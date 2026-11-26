@@ -28,6 +28,11 @@ pub(super) fn execute_fixed(
             Err(Exception::GeneralProtection { error_code: 0 })
         }
         FixedOutcome::GeneralProtection if is_active(Bug::TransactionEndCompletes) && instruction == Instruction::Xend => Ok(()),
+        FixedOutcome::GeneralProtection
+            if is_active(Bug::TimeStampCounterUnrestricted) && matches!(instruction, Instruction::Rdtsc | Instruction::Rdtscp) =>
+        {
+            Ok(())
+        }
         FixedOutcome::GeneralProtection => Err(Exception::GeneralProtection { error_code: 0 }),
         FixedOutcome::InvalidOpcode => Err(Exception::InvalidOpcode),
         FixedOutcome::SoftwareInterrupt if decoded.code() == Code::Int1 => Err(Exception::Debug { status: 0 }),
@@ -62,6 +67,8 @@ pub(super) fn execute_fixed(
             let access = if is_active(Bug::FlushChecksWrite) { Access::Write } else { Access::Read };
             check_access(processor.flags, memory, locate(processor, decoded), 1, access)
         }
+        FixedOutcome::SystemEnter if is_active(Bug::SystemEnterAdvances) => Err(Exception::SystemCall),
+        FixedOutcome::SystemEnter => Err(Exception::SystemEnter),
         FixedOutcome::ReadsOperand => {
             let width = decoded.memory_size().size() as u64;
             check_access(processor.flags, memory, locate(processor, decoded), width, Access::Read)

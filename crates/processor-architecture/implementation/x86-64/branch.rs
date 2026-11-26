@@ -94,6 +94,8 @@ pub static BRANCH_FORMS: &[BranchForm] = &[
     relative(Instruction::JnleRelbrd, If(NotLessOrEqual), &[Code::Jg_rel32_64]),
     relative(Instruction::JrcxzRelbrb, CountIsZero, &[Code::Jrcxz_rel8_64]),
     relative(Instruction::JecxzRelbrb, CountIsZero, &[Code::Jecxz_rel8_64]),
+    // JCXZ runs in a 32-bit code segment only, whose codes these are.
+    relative(Instruction::JcxzRelbrb, CountIsZero, &[Code::Jcxz_rel8_32, Code::Jcxz_rel8_16]),
     relative(Instruction::LoopRelbrb, Loop, &[Code::Loop_rel8_64_RCX, Code::Loop_rel8_64_ECX]),
     relative(Instruction::LoopeRelbrb, LoopWhileZero, &[Code::Loope_rel8_64_RCX, Code::Loope_rel8_64_ECX]),
     relative(Instruction::LoopneRelbrb, LoopWhileNotZero, &[Code::Loopne_rel8_64_RCX, Code::Loopne_rel8_64_ECX]),

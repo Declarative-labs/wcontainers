@@ -18,6 +18,9 @@ use crate::x87::{
 };
 use crate::{Access, Exception, Flags, Instruction, Processor, X87, X86_64, x87_arithmetic, x87_state};
 
+#[path = "x87_transcendental_simulation.rs"]
+mod transcendental;
+
 /// FSW's PE.
 const PRECISION: u16 = 1 << 5;
 /// FXSAVE's and FXRSTOR's area lies on 16 bytes.
@@ -477,6 +480,9 @@ pub(super) fn execute_x87(
             processor.mxcsr = mxcsr;
             processor.vector_registers = vectors;
         }
+        X87Operation::Transcendental(function) => {
+            transcendental::execute_transcendental(&mut x87, function);
+        }
         X87Operation::SquareRoot | X87Operation::RoundToIntegral => {
             if x87.is_empty(0) {
                 if underflow(&mut x87) {
@@ -546,6 +552,14 @@ pub(super) fn execute_x87(
     }
     processor.x87 = x87;
     Ok(())
+}
+
+/// What a transcendental form's behavior leaves undecided on the state before: none for any other form.
+pub(super) fn find_undecided_x87(instruction: Instruction, before: &X87) -> Option<transcendental::Undecided> {
+    let X87Operation::Transcendental(function) = find_x87_form(instruction)?.operation else {
+        return None;
+    };
+    Some(transcendental::execute_transcendental(&mut before.clone(), function))
 }
 
 /// The selectors of FIP and FDP in the 16-bit environment.

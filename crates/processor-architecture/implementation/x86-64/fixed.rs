@@ -35,6 +35,9 @@ pub enum FixedOutcome {
     /// The register operand is written with a random value, which a behavior does not compare, CF is set and OF, SF,
     /// ZF, AF and PF are cleared, as RDRAND and RDSEED do when the random source had a value ready.
     WritesRandom,
+    /// SYSENTER in 64-bit mode on Intel's chips: the kernel is entered at the MSRs Linux sets, with no return address
+    /// kept.
+    SystemEnter,
 }
 
 /// How far a state may move the form's memory operand without its encoding becoming another form's.
@@ -156,8 +159,9 @@ pub static FIXED_FORMS: &[FixedForm] = &[
     fixed(Instruction::ClflushoptMemmprefetch, TouchesByte, All),
     fixed(Instruction::ClwbMemmprefetch, TouchesByte, All),
     fixed(Instruction::PtwriteMemy, ReadsOperand, All),
-    fixed(Instruction::Rdtsc, WritesUndecided, Sample),
-    fixed(Instruction::Rdtscp, WritesUndecided, Sample),
+    // Under CR4.TSD, which the executors set so that the kernel answers a read of the time-stamp counter.
+    fixed(Instruction::Rdtsc, GeneralProtection, Sample),
+    fixed(Instruction::Rdtscp, GeneralProtection, Sample),
     fixed(Instruction::RdpidGpr64u64, WritesUndecided, Sample),
     fixed(Instruction::RdrandGprv, WritesRandom, Sample),
     fixed(Instruction::RdseedGprv, WritesRandom, Sample),
@@ -176,6 +180,7 @@ pub static FIXED_FORMS: &[FixedForm] = &[
     // ENQCMDS needs CPL 0; ENQCMD needs a valid IA32_PASID, which Linux gives only a process bound to a device.
     fixed(Instruction::EnqcmdsGpraMemu32, GeneralProtection, Sample),
     fixed(Instruction::EnqcmdGpraMemu32, GeneralProtection, Sample),
+    fixed(Instruction::Sysenter, FixedOutcome::SystemEnter, Sample),
 ];
 
 /// The general registers, by number, a form of [`FixedOutcome::WritesUndecided`] or [`FixedOutcome::WritesRandom`]

@@ -5014,7 +5014,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-distinguishing-state-generator-x86-64",
  "wcontainers-instruction-input-domain-x86-64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-conformance",

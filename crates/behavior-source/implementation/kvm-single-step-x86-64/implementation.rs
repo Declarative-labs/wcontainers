@@ -226,7 +226,13 @@ const SYSTEM_CALL_TARGET: u32 = 0xC000_0081;
 const LONG_MODE_SYSTEM_CALL_TARGET: u32 = 0xC000_0082;
 const SYSTEM_CALL_FLAG_MASK: u32 = 0xC000_0084;
 const SYSTEM_CALL_MASKED_FLAGS: u64 = TRAP | INTERRUPT_ENABLE | 1 << 10 | IO_PRIVILEGE | 1 << 14 | RESUME | 1 << 18;
-/// IA32_UMWAIT_CONTROL, and the value Linux gives it: UMWAIT and TPAUSE wait at most 100,000 TSC cycles, C0.2 allowed.
+/// IA32_SYSENTER_CS, IA32_SYSENTER_ESP and IA32_SYSENTER_EIP, which Linux sets to its kernel's code segment, a kernel
+/// stack and its entry; here the entry is a kernel address never fetched, as the trap after SYSENTER comes first.
+const SYSTEM_ENTER_SEGMENT: u32 = 0x174;
+const SYSTEM_ENTER_STACK: u32 = 0x175;
+const SYSTEM_ENTER_TARGET_REGISTER: u32 = 0x176;
+const SYSTEM_ENTER_TARGET: u64 = 0xFFFF_8000_0000_0000;
+/// IA32_UMWAIT_CONTROL as Linux sets it: C0.2 allowed, waits limited to 100,000 cycles of the time-stamp counter.
 const WAIT_CONTROL: u32 = 0xE1;
 const LINUX_WAIT_CONTROL: u64 = 100_000;
 /// R11, where SYSCALL saves RFLAGS.
@@ -243,10 +249,11 @@ const FAULT_USER: u32 = 1 << 2;
 const FAULT_INSTRUCTION_FETCH: u32 = 1 << 4;
 const PAGE_FAULT_VECTOR: u64 = 14;
 
-// Control registers: CR0's PE, MP, ET, NE, WP, AM and PG; CR4's PAE, PGE, OSFXSR, OSXMMEXCPT, UMIP, FSGSBASE, OSXSAVE
-// and PKE; EFER's SCE, LME, LMA and NXE.
+// Control registers: CR0's PE, MP, ET, NE, WP, AM and PG; CR4's TSD, PAE, PGE, OSFXSR, OSXMMEXCPT, UMIP, FSGSBASE,
+// OSXSAVE and PKE; EFER's SCE, LME, LMA and NXE. TSD is the executors' setting, not Linux's: a guest's read of the
+// time-stamp counter traps, for the kernel to answer.
 const CONTROL_0: u64 = 1 | 1 << 1 | 1 << 4 | 1 << 5 | 1 << 16 | 1 << 18 | 1 << 31;
-const CONTROL_4: u64 = 1 << 5 | 1 << 7 | 1 << 9 | 1 << 10 | 1 << 11 | 1 << 16 | 1 << 18 | 1 << 22;
+const CONTROL_4: u64 = 1 << 2 | 1 << 5 | 1 << 7 | 1 << 9 | 1 << 10 | 1 << 11 | 1 << 16 | 1 << 18 | 1 << 22;
 const EXTENDED_FEATURES: u64 = 1 | 1 << 8 | 1 << 10 | 1 << 11;
 
 /// A writable page of the state: where the guest keeps it, and its bytes before the instruction.
@@ -337,17 +344,23 @@ impl SingleStepMachine {
         cpu.set_cpuid2(&cpuid).map_err(|error| refused("setting CPUID", error))?;
         let handler = handler::assemble();
         // SYSCALL enters the handler's own entry on the kernel's code segment, with TF, IF, DF, IOPL, NT, RF and AC
-        // masked so that nothing steps or interrupts it.
+        // masked so that nothing steps or interrupts it; SYSENTER enters the kernel's code segment as under Linux.
         let entries: Vec<kvm_msr_entry> = [
             (SYSTEM_CALL_TARGET, KERNEL_CODE_SELECTOR << 32),
             (LONG_MODE_SYSTEM_CALL_TARGET, handler.system_call),
             (SYSTEM_CALL_FLAG_MASK, SYSTEM_CALL_MASKED_FLAGS),
+            (SYSTEM_ENTER_SEGMENT, KERNEL_CODE_SELECTOR),
+            (SYSTEM_ENTER_STACK, to_kernel(STACK_TOP)),
+            (SYSTEM_ENTER_TARGET_REGISTER, SYSTEM_ENTER_TARGET),
             (WAIT_CONTROL, LINUX_WAIT_CONTROL),
         ]
         .map(|(index, data)| kvm_msr_entry { index, data, ..kvm_msr_entry::default() })
         .to_vec();
-        let msrs = Msrs::from_entries(&entries).map_err(|error| refused("listing SYSCALL's MSRs", format!("{error:?}")))?;
-        cpu.set_msrs(&msrs).map_err(|error| refused("setting SYSCALL's MSRs", error))?;
+        let msrs = Msrs::from_entries(&entries).map_err(|error| refused("listing the MSRs", format!("{error:?}")))?;
+        let set = cpu.set_msrs(&msrs).map_err(|error| refused("setting the MSRs", error))?;
+        if set != entries.len() {
+            return Err(SetUpError(format!("KVM set {set} of the {} MSRs", entries.len())));
+        }
         let mut executor = Self {
             cpu,
             _machine: machine,
@@ -1023,7 +1036,7 @@ fn to_slot(processor: &Processor, page_table: u64, tracking: TrackingSteps) -> S
         general: processor.general_purpose_registers,
         instruction_pointer: processor.instruction_pointer,
         flags: processor.flags.bits() | RESERVED_ONE | INTERRUPT_ENABLE | TRAP,
-        code_segment: u64::from(USER_CODE),
+        code_segment: u64::from(processor.code_segment),
         stack_segment: u64::from(USER_DATA),
         fs_base: processor.fs_base,
         gs_base: processor.gs_base,
@@ -1122,8 +1135,8 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if !xsave::is_consistent(processor) {
         return Err(Refusal::NotModeled("XINUSE with a bit outside XCR0, or clear for a component out of its initial configuration"));
     }
-    if processor.code_segment != CODE_SEGMENT {
-        return Err(Refusal::NotModeled("CS other than Linux's 64-bit code segment, which every state holds"));
+    if processor.code_segment != CODE_SEGMENT && u64::from(processor.code_segment) != USER_32_BIT_CODE {
+        return Err(Refusal::NotModeled("CS other than Linux's 64-bit or 32-bit code segment"));
     }
     if !processor.data_segments.iter().all(|selector| is_loadable(*selector)) {
         return Err(Refusal::NotModeled("a data segment selector no program can load under Linux"));
@@ -1152,11 +1165,12 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 ///
 /// # Errors
 ///
-/// For a MOV SS that loads SS (it steps two instructions) and SYSENTER (it enters ring 0 at MSRs the source does not
-/// set as Linux does). VMCALL runs, which KVM answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk
-/// that rewrites it is off. Then for each instruction whose result under Linux differs from the source's guest, the table of settings
-/// on the page says why: INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
-/// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
+/// For a MOV SS that loads SS (it steps two instructions) and XBEGIN (its abort drops the trap). VMCALL runs, which KVM
+/// answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk that rewrites it is off; SYSENTER, UMWAIT and
+/// TPAUSE run under the MSRs Linux sets. Then for each instruction whose result under Linux differs from the source's
+/// guest, the table of settings on the page says why: INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's
+/// descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under UMIP is the program's outcome at this
+/// level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
     let bytes: [u8; 15] = read_bytes(memory, address);
@@ -1180,15 +1194,15 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         && read_source_selector(processor, memory, &decoded) == Some(STACK_SEGMENT_SELECTOR);
     let reason = match decoded.mnemonic() {
         _ if loads_stack_segment => Some("it loads SS, which holds off the trap until after the next instruction"),
-        // Linux sets IA32_SYSENTER_CS, so a 64-bit SYSENTER enters its kernel; the source leaves it 0, where it faults.
-        Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
-        // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
-        // IA32_TSC_AUX and the random source decide; nor do UMWAIT's and TPAUSE's the CF the time decides.
+        // RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers IA32_TSC_AUX and the random
+        // source decide; RDTSC, RDTSCP, UMWAIT and TPAUSE fault under CR4.TSD.
         // This chip's transactions always abort, and an aborting XBEGIN drops the single step's trap.
         Mnemonic::Xbegin => Some("it aborts, which drops the trap, so the chip runs the fallback's first instruction too"),
         Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
             Some("Linux takes it as a 32-bit system call")
         }
+        // Linux's XCR0 on this chip enables AMX's tiles, which KVM refuses a guest unless the host process asks for
+        // them with arch_prctl(ARCH_REQ_XCOMP_GUEST_PERM), a call the source does not make.
         _ if decoded.cpuid_features().iter().any(|feature| format!("{feature:?}").starts_with("AMX")) => {
             Some("Linux traps its first use of the tiles with #NM, where the source's XCR0 gives #UD")
         }
@@ -1216,9 +1230,13 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     if slot.vector == NOT_RUN {
         return Err(Refusal::SlotNotRun);
     }
+    // SYSENTER enters ring 0 at IA32_SYSENTER_EIP, where the trap after it stops the run before anything there runs.
+    let system_enter = slot.vector == DEBUG_VECTOR
+        && after.code_segment == KERNEL_CODE_SELECTOR
+        && after.instruction_pointer == SYSTEM_ENTER_TARGET;
     // A far transfer may leave Linux's 32-bit code segment in CS, at ring 3 too.
     let at_ring_3 = after.code_segment == u64::from(USER_CODE) || after.code_segment == USER_32_BIT_CODE;
-    if !(at_ring_3 && after.stack_segment == u64::from(USER_DATA)) {
+    if !system_enter && !(at_ring_3 && after.stack_segment == u64::from(USER_DATA)) {
         return Err(Refusal::NotFromRing3 {
             vector: slot.vector,
             error_code: slot.error_code,
@@ -1226,7 +1244,7 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
             instruction_pointer: after.instruction_pointer,
         });
     }
-    if after.flags & (INTERRUPT_ENABLE | IO_PRIVILEGE | VIRTUAL_8086) != INTERRUPT_ENABLE {
+    if !system_enter && after.flags & (INTERRUPT_ENABLE | IO_PRIVILEGE | VIRTUAL_8086) != INTERRUPT_ENABLE {
         return Err(Refusal::NotModeled("RFLAGS changed IF, IOPL or VM"));
     }
     let after_x87 = &slot.after_xsave.bytes;
@@ -1258,15 +1276,28 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         if saved & OPMASK_COMPONENT == 0 { 0 } else { value }
     });
     let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & SINGLE_STEP != 0;
-    let exception = if completed { None } else { Some(to_exception(slot)?) };
+    let exception = if system_enter {
+        Some(Exception::SystemEnter)
+    } else if completed {
+        None
+    } else {
+        Some(to_exception(slot)?)
+    };
     let mut general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
+    // SYSENTER saves neither the program's RSP nor its RIP: the program's are those before it.
+    let (instruction_pointer, code_segment) = if system_enter {
+        general_purpose_registers[STACK_POINTER] = slot.before.general[STACK_POINTER];
+        (slot.before.instruction_pointer, u64::from(USER_CODE))
+    } else {
+        (after.instruction_pointer, after.code_segment)
+    };
     // R11 holds the RFLAGS SYSCALL saw, with the TF the source steps by.
     if slot.vector == SYSTEM_CALL_VECTOR {
         general_purpose_registers[SAVED_FLAGS] &= !TRAP;
     }
     Ok(Processor {
         general_purpose_registers,
-        instruction_pointer: after.instruction_pointer,
+        instruction_pointer,
         flags: Flags::from_bits_truncate(after.flags & !(TRAP | RESUME)),
         fs_base: after.fs_base,
         gs_base: after.gs_base,
@@ -1284,7 +1315,7 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         } else {
             u32::from_le_bytes(after_x87[XSAVE_PKRU..XSAVE_PKRU + size_of::<u32>()].try_into().expect("four bytes"))
         },
-        code_segment: after.code_segment as u16,
+        code_segment: code_segment as u16,
         xcr0: EXTENDED_CONTROL_0,
         xinuse: saved & SAVED_COMPONENTS,
         // The handler's own XRSTOR64 at ring 0 leaves no tracking a program's XSAVEOPT can use; the reading step gives

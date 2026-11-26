@@ -103,7 +103,7 @@ fn read_control(processor: &mut Processor) -> Result<(), Exception> {
 /// UMWAIT and TPAUSE: #GP(0) for a source with a bit above bit 0, else OF, SF, ZF, AF and PF cleared and CF from the
 /// time, which the expectation does not compare.
 fn wait(control: WaitControl, processor: &mut Processor, decoded: &Decoded) -> Result<(), Exception> {
-    if control == WaitControl::FaultsUnderTimeStampDisable {
+    if control == WaitControl::FaultsUnderTimeStampDisable && !is_active(Bug::WaitWithoutTimeStampControl) {
         return Err(Exception::GeneralProtection { error_code: 0 });
     }
     let source = read_register(processor, decoded.op0_register()) as u32;

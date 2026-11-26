@@ -61,6 +61,7 @@ pub mod xsave;
 pub mod x87;
 pub mod x87_arithmetic;
 pub mod x87_state;
+pub mod x87_transcendental;
 #[cfg(test)]
 mod tests;
 
@@ -238,7 +239,7 @@ impl ProcessorArchitecture for X86_64 {
             && observed.mxcsr == expectation.mxcsr
             && observed.vector_registers == expectation.vector_registers
             && observed.upper_vector_halves == expectation.upper_vector_halves
-            && observed.x87 == expectation.x87
+            && meets_x87(&observed.x87, expectation)
             && observed.zmm_upper_halves == expectation.zmm_upper_halves
             && observed.high_vector_registers == expectation.high_vector_registers
             && observed.opmask_registers == expectation.opmask_registers
@@ -251,6 +252,18 @@ impl ProcessorArchitecture for X86_64 {
             && observed.xsave_tracking == expectation.xsave_tracking
             && (observed.flags.bits() ^ expectation.flags.bits()) & !expectation.nondeterministic_flags.bits() == 0
     }
+}
+
+/// Whether the x87 state is the one expected, but the registers and FSW bits the expectation leaves undecided.
+fn meets_x87(observed: &X87, expectation: &ProcessorExpectation) -> bool {
+    let expected = &expectation.x87;
+    let registers_meet = (0..X87_REGISTERS).all(|number| {
+        expectation.x87_registers_undecided & (1 << number) != 0 || observed.registers[number] == expected.registers[number]
+    });
+    let decided = !expectation.x87_status_undecided;
+    registers_meet
+        && observed.status & decided == expected.status & decided
+        && X87 { registers: expected.registers, status: expected.status, ..*observed } == *expected
 }
 
 /// The registers a program at ring 3 reads and writes, and the exception its last instruction raised.
@@ -286,8 +299,8 @@ pub struct Processor {
     pub exception: Option<Exception>,
     /// ES, DS, FS and GS's selectors, null as Linux starts a program; SS is always Linux's 0x2B at ring 3.
     pub data_segments: [u16; DATA_SEGMENTS],
-    /// CS: Linux's 64-bit code segment, 0x33, in every state of this architecture; a far transfer to Linux's 32-bit
-    /// code segment, 0x23, leaves one in compatibility mode, which no state starts in.
+    /// CS: Linux's 64-bit code segment, 0x33, in every state of this architecture but JCXZ's, which start in Linux's
+    /// 32-bit code segment, 0x23, the only one that encodes it; a far transfer there leaves one in compatibility mode.
     pub code_segment: u16,
     /// PKRU, which XCR0's PKRU bit enables: Linux starts a program at 0x55555554, every key but 0 denied access, and a
     /// state's pages all have key 0.
@@ -362,6 +375,11 @@ pub struct ProcessorExpectation {
     pub vector_registers: [u128; VECTOR_REGISTERS],
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
     pub x87: X87,
+    /// The physical x87 registers, by bit, whose values the state before does not decide, as the results of the x87
+    /// transcendental forms, which differ between chip makers in their last bits.
+    pub x87_registers_undecided: u8,
+    /// The bits of FSW the state before does not decide: C1, which tells how such a result was rounded.
+    pub x87_status_undecided: u16,
     pub zmm_upper_halves: [[u128; 2]; VECTOR_REGISTERS],
     pub high_vector_registers: [[u128; 4]; VECTOR_REGISTERS],
     pub opmask_registers: [u64; OPMASK_REGISTERS],
@@ -389,6 +407,8 @@ impl Processor {
             vector_registers: self.vector_registers,
             upper_vector_halves: self.upper_vector_halves,
             x87: self.x87,
+            x87_registers_undecided: 0,
+            x87_status_undecided: 0,
             zmm_upper_halves: self.zmm_upper_halves,
             high_vector_registers: self.high_vector_registers,
             opmask_registers: self.opmask_registers,

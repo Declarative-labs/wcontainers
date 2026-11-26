@@ -190,8 +190,9 @@ pub fn generate_counts() -> Vec<OperandValue> {
 }
 
 /// The comparison's elements, the first less the second: equal, below, above, a signed overflow, a borrow out of
-/// the low nibble alone, one into bit 3 alone (8 less 1), which tells AF from the carry out of bit 2, and zero less
-/// every bit; or two accumulators that differ in every byte.
+/// the low nibble alone, a borrow out of bit 3 that stops there (8 less 1, the one pair whose bits 3 and 4 of the
+/// operands and difference differ, so that AF is told from bit 3), and zero less every bit; or two accumulators that
+/// differ in every byte.
 pub fn generate_data(set: StringDataSet) -> Vec<OperandValue> {
     let pairs: Vec<(u64, u64)> = match set {
         StringDataSet::Comparison { bytes, repeated: true } => {

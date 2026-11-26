@@ -83,6 +83,8 @@ mod vex_upper;
 mod optional_simulation;
 #[path = "xsave_simulation.rs"]
 mod xsave_simulation;
+#[path = "compatibility_simulation.rs"]
+mod compatibility_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -107,6 +109,7 @@ impl Simulator<X86_64> for PreciseInstruction {
         let before = processor.instruction_pointer;
         let decoded = simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
         crate::xsave::track_components(*self, start, decoded.as_ref(), &mut processor);
+        compatibility_simulation::clear_stack_upper_half(start, &mut processor);
         let mut expectation = processor.to_expectation();
         if crate::xsave::is_wait(*self) && processor.exception.is_none() {
             expectation.nondeterministic_flags = Flags::CARRY;
@@ -124,6 +127,12 @@ impl Simulator<X86_64> for PreciseInstruction {
             if let Some(number) = descriptor_simulation::find_undecided_register(*instruction, start, memory.mutations, &decoded) {
                 expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
             }
+        }
+        if let (PreciseInstruction::X87 { instruction, .. }, None) = (self, processor.exception)
+            && let Some(undecided) = x87_simulation::find_undecided_x87(*instruction, &start.x87)
+        {
+            expectation.x87_registers_undecided = undecided.registers;
+            expectation.x87_status_undecided = undecided.status;
         }
         Ok(expectation)
     }
@@ -320,6 +329,7 @@ fn apply(
             avx_simulation::execute_avx(form, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),
+        PreciseInstruction::Branch(Instruction::JcxzRelbrb) => compatibility_simulation::execute_jump_if_count_zero(processor, memory),
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
         PreciseInstruction::Sse { instruction, across_fault, masked_faults } => {
             sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)

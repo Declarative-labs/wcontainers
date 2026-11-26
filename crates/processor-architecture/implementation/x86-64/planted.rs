@@ -60,6 +60,8 @@ pub enum Origin {
     OptionalRemaining,
     /// The family of XCR0, XINUSE and the XSAVE forms, and of UMWAIT and TPAUSE.
     StateAndXsave,
+    /// The family of the x87 transcendental forms, JCXZ and the forms the chip source refused.
+    X87AndRefused,
 }
 
 /// The forms a bug shows on.
@@ -1329,6 +1331,39 @@ pub enum Bug {
     RestoreReadsHeaderFromStart,
     /// XRSTOR tracks the components it restores as modified.
     RestoreTracksModified,
+    // The x87 transcendental forms, JCXZ and the forms the chip source refused.
+    /// FPTAN pushes +0 where it pushes 1.0.
+    TangentPushesZero,
+    /// FSINCOS leaves the cosine in ST(1) and pushes the sine.
+    SineCosineOrderSwapped,
+    /// The trigonometric forms take arguments up to 2 to the 64 as in range.
+    TrigonometricRangeTo64,
+    /// FYL2X of a zero x raises no ZE.
+    LogOfZeroNoDivideByZero,
+    /// FPATAN of ±0 over -0 gives ±0, not ±π.
+    ArcTangentZeroOverNegativeZero,
+    /// F2XM1 beyond ±1 raises no PE.
+    TwoToXOutOfRangeExact,
+    /// FYL2XP1 of an x at -1 or below raises IE.
+    LogOnePlusBelowMinusOneInvalid,
+    /// The transcendental forms raise no DE for a denormal operand.
+    TranscendentalDenormalIgnored,
+    /// FPATAN, FYL2X and FYL2XP1 do not pop.
+    BinaryTranscendentalKeepsStack,
+    /// A binary transcendental form's behavior leaves ST(0) undecided, not the result's ST(1).
+    UndecidedRegisterMisplaced,
+    /// SYSENTER leaves the instruction pointer past it, as SYSCALL does.
+    SystemEnterAdvances,
+    /// RDTSC and RDTSCP read the counter whatever CR4.TSD holds.
+    TimeStampCounterUnrestricted,
+    /// UMWAIT and TPAUSE wait whatever CR4.TSD holds.
+    WaitWithoutTimeStampControl,
+    /// JCXZ tests ECX, as JECXZ does.
+    CountJumpTestsDoubleword,
+    /// JCXZ under the prefix 0x66 keeps the target's bits above 16.
+    SixteenBitJumpTargetWhole,
+    /// A step in compatibility mode keeps RSP's upper half.
+    CompatibilityStepKeepsStackUpperHalf,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1944,6 +1979,22 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::ZeroUpperTracksSseInitial, "VZEROUPPER", Family::Forms(&[Instruction::Vzeroupper]), Origin::StateAndXsave),
     row(Bug::RestoreReadsHeaderFromStart, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
     row(Bug::RestoreTracksModified, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::TangentPushesZero, "FPTAN", Family::Forms(&[Instruction::Fptan]), Origin::X87AndRefused),
+    row(Bug::SineCosineOrderSwapped, "FSINCOS", Family::Forms(&[Instruction::Fsincos]), Origin::X87AndRefused),
+    row(Bug::TrigonometricRangeTo64, "FSIN, FCOS, FPTAN, FSINCOS", Family::Forms(&TRIGONOMETRIC), Origin::X87AndRefused),
+    row(Bug::LogOfZeroNoDivideByZero, "FYL2X", Family::Forms(&[Instruction::Fyl2x]), Origin::X87AndRefused),
+    row(Bug::ArcTangentZeroOverNegativeZero, "FPATAN", Family::Forms(&[Instruction::Fpatan]), Origin::X87AndRefused),
+    row(Bug::TwoToXOutOfRangeExact, "F2XM1", Family::Forms(&[Instruction::F2xm1]), Origin::X87AndRefused),
+    row(Bug::LogOnePlusBelowMinusOneInvalid, "FYL2XP1", Family::Forms(&[Instruction::Fyl2xp1]), Origin::X87AndRefused),
+    row(Bug::TranscendentalDenormalIgnored, "the x87 transcendental forms", Family::Forms(&TRANSCENDENTAL), Origin::X87AndRefused),
+    row(Bug::BinaryTranscendentalKeepsStack, "FPATAN, FYL2X, FYL2XP1", Family::Forms(&BINARY_TRANSCENDENTAL), Origin::X87AndRefused),
+    row(Bug::UndecidedRegisterMisplaced, "FPATAN, FYL2X, FYL2XP1", Family::Forms(&BINARY_TRANSCENDENTAL), Origin::X87AndRefused),
+    row(Bug::SystemEnterAdvances, "SYSENTER", Family::Forms(&[Instruction::Sysenter]), Origin::X87AndRefused),
+    row(Bug::TimeStampCounterUnrestricted, "RDTSC, RDTSCP", Family::Forms(&[Instruction::Rdtsc, Instruction::Rdtscp]), Origin::X87AndRefused),
+    row(Bug::WaitWithoutTimeStampControl, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::X87AndRefused),
+    row(Bug::CountJumpTestsDoubleword, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
+    row(Bug::SixteenBitJumpTargetWhole, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
+    row(Bug::CompatibilityStepKeepsStackUpperHalf, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
 ];
 
 const FISTTP: &[Instruction] =
@@ -1972,6 +2023,19 @@ const XSAVE_FAMILY: &[Instruction] = &[
     Instruction::Xsavec64Memmxsave,
     Instruction::XrstorMemmxsave,
     Instruction::Xrstor64Memmxsave,
+];
+
+const TRIGONOMETRIC: [Instruction; 4] = [Instruction::Fsin, Instruction::Fcos, Instruction::Fptan, Instruction::Fsincos];
+const BINARY_TRANSCENDENTAL: [Instruction; 3] = [Instruction::Fpatan, Instruction::Fyl2x, Instruction::Fyl2xp1];
+const TRANSCENDENTAL: [Instruction; 8] = [
+    Instruction::F2xm1,
+    Instruction::Fsin,
+    Instruction::Fcos,
+    Instruction::Fptan,
+    Instruction::Fsincos,
+    Instruction::Fpatan,
+    Instruction::Fyl2x,
+    Instruction::Fyl2xp1,
 ];
 
 const SEGMENT_LOADS: &[Instruction] = &[

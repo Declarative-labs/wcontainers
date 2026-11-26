@@ -54,6 +54,7 @@ use wcontainers_processor_architecture_x86_64::{
 pub mod avx;
 pub mod avx512_integer;
 pub mod branch;
+pub mod compatibility;
 pub mod descriptor;
 pub mod evex;
 pub mod extension;
@@ -76,6 +77,7 @@ mod vnni;
 pub mod x87;
 pub mod x87_arithmetic;
 pub mod xsave;
+pub mod x87_transcendental;
 #[cfg(test)]
 mod tests;
 
@@ -323,6 +325,8 @@ pub enum OperandType {
     XrstorTracking,
     /// The registers XRSTOR restores over and what XINUSE says of them.
     RestoredOver,
+    /// JCXZ's operand size, code address, displacement and RCX together.
+    CountJump,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -533,6 +537,7 @@ pub enum OperandValue {
     /// The area of the last XRSTOR and the components unmodified since, or none.
     XrstorTracking(Option<(u64, u64)>),
     WaitSource { register: usize, value: u64 },
+    CountJump(compatibility::CountJump),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -542,7 +547,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
     type CriticalValues<'domain> = vec::IntoIter<OperandValue>;
 
     /// The operands of the form in Intel's order, then the state it reads besides them; for a form not yet modeled
-    /// its sample encoding, and nothing for JCXZ, which no byte string encodes in 64-bit mode.
+    /// its sample encoding.
     fn list_operand_types(&self, instruction: Instruction) -> vec::IntoIter<OperandType> {
         use OperandType::{
             AccessPlacement, CpuidLeaf, CpuidSubleaf, CpuidUpperHalves, DataPagePermission, OperandSize, Register,
@@ -576,6 +581,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_float_form(instruction) {
             return float::list_operand_types(form).into_iter();
+        }
+        if instruction == Instruction::JcxzRelbrb {
+            return compatibility::list_operand_types().into_iter();
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::list_operand_types(form).into_iter();
@@ -879,6 +887,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::WaitDeadline => xsave::generate_deadlines(),
             OperandType::XrstorTracking => xsave::generate_trackings(),
             OperandType::RestoredOver => xsave::generate_restored_over(),
+            OperandType::CountJump => compatibility::generate_cases(),
         };
         values.into_iter()
     }
@@ -941,6 +950,9 @@ impl X86_64InputDomain {
         }
         if let Some(form) = find_float_form(instruction) {
             return float::build_state(form, &typed);
+        }
+        if instruction == Instruction::JcxzRelbrb {
+            return compatibility::build_state(&typed);
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::build_state(form, &typed);
