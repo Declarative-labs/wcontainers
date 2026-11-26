@@ -12,7 +12,7 @@ use crate::condition_flags::{
     IMMEDIATE_CARRY, IMMEDIATE_NEGATIVE, IMMEDIATE_OVERFLOW, IMMEDIATE_ZERO, Nzcv,
 };
 #[cfg(verus_keep_ghost)]
-use crate::integer::{Comparison, FlagSetting, IntegerOperation};
+use crate::integer::{BitfieldFill, Comparison, FlagSetting, IntegerOperation, SelectAlternative};
 #[cfg(verus_keep_ghost)]
 use crate::operand::{Rotation, Signedness};
 
@@ -187,6 +187,135 @@ pub open spec fn extended_register(x: int, option: nat, shift: nat, n: nat) -> O
     }
 }
 
+/// [HighestSetBit](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-integer#impl-shared.HighestSetBit.1)
+/// of a value: the position of its most significant one, or -1 where it has none.
+pub open spec fn highest_set_bit(x: nat) -> int
+    decreases x,
+{
+    if x == 0 { -1 } else { 1 + highest_set_bit(x / 2) }
+}
+
+/// [Replicate](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-vector#impl-shared.Replicate.2)
+/// of the low `esize` bits of `x`, `count` times: `x:Replicate(x, count - 1)`, the first copy the most significant.
+pub open spec fn replicate(x: int, esize: nat, count: nat) -> int
+    decreases count,
+{
+    if count == 0 { 0 } else { uint(x, esize) * pow2(((count - 1) * esize) as nat) + replicate(x, esize, (count - 1) as nat) }
+}
+
+/// [DecodeBitMasks](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-bitmasks#impl-aarch64.DecodeBitMasks.5)
+/// of immN, the 6-bit imms and immr, whether it decodes an immediate, and `m` bits: wmask and tmask, or none
+/// (UNDEFINED). Arm asserts that `m` holds an element, which the decodes of its callers ensure.
+pub open spec fn decode_bit_masks(imm_n: bool, imms: nat, immr: nat, immediate: bool, m: nat) -> Option<(int, int)> {
+    // len = HighestSetBit(immN:NOT(imms)).
+    let len = highest_set_bit(((if imm_n { pow2(6) } else { 0 }) + ones(6) - uint(imms as int, 6)) as nat);
+    if len < 1 {
+        None
+    } else {
+        // levels = ZeroExtend(Ones(len), 6), so `imms AND levels` is the low len bits of imms.
+        let levels = ones(len as nat);
+        let s = uint(imms as int, len as nat);
+        let r = uint(immr as int, len as nat);
+        if immediate && s == levels {
+            None
+        } else {
+            let esize = pow2(len as nat);
+            // diff = s - r, a 6-bit subtraction with borrow, of which d takes the low len bits.
+            let d = uint(s - r, len as nat);
+            let welem = ones((s + 1) as nat);
+            let telem = ones((d + 1) as nat);
+            Some((replicate(ror(welem, r as nat, esize), esize, m / esize), replicate(telem, esize, m / esize)))
+        }
+    }
+}
+
+/// The immediate of [AND (immediate)](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate--),
+/// ORR, EOR and ANDS (immediate), as their decode gives it from the field N:immr:imms: the wmask of
+/// DecodeBitMasks(N, imms, immr, TRUE, datasize), or none (UNDEFINED).
+pub open spec fn bitmask_immediate_value(field: nat, n: nat) -> Option<int> {
+    let imms = field % 64;
+    let immr = (field / 64) % 64;
+    let imm_n = (field / pow2(12)) % 2 == 1;
+    match decode_bit_masks(imm_n, imms, immr, true, n) {
+        Some((wmask, _)) => Some(wmask),
+        None => None,
+    }
+}
+
+/// The position of a move wide's immediate, as [MOVZ](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero-)'s
+/// decode gives it from hw: `UInt(hw:'0000')`, or none (UNDEFINED) where it is not below the width, which is hw<1> set
+/// in the 32-bit forms.
+pub open spec fn wide_immediate_position(hw: nat, n: nat) -> Option<nat> {
+    if hw * 16 >= n { None } else { Some(hw * 16) }
+}
+
+/// The Operation of [MOVN](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVN--Move-wide-with-NOT-),
+/// [MOVZ](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero-) and
+/// [MOVK](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVK--Move-wide-with-keep-) on
+/// `n` bits: imm16 at bits `pos + 15:pos` of zeros, of zeros then inverted, or of the destination, whose other bits
+/// it keeps.
+pub open spec fn move_wide(operation: IntegerOperation, n: nat, kept: u64, imm16: int, pos: nat) -> int {
+    let placed = imm16 * pow2(pos);
+    match operation {
+        IntegerOperation::MoveWideZero => placed,
+        IntegerOperation::MoveWideNot => ones(n) - placed,
+        IntegerOperation::MoveWideKeep => uint(kept as int, n) - uint(kept as int / (pow2(pos) as int), 16) * pow2(pos) + placed,
+        _ => 0,
+    }
+}
+
+/// The Operation of [SBFM](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SBFM--Signed-bitfield-move-),
+/// [BFM](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BFM--Bitfield-move-) and
+/// [UBFM](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move-) on
+/// `n` bits after their decode, `(wmask, tmask) = DecodeBitMasks(N, imms, immr, FALSE, datasize)` with N set for 64
+/// bits: none (UNDEFINED) where it refuses, else `(top AND NOT(tmask)) OR (bot AND tmask)`.
+pub open spec fn bitfield_move(fill: BitfieldFill, n: nat, kept: u64, source: u64, immr: nat, imms: nat) -> Option<int> {
+    match decode_bit_masks(n == 64, imms, immr, false, n) {
+        None => None,
+        Some((wmask, tmask)) => {
+            let (wmask, tmask) = (wmask as u64, tmask as u64);
+            // dst is Zeros() for SBFM and UBFM, X[d] for BFM.
+            let dst = match fill {
+                BitfieldFill::DestinationBits => kept,
+                _ => 0u64,
+            };
+            let bot = (dst & !wmask) | ((ror(uint(source as int, n), immr, n) as u64) & wmask);
+            // top is Replicate(src<S>) for SBFM, dst for BFM and UBFM.
+            let top = match fill {
+                BitfieldFill::SignBits => if uint(source as int / (pow2(imms) as int), 1) == 1 { ones(n) as u64 } else { 0u64 },
+                _ => dst,
+            };
+            Some(uint(((top & !tmask) | (bot & tmask)) as int, n))
+        },
+    }
+}
+
+/// The Operation of [EXTR](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EXTR--Extract-register-)
+/// on `n`-bit registers: `concat = operand1:operand2; result = concat<lsb + datasize - 1:lsb>`.
+pub open spec fn extract(n: nat, operand1: u64, operand2: u64, lsb: nat) -> int {
+    let concat = uint(operand1 as int, n) * pow2(n) + uint(operand2 as int, n);
+    uint(concat / (pow2(lsb) as int), n)
+}
+
+/// The Operation of [CSEL](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select-),
+/// [CSINC](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSINC--Conditional-select-increment-),
+/// [CSINV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSINV--Conditional-select-invert-)
+/// and [CSNEG](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSNEG--Conditional-select-negation-)
+/// on `n` bits: operand1 where the condition holds, else operand2, inverted for CSINV and CSNEG, plus one for CSINC
+/// and CSNEG.
+pub open spec fn conditional_select(alternative: SelectAlternative, n: nat, operand1: u64, operand2: u64, cond: nat, nzcv: Nzcv) -> int {
+    if condition_holds(cond, nzcv) {
+        uint(operand1 as int, n)
+    } else {
+        match alternative {
+            SelectAlternative::Select => uint(operand2 as int, n),
+            SelectAlternative::Increment => uint(operand2 as int + 1, n),
+            SelectAlternative::Invert => uint(!operand2 as int, n),
+            SelectAlternative::Negate => uint(!operand2 as int + 1, n),
+        }
+    }
+}
+
 /// The low `n` bits of a logical instruction's result, then the N, Z, C and V it sets: `result<N-1>:IsZeroBit(result):'00'`.
 pub open spec fn logical_result(x: int, n: nat) -> (int, bool, bool, bool, bool) {
     (uint(x, n), sint(x, n) < 0, is_zero(x, n), false, false)
@@ -209,7 +338,11 @@ pub open spec fn written(outcome: (int, bool, bool, bool, bool), setting: FlagSe
 /// [ADC and ADCS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADCS--Add-with-carry--setting-flags-),
 /// [SBC and SBCS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SBCS--Subtract-with-carry--setting-flags-),
 /// [AND and ANDS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--shifted-register---Bitwise-AND--shifted-register---setting-flags-)
-/// and [BIC and BICS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BICS--shifted-register---Bitwise-bit-clear--shifted-register---setting-flags-)
+/// [BIC and BICS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BICS--shifted-register---Bitwise-bit-clear--shifted-register---setting-flags-),
+/// [ORR](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register--),
+/// [ORN](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORN--shifted-register---Bitwise-OR-NOT--shifted-register--),
+/// [EOR](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EOR--shifted-register---Bitwise-exclusive-OR--shifted-register--)
+/// and [EON](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EON--Bitwise-exclusive-OR-NOT--shifted-register--)
 /// on `n`-bit operands, after their decode, with PSTATE.NZCV before it.
 pub open spec fn arithmetic_or_logical(
     operation: IntegerOperation,
@@ -225,6 +358,10 @@ pub open spec fn arithmetic_or_logical(
         IntegerOperation::SubtractWithCarry(setting) => written(add_with_carry(operand1 as int, !operand2 as int, nzcv.carry, n), setting),
         IntegerOperation::And(setting) => written(logical_result((operand1 & operand2) as int, n), setting),
         IntegerOperation::AndNot(setting) => written(logical_result((operand1 & !operand2) as int, n), setting),
+        IntegerOperation::Or => (uint((operand1 | operand2) as int, n), None),
+        IntegerOperation::OrNot => (uint((operand1 | !operand2) as int, n), None),
+        IntegerOperation::ExclusiveOr => (uint((operand1 ^ operand2) as int, n), None),
+        IntegerOperation::ExclusiveOrNot => (uint((operand1 ^ !operand2) as int, n), None),
         _ => (0, None),
     }
 }

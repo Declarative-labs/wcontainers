@@ -2,7 +2,15 @@
 
 use core::convert::Infallible;
 
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
+use vstd::prelude::*;
+
 use crate::Instruction;
+#[cfg(verus_keep_ghost)]
+use crate::pseudocode::{ones, uint};
+
+verus! {
 
 /// A run of bits in an instruction's encoding.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -12,18 +20,56 @@ pub struct Field {
 }
 
 impl Field {
+    /// Whether the field lies inside a 32-bit encoding.
+    pub open spec fn fits(self) -> bool {
+        self.lowest_bit < u32::BITS && self.lowest_bit + self.width <= u32::BITS
+    }
+
     pub const fn new(lowest_bit: u32, width: u32) -> Self {
         Self { lowest_bit, width }
     }
 
-    pub const fn to_mask(self) -> u32 {
+    pub const fn to_mask(self) -> (mask: u32)
+        requires
+            self.fits(),
+        ensures
+            mask == ((ones(self.width as nat) as u32) << self.lowest_bit),
+    {
+        proof {
+            vstd::arithmetic::power2::lemma2_to64();
+            if self.width < 32 {
+                vstd::arithmetic::power2::lemma_pow2_strictly_increases(self.width as nat, 32);
+            }
+            vstd::bits::lemma_u64_shl_is_mul(1, self.width as u64);
+            let width = self.width;
+            assert(1u64 << width == 1u64 << (width as u64)) by (bit_vector);
+        }
         (((1_u64 << self.width) - 1) as u32) << self.lowest_bit
     }
 
-    pub const fn read(self, word: u32) -> u32 {
-        (word & self.to_mask()) >> self.lowest_bit
+    /// The field's bits of the word, `word<lowest_bit + width - 1:lowest_bit>`.
+    pub const fn read(self, word: u32) -> (value: u32)
+        requires
+            self.fits(),
+        ensures
+            value as int == uint(word as int / (pow2(self.lowest_bit as nat) as int), self.width as nat),
+    {
+        let mask = self.to_mask();
+        proof {
+            let (low, width) = (self.lowest_bit, self.width);
+            vstd::arithmetic::power2::lemma2_to64();
+            let ones_mask = ones(width as nat) as u32;
+            assert((word & (ones_mask << low)) >> low == (word >> low) & ones_mask) by (bit_vector);
+            vstd::bits::lemma_u32_shr_is_div(word, low);
+            crate::lemmas::lemma_mask_32(word >> low, width as nat);
+        }
+        (word & mask) >> self.lowest_bit
     }
+}
 
+} // verus!
+
+impl Field {
     /// Reads the field as a two's complement number.
     pub const fn read_signed(self, word: u32) -> i64 {
         let bits_above = i64::BITS - self.width;

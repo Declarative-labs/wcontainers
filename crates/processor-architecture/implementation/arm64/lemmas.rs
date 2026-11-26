@@ -7,7 +7,7 @@ use vstd::arithmetic::power2::{lemma_pow2_adds, lemma_pow2_pos, pow2};
 use vstd::prelude::*;
 
 #[cfg(verus_keep_ghost)]
-use crate::pseudocode::{ones, sint, uint};
+use crate::pseudocode::{highest_set_bit, ones, replicate, sint, uint};
 
 verus! {
 
@@ -244,6 +244,101 @@ pub proof fn lemma_sint_mod(v: int, l: nat, k: nat)
                 pow2(l) == low * high;
         vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(-high, uint(v, l), low);
         assert(low * -high + uint(v, l) == uint(v, l) - low * high) by (nonlinear_arith);
+    }
+}
+
+/// A mask of `k` ones keeps the low `k` bits of a 32-bit value: the value modulo 2^k.
+pub proof fn lemma_mask_32(x: u32, k: nat)
+    requires
+        k <= 32,
+    ensures
+        0 <= ones(k) <= u32::MAX,
+        (x & (ones(k) as u32)) as int == uint(x as int, k),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    if k < 32 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(k, 32);
+    }
+    lemma_mask(x as u64, k);
+    let mask = ones(k) as u32;
+    assert((x & mask) as u64 == (x as u64) & (mask as u64)) by (bit_vector);
+}
+
+/// HighestSetBit of a value below 2^k is below k, and of one at least 2^k is k or more.
+pub proof fn lemma_highest_set_bit_bounds(x: nat, k: nat)
+    ensures
+        highest_set_bit(x) >= -1,
+        x < pow2(k) ==> highest_set_bit(x) < k,
+        x >= pow2(k) ==> highest_set_bit(x) >= k,
+    decreases x,
+{
+    lemma_pow2_pos(k);
+    vstd::arithmetic::power2::lemma2_to64();
+    if x > 0 {
+        if k > 0 {
+            vstd::arithmetic::power2::lemma_pow2_unfold(k);
+            lemma_highest_set_bit_bounds(x / 2, (k - 1) as nat);
+            let half = pow2((k - 1) as nat) as int;
+            assert(x < 2 * half ==> x / 2 < half);
+            assert(x >= 2 * half ==> x / 2 >= half);
+        } else {
+            lemma_highest_set_bit_bounds(x / 2, 0);
+        }
+    }
+}
+
+/// Replicate of an element below 2^e, `count` times, is below 2^(count * e).
+pub proof fn lemma_replicate_bound(x: int, e: nat, count: nat)
+    ensures
+        0 <= replicate(x, e, count) < pow2(count * e),
+    decreases count,
+{
+    if count == 0 {
+        vstd::arithmetic::power2::lemma2_to64();
+    } else {
+        lemma_replicate_bound(x, e, (count - 1) as nat);
+        lemma_pow2_pos(e);
+        lemma_pow2_pos(((count - 1) * e) as nat);
+        let (step, below) = (pow2(e) as int, pow2(((count - 1) * e) as nat) as int);
+        assert(((count - 1) * e) as nat + e == count * e) by (nonlinear_arith)
+            requires
+                count > 0;
+        lemma_pow2_adds(((count - 1) * e) as nat, e);
+        let element = uint(x, e);
+        assert(0 <= element < step);
+        assert(0 <= element * below + replicate(x, e, (count - 1) as nat) < step * below) by (nonlinear_arith)
+            requires
+                0 <= element < step,
+                0 <= replicate(x, e, (count - 1) as nat) < below;
+    }
+}
+
+/// The low `k * e` bits of `count` copies of an element are `k` copies of it, for `k` up to `count`.
+pub proof fn lemma_replicate_low(x: int, e: nat, count: nat, k: nat)
+    requires
+        k <= count,
+    ensures
+        uint(replicate(x, e, count), k * e) == replicate(x, e, k),
+    decreases count,
+{
+    lemma_pow2_pos(k * e);
+    if count == k {
+        lemma_replicate_bound(x, e, k);
+        vstd::arithmetic::div_mod::lemma_small_mod(replicate(x, e, k) as nat, pow2(k * e));
+    } else {
+        lemma_replicate_low(x, e, (count - 1) as nat, k);
+        let rest = (((count - 1) - k) * e) as nat;
+        assert(k * e + rest == ((count - 1) * e) as nat) by (nonlinear_arith)
+            requires
+                k < count,
+                rest == ((count - 1) - k) * e;
+        lemma_pow2_adds(k * e, rest);
+        let (low, high) = (pow2(k * e) as int, pow2(rest) as int);
+        let element = uint(x, e);
+        assert(element * pow2(((count - 1) * e) as nat) == low * (element * high)) by (nonlinear_arith)
+            requires
+                pow2(((count - 1) * e) as nat) == low * high;
+        vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(element * high, replicate(x, e, (count - 1) as nat), low);
     }
 }
 

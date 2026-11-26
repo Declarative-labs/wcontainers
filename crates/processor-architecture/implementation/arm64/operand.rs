@@ -166,14 +166,14 @@ impl RegisterWidth {
     }
 }
 
-} // verus!
-
 /// What register number 31 names in an operand.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RegisterThirtyOne {
     ZeroRegister,
     StackPointer,
 }
+
+} // verus!
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OperandAccess {
