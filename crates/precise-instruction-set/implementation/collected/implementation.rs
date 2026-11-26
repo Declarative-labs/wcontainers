@@ -30,6 +30,16 @@ mod accumulator_machine {
     include!(concat!(env!("OUT_DIR"), "/accumulator-machine.rs"));
 }
 
+/// The samples of ARM64 cores, as `tools/collect-observations` wrote them.
+#[cfg(test)]
+mod arm64 {
+    use wcontainers_processor_architecture_arm64::{Arm64, CoreIdentity, User};
+
+    type Sample = crate::BakedSample<Arm64<User>, CoreIdentity>;
+
+    include!(concat!(env!("OUT_DIR"), "/arm64.rs"));
+}
+
 /// Each instruction of a sample with the behavior its kind of core shows.
 pub struct CollectedPreciseInstructionSet<Architecture: ProcessorArchitecture> {
     measurements: Vec<(Architecture::Instruction, Architecture::PreciseInstruction)>,
@@ -62,5 +72,7 @@ impl<Architecture: ProcessorArchitecture> PreciseInstructionSet<Architecture>
     }
 }
 
+#[cfg(test)]
+mod arm64_tests;
 #[cfg(test)]
 mod tests;
