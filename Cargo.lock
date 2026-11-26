@@ -4817,6 +4817,8 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "linux-raw-sys",
+ "nix",
+ "socket2",
  "wcontainers-abi",
  "wcontainers-linux-socket-options",
  "wcontainers-linux-socket-options-conformance",
