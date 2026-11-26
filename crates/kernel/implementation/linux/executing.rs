@@ -316,7 +316,6 @@ impl<
             inner,
             shared: &self.shared,
             pid,
-            read: Vec::new(),
             types: PhantomData,
         })
     }
@@ -337,6 +336,9 @@ where
     type Runner = KernelRunner<C, State, S>;
     type SuspendedTask = Held<SuspendedTask, C>;
     type ProcessContext = Held<ProcessContext, C>;
+    type Runners = alloc::vec::IntoIter<Self::Runner>;
+    type SuspendedTasks<'kernel> = alloc::vec::IntoIter<(TaskId, Self::SuspendedTask)>;
+    type UnresumedTasks<'kernel> = alloc::vec::IntoIter<Self::SuspendedTask>;
 
     /// Starts the container `config` describes, its programs told that `parallelism` processors
     /// are online. Its threads run one at a time, which is within any `parallelism`.
@@ -344,10 +346,7 @@ where
     /// # Panics
     ///
     /// If the kernel cannot run the first process as its execution configuration asks.
-    fn new(
-        config: Self::Config,
-        parallelism: NonZeroUsize,
-    ) -> (Self, impl Iterator<Item = Self::Runner>) {
+    fn new(config: Self::Config, parallelism: NonZeroUsize) -> (Self, Self::Runners) {
         let KernelConfig {
             mut kernel,
             executor,
@@ -362,18 +361,17 @@ where
                 panic!("the kernel cannot run as asked: {unsupported:?}")
             });
         let shared = Arc::clone(&kernel.shared);
-        let runners = (0..parallelism.get()).map(move |_| KernelRunner {
-            shared: Arc::clone(&shared),
-            system: Arc::clone(&system),
-            types: PhantomData,
-        });
-        (kernel, runners)
+        let runners: Vec<_> = (0..parallelism.get())
+            .map(|_| KernelRunner {
+                shared: Arc::clone(&shared),
+                system: Arc::clone(&system),
+                types: PhantomData,
+            })
+            .collect();
+        (kernel, runners.into_iter())
     }
 
-    fn suspend_tasks(
-        &self,
-        tasks: &[TaskId],
-    ) -> impl Iterator<Item = (TaskId, Self::SuspendedTask)> {
+    fn suspend_tasks(&self, tasks: &[TaskId]) -> Self::SuspendedTasks<'_> {
         let mut inner = self.shared.lock();
         let Inner { kernel, executor } = &mut *inner;
         let taken: Vec<_> = kernel
@@ -387,10 +385,7 @@ where
     fn suspend_process(
         &self,
         process: TaskId,
-    ) -> Option<(
-        Self::ProcessContext,
-        impl Iterator<Item = (TaskId, Self::SuspendedTask)>,
-    )> {
+    ) -> Option<(Self::ProcessContext, Self::SuspendedTasks<'_>)> {
         let mut inner = self.shared.lock();
         let Inner { kernel, executor } = &mut *inner;
         let (context, tasks) = kernel.suspend_process(executor, process)?;
@@ -448,7 +443,7 @@ where
     fn resume_tasks(
         &self,
         tasks: impl IntoIterator<Item = Self::SuspendedTask>,
-    ) -> impl Iterator<Item = Self::SuspendedTask> {
+    ) -> Self::UnresumedTasks<'_> {
         // The caller's iterator runs before the lock is taken, since it may do anything.
         let tasks: Vec<Self::SuspendedTask> = tasks.into_iter().collect();
         let mut inner = self.shared.lock();
@@ -579,8 +574,6 @@ pub struct KernelProcess<'a, C: Executor, State, S> {
     inner: spin::MutexGuard<'a, Inner<C>>,
     shared: &'a Arc<Shared<C>>,
     pid: Pid,
-    /// The bytes of the last read.
-    read: Vec<u8>,
     types: PhantomData<fn() -> (State, S)>,
 }
 
@@ -646,6 +639,7 @@ where
 {
     type State = State;
     type Kernel = KernelWithExecutor<C, State, S>;
+    type SuspendedTasks = alloc::vec::IntoIter<(TaskId, Held<SuspendedTask, C>)>;
 
     fn id(&self) -> TaskId {
         crate::system::task_id(self.pid)
@@ -671,12 +665,14 @@ where
         self.kernel().processes[&self.pid].memory
     }
 
+    /// Hands the range to `reader` as one part.
     fn read_memory(
         &mut self,
         range: Range<u64>,
-    ) -> Result<impl Iterator<Item = &[u8]>, MemoryError> {
-        self.read = self.handle().read_memory(range)?;
-        Ok(core::iter::once(&self.read[..]))
+        reader: &mut impl interface::MemoryReader,
+    ) -> Result<(), MemoryError> {
+        reader.read_part(&self.handle().read_memory(range)?);
+        Ok(())
     }
 
     fn write_memory(&mut self, range: Range<u64>, bytes: &[u8]) -> Result<(), WriteMemoryError> {
@@ -709,10 +705,7 @@ where
         self.handle().send_signal(thread, signal);
     }
 
-    fn suspend_threads(
-        &mut self,
-        threads: &[TaskId],
-    ) -> impl Iterator<Item = (TaskId, Held<SuspendedTask, C>)> {
+    fn suspend_threads(&mut self, threads: &[TaskId]) -> Self::SuspendedTasks {
         let shared = self.shared;
         let taken: Vec<_> = self
             .handle()
@@ -722,12 +715,7 @@ where
         taken.into_iter()
     }
 
-    fn suspend_process(
-        mut self,
-    ) -> (
-        Held<ProcessContext, C>,
-        impl Iterator<Item = (TaskId, Held<SuspendedTask, C>)>,
-    ) {
+    fn suspend_process(mut self) -> (Held<ProcessContext, C>, Self::SuspendedTasks) {
         let shared = self.shared;
         let (context, tasks) = self.handle().suspend_process();
         let tasks: Vec<_> = tasks.map(|(id, task)| (id, shared.hold(task))).collect();
@@ -876,6 +864,7 @@ mod tests {
         type GuestMemory = Absent;
         type Interrupter = Absent;
         type CreateGuestMemoryError = NoMemory;
+        type Execution<'execution> = core::future::Ready<Processor>;
 
         fn create_guest_memory(&self) -> Result<(Absent, Absent), NoMemory> {
             Err(NoMemory)
@@ -886,10 +875,7 @@ mod tests {
             _processor: Processor,
             memory: &'execution Absent,
             _handler: &'execution mut impl wcontainers_executor::TrapHandler,
-        ) -> (
-            impl core::future::Future<Output = Processor> + 'execution,
-            Absent,
-        ) {
+        ) -> (core::future::Ready<Processor>, Absent) {
             (core::future::ready(memory.anything()), memory.anything())
         }
     }

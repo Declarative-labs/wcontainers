@@ -4875,6 +4875,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-observation-collector"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-observation-collector-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-observation-collector",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
 name = "wcontainers-opengl"
 version = "0.1.0"
 dependencies = [
