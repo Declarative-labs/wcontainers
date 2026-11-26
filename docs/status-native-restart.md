@@ -677,3 +677,114 @@ Started (MEASURED, job native-r2-formi, Graviton4, release, pinned to CPU 63, lo
 What RI waits on: the executor itself needs the owner's answers to brief question 4 (its primitives, all
 inherently unsafe and with no outside API) and enforcement decision 2 (its own process or ours behind a lock);
 items 5 and 6 also need RT1, X2 and X3.
+
+## Merges, R2's bar test by test, the Linux process API crate, RI's decisions (run of 2026-11-26, second)
+
+### Merges (MEASURED: `git merge-base --is-ancestor`, and `git diff --quiet` per file)
+
+- His main (his checkout, fetched: ac696ea19) and origin/kernel-port (e177511f5) were already inside.
+- origin/translator-port 82e47e5bb: merged, no conflict. origin/arm64-instructions 44e944a2f: merged, no conflict.
+  origin/executor-restart 62d137472: merged, no conflict. origin/runtime-restart 322758f61: merged, one conflict in
+  `Cargo.lock` (both sides' packages kept; cargo's update on the machine settled it).
+- His 29 interface folders: 91 files beside an `interface.rs`, 0 differ from his main.
+
+### What builds now (MEASURED, Graviton4, `cargo check --keep-going -p <crate>`, tree 221da738e)
+
+| Crate | `--lib` | `--all-targets` | What fails |
+|---|---|---|---|
+| kernel-linux | 1 error | 1 | `running.rs:203` builds a `Processor` without the two SVE fields the arm64-instructions merge added (E0063): kernel track, one line |
+| runtime-single-kernel | 0 (with the kernel line patched in the machine copy only) | 0 | RT1 builds |
+| executor-wasmtime, executor-unicorn | 76 | 76 to 87 | wasmtime's own: `syndrome`, `INSTRUCTION_BYTES` gone from processor-architecture-arm64, `set_permissions`/`map_from` moved to `PageTable` (X2 not done) |
+| precise-instruction-set-translator | 11 | 12 | instruction track (as before) |
+| hardware-virtualization-inside, monitor | 4 to 84 | | `syndrome` import, and the kernel's container API changed under `container.rs` (R3) |
+| arm64-stop, host-process | 0 | 0 | |
+
+### R2's bar, test by test (MEASURED unless marked)
+
+| Test of the bar | Builds | Runs | Waits on |
+|---|---|---|---|
+| executor conformance suite (`conformance_run.rs`) | yes, now against a Neoverse V2's recorded behaviors (behavior-source recording `neoverse-v2`, measured with the ARM64 generator), no longer the translator's precise set | see "Runs" below | |
+| differential | yes: moved off the runtime's `Answer`/`Execution` loop onto `run_translated`, as run.rs | 1 passed, 0 failed, 928 s (before the unsafe move; rerun below) | |
+| kernel | no | | X2 (the wasmtime executor), and the kernel taking an executor without the abi's `Cpu` (the runtime's `Executor` and the kernel's `GuestMachine::new` ask `Cpu` for `address_space` alone; form P no longer implements `Cpu`, as the brief asks) |
+| busybox | no | | X3 (the unicorn executor) and the same `Cpu` bound |
+| speed | no | | X2, X3 and the same bound |
+| form P's other 22 binaries | yes | see below | |
+
+`tests-on-other-tracks` now holds only kernel, busybox and speed; conformance and differential are plain test
+targets.
+
+### The Linux process API crate (the orchestrator's ruling 1)
+
+`crates/linux-process`: `interface.rs` holds one trait `LinuxProcess` (associated `FixedMapping`, `SharedWords`),
+`implementation/direct` (`DirectLinuxProcess`) holds every marked line, `conformance/suite.rs` 10 tests (7 on
+x86_64, where the four ARM64 instructions do not exist). Built for Linux on both architectures (form P runs on the
+Xeon too). New names in reviewable-external-names.toml.
+
+| host-process line | What | Now |
+|---|---|---|
+| stub.rs:878 | `tgkill` | `tgkill`; a stub thread id that is no thread now gives `ESRCH` before any call |
+| probe.rs:254, :261 | fixed `mmap` (`FIXED_NOREPLACE`) and `munmap` | `mmap_fixed_noreplace`, unmapped on the handle's drop (`ENOSYS` where an old Linux maps elsewhere) |
+| pages.rs:368, :383 | atomic views of the thread pages | `create_shared_words`, `shared_words32/64`, `shared_words_file`: the memory file is now sealed against shrinking (`F_SEAL_SHRINK`), so no other holder can make a word fault |
+| probe.rs:167 | `mrs ctr_el0` | `read_ctr_el0` |
+| probe.rs:199 | the SVE probe's assembly (and its `compile_error!` guard) | `predicates_after_system_call` |
+| code.rs:235, :244 | `dc cvau`, `ic ivau` | `dc_cvau`, `ic_ivau` |
+
+Lines with `unsafe` (root manifest's command): host-process 9 -> 0; linux-process 0 -> 9 (direct 9, each marked,
+none UNSOUND; interface and suite 0 under the workspace `forbid`).
+
+NOT MOVED, for the orchestrator (one line): the zygote's two `global_asm!` modules (aarch64.rs 1,474 lines,
+x86_64.rs 964) are form P's own program run in another process, with 223 const operands from form P's layout, page
+protocol and stub descriptors; moving them into the API crate's `direct` would move that whole layout into an
+outside-API crate, so host-process keeps its `deny` table for these two marks only. Proposal: either that, or a
+crate `host-process-zygote` (layout plus assembly, its own `deny` table).
+
+Measured (rented Graviton4 and Xeon, Linux 7.0.0-1018-aws, rustc 1.99.0):
+- `cargo clippy --all-targets -- -D warnings` on the three linux-process crates and host-process: exit 0 on both.
+- linux-process suite: 10 passed, 0 failed, three runs in a row (Graviton4); 7 passed (Xeon). Hostile cases:
+  a thread id of another process refused both ways (`ESRCH`); a held page refused (`EEXIST`) and free again after
+  drop (read from /proc/self/maps); a heap page refused, its bytes unchanged; a misaligned address and length 0
+  refused (`EINVAL`), a page at the top of the address space refused; the shared file refuses `ftruncate` to 0
+  (`EPERM`) and keeps its size; an empty memory refused; two memories apart and zeroed.
+- host-process on the Xeon: every binary, 67 passed, 0 failed, 2 ignored.
+- host-process on Graviton4 after the move (job native-r2d): the library and 23 binaries (every one but kernel,
+  busybox, speed and conformance): exit 0, 111 passed, 0 failed, 5 ignored (measurements); differential 1 passed.
+  The executor interface's own suite cases in conformance (21 of them: borrow, zero, copy, map, unmap, permissions,
+  system call, fault, interrupt answers): all ok.
+
+### RI: form I, against its bar (the orchestrator's rulings 2 and 3)
+
+Ruling 2 (where form I's primitives go): they go in the Linux process API crate's `direct` (brief question 4's
+proposal), which is ours, not an owner interface file, so no owner line is needed. Already there and reusable by
+form I: fixed windows (`mmap_fixed_noreplace`), cache maintenance (`dc_cvau`, `ic_ivau`, `read_ctr_el0`). Still
+to add, each one marked method: entering translated code with every register loaded and coming back (the runner's
+jump), the signal stack and its handlers, the raw signal mask (glibc refuses signals 32 and 33).
+
+Ruling 3 (own process or lock), decided by measurement: OWN PROCESS. The lock is not as safe (MEASURED today,
+challenge-3-probe/lock.c, built and run in a fresh `mktemp` folder on each machine, then removed; Linux
+7.0.0-1018-aws, aarch64 and x86_64, the same lines on both):
+```
+lock in place
+(b) forked child after the lock: sigaction(SIGSEGV) = -1 errno EPERM
+(c) exec'd program after the lock: sigaction(SIGSEGV) = -1 errno EPERM
+(a) fault outside guest code after the lock: child ended by Alarm clock
+```
+With the lock, a fault outside guest code spins until a timer kills it instead of crashing, and every child the
+process forks or execs after it (the zygote's stubs, any program) can no longer install a fault handler: form P
+and the wasmtime executor (READ: it panics without its handlers) stop working in that process.
+
+What "own process" means for the build (INFERRED, the design to build next): form I's runners and the kernel run in
+one process of form I's own, started by exec from the embedder like the zygote, holding none of the embedder's
+memory; the embedder talks to it over a socket, one crossing per container start and per arrival, not per guest
+system call (the kernel is in that process too). It owns its fault handlers, so no lock.
+
+Bar items, state:
+1. Exactness: in_process_way 4 passed (MEASURED this run, on translated code in a P stub, its window at 0); the
+   window-edge test on the I executor waits on the executor.
+2. Isolation: in_process_attacks 2 passed (MEASURED this run, as item 1); the two-I-plus-one-P test waits on the
+   executor.
+3. Speculation: holds (MEASURED the run before, numbers above).
+4. Cost: per-shape baseline measured the run before; the I executor's figures wait on it.
+5. Conformance, kernel, busybox, differential on I: wait on the executor, and kernel and busybox also on X2, X3.
+6. Crossover: waits on the executor, and on X2, X3 for busybox.
+7. Unsafe only in the API crate's `direct`: holds for what is built (0 in host-process; 9 marked in linux-process).
+The executor itself (the entry, signal stack and mask primitives, and the own process) is the next piece of RI.
