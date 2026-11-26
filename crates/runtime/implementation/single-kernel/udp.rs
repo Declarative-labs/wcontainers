@@ -18,7 +18,10 @@ use wcontainers_udp_sockets::{
     UdpSockets,
 };
 
+use wcontainers_volatile_bytes::VolatileBytes;
+
 use crate::LocalSystem;
+use crate::host_call::receive_into;
 use crate::tcp::NetworkHandle;
 
 /// Gives the length of the IP and UDP headers of a datagram of `peer`'s address family.
@@ -123,7 +126,7 @@ fn destination(route: &RouteSelectors<'_>) -> Result<SocketAddr, HostError> {
     }
 }
 
-impl UdpSockets for LocalSystem {
+impl<E> UdpSockets for LocalSystem<E> {
     type Socket = NetworkHandle;
 
     fn open(
@@ -176,11 +179,15 @@ impl UdpSockets for LocalSystem {
             .map_err(SendError::Host)
     }
 
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError> {
-        self.state()
-            .network()
-            .udp_receive(socket.0, into)
-            .map(received)
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        into: &impl VolatileBytes,
+    ) -> Result<UdpReceived, HostError> {
+        receive_into(into, |bytes| {
+            self.state().network().udp_receive(socket.0, bytes)
+        })
+        .map(received)
     }
 
     fn count_unsent_bytes(&self, _socket: &Self::Socket) -> Result<ByteCount, HostError> {
@@ -203,7 +210,7 @@ impl UdpSockets for LocalSystem {
     }
 }
 
-impl<'a> Configurable<NetworkHandle, UdpSocketSetting<'a>> for LocalSystem {
+impl<'a, E> Configurable<NetworkHandle, UdpSocketSetting<'a>> for LocalSystem<E> {
     fn configure(
         &self,
         _socket: &NetworkHandle,

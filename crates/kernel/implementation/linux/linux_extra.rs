@@ -135,6 +135,10 @@ pub(crate) const F_GETDELEG: u32 = 1039;
 pub(crate) const F_SETDELEG: u32 = 1040;
 pub(crate) const PR_RSEQ_SLICE_EXTENSION: u32 = 79;
 
+/// The cap on a `listen` backlog, `net.core.somaxconn`'s default (`linux/socket.h`, not a uapi
+/// header).
+pub(crate) const SOMAXCONN: i32 = 4096;
+
 /// `rseq`'s flags (`linux/rseq.h`, which linux-raw-sys does not generate): unregister, and turn time
 /// slice extensions on from the start.
 pub(crate) const RSEQ_FLAG_UNREGISTER: u32 = 1;
@@ -903,6 +907,38 @@ pub(crate) const NTP_TOLERANCE: i64 = 32_768_000;
 /// and the length of one.
 pub(crate) const USER_HZ: u64 = 100;
 pub(crate) const NANOSECONDS_PER_TICK: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / USER_HZ;
+
+/// Nanoseconds per millisecond and per microsecond (`NSEC_PER_MSEC`, `NSEC_PER_USEC`), and
+/// microseconds per second (`USEC_PER_SEC`).
+pub(crate) const NANOSECONDS_PER_MILLISECOND: u64 =
+    core::time::Duration::from_millis(1).as_nanos() as u64;
+pub(crate) const NANOSECONDS_PER_MICROSECOND: u64 =
+    core::time::Duration::from_micros(1).as_nanos() as u64;
+pub(crate) const MICROSECONDS_PER_SECOND: u64 =
+    core::time::Duration::from_secs(1).as_micros() as u64;
+
+/// The kernel's own ticks a second (`HZ`; 1000 on the reference, measured), which jiffies count,
+/// and the length of one (`TICK_NSEC`).
+pub(crate) const HZ: u64 = 1000;
+pub(crate) const NANOSECONDS_PER_JIFFY: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / HZ;
+
+/// How long before zero the jiffies counter starts (`INITIAL_JIFFIES`, five minutes).
+pub(crate) const INITIAL_JIFFIES_BEFORE_ZERO: u64 = 300 * HZ;
+
+/// TCP's first retransmission timeout and its bounds (`TCP_TIMEOUT_INIT`, `TCP_RTO_MIN`,
+/// `TCP_RTO_MAX`), in nanoseconds.
+pub(crate) const TCP_TIMEOUT_INIT: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND;
+pub(crate) const TCP_RTO_MIN: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / 5;
+pub(crate) const TCP_RTO_MAX: u64 = 120 * wcontainers_abi::NANOSECONDS_PER_SECOND;
+
+pub(crate) use wcontainers_abi::KIB;
+
+/// A thread's kernel stack (`THREAD_SIZE`) and the fewest threads `set_max_threads` allows.
+pub(crate) const THREAD_SIZE: u64 = 16 * KIB;
+pub(crate) const MIN_THREADS: u64 = 20;
+
+/// The tenths of a second a terminal's `VTIME` counts in.
+pub(crate) const DECISECONDS_PER_SECOND: u64 = 10;
 
 /// The most one read or write moves (`MAX_RW_COUNT`).
 pub const MAX_RW_COUNT: u64 = 0x7fff_f000;

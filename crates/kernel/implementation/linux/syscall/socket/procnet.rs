@@ -136,7 +136,7 @@ fn holders(kernel: &Kernel, protocol: Protocol) -> Vec<SocketRef> {
         .bound
         .iter()
         .filter(|((held, _), _)| *held == protocol)
-        .flat_map(|(_, sockets)| sockets.iter().filter_map(alloc::rc::Weak::upgrade))
+        .flat_map(|(_, sockets)| sockets.iter().filter_map(alloc::sync::Weak::upgrade))
         .filter(|socket| !socket.borrow().dead && seen.insert(socket.as_ptr() as usize))
         .collect()
 }
@@ -376,7 +376,7 @@ fn unix(kernel: &Kernel) -> Vec<u8> {
                     .borrow()
                     .peer
                     .as_ref()
-                    .is_some_and(|peer| alloc::rc::Rc::ptr_eq(peer, socket))
+                    .is_some_and(|peer| alloc::sync::Arc::ptr_eq(peer, socket))
             })
             .count();
         let own = socket.borrow();

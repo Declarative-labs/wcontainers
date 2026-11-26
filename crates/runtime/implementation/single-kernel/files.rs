@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use fuse_abi::linux::{
@@ -144,20 +144,36 @@ fn name(bytes: &[u8]) -> Result<(CString, &[u8]), Fail> {
     Ok((name.to_owned(), rest))
 }
 
-/// A FIFO or socket node (rustix offers `mknodat` on Linux only).
+/// A FIFO or socket node.
+#[cfg(not(target_vendor = "apple"))]
 fn make_node(
     dir: BorrowedFd<'_>,
     name: &CStr,
     file: FileType,
     permissions: u32,
 ) -> Result<(), HostErrno> {
-    let mode = file.as_raw_mode() | Mode::from_raw_mode(permissions as _).bits();
-    // SAFETY: a descriptor this backend holds open and a NUL-ended name.
-    let made = unsafe { libc::mknodat(dir.as_raw_fd(), name.as_ptr(), mode as libc::mode_t, 0) };
-    if made == 0 {
-        Ok(())
+    host::mknodat(dir, name, file, Mode::from_raw_mode(permissions as _), 0)
+}
+
+/// A FIFO or socket node, made at its path, as macOS has no `mknodat`: a socket's by binding a socket there.
+#[cfg(target_vendor = "apple")]
+fn make_node(
+    dir: BorrowedFd<'_>,
+    name: &CStr,
+    file: FileType,
+    permissions: u32,
+) -> Result<(), HostErrno> {
+    use std::os::unix::ffi::OsStrExt;
+    let directory = host::getpath(dir)?;
+    let path = Path::new(std::ffi::OsStr::from_bytes(directory.to_bytes()))
+        .join(std::ffi::OsStr::from_bytes(name.to_bytes()));
+    if file == FileType::Socket {
+        std::os::unix::net::UnixListener::bind(&path)
+            .map(drop)
+            .map_err(|error| HostErrno::from_io_error(&error).unwrap_or(HostErrno::IO))
     } else {
-        Err(HostErrno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(HostErrno::IO))
+        let mode = nix::sys::stat::Mode::from_bits_truncate(permissions as _);
+        nix::unistd::mkfifo(&path, mode).map_err(|error| HostErrno::from_raw_os_error(error as i32))
     }
 }
 

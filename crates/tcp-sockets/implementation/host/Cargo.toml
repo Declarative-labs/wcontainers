@@ -19,6 +19,9 @@ wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-tcp-sockets = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 etherparse.workspace = true
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 
@@ -34,13 +37,23 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioc
 libc = "0.2.191"
 # The attributes of a transmit report's statistics.
 netlink-packet-core = "0.9.0"
+# The uapi structures read from and written as bytes.
+zerocopy.workspace = true
 
 [dev-dependencies]
 wcontainers-tcp-sockets-conformance = { path = "../../conformance" }
+# Counts the allocations of the waiting thread in the allocation test (MIT or Apache-2.0).
+allocation-counter = "0.8.1"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
-[lints]
-workspace = true
+[[test]]
+name = "allocations"
+path = "tests/allocations.rs"
+harness = false
+
+# TODO: remove this crate's 1 use of unsafe, then replace this table with `[lints]` `workspace = true`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

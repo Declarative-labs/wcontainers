@@ -1,0 +1,185 @@
+[package]
+name = "wcontainers-executor-host-process"
+description = "The wcontainers executor that runs each guest process as a host process, with no virtual machine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "implementation.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-abi.workspace = true
+# Host calls: memfds, mappings, the zygote's socket, processes and CPU placement.
+rustix = { version = "1.1.6", features = ["event", "fs", "mm", "net", "param", "process", "thread", "time"] }
+# The layouts of a socket message and a seccomp filter,
+# where rustix has none.
+libc = "0.2.191"
+# Linux's numbers for the zygote's and the stubs' own host calls and filter.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "general", "net", "prctl", "ptrace", "no_std"] }
+# Each memory's permissions and its borrowed and lent pages, by range.
+rangemap = { version = "1.8.0", default-features = false }
+# A register block as the words of its register page.
+zerocopy.workspace = true
+# A stub process's CPU clock, for placement's samples: rustix has none.
+nix = { version = "0.31.3", default-features = false, features = ["process", "time"] }
+# The embedder's mappings of a stub's thread pages and code area, made and unmapped without unsafe code of ours.
+memmap2 = "0.9.12"
+# The ELF header and program headers of the zygote's executable image, and its code read from the embedder's own.
+object = { version = "0.41.0", default-features = false, features = ["elf", "read_core", "std"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Moving, stopping and killing the zygote and its stubs from outside, and the permissions of their mappings.
+rustix = { version = "1.1.6", features = ["fs", "mm", "process", "thread"] }
+# Seeded order of the stop test's turns.
+fastrand = "2.5.0"
+# Tracing one stub thread to step it and send its stop at every instruction of a turn.
+nix = { version = "0.31.3", default-features = false, features = ["process", "ptrace", "signal"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+# Where translated code finds its slots, its floor entries and its register page, and the words a loader fills.
+wcontainers-arm64 = { path = "../../../arm64" }
+# Guest code translated for the process way, its position map, and its stops resolved to the guest's state.
+wcontainers-translator = { path = "../../../translator", features = ["native"] }
+wcontainers-guest-cpu = { path = "../../../guest-cpu" }
+wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
+# The kernel's loop, which runs threads through `Execution`.
+wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", default-features = false }
+# The executor interface, its ARM64 processor state, and the exception classes the state's syndromes are made from.
+wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+aarch64-cpu = "12.0.0"
+# The hash of every return's position, the virtual-machine executor's, so the two compare.
+rustc-hash = { version = "2.1.3", default-features = false }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
+# The floor test's pieces, standing in for translated code, in the native output's own encodings.
+wcontainers-arm64 = { path = "../../../arm64" }
+# Translated code of the process way, its position map, and its stops resolved, in the translated test.
+wcontainers-translator = { path = "../../../translator", features = ["native"] }
+wcontainers-guest-cpu = { path = "../../../guest-cpu" }
+wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
+# The kernel test: the kernel, its loop with containers, the seeded policy, the host's services it calls, the
+# WebAssembly output to compare with, and the C target of the guest programs.
+wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
+wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel" }
+wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy" }
+wcontainers-system = { path = "../../../system" }
+wcontainers-clock = { path = "../../../clock" }
+wcontainers-random-source = { path = "../../../random-source" }
+wcontainers-readiness = { path = "../../../readiness" }
+wcontainers-executor-wasmtime = { path = "../wasmtime" }
+wcontainers-translator-test = { path = "../../../translator-test" }
+# The busybox test: the reference image, its commands, and the reference's outcome in Docker on this machine.
+wcontainers-executor-unicorn = { path = "../unicorn" }
+# The executor interface's suite, the translator's precise instruction set and the states it is checked on, and the
+# ARM64 processor state the interrupt test starts from.
+wcontainers-executor-conformance = { path = "../../conformance" }
+wcontainers-precise-instruction-set-translator = { path = "../../../precise-instruction-set/implementation/translator" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
+wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+# The differential test's draws of layer 1's cases.
+proptest = "1.12.0"
+# The in-process way's test runs translated code in the emulator (GPL-2.0, test only, as the virtual-machine form's
+# tests use it).
+unicorn-engine = "2.1.5"
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
+# Finding the host call a traced stub thread is about to make, in the step test.
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder"] }
+
+[[test]]
+name = "zygote"
+
+[[test]]
+name = "stub"
+
+[[test]]
+name = "files"
+
+[[test]]
+name = "host"
+
+[[test]]
+name = "threads"
+
+[[test]]
+name = "stop"
+
+[[test]]
+name = "touch"
+
+[[test]]
+name = "memory"
+
+[[test]]
+name = "slice"
+
+[[test]]
+name = "placement"
+
+[[test]]
+name = "embedder"
+
+[[test]]
+name = "floor"
+
+[[test]]
+name = "step"
+
+[[test]]
+name = "translated"
+
+[[test]]
+name = "run"
+
+[[test]]
+name = "kernel"
+
+[[test]]
+name = "busybox"
+
+[[test]]
+name = "speed"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[[test]]
+name = "interrupt"
+
+[[test]]
+name = "copy"
+
+[[test]]
+name = "forged"
+
+[[test]]
+name = "differential"
+
+[[test]]
+name = "in_process_way"
+
+[[test]]
+name = "in_process_cost"
+
+[[test]]
+name = "in_process_speculation"
+
+[[test]]
+name = "in_process_attacks"
+
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

@@ -3,10 +3,10 @@
 //! Linux's user segments as the reference shows them.
 
 use crate::decode::Instruction;
-use crate::descriptors::{SEGMENTS, SELECTOR_PRIVILEGE};
 use crate::guest::{Control, Reason, Trap};
 use crate::meaning::{canonical_target, checked, load_rflags, read, write};
 use crate::operand::*;
+use crate::user_segments::{SEGMENTS, SELECTOR_PRIVILEGE};
 use crate::{NT, SegmentRegister, USER_CS, USER_DS, USER32_CS, X86_64};
 use iced_x86::{Code, Mnemonic, OpKind, Register};
 use wasm_encoder::{BlockType, ValType};
@@ -73,7 +73,7 @@ fn kept(r: Register) -> Option<SegmentRegister> {
 }
 
 /// The bytes of an operand size: the far transfers' offsets and slots, `lfs`' offset.
-fn operand_bytes(i: &Instruction) -> u32 {
+pub(crate) fn operand_bytes(i: &Instruction) -> u32 {
     use Code::*;
     match i.iced.code() {
         Retfw | Retfw_imm16 | Iretw | Call_m1616 | Jmp_m1616 => size_of::<u16>() as u32,
@@ -90,14 +90,14 @@ fn operand_bytes(i: &Instruction) -> u32 {
 /// slot is not canonical faults first at its rflags slot on the reference); a return reads the selector's 16
 /// bits alone of the cs and ss slots, as `pop` of a segment register does.
 pub fn frame_slots(i: &Instruction) -> Option<Vec<(i64, u32)>> {
+    use crate::answer::FrameSlot::{self, *};
     use Mnemonic::*;
-    use Slot::*;
     if !matches!(i.iced.mnemonic(), Retf | Iret | Iretd | Iretq) && !is_far(i) {
         return None;
     }
     let s = operand_bytes(i);
     let selector = size_of::<u16>() as u32;
-    let read = |slot: Slot| {
+    let read = |slot: FrameSlot| {
         let bytes = if matches!(slot, Cs | Ss) { selector } else { s };
         (slot as i64 * i64::from(s), bytes)
     };
@@ -110,16 +110,6 @@ pub fn frame_slots(i: &Instruction) -> Option<Vec<(i64, u32)>> {
             .to_vec(),
         _ => return None,
     })
-}
-
-/// The slots of a far transfer's frame from its lowest, each of the operand size.
-#[derive(Clone, Copy)]
-enum Slot {
-    Rip,
-    Cs,
-    Rflags,
-    Rsp,
-    Ss,
 }
 
 /// The bytes a far `call` pushes: the old cs and the return address, each of the operand size.

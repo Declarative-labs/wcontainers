@@ -122,6 +122,11 @@ fn fault(word: u32) -> Option<String> {
                 | InsideCall::Trap
                 | InsideCall::Misaligned => Side::Before,
                 // A call through a register has built x30 before its last target is compared.
+                InsideCall::X87Control | InsideCall::Step | InsideCall::Stop => {
+                    return Some(format!(
+                        "{call:?}, which ARM64 code never makes, at {offset}"
+                    ));
+                }
                 InsideCall::LastTarget => match i {
                     I::BranchRegister {
                         op: BranchRegister::Blr,
@@ -182,7 +187,7 @@ fn fault(word: u32) -> Option<String> {
             .has_bit(Arm64::reg_bit(Reg::X(w)).expect("a bit"))
     });
     let read_where_kept = matches!(
-        Arm64::route(&i),
+        Arm64::route(&wcontainers_arm64::Way::Machine, &i, &()),
         Route::Kernel | Route::Trap | Route::Nothing
     );
     let expected = [
@@ -234,7 +239,10 @@ fn every_decoded_form_carries_over_in_shape() {
             }
             carried += 1;
             *routes
-                .entry(format!("{:?}", Arm64::route(&decode(word))))
+                .entry(format!(
+                    "{:?}",
+                    Arm64::route(&wcontainers_arm64::Way::Machine, &decode(word), &())
+                ))
                 .or_default() += 1;
             let result = std::panic::catch_unwind(|| fault(word));
             match result {

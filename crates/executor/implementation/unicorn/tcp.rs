@@ -33,6 +33,8 @@ use wcontainers_tcp_sockets::{
     TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest, TcpShutdown,
 };
 
+use wcontainers_volatile_bytes::VolatileBytes;
+
 use super::{TestHost, lock};
 use crate::replay::Entry;
 
@@ -62,8 +64,13 @@ impl Readied {
         }
     }
 
-    /// Waits until the network says what `number` is ready for, forgetting it if let go.
-    pub(super) async fn wait(readied: &Mutex<Readied>, number: u32) -> ReadinessReport {
+    /// Waits until the network says what `number` is ready for, or `now` finds it ready when the
+    /// wait is polled, forgetting it if let go.
+    pub(super) async fn wait(
+        readied: &Mutex<Readied>,
+        number: u32,
+        now: impl Fn() -> Option<ReadinessReport>,
+    ) -> ReadinessReport {
         /// Forgets the readiness waited for, when the wait is let go.
         struct Forget<'a>(&'a Mutex<Readied>, u32);
         impl Drop for Forget<'_> {
@@ -76,7 +83,7 @@ impl Readied {
         let _forget = Forget(readied, number);
         std::future::poll_fn(|context| {
             let mut readied = lock(readied);
-            match readied.arrived.remove(&number) {
+            match readied.arrived.remove(&number).or_else(&now) {
                 Some(ready) => Poll::Ready(ready),
                 None => {
                     readied.waiting.insert(number, context.waker().clone());
@@ -148,15 +155,16 @@ impl<H: Send> TcpConnections for TestHost<H> {
         &self,
         connection: &Self::Connection,
         _request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
+        let bytes = super::copied(payload);
         self.answer(
             Entry::Sent,
             |entry| match entry {
                 Entry::Sent(result) => Ok(result),
                 other => Err(other),
             },
-            || lock(&self.network).tcp_send(connection.0, bytes),
+            || lock(&self.network).tcp_send(connection.0, &bytes),
         )
         .map(ByteCount)
     }
@@ -165,7 +173,7 @@ impl<H: Send> TcpConnections for TestHost<H> {
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         let peek = match request {
             TcpReceiveRequest::Read => false,
@@ -177,17 +185,19 @@ impl<H: Send> TcpConnections for TestHost<H> {
         let (result, bytes) = self.answer(
             |(result, bytes)| Entry::Received(result, bytes),
             |entry| match entry {
-                Entry::Received(result, bytes) if bytes.len() <= into.len() => Ok((result, bytes)),
+                Entry::Received(result, bytes) if bytes.len() <= super::length(into) => {
+                    Ok((result, bytes))
+                }
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![0; into.len()];
+                let mut bytes = vec![0; super::length(into)];
                 let result = lock(&self.network).tcp_receive(connection.0, &mut bytes, peek);
                 bytes.truncate(*result.as_ref().unwrap_or(&0));
                 (result, bytes)
             },
         );
-        into[..bytes.len()].copy_from_slice(&bytes);
+        into.write(&bytes);
         Ok(TcpReceived {
             length: ByteCount(result?),
             timestamps: ReceiveTimestamps {
@@ -225,16 +235,21 @@ impl<H: Send> TcpConnections for TestHost<H> {
         Ok(())
     }
 
-    fn close(&self, connection: Self::Connection, _manner: TcpClose) {
+    fn close(&self, connection: Self::Connection, manner: TcpClose) {
         if !self.replaying() {
-            lock(&self.network).tcp_close(connection.0);
+            let mut network = lock(&self.network);
+            match manner {
+                TcpClose::Orderly => network.tcp_close(connection.0),
+                TcpClose::Abort => network.tcp_reset(connection.0),
+            }
         }
     }
 
-    /// Closes the connection, whose port no bind of its own holds, leaving the reset Linux leaves pending.
+    /// Resets the connection, whose port no bind of its own holds, leaving the reset Linux leaves
+    /// pending.
     fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket> {
         if !self.replaying() {
-            lock(&self.network).tcp_close(connection.0);
+            lock(&self.network).tcp_reset(connection.0);
         }
         TcpDisconnected {
             bound_socket: None,
@@ -405,7 +420,10 @@ impl<H: Send> Readiness<TcpHandle> for TestHost<H> {
         if !self.replaying() {
             lock(&self.network).arm(connection.0, interest);
         }
-        Ok(Readied::wait(&self.ready, connection.0).await)
+        Ok(Readied::wait(&self.ready, connection.0, || {
+            self.socket_ready_now(connection.0)
+        })
+        .await)
     }
 }
 

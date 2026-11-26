@@ -3,7 +3,7 @@ use core::iter;
 
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_executor::Executor;
+use wcontainers_executor::{Executor, ProcessorStateOf, TrapHandler};
 use wcontainers_executor_simulation::Simulation;
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
@@ -12,7 +12,7 @@ use wcontainers_precise_instruction_set_neoverse_v2::NeoverseV2;
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
 };
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, Processor};
+use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction};
 
 use crate::{MeasuredInstructionSet, MeasurementFailure};
 
@@ -59,10 +59,29 @@ struct Counted<Chip> {
 impl<Chip: Executor<Architecture = Arm64>> Executor for Counted<Chip> {
     type Architecture = Arm64;
     type TranslatorConfig = ();
+    type GuestMemory = Chip::GuestMemory;
+    type Interrupter = Chip::Interrupter;
+    type CreateGuestMemoryError = Chip::CreateGuestMemoryError;
+
+    fn create_guest_memory(&self) -> Result<Self::GuestMemory, Self::CreateGuestMemoryError> {
+        self.chip.create_guest_memory()
+    }
+
+    fn execute<'execution>(
+        &'execution mut self,
+        processor: ProcessorStateOf<Self>,
+        memory: &'execution Self::GuestMemory,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (
+        impl Future<Output = ProcessorStateOf<Self>> + 'execution,
+        Self::Interrupter,
+    ) {
+        self.chip.execute(processor, memory, handler)
+    }
 
     fn execute_single_instruction_in_place(
         &mut self,
-        processor: &mut Processor,
+        processor: &mut ProcessorStateOf<Self>,
         memory: &[MemoryDelta<'_, Arm64>],
         on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
     ) {

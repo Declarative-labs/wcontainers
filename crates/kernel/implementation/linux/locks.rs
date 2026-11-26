@@ -2,9 +2,9 @@
 //! of byte ranges, each held by an owner; each owner's ranges lie together in the list, sorted, with
 //! neighbouring ranges of one kind joined, and an owner's first range goes at the end.
 
-use alloc::rc::Weak;
+use alloc::sync::Weak;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use crate::file::OpenFile;
 
@@ -17,7 +17,7 @@ pub(crate) enum LockOwner {
     /// A descriptor table, for F_SETLK's locks: let go when any of its descriptors of the file closes.
     Table(u64),
     /// An open file, for F_OFD_SETLK's locks: let go when the file's last reference goes.
-    File(Weak<RefCell<OpenFile>>),
+    File(Weak<AtomicRefCell<OpenFile>>),
 }
 
 impl LockOwner {
@@ -48,7 +48,7 @@ pub(crate) struct RecordLock {
     pub owner: LockOwner,
     /// The process that took it (`flc_pid`), and the open file it was taken through (`flc_file`).
     pub pid: i32,
-    pub file: Weak<RefCell<OpenFile>>,
+    pub file: Weak<AtomicRefCell<OpenFile>>,
     pub write: bool,
     pub start: u64,
     /// The last byte, inclusive.

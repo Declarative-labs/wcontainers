@@ -8,6 +8,1085 @@ crates/abi (wcontainers-abi), the stand-in and its tests crates/executor/impleme
 -kernel-test, src/... and wcontainers-runtime for these and for
 crates/runtime/implementation/single-kernel.
 
+## KC, seventeenth run: the second check's findings
+
+Started about 21:55 UTC on 2026-11-24 at a4352ae2. Builds and tests on the rented machines only.
+Scratch kernel/kc17 (b.sh runs a command on a copy with other agents' uncommitted edits taken
+back; t1.sh to t3.sh, whole.sh; logs beside them).
+
+- The told-reset test's failures under load were a defect of the test, not of the kernel: its
+  server said a reset was done as soon as its `close()` returned, but sending a reset is not its
+  arrival. Measured (t3.log, ARM64, 4 test threads, load 44 to 46): in 8 of 10 runs of the
+  outside binary one reset reached this machine's end of the connection 7 to 75 ms after the
+  close returned. Now (e81021d0) both resetting servers wait until this machine no longer lists
+  the client's end among its TCP sockets (/proc/net/tcp through procfs 0.18.0, MIT OR
+  Apache-2.0, a dev-dependency of the stand-in), up to 5 s; the hook of
+  `a_look_hears_a_reset_the_system_has_not_told_yet` fails if the reset did not arrive, and the
+  full-connection server answers "unheard" instead of "reset". The reference's end is in its
+  container's namespace and not listed, so its servers go on at once, as before.
+  `a_full_connection_hears_a_reset` met the same: its server waited a fixed 300 ms, which a
+  slow arrival can pass (its check failure was at load up to 52 with 8 threads). Results: with
+  the change the outside binary passed 15 of 15 (t1.log, 10 with 4 threads, 5 with 8, load 28
+  to 33) and 10 of 10 more (t3.log, 4 threads, load 44 to 46); as committed before, in the
+  same job, 6 of 10 (t2.log, 4 threads, load 19 to 25; the told-reset test failed the other 4).
+- `a_copy_let_go_of_under_a_handle_is_dropped_later` now checks the drop itself (ca86b587): a
+  copy of a child that alone has a System V segment attached is let go of under the child's
+  handle, the child is killed through the handle, and once the lock's next holder has taken it
+  the parent (guest heldattach.c) reads the segment's attachment count, which a live copy's
+  map still adds to: 0. With the check's break `never_drop_let_go` it fails (the count is 1),
+  t3.log. A pipe's write end could not show it: a copy shares its process's descriptor table,
+  so the child's end closes the copy's too.
+- A new round trip, `an_ended_process_is_neither_copied_nor_taken` (guest endedchild.c: a child
+  ended and not reaped), fails with the check's break `copy_of_ended` (t2.log).
+- The kernel suite calls `Kernel::resume_process` (7252465e): `suspended_process_is_resumed`
+  (context taken in, then its threads, and the thread is on the kernel again) and
+  `copy_beside_its_process_is_handed_back`; the latter fails with the check's break
+  `resume_twice`, and the conformance run is 19 (t2.log).
+- Not tested, with the reason: that a runner leaves the lock to an interface call that waits
+  for it (the check's `runner_ignores_waiting`). Without it a waiting call still gets the
+  lock, a little later, because `turn_started` ends a turn at once while a call waits; what the
+  check changes is only how soon, which no test can force through the interface's calls.
+- Not mine, left alone: uncommitted edits in the stand-in's driver.rs, ltp.rs and standin.rs
+  (20:41 to 20:47 UTC; reworded SAFETY comments, and a `refused_in_a_copy` that hands a copy's
+  refusals back to the process it was copied from). This run's tests ran with them taken back.
+- To look at later: a context copy shares its process's descriptor table (only the memory map
+  and signal actions are copied), so a copy resumed after its process closed a file does not
+  have that file.
+
+## KC, sixteenth run: the independent check's findings
+
+Started about 16:30 UTC on 2026-11-24 at 83aad908. Builds and tests on the rented machines only.
+Scratch kernel/kc16 (b.sh, t1.sh, whole.sh, logs beside them).
+
+- A refusal of the stand-in now fails its test (dd3f9fbd): a `StandIn` dropped with a refused
+  kernel request nothing took panics ("the stand-in refused the kernel's requests"), unless its
+  thread is panicking already; `refused()` became `take_refused()`, which the stand-in's own
+  refusal tests call, and a new test, `a_refusal_not_taken_fails_its_test`, checks the panic.
+  The check's break (36c9d5cf taken back: the start's `memory_drop` removed) now fails
+  `a_terminal_closed_before_the_start_finished` at standin.rs:207, and the streams binary 17 of
+  18 (t1.log, ARM64, 16:57 UTC, load 10 to 13).
+- `hear_now` (74e2ca54) had no effect on the stand-in, which is why no test failed without it:
+  the stand-in's wait on an outside socket answered only what its network had reported, and
+  the network is polled at the end of every system call, before the next one. A real host's
+  wait asks its socket when polled. Now (3eb5e088): the stand-in's socket waits ask the socket
+  when polled too (`Network::ready_now`, one zero-time poll of that socket; not in a run that
+  keeps or answers from a record, whose record holds only what it heard between turns), and a
+  new test, `a_look_hears_a_reset_the_system_has_not_told_yet` (outside, guest/toldreset.c),
+  has its server reset the connection at the start of the program's look (a hook on ppoll,
+  pselect6 and getsockopt), after every earlier call's end, once each by poll, select and
+  SO_ERROR; the reference's server resets it at once. At the tip it passes 3 of 3 and the
+  outside binary 9 of 9; with `hear_now` made a no-op (the check's break) it fails 5 of 5,
+  on a quiet machine (t1.log, 16:57 UTC, load 10 to 13). So the earlier load-only failure of
+  `a_full_connection_hears_a_reset` was not fixed by 74e2ca54 on the stand-in after all (its
+  wait could not answer at the look); what that test met under load is still not known. It
+  has passed every quiet run.
+- The stand-in is rustfmt-clean (166fb4cf: the check's ten hunks and the same in space.rs and
+  tests/guest_edges.rs); whole.sh's fmt check now covers the stand-in. Clippy over the kernel
+  and the stand-in, all targets, `--no-deps`, warnings denied: status 0 (c2.log).
+- The three causes the thirteenth run left open (limits, proc_attr, proc_mem) are filled in from
+  the check's log: machine differences, like the rest of the ARM list.
+- "For the owner": the items that still described the removed unsafe lines are cut to one line
+  that points at the fifteenth run's item.
+- Layer 1 at its default seed 0 fails on the ARM64 machine at a machine difference
+  (`sched_getaffinity` gives 16 bytes on its 96 cores, ours 8), so the default seed's
+  sequences past that point are not compared anywhere while the Mac's part is not run (by
+  ruling); seed 4711 with 96 cases matched (the check's run). Not changed: ours reports the
+  processor count it was started with, which is the machine difference.
+- Not changed, still open: the conformance suite can check only that another process's task is
+  not returned, not that it stays (no suite function reaches both a handle and its kernel; the
+  stand-in's round_trips test checks it; listed for the owner); the two unstable features (for
+  the owner); the speed cost of the atomic counts (below).
+- The whole workspace's check: at 3eb5e088 it failed in another track's crates for a few
+  minutes (wcontainers-arm64's carry.rs committed before its way.rs, which had that track's
+  uncommitted edit, so left alone); that track committed 6974c922, and at 4c35bb7c `cargo check
+  --keep-going --workspace --all-targets` is status 0 on ARM64 (a2.log, 17:25 UTC, load 9) and
+  on x86-64 (x2.log, 17:25 UTC, load 6).
+- The whole suite of this track's crates and the stand-ins at 4c35bb7c (whole.sh, job
+  kernel/20261124-173630-1292826, 17:36 to 19:06 UTC, load 18 at the start, 5 to 35 during,
+  5 at the end; 8 test threads; other agents' uncommitted edits taken back; log in the cloud
+  folder's logs/kernel): 456 passed, 35 failed, 8 ignored (136 result lines; two more passing
+  than the fifteenth run: the two new tests); clippy over this track's packages, the policy and
+  the runtime, all targets, `--no-deps`, warnings denied, status 0; fmt of the abi, kernel,
+  conformance and stand-in: no diff. The 35 failures are exactly the ARM list (kc16/fails16.txt
+  against kf7/fails7.txt: no difference), each with its cause in the thirteenth run's entry
+  (the machine's own Linux 7.0 as the reference). No stand-in refusal failed a test.
+- Thirty LTP verdicts in the same job (19:06 UTC, load 5): all 30 pass and match the committed
+  reference.
+
+Not done, for KC (what comes next, in order):
+- The cost of the atomic counts and borrows (fifteenth run): perf on the x86-64 machine, then
+  fewer `Arc` clones and borrows on the call path, without unsafe code.
+- epoll_wait does not hear outside connections at once (fourteenth run).
+
+## KC, fifteenth run: the kernel without unsafe
+
+Started about 12:50 UTC on 2026-11-24 at 353ba359. Builds and tests on the rented machines only.
+Scratch kernel/kc15 (b.sh runs a command on a copy with other agents' uncommitted edits taken
+back; whole.sh the suite and LTP; logs beside them).
+
+- The kernel's five unsafe lines are gone (16e84f8d) and the crate inherits the workspace lints
+  (`unsafe_code = "forbid"`); its line is out of the root list (3aa47f9a). Which way, and why:
+  the state is `Send` by its types. The interface asks `Kernel: Sync` and `Runner: Send` and is
+  called from any host thread, and a `no_std` crate has no thread of its own to keep the state
+  on, so a one-thread handle cannot fit. How:
+  - `Rc`/`Weak` are `Arc`/`sync::Weak`, `RefCell` is `AtomicRefCell` (atomic_refcell 0.1.13,
+    MIT OR Apache-2.0, `no_std`; same `borrow`/`borrow_mut`), `Cell` in shared records is
+    crossbeam-utils' `AtomicCell` (already in the lock; MIT OR Apache-2.0; `load`/`store`), and
+    the type-erased handles and embedder data are `dyn Any + Send (+ Sync)`. Short-lived cells
+    (a path walk's, the buffers lent to the host as volatile bytes) stay `core::cell`. `Pipe`
+    has a written `Clone`, since `AtomicCell` has none.
+  - The kernel's `System` asks its handles to be `Send + Sync` and itself `Send`, and each wait
+    it keeps (`wait_until_ready` of the four handle kinds, `send_request`, `receive_notice`,
+    `resolve_domain`) to return a `Send` future, with `#![feature(return_type_notation)]`; a kept
+    call is `SmallBox<dyn Future + Send>`, made by `waiting::waiting_call`, which coerces through
+    smallbox's `coerce` feature instead of the `smallbox!` macro (the macro put unsafe code into
+    the kernel, which `forbid` refuses).
+  - `KernelConfig::new` and `KernelWithExecutor::start` are safe functions; the `Kernel` impl asks
+    `GuestMemory: Send` and `TranslatorConfig: Send + Sync`.
+  - The stand-in (b4a6ca0a): `UnicornSpace` shares host pages by `Arc` with the touched bits in
+    an `AtomicRefCell`; its marked `unsafe impl Send` moved from `StandIn` to the `Memory` that
+    owns a unicorn handle (unicorn's count 14 to 13: the driver's `unsafe` call is gone); the
+    driver's compile check of the test host's waits is gone, as the kernel's bound now checks
+    it; a host generic over its hooks names the stream wait's `Send` (return type notation).
+    The seeded test policy (5be7ad01) and the runtime's local kernel (1607abc4) ask the same
+    bounds of their host and executor. All under "For the owner".
+  - What it costs, measured (speed.sh, x86-64 machine, 13:37 to 13:50 UTC, load 3 to 6; the
+    stand-in's waitcost test in the release profile, pinned to one core, before at e6cdb186 and
+    after at 3aa47f9a, alternately, three rounds each of median-of-5; speed2.log): a guest pipe
+    ping-pong costs 12391, 12631 and (first try, speed.log) 12432 to 12710 ns per repetition
+    before and 14493, 14542 and 14588 ns after, about 16 percent more; an outside socket read
+    17447 and 17520 ns before and 18322, 19594 and 19675 ns after, 5 to 12 percent more.
+    Allocations per repetition are unchanged (142 and 81, the whole test process). The times
+    include unicorn's emulation, so the kernel's own share grew by more than these fractions.
+    The cost is the atomic reference counts and borrows on x86-64 (a locked instruction each),
+    which the kernel's one lock already makes needless; on wasm32 without threads they are plain
+    loads and stores (not measured). Not yet cut: listed below.
+- Checks (ARM64, 13:14 to 13:21 UTC, load 9 to 23): the whole workspace's `cargo check
+  --keep-going --workspace --all-targets` status 0, and on x86-64 status 0 (13:18 UTC, load 7);
+  clippy over the kernel, stand-in, policy and runtime, all targets, warnings denied, status 0;
+  kernel fmt no diff; kernel unit tests 26 pass, the kernel conformance run 17 pass; the
+  stand-in's runners 4, streams 18 and outside 8 pass.
+- The ARM64 machine's disk was full (117 MB left; links failed); this track's old build folder
+  /work/target/kernel (63 GB) was removed.
+- The whole suite of this track's crates and the stand-ins at 3aa47f9a (whole.sh, job
+  kernel/20261124-132212-1323362, 13:24 to 14:53 UTC, load 8 to 17; 8 test threads; other
+  agents' uncommitted edits taken back; logs kc15/whole.log and kc15/suite.log): 454 passed, 35
+  failed, 8 ignored (136 result lines); clippy over this track's packages, the policy and the
+  runtime, all targets, warnings denied, status 0; fmt no diff. The 35 failures are exactly the
+  ARM list (kf7/fails7.txt; causes in the thirteenth run's entry: the machine's own Linux 7.0
+  as the reference). `a_terminal_closed_before_the_start_finished` and
+  `a_full_connection_hears_a_reset` passed; the stand-in printed no refusal. Python's tests took
+  4334 s (4388 s in the fourteenth run).
+- Thirty LTP verdicts in the same job (14:53 UTC, load 8 to 15): all 30 pass and match the
+  committed reference.
+
+Not done, for KC (what comes next, in order):
+- The cost above: find the hot atomic counts and borrows on a guest pipe round trip (perf on
+  the x86-64 machine, speed.sh) and cut those the one lock makes needless, without unsafe code
+  (fewer `Arc` clones on the call path; borrows taken once per call).
+- The owner's answer on the two unstable features and the moved marked impl (For the owner).
+- epoll_wait does not hear outside connections at once (fourteenth run); a check that fails a
+  test when the stand-in refuses a kernel request (done in the sixteenth run).
+
+Started about 11:00 UTC on 2026-11-24 at 9bc830b2. Builds and tests on the ARM64 machine only.
+Scratch kernel/kc14 (t1.sh, whole.sh, rtn/, logs beside them).
+
+- `a_full_connection_hears_a_reset` fixed in the kernel (74e2ca54): poll, ppoll, select and
+  getsockopt SO_ERROR first poll the kept wait of each looked-at socket's outside connection
+  once (`Waiting::poll_now`, `outside::hear_now`), and the host's future asks the socket itself
+  when polled, so a reset the host had before bytes the program read on another connection is
+  known, as on Linux. Cost: one host poll per outside connection a guest's poll or select looks
+  at, and nothing for other files. A new unit test,
+  `a_call_polled_now_answers_before_its_waker_fires_and_only_itself`. Kernel clippy and fmt clean, unit tests 26 pass, the reset test alone
+  10 of 10 and the whole outside binary 3 of 3 (t1.log, 11:14 UTC, load 9 to 12). Not covered:
+  epoll_wait still answers from what the waits reported (looking at every item there would cost
+  a host call per outside item per wait, against epoll's point); listed.
+- siginfo.rs's test, from the unsafe job's commit 0427f705, was not formatted: formatted
+  (3cd3fcd1).
+- The whole suite of this track's crates and the stand-ins at 7c765bfd (which holds 74e2ca54;
+  whole.sh, job kernel/20261124-111636-2370477, 11:17 to 12:46 UTC, load 8 to 19; 8 test threads;
+  other agents' uncommitted edits taken back; logs kc14/log and kc14/suite.log): 451 passed, 36
+  failed, 8 ignored; clippy over this track's packages, all targets, warnings denied, status 0;
+  fmt no diff. `a_full_connection_hears_a_reset` passed. 35 failures are exactly the ARM list
+  (kf7/fails7.txt), each with the cause the thirteenth run's entry gives (the machine's own Linux
+  7.0 as the reference). The 36th:
+  - `a_terminal_closed_before_the_start_finished` (streams): the stand-in's new check (56e15fbe7,
+    executors job) panicked, "a block of shared pages is dropped while a memory still shows it".
+    At the tip (with 03706cc0, where the stand-in refuses such a drop by name and keeps the
+    block) the test passed 5 of 5 alone but the stand-in printed `DroppingAShownBlock { block:
+    SharedId(1) and (2), shown_in: [MemoryId(11)] }` in each (t2.sh). A kernel defect: when the
+    first start's ends could not be made yet (the start waits for the backend), `start_first`
+    returned without dropping the memory it had loaded the program into, loaded it again on the
+    next try, and later dropped the file blocks that leaked memory still showed (abi/cpu.rs:88).
+    Fixed (36c9d5cf): that memory is dropped on that path. With it: no refusal in 5 of 5 runs and
+    the whole streams binary 18 of 18, kernel clippy clean (t3.sh, 12:51 UTC, load 19). The whole
+    suite was not run again after this narrow fix. No test fails on a refusal of the stand-in
+    yet (it only prints): listed.
+- Thirty LTP verdicts in the same job (12:46 UTC, load 16): all 30 pass and match the committed
+  reference.
+- The five unsafe lines of executing.rs (the two `unsafe impl`, `unsafe fn new`, `unsafe fn start`
+  and its call) are NOT removed. Which way: the state must become `Send` by its types. Keeping it
+  on one thread behind a `Send` handle cannot work here: the interface asks `Kernel: Sync` and
+  `Runner: Send`, its calls come from any host thread, and a `no_std` crate has no thread of its
+  own to keep the state on (nor has a browser's main thread for it). What the `Send` way takes:
+  1. The kernel's records: `Rc`/`Weak` to `Arc`/`sync::Weak` (84, 43 and 185 `Rc::` sites),
+     `RefCell` to `AtomicRefCell` (crate atomic_refcell, MIT OR Apache-2.0, `no_std`, the same
+     `borrow`/`borrow_mut` names; 86 types, about 1,600 borrow sites), `Cell` to atomics (26),
+     `dyn Any` to `dyn Any + Send + Sync` (16). Mechanical, in 30 files, but each borrow then
+     costs two atomic operations that the one kernel lock makes useless (not measured).
+  2. The system's waiting calls kept as `SmallBox<dyn Future + Send>`: stable Rust cannot ask an
+     interface's `async fn` future to be `Send` in generic code. Measured this run (rtn/,
+     rustc 1.99.0 on the ARM64 machine): with `#![feature(return_type_notation)]`, which the
+     workspace's `RUSTC_BOOTSTRAP=1` already lets through, `S: Readiness<H,
+     wait_until_ready(..): Send>` compiles and the kept call drops on another thread; without
+     the gate, E0554. The other way is the interface writing `fn ..(..) -> impl Future<Output =
+     ..> + Send` for `wait_until_ready`, `send_request`, `receive_notice` and `resolve_domain`.
+  3. The guest memories: `Executor::GuestMemory` need not be `Send`; the kernel's impl can ask it
+     in its bounds, and the stand-in's `UnicornSpace` (`RefCell<Space>`, executors job's crate)
+     must then be made `Send`.
+  Step 2 is the owner's ruling (an unstable feature in the kernel, or `Send` in the system's
+  interfaces), and without it steps 1 and 3 remove no unsafe line while making every borrow
+  slower, so none was started. Listed under "For the owner".
+
+Not done, for KC (what comes next, in order):
+- The five unsafe lines: done in the fifteenth run.
+- epoll_wait does not hear outside connections at once (above); a program that learns of a reset
+  through epoll after another connection's bytes can still miss it.
+- A check that fails a test when the stand-in refuses a kernel request (today only printed):
+  the driver could fail a run whose `StandIn::refused()` is not empty.
+
+## KC, thirteenth run: the three files fixed, the workspace builds, the quiet suite and LTP
+
+Started about 07:50 UTC on 2026-11-24 at b80efb96. Every build and test ran on the rented
+machines; the Mac only edited, formatted single files and committed. Scratch kernel/kc13 (arm.sh,
+x86.sh, whole.sh, t1.sh to t3.sh, ltp30.sh, logs beside them).
+
+- The three other tracks' files, fixed by this track as the orchestrator ordered, each in its own
+  commit (no uncommitted edit of anyone else's was in them): hardware-virtualization's
+  tests/guest_memory.rs:222 asks `reached.is_empty()` (920abe37); translator-test's layer1.rs
+  gives `#[cfg(all(target_os = "linux", target_arch = "x86_64"))]` to the four functions that use
+  `guest::x86_64::native` without it (the reciprocals, far transfers and xsave tests and the
+  helper `answered_as_the_meaning`; c027d2e0); the measured precise instruction set's `Counted`
+  passes `GuestMemory`, `Interrupter`, `CreateGuestMemoryError`, `create_guest_memory` and
+  `execute` through to its chip and takes `ProcessorStateOf<Self>` (2ca8530e).
+- The whole workspace's `cargo check --keep-going --workspace --all-targets` at 2ca8530e, other
+  agents' uncommitted edits taken back: status 0 on ARM64 (07:52 UTC, load 26) and on x86-64
+  (07:53 UTC, load 104 from other jobs). KC's build bar is met.
+- Unsafe: the tests' counting allocator in waiting.rs is gone; the allocation checks (waiting.rs,
+  fs/backend.rs, syscall/socket/outside.rs) count with allocation-counter 0.8.1 (MIT OR
+  Apache-2.0, already the TCP host's test dependency; its own allocator holds the unsafe, an
+  import), 1ac58b05, lock line 3616c2ed. The crate counts 331 uses (was 336); the root list and
+  the crate's TODO say so (d072e774, 111414c2). Kernel clippy (all targets, warnings denied)
+  status 0 and kernel unit tests 24 pass (t1b.log, 08:00 UTC, load 34).
+- The `unsafe impl Sync for KernelWithExecutor` and `unsafe impl Send for KernelRunner` are NOT
+  removed: no means without unsafe exists in this milestone. What they hold is not `Send`, for
+  three reasons, each outside one milestone's reach: the kernel's state is `Rc`, `Weak`,
+  `RefCell` and `Cell` throughout (`Arc<RefCell<_>>` is not `Send` either, so it is the owner's
+  parallel redesign, each record behind a lock, not a renaming); the system's waiting calls it
+  keeps are futures of the interfaces' `async fn`s, which stable Rust cannot require to be `Send`
+  (return type notation is still unstable on the pinned 1.99.0: E0658, tried on the ARM64
+  machine this run); and the executor interface's `MemorySpace` does not require `Send` (the
+  stand-in's `UnicornSpace` holds a `RefCell`). Keeping the value on one thread does not fit
+  either: `Kernel: Sync` is called from any host thread and hands out tasks and contexts that
+  share the kernel's records. Listed for the owner (see "For the owner", KC fourth run).
+- The whole suite of this track's crates and the stand-ins at 0c81b5c0 (whole.sh, job
+  kernel/20261124-075545-2700871, suite start 07:55 UTC, load 17; 8 test threads; other agents'
+  uncommitted edits taken back):
+  443 passed, 36 failed, 8 ignored (136 result lines; suite end 09:34 UTC, load 39); clippy over
+  this track's packages, all targets, warnings denied, status 0; fmt no diff. 35 failures are
+  exactly the ARM list (kf7/fails7.txt); python's `system_test_modules_match_reference` passed.
+  Every failure by name, with the first line where ours and the reference differ (kc13/causes.txt):
+  - `a_full_connection_hears_a_reset` (outside), NOT on the ARM list: ours polls "in out" and
+    reads SO_ERROR none where Linux has "err hup rdhup" and the reset; ours heard the reset only
+    after (its last read failed with it). It passed 20 of 20 alone (t2.log, 08:23 UTC, load 23)
+    and its binary 10 of 10 (t3.log, load 35; 2.6 s a run against 11 s in the suite). A timing
+    defect of the kernel's: the guest learns of the reset through a second connection 300 ms
+    later, and the kernel settles every woken wait before a thread runs, so the host reported
+    the data connection's reset after the signal connection's bytes. The kernel answered poll and
+    SO_ERROR from what its waits had reported. The fix: poll the connection's live wait once at
+    such a call (the host's future asks the socket itself when polled, linux-socket-options
+    readiness.rs), at the cost of a host call per guest poll of an outside connection; not made
+    in this run. Listed.
+  The 35 of the ARM list: the reference here is the machine's own kernel (Linux
+  7.0.0-1018-aws, bare metal: SVE, no /proc/config.gz, its own cgroup and tmpfs options), and
+  these tests' outcomes were settled against Docker Desktop's 7.0.14-linuxkit, where they pass
+  (the Mac's part, not run by ruling; arm-machine.md lists them):
+  - `attributes_and_exec_credentials_match_reference`: getxattr errno 95 against 61.
+  - `cgroup_matches_reference`: the cgroup2 mount lacks nsdelegate,memory_recursiveprot.
+  - `clock_adjustments_match_reference`: adjtimex's state and frequency (the machine's NTP).
+  - `clocks_match_reference`: clock id 8 (CLOCK_REALTIME_ALARM) works on ours, -22 there.
+  - `core_dumps_match_reference`: the CORE note's flags 400740 against c00740.
+  - `coredump_filter_matches_reference`: 00000023 against 00000033 at start.
+  - `file_capabilities_match_reference`: get file capabilities -1 EINVAL against 20 bytes.
+  - `file_requests_match_reference`: WATCH_SIZE ENOTTY against ENODEV.
+  - `limits_match_reference`: the machine's own limits (from the check's suite.log, sixteenth
+    run): /proc/sys/kernel/keys/maxbytes 20000 and maxkeys 200 against ours 700000 and 10000
+    (Docker Desktop's), and the machine's /proc/cgroups also lists `misc` and `dmem`.
+  - `listings_are_a_subset_of_the_reference`, `thread_listings_are_a_subset_of_the_reference`:
+    link counts (/proc/net 6 against 7, task mem 20 against 21).
+  - `making_pairs`: TIOCSTI errno 1 against 5.
+  - `map_flags_match_reference`: madvise advice 101 errno 22 against 1.
+  - `mount_tables_match_reference` and `_on_backend_root`: tmpfs without inode64.
+  - `partial_copies_match_reference`: sched_getaffinity into partly mapped buffers (ours 8,
+    theirs fails each); `priorities_across_processes_match_reference`: getaffinity 8 against
+    EINVAL.
+  - `proc_attr_matches_reference`: the machine has security modules on: it lists `smack` and
+    `apparmor` under /proc/<pid>/attr and reads `current` (28 bytes, errno 0, and a child reads
+    its parent's) where ours, with none, gives -1 EINVAL (from the check's suite.log).
+  - `proc_mem_matches_reference`: the machine's Yama ptrace restriction (Ubuntu's default): a
+    child's open of its parent's /proc/<pid>/mem is -1 EACCES (13) and its read -1 EBADF there,
+    where ours, as Docker Desktop's, reads the parent's memory.
+  - `proc_net_matches_reference`: a listener's queue 0x380 against 0x3C0.
+  - `proc_task_matches_reference`: a cwd link's offset 21 against 22.
+  - `proc_writes_seeks_and_reads_match_reference`: a 4 MiB pread of ostype ENOMEM against 6.
+  - `root_files_match_reference`: dioalign memory 512 against 4.
+  - `route_questions_and_rules_match_reference`: a rule message of 52 bytes against 60.
+  - `scheduling_attributes_match_reference`: sched_getattr's tail bytes.
+  - `secret_memory_matches_reference`: madvise and the lock limit on secret memory.
+  - `sequences_match_reference`, `sequences_on_backend_match_reference`,
+    `sequences_on_cached_backend_match_reference`: layer 1's seed 0 sequence from mkdirat.
+  - `shared_memory_segments_match_reference`: a 2^40-byte segment succeeds, ENOMEM there.
+  - `signal_frames_match_reference`: the machine's SVE record (53564501) in the frame.
+  - `socket_edges_match_reference`: an urgent peek of length 1 EAGAIN against 0.
+  - `special_files_match_reference`: getxattr through /proc errno 22 against 61.
+  - busybox `system`: zcat /proc/config.gz (the machine has none).
+  - `timers_match_reference`: timer_create on the alarm clock EPERM against EOPNOTSUPP.
+  None of these fails only under load: each is on the ARM list, which every whole suite on this
+  machine in this file's record failed, quiet or loaded. Of the 04:00 UTC run at load near 200 the
+  orchestrator named (timers, signal_frames, sequences, proc_task, mount_tables, socket_edges),
+  every one is on this list and fails here at load 17 too.
+- Thirty LTP verdicts against the reference, one command (ltp30.sh; at 98f0c901, 08:27 UTC, load
+  30): fork01, clone04, vfork01, mmap01, munmap01, mprotect01, pipe01, pipe2_01, socket01,
+  socketpair01, sendto01, recvfrom01, connect01, bind01, listen01, accept01, epoll_wait01,
+  poll01, select01, futex_wait01, futex_wake01, sigaction01, rt_sigprocmask01, getrandom01,
+  prctl01, shmat01, eventfd01, timerfd01, execve01, waitpid01: all 30 pass on ours and match
+  the committed reference; against the reference run now on the machine 29 match and eventfd01
+  differs (reference broken: "Cannot parse kernel .config", the machine's kernel has no
+  /proc/config.gz, the same machine difference as busybox `system`).
+- No interface file differs from main (8c32fdc8): `git diff main HEAD` over every
+  crates/<name>/*.rs and foreign_implementation shows only crates/abi/host.rs (this track's abi
+  crate) and wcontainers-opengl's build.rs, as before.
+- The whole LTP comparison in the same job (09:34 to 11:03 UTC, load 17 to 53, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts /work/kernel-kc13/whole.tsv on the machine): 4169 of 4226 match the
+  reference and 57 differ (16 a part not built, 32 a wrong answer, 9 slower than the limit), the
+  K6c bar's count, and all 4226 match 376fba71's verdicts: no worse than before the merges.
+
+Not done, for KC:
+- The two `unsafe impl`s (above): they need the owner's ruling (a `Send` bound on the system's
+  waiting calls and on `MemorySpace`, and the kernel's state made shareable).
+- `a_full_connection_hears_a_reset` fails under the suite's load (above); the fix is named there.
+
+
+
+Started about 07:47 UTC on 2026-11-24 at a329bc12. The three other tracks' files (see "For the
+orchestrator") had no commit and no uncommitted edit; the owner's merges of 2026-11-23
+(e65273d5, 45dc7425) were already conformed in this track's crates in earlier runs. Nothing was
+built. A wait was started (scratch kernel/kc12, wait.sh) and ended with the run.
+
+## KC, eleventh run: still waiting on the three files
+
+Started about 07:16 UTC on 2026-11-24 at 962a03fd. Watched the three other tracks' files from
+07:17 to 07:47 UTC (scratch kernel/kc11, wait.sh): no commit and no uncommitted edit touched them,
+and main has nothing newer for them. The tip's other commits were other tracks' docs, so the
+check was not run again; its result at 9d374918 stands. Nothing of this track's is open for KC.
+
+## KC, tenth run: the workspace check again at 9d374918
+
+Started about 06:33 UTC on 2026-11-24. The Mac only read, edited and committed. Scratch kernel/kc9
+(arm.sh, x86.sh, wait.sh, logs beside them).
+
+- Waited 06:37 to 07:15 UTC for the three other tracks' files: only layer1.rs changed (108d7566,
+  the native track), without the x86-64 cfg on the three functions.
+- The whole workspace's `cargo check --keep-going --all-targets` at 9d374918: on ARM64 (other
+  agents' uncommitted edits taken back, 07:15 UTC, load 3) it fails exactly as before, in
+  measured/tests.rs:59, layer1.rs 499, 690 and 715, and guest_memory.rs:222; on x86-64 (07:16 UTC,
+  load 158 from other jobs; the patch taking back others' edits did not upload, so this is the
+  working tree with them) only in measured/tests.rs:59.
+- No interface file differs from main: `git diff HEAD main` over every crates/<name>/*.rs lists
+  only crates/abi/host.rs (this track's abi crate) and wcontainers-opengl's build.rs (not an
+  interface). The owner's 22eaab2d (infallible icmp and raw getters) is on main and its interface
+  files equal agents'.
+
+Not done: as in the eighth run, KC's pass bar waits only on those three files.
+
+## KC, eighth run: the workspace check on the x86-64 machine
+
+Started about 06:26 UTC on 2026-11-24 at 4403770d. The Mac only edited and committed. Scratch
+kernel/kc8 (c1.sh, c1.log).
+
+- Since the seventh run's check at 7ef9b914 only other tracks' docs changed, so the ARM64 check was
+  not repeated: it still fails only in the three crates named there.
+- The whole workspace's `cargo check --keep-going --all-targets` on the x86-64 machine at
+  4403770d (other agents' uncommitted edits taken back; 06:27 to 06:31 UTC, load 74 to 67 from
+  other jobs) fails only in precise-instruction-set-measured's tests.rs:59 (the instruction
+  design track's `Counted` executor lacks `GuestMemory`, `Interrupter`, `CreateGuestMemoryError`,
+  `create_guest_memory` and `execute`). Translator-test's layer1 and hardware-virtualization's
+  tests/guest_memory.rs build there: their failures are ARM64-only (`guest::x86_64::native` is
+  compiled only on x86-64 Linux; guest_memory.rs only on aarch64).
+
+Not done: KC's pass bar waits only on those three files of other tracks (see "For the
+orchestrator"); nothing of this track's fails the check.
+
+## KC, seventh run: the sixth run's results read, a new suite check, three breaks
+
+Started about 04:40 UTC on 2026-11-24 at 2086b90e. Every build and test ran on the ARM64 machine;
+the Mac only edited and committed. Scratch kernel/kc7 (c1.sh to c3.sh, breaks.sh, runners.sh,
+python.sh, logs beside them).
+
+- The sixth run's whole suite and LTP comparison ended; their results are in its section below.
+  The LTP verdicts all match 376fba71's: no worse than before the merges.
+- The one failure off the ARM list, python's `system_test_modules_match_reference`, passed when
+  run alone at the tip (kc7/python.log, 05:08 to 06:23 UTC, load 6 to 27, 4500 s). Its failure in
+  the whole job was a read of the backend's connection in a copy made at a save, while the
+  machine's load reached 1341 from other jobs; the cause is not shown (the job kept no more of
+  the message). Not on the ARM list; watch it in the next whole suite.
+- The sixth run's uncommitted suite check is committed (87c739d4): `taken_tasks_are_resumed`,
+  threads taken and given back are all taken in and can be taken again, each once. Kernel
+  conformance 17 pass, kernel unit tests 24 pass (kc7/c1.log, 04:47 UTC, load 31 rising).
+- Three breaks made on the machine's copy only (kc7/breaks.log, runners.log), each noticed:
+  a process handle taking threads of another process fails
+  `process::threads_of_another_process_are_not_taken`; resumed tasks all handed back fails
+  `taken_tasks_are_resumed`; an interface call that never ends a running turn hung the runner
+  test until a 600 s timeout, so the test now has a 30 s deadline and fails by name ("the
+  interface's call did not end the running turn within 30s", 97483709). The kernel cannot move
+  to another thread (its objects hold `Rc`), so the deadline ends the test binary.
+- The whole workspace's `cargo check --all-targets` at 7ef9b914 (kc7/c3.log, 06:24 UTC, load 4
+  to 12, other agents' uncommitted edits taken back) fails only in other tracks' tests:
+  precise-instruction-set-measured's tests.rs (an `Executor` without the new items),
+  wcontainers-translator-test's layer1 (`guest::x86_64::native`) and hardware-virtualization's
+  tests/guest_memory.rs:222 (type annotations). Clippy over this track's packages, all targets,
+  warnings denied: status 0 (c1.log).
+- No interface file differs from main: `git diff main HEAD` over every crates/<name>/*.rs shows
+  only crates/abi/host.rs (this track's abi crate, 60cb4fe1) and other agents' `[lints]` lines
+  in Cargo.toml files.
+
+Not done: the workspace check passes once the three crates above are conformed by their owners;
+then KC's pass bar is met. The open items of the fifth run (time slice, the runtime's
+interrupter) stay with the owner.
+
+## KC, sixth run: the workspace check, the whole suite and the LTP verdicts at the tip
+
+Started about 03:40 UTC on 2026-11-24 at 3ccfcc3a. Every build and test ran on the ARM64 machine;
+the Mac only edited and committed. Scratch kernel/kc6 (c1.sh to c3.sh, whole.sh, logs beside them).
+
+- The ninth KF run's whole job (kernel/20261124-024108-1615225, at f8f546ce, before the guest
+  memory on memory spaces and the runners) was stopped at 03:45 in the Python tests: its code was
+  no longer the tip's. Up to there its failures were all on the ARM list (inet's three, layer 1's
+  three among them).
+- The whole workspace's `cargo check --keep-going --all-targets`: at the committed tip 4797115f
+  (other agents' uncommitted edits taken back, kc6/c2.log) it fails in the wasmtime executor (its
+  committed guest_memory.rs imports `VolatileBytes` privately; the executors job has the fix
+  uncommitted, and everything over that crate goes unchecked), precise-instruction-set-measured's
+  tests (an `Executor` without the new items) and wcontainers-translator-test's layer1
+  (`guest::x86_64::native`). On the working tree as it was (kc6/c3.log, 03:45 UTC, load 16) it
+  fails only in precise-instruction-set-measured's tests, translator-test's layer1 and
+  hardware-virtualization's tests/guest_memory.rs (type annotations). None is this track's;
+  clippy over this track's packages, all targets, warnings denied: status 0 in both.
+- The ARM64 machine's disk filled (581 of 581 GB) as the first whole job built; this track's
+  /work/target/kernel/debug (107 GB) and kernel-mem/debug (26 GB) were freed and the whole job now
+  builds with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`. The other big folders there are other
+  jobs' (nwvm 76 GB, runtime 40 GB, conform-unicorn 29 GB, vb-callers 24 GB, conform-hv 22 GB).
+- The whole suite at e705a28e (kc6/whole.sh, job kernel/20261124-034859-3840947, suite start 03:50
+  UTC, load 21, 8 test threads; other agents' uncommitted edits taken back, the wasmtime
+  executor's kept so it builds): clippy with warnings denied status 0, fmt no diff; 442 passed,
+  36 failed, 8 ignored (136 result lines; suite end 04:47 UTC, the machine's load reaching 1341
+  from other jobs about 04:49). 35 of the failures are exactly the ARM list (kf7/fails7.txt);
+  the 36th is python's `system_test_modules_match_reference` (passed in the ninth KF run's job at
+  f8f546ce): after 2277 s a copy made at a save panicked at the stand-in's backend.rs:460
+  ("reading from the backend"); the job kept no more of the message. The seventh run reran it
+  alone (see there).
+- The whole LTP comparison in the same job (04:48 to 06:17 UTC, load 8 to 30, LTP_JOBS 8,
+  LTP_LIMIT 900; log ../orchestrator/cloud/logs/kernel/20261124-034859-3840947.log, verdicts
+  /work/kernel-kc6/whole.tsv on the machine): 4169 of 4226 match the reference and 57 differ (16
+  a part not built, 32 a wrong answer, 9 slower than the limit), the K6c bar's count, and all
+  4226 match 376fba71's verdicts. So the verdicts are no worse than before the merges.
+
+## KC, fifth run: the kernel's runners run through `execute`
+
+Started about 03:20 UTC on 2026-11-24 at 95201039. Every build and test ran on the ARM64 machine
+(name kernel-mem); the Mac only edited, formatted single files and committed. Scratch kernel/kc5
+(c1.sh to c3.sh, logs beside them).
+
+- `Runner::run` on `Executor::execute` was still not written (the executors job's conform-runner
+  stage had not started: its scratch was at repair-hv), so this run wrote it, as the notice of
+  2026-11-23 allows (f6ddaeac, lock line de652cf6). running.rs: a turn gives the thread's
+  registers as arm64's processor state, runs `execute` with a trap handler that records the
+  first trap and terminates, polls the future to its end (with `Waker::noop`), and gives the trap
+  back as the abi's `Exit` (`pc` after the `svc` for a call; illegal instruction, breakpoint and
+  alignment from the syndrome, as they have no hook). `KernelRunner::run` loops `next`, a turn,
+  `exit` under the kernel's lock, taken per turn; it returns `Idle` (with the kernel's time as a
+  `Duration` on the monotonic clock, after telling it `Timer` once), `Finished` (the wait status
+  as `ProcessEnd`, `NotStarted` with the start's error), `Interrupted`, or `Idle` with no time
+  while another runner holds the lock. The runners hold the system (`Arc<S>`) the config gave.
+- The kernel interface's calls end a running turn: the turn's interrupter is kept beside the lock
+  while it runs, and a call that finds the lock held raises it and waits; a runner leaves the lock
+  to such a call and returns `Interrupted` (executing.rs `Shared::lock`, `turn_started`).
+- The executor's processor state becomes arm64's by a `TypeId` check known at compile time
+  (`executors_own`), not by an `Architecture = Arm64` bound: that bound broke the runtime's
+  described.rs, which is generic over any executor (another track's file). A runner of an executor
+  of another architecture panics, named.
+- New tests (the stand-in's tests/runners.rs, guests spin.c and codewrite.c): hello (no C library)
+  and processors (C library, 4 runners) run to their end on a runner; a guest that never traps is
+  interrupted so `suspend_tasks` takes its thread; code the kernel writes over code that already
+  ran (a read from a pipe into an executable page) is what runs next, on a runner and on the
+  kernel's own driver (so unicorn drops its translations on `mem_write`, and `code_changed` doing
+  nothing is right for the stand-in). Kernel unit tests: new running.rs register round trip and
+  hook-less traps.
+- Measured on the ARM64 machine (03:35 to 03:40 UTC, load 7 to 10): clippy over abi, kernel,
+  kernel suite, stand-in and inside, all targets, warnings denied, status 0; kernel unit tests 24,
+  kernel conformance 17, stand-in's runners 4, processors 1, round_trips 6, hello 1, faults 1,
+  align 1 (2 ignored), embedder 36, the stand-in's executor conformance 21 pass.
+- The whole workspace's `cargo check --all-targets` (03:24 UTC, before these commits) fails only in
+  other tracks' crates being conformed now: the simulation and wasmtime executors (missing
+  `Interrupter`, `VolatileBytes` from its old place) and wcontainers-translator-test's layer1
+  (`guest::x86_64::native`). Nothing of this track's. The wasmtime executor had another agent's
+  edits in progress, so the remote copy took its committed files plus kc5/wasmtime-vb.patch for
+  every build above; the Mac's copy was not touched.
+- Again at the tip (03:41 UTC, load 9 to 12, kc5/c4.log): it fails only in other tracks' tests:
+  hardware-virtualization's tests/guest_memory.rs (type annotations), host-process's
+  tests/forged.rs (`libc::SEGV_ACCERR`), precise-instruction-set-measured's tests (an `Executor`
+  without the new items) and wcontainers-translator-test's layer1. Clippy over this track's
+  packages, all targets, warnings denied, with no remote patch: status 0.
+- No commit of this run touches an interface file.
+- The placement request of 2026-11-23 (mappings low first, independent of the executor's
+  ceiling, the size from `MachineDescription`) is taken as part of the next milestone, KF, whose
+  placement work it continues; `GuestMachine` keeps `C: Cpu` only for `address_space` until then.
+
+Not done, in order:
+- A time slice: `execute` takes none, so a turn runs until its thread traps; a guest thread that
+  spins without a call starves the others until one of the interface's calls ends its turn.
+- The runtime's `RunInterrupter` reaches no running turn (the `Kernel` interface has no call to
+  interrupt one); the runtime's stop closure was for the old executors' stop flags.
+- The ninth KF run's whole suite and LTP comparison (job kernel/20261124-024108-1615225) were still
+  in the suite at 03:40 (51 test binaries done); read them next.
+
+## Guest memory on the executor's memory spaces, first run
+
+Started about 03:00 UTC on 2026-11-24 at 533f6bde. Builds and tests ran on the ARM64 machine
+(name kernel-mem); the Mac only edited, formatted single files and committed. Scratch kernel/km1
+(m1.sh, m1b.log).
+
+- The run's task text named milestone KC and a list of K6c findings. KC is done (its four runs
+  are below), and every finding in that list was settled in the K6c fourteenth run (see there).
+  So this run did the first job of the notice of 2026-11-23: the kernel's guest memory on the
+  executor's `MemorySpace`.
+- Done (df746f1b): new guest_machine.rs, `GuestMachine<C>`. It holds the executor, one
+  `C::GuestMemory` per memory, one per block of shared pages (its pages from address 0) and each
+  thread's registers, and it is the abi `Cpu` the rest of the kernel calls. `memory_new` is
+  `create_guest_memory`; `memory_duplicate` (fork) is `copy_from` over the whole space; `read`,
+  `write` and `shared_read`/`shared_write` are `borrow` with `read`/`write`; `zero` and
+  `set_permissions` are the space's; `shared_map` is `map_from`; `shared_unmap` copies the bytes
+  out, `unmap_from`, and writes them back in 64 KiB pieces (the space zeroes what it unmaps, the
+  abi keeps a private copy); `code_changed` does nothing (the space's executor sees writes made
+  through it). `KernelWithExecutor` holds a `GuestMachine` and `with_parts` hands it out.
+- The stand-in's driver runs a thread of such a kernel with `StandIn::run_on` (the kernel's
+  registers and `UnicornSpace`); `UnicornSpace::run_turn` takes the machine-clock deadline too.
+- Measured on the ARM64 machine (03:17 to 03:21 UTC, load 28 to 39): clippy over abi, kernel,
+  kernel suite, stand-in and inside, all targets, warnings denied, status 0 (the wasmtime
+  executor, another track's, still imports `VolatileBytes` from `memory_space`: kf9's
+  wasmtime-vb.patch, now km1/wasmtime-vb.patch, conformed the remote copy only); kernel unit
+  tests 22, kernel conformance 17, embedder 36, processors 1, round_trips 6, startoptions 16
+  pass. My hunks in standin.rs and space.rs were formatted by hand after the run (layout only);
+  the rest of those two files is another agent's and not rustfmt-clean.
+
+Not done yet, in order:
+- `Runner::run` on `Executor::execute` (conform-runner, the executors job's last stage) was not
+  written at 03:00. Next run: if it still is not, write it on `GuestMachine` (registers to the
+  arm64 `Processor` and back, a trap handler that records the trap and terminates, `pc` after
+  the `svc`, `Next::Idle` as `StopReason::Idle`). Open for it: `execute` takes no slice, so a
+  thread that spins never yields; the stand-in would need a budget it is made with.
+- `GuestMachine` still takes `address_space` from the executor's `Cpu`, so `C: Cpu` stays.
+- The runtime's drive loop, layer 1 and every other user of the bare `Kernel` still pass their
+  own `Cpu` (its memories); they move when they drive through the runner.
+- `code_changed` doing nothing relies on unicorn dropping translations on `mem_write`; nothing
+  in the tests run checks the kernel writing over code that has already run.
+- The ninth KF run's whole suite and LTP comparison (job kernel/20261124-024108-1615225) were
+  still running at 03:20; read them next (they ran before df746f1b, which changes only
+  `KernelWithExecutor`'s path).
+
+For the owner (also under "For the owner"): `KernelWithExecutor`'s `unsafe impl Sync` now also
+covers the guest memory spaces, which the executor interface does not require to be `Send`
+(`UnicornSpace` holds `Rc` and `RefCell`). The argument written beside it: they are reached only
+through the `GuestMachine` under the kernel's lock. The sound form is a `GuestMemory: Send`
+bound, which the stand-in's space does not meet without a new marked `unsafe impl Send`, or the
+runner design with each process's memory behind its own lock.
+
+## KF, ninth run: the whole suite on volatile bytes
+
+Started about 02:30 UTC on 2026-11-24 at b6763a53. Every build and test ran on the ARM64 machine;
+the Mac only edited and committed. Scratch kernel/kf9 (d1.sh to d4.sh, whole.sh, logs beside them).
+
+- The executor suite builds again (794413392, another track's). The single-kernel runtime (the
+  runtime track's: described.rs, system.rs, tcp.rs, udp.rs) still takes slices, and the wasmtime
+  executor (guest_memory.rs) still imports `VolatileBytes` from `memory_space` without the new
+  `read_to` and `write_from`; the kernel's tests and the stand-in need both. Neither crate was
+  edited: scratch kf9/runtime-vb.patch and kf9/wasmtime-vb.patch conform them (copy through a
+  buffer), and the ARM64 jobs apply them to the machine's copy only, so this track's suite runs.
+  Their owners still have to conform them.
+- The kernel's unit-test executor imports `VolatileBytes` from its own crate and gives its
+  uninhabited bytes `read_to` and `write_from` (d74d4b31; lock lines f8f546ce, committed alone:
+  the lock also holds other agents' uncommitted lines). Kernel unit tests 22 pass; clippy over the
+  kernel, abi, kernel suite, stand-in and inside, all targets, warnings denied: status 0.
+- fmt over the same packages finds differences only in the stand-in's space.rs and standin.rs,
+  which another agent had uncommitted edits in (the executor interface's part of that crate).
+- The 14 literal lines For the orchestrator names were read again: each is a measured or chosen
+  test value equal to another crate's constant by chance, or a fact without a shared home (the
+  MTUs); renaming or changing a value only to pass the check would hide, not settle, them. They
+  wait for the ruling.
+- The whole suite and then the whole LTP comparison were started at f8f546ce (kf9/whole.sh, job
+  kernel/20261124-024108-1615225, suite start 02:41 UTC, load 4; its output in
+  kf9/whole-attach.log, the LTP verdicts copied to /work/kernel-kf9-whole.tsv on the machine).
+  This run ended before they did: the next run reads them (do not start them again while the
+  inputs are unchanged) and compares with fails7.txt (the ARM list) and ours-20260930-376fba71.tsv.
+
+## KF, eighth run: the literal check's lines this track can settle, and the executor interface
+
+Started about 02:00 UTC on 2026-11-24 at 6ea365e5. Every build and test ran on the ARM64 machine;
+the Mac only edited, formatted single files and committed. Scratch kernel/kf8 (b1.sh to b5.sh,
+lit.sh, whole.sh, logs beside them).
+
+- hardware-virtualization-inside's `WRITE_NOT_READ` is gone: stop.rs and floor-cases import the
+  arm64 architecture crate's (efb627ab; its lock line 25d94a30). That crate is `no_std` and needs
+  only `aarch64-cpu`, which the inside already used. Clippy over the inside (with and without
+  `kernel-test`) status 0, its tests 3 pass, its programs build for aarch64-unknown-none-softfloat.
+- The executor interface (b01ba0d8 and before) asks every `Executor` for a guest memory, an
+  interrupter and `execute`; the kernel's unit-test executor `Plain` did not have them, so the
+  kernel's unit tests did not build. `Plain` now has an uninhabited memory and interrupter and
+  gives no memory (60183ae8). Kernel unit tests 22 and its conformance 16 pass.
+- The literal fix list, steps 4 and 5 (5512c9a1): widths are `u32::BITS`, `u64::BITS` and
+  `u16::BITS`; counter details are made by `counters::detail` and `counters::socket_detail`, which
+  give the same values as before. The baseline loses 33 kernel lines.
+- The stand-in's tests/standin.rs placed code at its own `CODE = 0x10000`, which the executor
+  suite's `CODE` (its `LOWEST_ADDRESS`) made a redefinition; it now uses
+  `wcontainers_abi::LOWEST_ADDRESS` (a7b0b008), one more baseline line gone.
+- Tests run on the ARM64 machine after these (load 4 to 19): handle, seccomp, securebits, faults,
+  unixsock, lockwaits, options, standin pass; inet's three, threads' `proc_task_matches_reference`
+  and clocks' two fail, all six on the ARM list.
+
+The literal check at a7b0b008's parent 5512c9a1 (kf8/lit.sh, lit2-out.txt): baseline 27583 lines
+(27582 after a7b0b008), exits 1 on other tracks' files and the interfaces', and in this track's
+files only on the 14 lines For the orchestrator names (`WRITE_NOT_READ` is off that list).
+
+The owner's volatile bytes (e9fff41e, merged at 45dc7425): sockets, streams and the random
+source take `&impl VolatileBytes`. Conformed: the kernel passes `RefCell<&mut [u8]>` (the
+interface's own implementation); its two senders now take `&mut [u8]`, as every caller holds its
+own buffer (911f7e16). The inside's link host (fb83448d) and the stand-in's test host (fe19ffee)
+copy through a buffer; lock lines fc3977ac. Measured on the ARM64 machine: clippy over the kernel
+and abi libraries and over the inside (all targets) status 0, the inside's tests 3 pass.
+Not yet built: the kernel's tests and the stand-in, as they need the single-kernel runtime
+(described.rs, system.rs, tcp.rs, udp.rs still take slices: the runtime track's) and the executor
+suite (crates/executor/conformance still imports `VolatileBytes` from `memory_space`), neither
+this track's. The seeded test policy was converted by another agent (79209968).
+
+The whole suite was started at a7b0b008 (kf8/whole.sh) and did not run: the ARM64 machine's disk
+filled (581 of 581 GB) while it built. This track's folders were freed: /work/target/kernel/debug
+(141 GB of old builds), kernel-vb and kernel-literals; 164 GB were free after. It must be run once
+the runtime and the executor suite build again.
+
+## KF, seventh run: the third check's findings
+
+The seventh run made the fixes (commits b7524554 to 376fba71) and started the whole suite; the
+eighth (from 23:07 UTC on 2026-11-23) read its results and wrote this section. Every build and
+test ran on the ARM64 machine; the Mac only edited, formatted single files and committed. Scratch
+kernel/kf7 (a1.sh, a2.sh, whole.sh, literals.sh, logs beside them).
+
+The check's findings:
+- The sixth run's whole suite count: 399 passed, 36 failed, 8 ignored, the sum of suite6.log's
+  result lines (d09725ac).
+- No fallback when nothing fits below the mmap base: placement now searches bottom-up from
+  Linux's share of the space (a quarter of the lowest range's top) to fill the gap above the mmap
+  base, below the stack, as Linux's `vm_unmapped_area` fallback does, for the PMD-padded search
+  and the plain one (b7524554, c4761680). `placeable`, and so the ceiling's distance, count that
+  gap. New unit test `a_full_space_below_the_mmap_base_falls_back_to_the_gap_above_it`; the PMD
+  unit test fills the gap first so it still tests what it was written for; the embedder's
+  outgrow test asserts a distance under two pieces, as the space left can now be in two places.
+- A hint below the lowest address is moved up to it (Linux's `round_hint_to_min`), and
+  `/proc/sys/vm/mmap_min_addr` exists (9f249272). New guest spaceedges.c and test
+  `placement::the_edges_of_the_space_match_reference`: the hint moved up, the same hint again,
+  two fixed cases, and the stack's gap filled once the space is full, against the reference.
+- Widths (8bf5b240): a width of part pages is cut to whole ones, counted and warned of
+  ("address space narrowed"); the first program is always checked against the space, so a width
+  too small for it fails the start with ENOMEM and counts `PROCESS_OUTGROWN`. New tests
+  machine.rs `a_width_of_part_pages_is_cut_to_whole_ones` and
+  `a_width_too_small_for_the_program_fails_the_start`.
+- `Start::ceiling` with no embedder that sets it: For the orchestrator (KF, seventh run).
+- The lowest address (65536 against the reference's 32768) and the fallback's range: Departures
+  (KF, seventh run).
+
+The literal check at c4761680 (kf7/literals.sh, lit1.log): baseline 27616 lines; it exits 1, on
+other tracks' files and the interfaces', and in this track's files only on the 15 lines For the
+orchestrator already names (the fifth run's four, the sixth run's); this run added none.
+
+Measured on the ARM64 machine (load 14 to 22): kernel unit tests 22 pass; placement 2, machine 4,
+embedder 36, memory 2, layout, linux_layouts, privatemap, startoptions 16 pass; mapflags 1 of 2,
+its failure on the ARM list.
+
+The whole suite at 376fba71's code (23:04 to 00:33 UTC, load 22 falling to 3, 8 test threads;
+kf7/whole.sh, log kf7/suite7b.log, job kernel/20261123-230410-1025094): clippy with warnings
+denied status 0, fmt no diff; 405 passed, 35 failed, 8 ignored (the sum of the log's 133 result
+lines). The 35 are exactly the ARM list (kf7/fails7.txt is kf6/fails6.txt less backend
+`mapped_pages_read_when_touched_match_reference`, whose reference run hung in the sixth run and
+passed here). The six more passing than the sixth run: that test, b49c49e5's and this run's unit
+tests, placement's edges test and machine's two. The workspace's `cargo check --all-targets` in
+the same job stopped only on the translator test's layer1.rs (an import another track removed).
+
+The whole LTP comparison at the same code (same job, 00:33 to 02:00 UTC on the 24th, load 4 to
+17, LTP_JOBS 8, LTP_LIMIT 900; verdicts ltp/ours-20260930-376fba71.tsv, log kf7/suite7c.log):
+4169 of 4226 match the reference and 57 differ (16 a part not built, 32 a wrong answer, 9 slower
+than the limit), the K6c bar's count, and all 4226 match ba9f009e's verdicts. So neither the
+fallback to the stack's gap, the hint moved up, nor the width checks changed any verdict.
+
+Verdicts changed on purpose: none of the old tests; new are the unit test, placement's edges test
+and machine's two.
+
+## KF, sixth run: the second check's findings
+
+Started about 16:00 UTC on 2026-11-23 at 9aa56cb0. Every build and test ran on the ARM64 machine;
+the Mac only edited, formatted single files and committed. Scratch kernel/kf6 (a1.sh to a3.sh,
+whole.sh, literals.sh, logs beside them).
+
+The check's findings:
+- `execCPUAffinity` was asked for and not built (7b992220): `StartOptions::cpu_affinity`, a mask
+  as `sched_setaffinity` takes it (its final set; runc sets it before the program), applied as the
+  first process's own `sched_setaffinity` at start; a mask of no processor online fails the start
+  with EINVAL. Each thread now keeps its affinity (`Thread::affinity`, none for every processor,
+  inherited by clone and kept for an ended leader); `sched_getaffinity` gives it,
+  `sched_setaffinity` sets it (the mask and the processors online; none of them is EINVAL), and
+  `getcpu` names the lowest processor of it. Until now `sched_setaffinity` answered 0 and kept
+  nothing. Tests: startoptions `a_processor_affinity_matches_reference` (guest affinity.c: the
+  reference sets the mask itself and runs itself again; ours starts with it on four processors;
+  the exit code holds the set, a child's set, sched_getcpu, a second set read back and an empty
+  mask refused) and `a_processor_affinity_of_no_processor_online_fails_the_start`. Both pass.
+- Placement compared with the reference (3285715e): new tests/placement.rs
+  `relative_placement_matches_reference` (guest placement.c, layout not random, seccomp off on
+  both sides: the stack's top to the vDSO's, the first mapping against the vDSO, gaps between
+  mappings, a hole refilled, hints below and on a mapping, 1 GiB, 3 MiB, 4 MiB and 2 MiB
+  mappings and where each starts in its PMD, shared anonymous memory, a hint that does not fit,
+  a mapping that grows down, two mremap moves). It found the finding below; it passes now.
+- No huge-page alignment: Linux places anonymous private memory of whole PMDs (2 MiB) asked for
+  with no hint on a PMD's boundary (`__get_unmapped_area` to `__thp_get_unmapped_area`: the
+  space for one PMD more, top-down, then its boundary, or one PMD higher where the space starts
+  on one). Now `AddressMap::find_free_anonymous` does the same for mmap (no file, not
+  MAP_SHARED, no hint) and for an mremap move of private anonymous memory. Shared anonymous
+  memory is not aligned (shmem's huge setting is never), as the reference shows; a private
+  mapping of `/dev/zero` (Linux aligns any length of at least a PMD there) is not. The boundary
+  is sought in each placement range before the plain search there (b49c49e5), so a lowest range
+  with room only for the unaligned mapping keeps it, under every ceiling. Unit tests
+  `anonymous_memory_of_whole_pmds_starts_on_a_boundary` and
+  `a_pmd_stays_in_the_lowest_range_without_its_boundary`.
+- Placement under a ceiling below 4 GiB: see the decision under Departures (KF, sixth run).
+- The literal check: see below.
+- `MAX_ARG_STRLEN` is `wcontainers_abi::PAGE_SIZE * 32` (d3cda690).
+- A memory size other than the space's end: the stand-in's driver takes `Prepared::memory_bytes`
+  and `Prepared::address_space_bytes`; tests/machine.rs `the_memory_size_given_is_the_one_told`
+  (3 GiB on the 4 GiB stand-in: `/proc/meminfo`'s MemTotal and `free`'s sysinfo total).
+- A width past 2^48 is now counted and warned of, "address space narrowed to 48 bits" with the
+  size asked for as detail (55609a34); tests/machine.rs `placements_stay_under_each_address_width`
+  (widths 1 GiB, 2 GiB and 2^52: every mapping of `/proc/self/maps` under each, the warning only
+  for 2^52). Both pass.
+
+The literal check at the committed tip (kf6/literals.sh): of the check's list in this track's
+files, hardware-virtualization-inside's `PAIR` is now `SAVED_PAIR` (3dc17db7, a different fact
+from the x86 assembler's). The others are values other tracks named after these lines were
+written, and are For the orchestrator (KF, sixth run). The literal fix list: `SOMAXCONN`, the
+cap on a listen backlog and `/proc/sys/net/core/somaxconn`'s value, is named once in
+linux_extra.rs (89be397e, 2b12892c); the baseline went from 27628 to 27626 lines (f11d1234). The
+check at 2b12892c (kf6/lit4*) exits 1, on other tracks' files and the interfaces', and in this
+track's files only on the lines For the orchestrator names (the fifth run's four and the sixth's).
+
+Measured on the ARM64 machine during the run (load 3 to 58, other tracks' jobs beside): kernel
+unit tests 21 pass at b49c49e5 (20 at 3dc17db7); startoptions 16 of 16, placement 1, machine 2,
+layout, linux_layouts, memory 2, privatemap, sharedmap 2, faults, bigargs, execveat, unixsock 4
+pass; mapflags 1 of 2, procwrite 3 of 5, schedattr 0 of 1, priorities 0 of 1, every failure on
+the ARM list.
+
+The whole suite at 3dc17db7 (16:21 to 19:30 UTC, load 3 to 48, 8 test threads; kf6/whole.sh,
+log kf6/suite6.log, job kernel/20261123-162017-413346): clippy with warnings denied status 0, fmt
+no diff; 399 passed, 36 failed, 8 ignored, the sum of the log's 133 result lines (the fifth
+run's: 394, 35, 8; an earlier version of this paragraph gave 411 and 406, which no log backs).
+The failures are the ARM list (kf6/fails6.txt) and one more, backend
+`mapped_pages_read_when_touched_match_reference`, whose reference run hung: on Linux, guest
+backendmaps.c sat 98 minutes in `anon_pipe_write` on a pipe of its own under the cached test
+server, and the container was killed by hand at 18:05 to let the suite go on. Alone it passes 3
+times of 3 (kf6/a8.log, 15 to 38 s). Recorded under Known issues. The five more passing are the
+new tests (two of startoptions, placement's one, machine's two) less the hung one, plus the
+kernel's unit tests' one more. The later commits (89be397e to b49c49e5: somaxconn's name, the
+range-by-range alignment) ran with the tests they touch above, not with the whole suite.
+
+The whole LTP comparison at 3dc17db7 (same job, 19:30 to 20:59 UTC, load 6 to 22, LTP_JOBS 8,
+LTP_LIMIT 900; verdicts ltp/ours-20260930-3dc17db7.tsv): 4169 of 4226 match the reference and 57
+differ, the K6c bar's count, and all 4226 match ba9f009e's verdicts. So neither the affinity nor
+the PMD alignment changed any verdict (sched_setaffinity01, thp02 and thp03 as before).
+
+Verdicts changed on purpose: none of the old tests; new are startoptions' two affinity tests,
+placement's one, machine's two and the kernel's two unit tests.
+
+## KF, fifth run: the check's findings, and the literal fix list's time and size units
+
+Started about 10:30 UTC on 2026-11-23 at 4f59ef13's code (nothing to merge: main's last merge,
+ccef11b8, brought only the webassembly engine interface). Everything built and ran on the ARM64
+machine; the Mac only edited, formatted single files and committed. Scratch kernel/kf5 (check*.sh,
+literals.sh, whole.sh). KF's items were all built in its first four runs (below); this run fixed
+the check's findings and went on with the literal fix list.
+
+The check's findings:
+- No `.` or `..` on the backend root: the test server's passthrough leaves them out on purpose.
+  The server now lists them first (backend/src/announcing.rs `dots`: `.` at position 1, `..` at
+  2, the passthrough's positions shifted past them, ext4's end mark kept; a dot's READDIRPLUS
+  entry has no node, as Linux ignores it). New tests dentries `listings_have_their_dots` and
+  `listings_have_their_dots_on_the_backend_root` (guest/dots.c: both dots, `.`'s inode, a
+  position after them gone back to, and for directories the program made the counts and `..`'s
+  inode; overlayfs gives an image directory's `..` the lower layer's inode, so that one is not
+  compared). Both failed before the fix on the backend root (the checker's run) and pass.
+- `/proc/<pid>/fd` of a file whose opened name was unlinked while another link stays: each inode
+  now keeps the names taken from it with the kernel's object number then (`Inode::removed_names`,
+  noted at an unlink and at a replacing rename, on tmpfs and the backend; an rmdir leaves no link,
+  which shows already); an open file shows " (deleted)" when its opened name was taken after it was opened
+  (`OpenFile::shown_deleted`), as Linux's unhashed dentry. New tests dentries
+  `opened_names_taken_away_match_reference` and `..._on_the_backend_root_match_reference`
+  (guest/namesgone.c, tmpfs and the root, ordinary and O_PATH: unlinked with a link left,
+  unlinked and linked again, replaced by a rename, the last name, another name): pass. The same
+  record now tells inotify on the backend that an opened name went (IN_EXCL_UNLINK): that part
+  of `inotify_matches_reference_on_backend_root` now matches; it stays ignored for the renamed
+  file's events, its reason narrowed (Known gaps, Known issues). maps, exe and core dumps still
+  go by the link count (Known gaps).
+- The waiting list's mlock05 (smaps is not built: ENOENT at its open) and IPV6_RTHDR (the option
+  is not built: ENOPROTOOPT at the setsockopt, which Linux takes on any IPv6 socket) are restated
+  exactly in "Waiting for the owner" and Known gaps.
+- The LTP hang watchdog counted Docker's start of a test's backend container: it now counts only
+  from the run's first step, and the backend's start is a step (ltp.rs `run_one`, driver.rs
+  `PROGRESS`). A run stuck before its first step is bounded by the limit (a timeout).
+- ADSP072 runs within about 10 s of the 900 s limit alone (889.8 s in the check's rerun, 886 s
+  in K6c): its verdict in a whole run depends on the load, and a timeout there is that, not a
+  regression. Recorded here; no limit is changed for one test.
+- clippy with warnings denied: the bar's command is `cargo clippy --no-deps --all-targets -p
+  wcontainers-abi -p wcontainers-kernel-linux -p wcontainers-kernel-conformance -p
+  wcontainers-executor-unicorn -p wcontainers-executor-hardware-virtualization-inside -- -D
+  warnings`. Without `--no-deps` clippy also lints the workspace crates these depend on, and
+  stops at the kernel interface's two type_complexity errors (the owner's file). With it: status
+  0 at each commit of this run. fmt over those packages: no diff; the single-kernel runtime's
+  net.rs diff is the runtime track's (176dac0c).
+- The ignored tests list under For the independent check is complete (8 without the runtime
+  feature).
+- The Mac's part: not run, by the ruling of 2026-11-22 (nothing builds or tests on the Mac).
+- The literal check now runs at the committed tip on the ARM64 machine from a git bundle
+  (kf5/literals.sh), which has the history the check needs.
+
+The literal fix list (steps 2 and 3, and the oom score): `NANOSECONDS_PER_MILLISECOND`,
+`NANOSECONDS_PER_MICROSECOND`, `MICROSECONDS_PER_SECOND`, `HZ` and `NANOSECONDS_PER_JIFFY`,
+`INITIAL_JIFFIES_BEFORE_ZERO`, `TCP_TIMEOUT_INIT`, `TCP_RTO_MIN`, `TCP_RTO_MAX`,
+`DECISECONDS_PER_SECOND`, `THREAD_SIZE`, `MIN_THREADS` (linux_extra.rs), the abi's `KIB` for
+meminfo and the thread limit, `FUTEX_TID_MASK` for its top, the fair slice's bounds, and the oom
+score's range as `OOM_SCORE_ADJ_MAX`. The units are crate-private: in the abi they would make
+other crates' test literals `restated` (rule 8), which is what held microseconds since KF's second
+run; `MILLISECONDS_PER_SECOND` is not named at all, as the check found the translator test's
+`IDLE_MILLISECONDS = 1000` restating it. The stand-in's waitcost no longer keeps its own copy of
+nanoseconds per microsecond. Baseline: kernel 2347 to 2305 lines, stand-in 2309 to 2308 (one
+stale line), 43 lines removed in all (a9f8631e); the check at a9f8631e has no finding in this
+track's files beyond the four For the orchestrator already names (`WRITE_NOT_READ`, `"/bin"`,
+`"warn"`, `TOLD_AFTER_RESET`); it exits 1 on other tracks' files and the interfaces' (kf5/lit3*).
+
+Measured on the ARM64 machine during the run (load 3 to 10): kernel unit tests 19 and its
+conformance 16 pass; dentries 4 pass; dpath, tmpfile, dirorder, epoll, pollmask, edges 7,
+unixsock 4, deadlines, cputime, options, memory 2, sysfs 4, processors pass; backend 19 of 21,
+rootbackend 1 of 3, inet 23 of 26, clocks 0 of 2, timers 4 of 5, terminal 9 of 10, priorities,
+schedattr, procstatus 4 of 5, procwrite 3 of 5, sysvshm 1 of 2: every failure on the ARM list.
+
+The whole suite at a9f8631e (ARM64, 11:02 to 12:30 UTC, load 2 to 13, 8 test threads; scratch
+kernel/kf5/whole.sh, log kf5/attach1.log, job kernel/20261123-110052-548543): clippy with warnings
+denied status 0, fmt no diff; 394 passed, 35 failed, 8 ignored; the 35 are exactly the ARM list
+(kf5/fails5.txt is the same as kc4/fails4.txt); the four more passing are dentries'. The
+workspace's `cargo check --all-targets` in the same job stopped on wasmedge-sys's build script
+(the wasmedge engine track's crate), not on this track's.
+
+The whole LTP comparison at a9f8631e (same job, 12:30 to 13:59 UTC, load 6 to 21, LTP_JOBS 8,
+LTP_LIMIT 900; verdicts ltp/ours-20260930-a9f8631e.tsv, log kf5/attach2.log): 4169 of 4226
+match the reference and 57 differ, the K6c bar's count, and all 4226 match ba9f009e's verdicts
+(60cb4fe1 gave the same). ADSP072 passed in 868.1 s. So neither the dot entries nor the deleted
+names nor the named units changed any verdict.
+
+Verdicts changed on purpose: new are dentries' four; inotify's ignored test now differs only in
+its renamed part.
+
+## KC, fourth run: the third check's findings
+
+- The kernel keeps a wait on `FuseServer::receive_notice` (fs/backend.rs `wait_for_notice`,
+  `notice_came`, `apply_notice`; waiting.rs `WaitFor::Notice`): one per file server, started with
+  the backend's first request, `None` the first time, then each notice applied at once and the
+  next asked for with its result (Linux's answer to the server's write: EINVAL for a body of the
+  wrong size or an unknown code, ENAMETOOLONG, ENOTDIR, ENOENT as before). A system that answers
+  `NotSupported` sends no notices and the wait ends; any other failure ends it counted, "backend
+  notices ended". A restore on another system drops the wait and asks the new one afresh. The
+  notice comes back in a kept buffer: new unit test
+  `a_notice_waited_for_tells_how_the_one_before_went_and_allocates_nothing` (100 rounds, no
+  allocation after the first). A notice beats a reply to a request sent before it for a mapped
+  file's pages too: an INVAL_INODE bumps the pages' change count, and pages a read brings back
+  under an older count are not taken (shared.rs `pages_came`, checked, unchanged).
+- The abi's `Event::BackendNotice` is gone (no system hands notices that way any more); the
+  stand-in's record keeps the abi's `Event` itself, its `OwnedEvent` copy is gone.
+- The stand-in's test host sends every notice through `receive_notice` (injected ones and the
+  real server's) and keeps the interface's rule, which its seed-chosen order used to break: each
+  reply arrives with the count of notices sent before it and completes only once the kernel has
+  applied that many (driver.rs `Replies`, `Notices`), and the backend's held messages keep the
+  server's order, so a reply is never handed before a notice the server sent ahead of it
+  (backend.rs `next`). A wait that tells a result for no notice, or none after one, is listed in
+  the run's `broken`. `backend_notices_are_handled` (400 notices) now goes through the wait.
+- Programs are told that `parallelism` processors are online on a kernel made with
+  `Kernel::new(config, parallelism)`: `sched_getaffinity` (a mask of that many bits, EINVAL for a
+  size too small for it, as Linux), `sched_setaffinity` (refused only for a mask naming none of
+  them), /proc/cpuinfo and /proc/stat. A kernel made with the inherent `start` (every driver
+  compared with Docker) is told 1, as before. New test tests/processors.rs with
+  guest/processors.c: parallelism 1, 4 and 65 each give that count from all three sources. The
+  stand-in's kernels for the interface tests are now made through `KernelConfig::new` and
+  `Kernel::new` (the start's strings leaked for the test's life), and `KernelConfig` is exported,
+  which it was not, so no embedder could make one.
+- The unsafe code written in KC is reported in the ruling's form under For the owner (each use,
+  why no vetted library does it, what removing it costs); the stand-in's two KC uses carry
+  `#[expect(unsafe_code, reason)]`.
+- `Runner::run`: For the owner now says why the executor's single-instruction call is not used
+  yet (its memory form), and names a run on it as the slow path still to build.
+- Measured on the ARM64 machine at 60cb4fe1 (05:30 to 05:35 UTC, load 2 to 9): clippy with all
+  targets on the abi, the kernel, its suite, the stand-in, the runtime's single kernel, the test
+  policy and both hardware crates gives nothing in their files (the kernel interface's two and
+  tcp-sockets' one are not this track's); kernel unit tests 19 and the kernel suite 16 pass; the
+  stand-in's round_trips 6, processors 1, saving 1 and its conformance 1 pass; backend 19 passed
+  and 2 failed, rootbackend 1 passed and 2 failed, all four on the known ARM list
+  (file_capabilities, special_files, root_files, core_dumps); `backend_notices_are_handled`
+  passed.
+- The whole suite at 60cb4fe1 (ARM64, 05:35 to 07:04 UTC, load 3 to 21, 8 test threads; scratch
+  kernel/kc4/whole.sh, log kc4/attach1.log, job kernel/20261123-053521-249150), after a
+  `cargo check --workspace --all-targets` that gave no error: 390 passed, 35 failed, 8 ignored;
+  the 35 are exactly the known ARM list (kc4/fails4.txt is the same as kc3/fails3.txt). The
+  commits after it (207e89ea: the proc contents built from named pieces, the same bytes; the
+  removed mark) were tested apart at the tip: clippy on the kernel and the stand-in gives
+  nothing; processors 1 and outside 8 pass, procaccess 2 of 4, procwrite 3 of 5, fileioctl 0 of
+  1 and priorities 0 of 1, each failure on the ARM list.
+- The whole LTP comparison at 60cb4fe1 (same job, 07:04 to 08:32 UTC, load 3 to 14, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts in ltp/ours-20260930-60cb4fe1.tsv, comparison scratch
+  kernel/kc4/ltp-compare.log): by line 4169 of 4226 match the reference and 57 differ, the K6c
+  bar's count, and all 4226 verdicts match ba9f009e's. So the notice wait and the processor count
+  changed no verdict.
+- Not run, with the reason: the Mac's part of the suite (layer 1 seeds and the tests the ARM64
+  machine's kernel answers differently from Docker Desktop's): the orchestrator's ruling of
+  2026-11-22 says nothing builds or tests on the owner's Mac. The owner's linter: not to be run.
+- The literal check (the checker built on the Mac on the 21st, after its crate's last change, run
+  with `nice -n 19`, about 20 s; it needs git's history, which the rented machines' copies lack;
+  logs scratch kernel/kc4/literals*.log): exits 1, on other tracks' files (the shaders'
+  submodules alone give thousands of lines) and the interface's. In this track's files: nothing
+  new from this run (the cpuinfo and stat contents are built from named pieces, the messages of
+  the test host's notice check are text); the baseline lost 7 lines whose literals are gone (the
+  two old proc contents, four `8`s of the affinity calls, tty.rs's `ECHO_BLOCK` restated line)
+  and gained none. The `standalone 300` mark in the stand-in's tests/outside.rs is removed: the
+  check refuses a mark in test code, so it never settled `TOLD_AFTER_RESET`, which stays For the
+  orchestrator. New and not this run's: hardware-virtualization-inside syndrome.rs
+  `WRITE_NOT_READ = 64` is now a redefinition of the one processor-architecture's arm64 crate
+  added (For the orchestrator).
+- Not fixed, with its reason: the suite's check that another process's thread is not suspended
+  through a handle stays in round_trips (`a_handle_takes_no_thread_of_another_process`): no
+  suite function can hold both a handle and its kernel through the interface (For the owner, KA,
+  fourth run).
+
+## KC, third run: the kernel's runners, and the second check's findings
+
+- [blocking] The owner's runner interface (2b546ee0, merged at 1750855e) is implemented
+  (ff435062, pushed at once): `Kernel::new(config, parallelism)` starts the container as before
+  and returns `parallelism` runners (`KernelRunner`, sharing the kernel's `Arc`, `Send` by an
+  `unsafe impl` with the same bounds and reason as the kernel's `Sync`); `Runner::run` panics as
+  not built, as `Kernel::run` did (For the owner). The whole workspace's `cargo check
+  --all-targets` passes on the ARM64 machine (01:39 UTC, load 17); clippy on the kernel, its suite,
+  the stand-in, the runtime's single kernel and the test policy gives nothing in this track's
+  files; kernel unit tests 18, kernel suite 16, round_trips 6 pass.
+- [blocking] The restart-code line of the first run's section is corrected: ERESTARTNOHAND is
+  514, named, and comes back `WellKnown`; 515 is ENOIOCTLCMD.
+- A guest's connect to `AF_UNSPEC` on a TCP connection to the outside now resets it at once
+  through the system's `disconnect` (outside.rs `disconnect`, flushed at once; a socket given back
+  is released), and the guest's socket keeps the reset pending as Linux does (a read then gives
+  ECONNRESET, inside the container too, where it gave ENOTCONN). The stand-in's test host now
+  resets on `disconnect` and on `TcpClose::Abort` (socket2 0.6.5, MIT OR Apache-2.0, for the
+  linger; no unsafe code). New test outside `a_disconnected_connection_resets_its_outside_end`
+  (guest/disconnectout.c, compared with Docker): before the fix ours read ENOTCONN and the server
+  heard nothing, Docker's ECONNRESET and a reset; now both match. Measured on the ARM64 machine
+  (load 15 to 21): outside 8 passed, inet 23 passed and 3 failed (the ARM list: proc_net,
+  route_questions_and_rules, socket_edges; the first 20 differing lines of the last are Unix
+  sockets' urgent data and listens),
+  netprograms 3, sigio 2, pollmask 1, epoll 1 passed.
+- The suite's check that another process's thread is not suspended through a handle stays in the
+  stand-in's round_trips (`a_handle_takes_no_thread_of_another_process`): the linter's suite shape
+  gives each check one value of one trait of the interface (RULES.md, `conformance_not_run`), and
+  a `Process` handle reaches only its own process, so no suite function can both take through a
+  handle and then ask the kernel. A pair of the kernel and a closure would fit the check's
+  suggestion but not that shape.
+- Recorded For the owner: the lock spins without bound (no way to park a host thread in a
+  `no_std` kernel); 515 to 4095 come back `Ok` as 41 and 58 do. Carried: the FUSE notice wait (next
+  work), the bind departure (For the orchestrator). The single-kernel runtime's `disconnect`
+  (another track's file) still closes in order rather than resetting.
+- The whole suite at ba9f009e (ARM64, 01:54 to 03:24 UTC, load 7 to 23, 8 test threads; scratch
+  kernel/kc3/whole.sh, log kc3/attach1.log, job kernel/20261123-015423-2251934): 386 passed, 35
+  failed, exactly the known ARM list (kc3/fails3.txt is the same as kc2/fails2.txt); the one more
+  passing is the new outside test.
+- The whole LTP comparison at ba9f009e (same job, 03:24 to 04:52 UTC, load 6 to 12, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts in ltp/ours-20260930-ba9f009e.tsv, comparison kc3/ltp-compare.log): by
+  line 4169 of 4226 match the reference and 57 differ, the same count as at 91d85e31, the K6c bar,
+  and two better than at 0ce16ef9 (4167). Against 0ce16ef9's verdicts 2 differ, getrusage04 and
+  ADSP072, which now pass (the two timings the first run explained). So the verdicts are no worse
+  than before the merges.
+- The merge of main's 401e14eb at 543e8756 (`StopReason::Panicked`, the system's
+  `MachineDescription`) needed nothing: the whole workspace's `cargo check --all-targets` passes at
+  701fa613 on the ARM64 machine (04:53 UTC, load 8). The kernel never returns `Panicked` (its
+  runners are not built), and `MachineDescription` is a subtrait of `ProcessTracer`, which no
+  system implements and the kernel does not call yet (For the owner), so the kernel still answers
+  the processors online and the memory size itself. No interface file differs from local main.
+
+## KC, second run: the independent check's findings
+
+- [blocking] `Kernel: Sync` no longer rests on a condition callers cannot see (7e2b6df8,
+  0f3cd949). The kernel's state stays `Rc` and `RefCell` inside, behind one `spin::Mutex`, now in
+  an `Arc` with what it hands out: the interface's `ProcessContext` and `SuspendedTask` are
+  `Held<..>` (executing.rs), which share the kernel's records and are dropped under its lock, or,
+  while that lock is held (a process handle holds it while it lasts), queued and dropped by the
+  lock's next holder. Every interface call collects what it hands out under the lock, runs the
+  caller's iterator of tasks before taking it, takes back only what this kernel handed out (the
+  rest is handed back), and swaps a resumed context's execution configuration under it. `Sync`
+  is now bounded by `C: Send` (with its translator settings), `State: Send`, `S: Send` and the
+  system's TCP, UDP and stream handles `Send`; the one thing types cannot say, that the system's
+  waiting calls may be polled on another host thread, is the condition of the now `unsafe`
+  `KernelWithExecutor::start` and `KernelConfig::new` (For the owner). The stand-in's executor is
+  `Send` by an `unsafe impl` with its reason (standin.rs), and driver.rs fails to build unless
+  each of the test host's waiting calls is `Send`. `parts` is now `with_parts(closure)`, under
+  the lock.
+- The check's race (4 threads copying the first process's context and dropping it) is now the
+  stand-in's round_trips `copies_are_made_and_let_go_of_on_several_threads` (4 threads, 200000
+  rounds each): it passes (5.0 s, ARM64, load 7). With `Held`'s drop made to drop without the
+  lock it aborted 2 times of 3 (SIGTRAP, SIGABRT; the third passed). Also new:
+  `a_copy_let_go_of_under_a_handle_is_dropped_later`.
+- The suite's `threads_of_another_process_are_not_taken` now says only what it checks: a handle
+  reaches only its own process, so whether another process's thread stayed on the kernel cannot be
+  seen through the interface; the stand-in's round_trips test still checks it.
+  `tasks_of_several_processes_are_taken_at_once` no longer asks for an order. Two comments that
+  said the suite's process had not run are fixed; `PROBED` is private.
+- outside.rs: the doc comments of `local_end_error` and `refusal` are each above their own
+  function again. The bind departure is now under Departures (KC) and asked of the orchestrator;
+  the release of a bound socket given back is therefore not reached.
+- The status's restart-code line and the LTP comparison's basis are corrected in the first run's
+  section below; the executor interface (bb91b32c) is recorded as merged and implemented;
+  `UnknownErrno` not taking 41 and 58 is For the owner; the owner's 2026-11-22 answers on
+  `FallbackObserver` and `ProcessTracer` are scheduled in "Where things stand". The FUSE notice
+  wait and `Kernel::run` stay as disclosed (next work; For the owner).
+- tests/outside.rs `TOLD_AFTER_RESET` carries a `standalone 300` mark (a pause, not a task id),
+  which settles that line of the For-the-orchestrator item of KA's sixteenth run.
+- Measured on the ARM64 machine (96 cores) at 7e2b6df8: clippy on the kernel, its suite, the
+  stand-in, the runtime's single kernel and the test policy reports nothing in this track's
+  files (the interface's two and tcp-sockets' one are not this track's); the whole workspace's
+  `cargo check --all-targets` gives no error or warning line (load 5.6); kernel unit tests 18,
+  kernel suite 16, round_trips 6, all pass (load 5 to 6). Interface files: against origin/main
+  only crates/abi/interface.rs (this track's) and crates/instruction-input-domain/interface.rs
+  (the owner's, not yet merged into agents) differ; no commit of this run touches one.
+- The whole suite of this track's crates at 0f3cd949 (ARM64, 23:51 to 01:21 UTC, load 3 to 18,
+  8 test threads; log scratch kernel/kc2/log): 385 passed, 35 failed, exactly the known ARM list
+  (k6c14/fail14.txt; kernel/kc2/fails2.txt). The LTP comparison was not run again: this run
+  changed only the kernel interface's wrapper (executing.rs), which the LTP runner does not use,
+  and a comment in outside.rs, so its verdicts stand as in the first run.
+
 ## KC, first run: the kernel builds against the owner's interfaces of 2026-11-22
 
 - Built and pushed at once (0ce16ef9, lock file 503fbebb): wcontainers-kernel-linux, the kernel
@@ -25,6 +1104,7 @@ crates/runtime/implementation/single-kernel.
   thread at a time. Nothing checks that condition: the state is `Rc` and `RefCell` throughout, the
   stand-in's executor (Unicorn) is not `Send`, and the system's stored waiting calls need not be
   `Send` (For the owner). Making the state shareable is the owner's "start on that", not done here.
+  (The independent check found this unsound; the second run replaced it, see there.)
 - `Kernel::run` is not built: it panics as "not built". The executor interface has no call that
   runs a thread, so this kernel is still driven through its own `next`, `exit` and `event` on the
   executor it holds (For the owner). `type Fallback` is the abi's `Warning<'static>` (what the
@@ -38,11 +1118,17 @@ crates/runtime/implementation/single-kernel.
   stand-in's round_trips.rs adds `a_handle_takes_no_thread_of_another_process`: the child's thread,
   asked for through the parent's handle, is still taken by the kernel afterwards.
 - `SystemCallError`: a backend's unnamed error (134 to 511) is now `Err(Unknown(..))`; a known one
-  `Err(WellKnown(..))`; restart codes stay `Ok` of the raw value, as before.
+  `Err(WellKnown(..))`, the restart codes (ERESTARTSYS, ERESTARTNOINTR, ERESTART_RESTARTBLOCK)
+  included, as before KC: all four restart codes, ERESTARTSYS (512), ERESTARTNOINTR (513),
+  ERESTARTNOHAND (514) and ERESTART_RESTARTBLOCK (516), are named by the interface's `Errno` and
+  come back `WellKnown`; 515 (ENOIOCTLCMD), which `Errno` does not name, is `Ok` of the raw value.
+  (Corrected in the third run; the first run said restart codes stay `Ok`, the second gave
+  ERESTARTNOHAND as an unnamed 515.)
 - `FuseServer::receive_notice`: the test host and the runtime answer `NotSupported` (they still
   hand notices as the abi's `Event::BackendNotice`); the policy refuses it, counted, as every
   other outside request; the kernel's own test server never sends one. The kernel does not yet
-  keep a wait on `receive_notice` (next work).
+  keep a wait on `receive_notice` (next work). (Built in the fourth run; the stand-in's test
+  host now sends its notices through it.)
 - TCP: connect and listen pass `TcpLocalEnd::Unbound`, as they did before the change; a socket
   given back in an error is released. The kernel does not bind at the system at a guest's `bind`:
   a container has its own network namespace and its sockets reach the outside through the exit
@@ -59,6 +1145,18 @@ crates/runtime/implementation/single-kernel.
   list) and backend `listings_match_reference`, which then passed alone 3 times and in the whole
   backend file twice (8 threads); its failing output was cut by the job's filter, so which side
   differed is not known.
+- The whole LTP comparison at 0ce16ef9 (same job, 21:17 to 22:46 UTC, load 10 to 18, LTP_JOBS 8,
+  LTP_LIMIT 900; verdicts in ltp/ours-20260930-0ce16ef9.tsv): by distinct test name 4152 of 4211
+  match the reference and 59 differ, against 4154 of 4211 at 91d85e31, the K6c bar (by line, with
+  15 scsi_debug names listed twice: 4167 of 4226 against 4169). So two more differ from the
+  reference than at the bar, getrusage04 and ADSP072, both explained here. Against 91d85e31's own
+  verdicts 5 differ:
+  fcntl12, fcntl12_64 and fork09 now time out where they failed or broke (all three are the test
+  harness's open-file limit, under "Waiting for the owner", and differ from the reference both
+  times); getrusage04 failed, then passed alone 3 times of 3 (its timing, as noted at 18eda16f);
+  ADSP072 timed out at 900 s (852 s at 91d85e31) and passed alone with a 3600 s limit in 886 s
+  (load 7 to 9). So the verdicts are no worse than before the merges once those two timings are
+  counted as passing, as their reruns showed.
 - The ARM64 machine's disk was full (5 GB free at 21:48 UTC) while the LTP comparison ran: this
   track removed its old measurement build (kernel-kd, 18 GB), its incremental caches and build
   outputs older than five hours from /work/target/kernel (140 GB); 135 GB were free after.
@@ -95,12 +1193,70 @@ crates/runtime/implementation/single-kernel.
 
 ## For the owner
 
-- KC: `Kernel: Sync` cannot be met soundly by this kernel yet, and the interfaces leave part of it
-  unexpressed. The system's `async fn`s carry no `Send` bound, so a kernel that stores a system's
-  waiting call and lets another host thread poll it cannot know it may. Example: a browser system
-  whose `send_request` future holds a JavaScript value polled from a worker other than the one
-  that made it. This kernel asserts `Sync` with an `unsafe impl` on the condition that it stays on
-  one host thread at a time (executing.rs).
+- KC, fifteenth run (decided by this track, as the orchestrator asked; tell me to undo it): the
+  kernel's last five unsafe lines are gone and the crate inherits the workspace's `forbid`. It
+  rests on two unstable features under the workspace's `RUSTC_BOOTSTRAP=1`: (a)
+  `#![feature(return_type_notation)]` in the kernel, the seeded test policy and the unicorn
+  stand-in, so the kernel can ask a generic system for `Send` futures; example, system.rs:
+  `Self: Readiness<<Self as TcpConnections>::Connection, wait_until_ready(..): Send>`. It goes
+  if the interfaces write `fn wait_until_ready(..) -> impl Future<Output = ..> + Send` (and the
+  same for `send_request`, `receive_notice`, `resolve_domain`). (b) smallbox's `coerce` feature
+  (`coerce_unsized` inside smallbox), so a waiting call is made without the unsafe code its
+  `smallbox!` macro expanded into the kernel (a use the unsafe count did not see). Without it,
+  a waiting call is a `Box`, one allocation per wait. And the executor's `GuestMemory` must be
+  `Send` for the kernel to be `Kernel` (the impl asks it): the stand-in's `UnicornSpace` is
+  now, with its marked `unsafe impl Send` moved from the whole `StandIn` to the `Memory` that
+  holds the unicorn handle (same count, narrower promise); the runtime's local kernel asks the
+  same of its executor.
+- KC, second run: `UnknownErrno` takes 134 to 511, but a FUSE server may answer any error from 1
+  to 511, and Linux leaves 41 and 58 unnamed below 134. Such an answer cannot be `WellKnown` (no
+  `Errno` names it) nor `Unknown`, so the embedder's response hook sees it as `Ok` of the raw
+  value. Example: a backend answering -41 to a read: the hook gets `Ok(18446744073709551575)`; the
+  guest still gets -41. The same holds for 515 to 4095 (515 is ENOIOCTLCMD, which `Errno` does not
+  name; 512, 513, 514 and 516 are named and come back `WellKnown`): the hook gets `Ok` of the raw
+  value, and the guest the error.
+- KC, fifth run: `Runner::run` is built on `execute` (see that section). Three things for you:
+  a turn keeps no time slice, as `execute` takes none (a guest that spins without a call holds
+  its runner's turn until a kernel interface call ends it); the runtime's interrupter cannot reach
+  a running turn, as the `Kernel` interface has no interrupt call; and the processor state is
+  checked to be arm64's at compile time through `TypeId` rather than by a bound, since the
+  runtime's `LocalSystem<E>` names the kernel for any executor `E`. Example: a guest with two
+  threads, one in `for (;;);` and one waiting on a 1 ms timer, never runs the second.
+- KC, third run (answered by the fifth run's runner; kept for the record):
+  `Runner::run(&mut self, executor)` is not built. `Kernel::new` makes
+  `parallelism` runners, each panicking as not built; the kernel runs one thread at a time,
+  within any parallelism, and from the fourth run tells its programs that `parallelism`
+  processors are online. Corrected in the fourth run: the executor interface does have a call
+  that runs, `execute_single_instruction(_in_place)`, so a run is possible in principle as a
+  slow path, still to be built. It is not built yet because each step takes the guest's memory
+  as a list of `MemoryDelta`s (the whole memory as changes from zero, or every value the
+  instruction might read, which the caller cannot know before the instruction is decoded) and
+  gives the threads' registers as the interface's `Processor`, while this kernel keeps both in
+  its own executor (the abi's `Cpu`, memories by id, shared blocks). Built on it, every guest
+  instruction would hand the executor every mapped page: a hello world runs about a million
+  instructions over a few hundred pages (expected, not measured). Example: `run` stepping a
+  thread whose next instruction is a load through a register: which bytes to pass as deltas is
+  known only after the instruction is decoded.
+- KC, third run: the kernel's lock (`spin::Mutex`, executing.rs) spins without bound, and a
+  process handle holds it while it lasts, so a second host thread calling `suspend_tasks` or
+  `copy_process_context` while a handle or a `with_parts` drive is alive spins a whole core until
+  it ends. The kernel is `no_std`, and neither the kernel nor the executor interface gives it a
+  way to park a host thread. Example: an embedder that holds a process handle on one thread while
+  a watchdog thread suspends a task. A wait the host provides (or a runner that owns its share of
+  the kernel) would settle it; until then the critical sections are each one interface call.
+- KC, second and fourth runs (settled by the fifteenth run's item at the top of this list; kept
+  short for the record): the kernel's `unsafe impl Sync for KernelWithExecutor`, `unsafe impl Send
+  for KernelRunner`, `unsafe fn KernelConfig::new` and `unsafe fn KernelWithExecutor::start` are
+  gone, with no unsafe code in their place: the kernel's state is `Send` by its types, and the
+  `Send` of the system's waiting calls is asked through return type notation. The kernel is off
+  the root Cargo.toml's unsafe list and inherits the workspace's `forbid`. What stays open for
+  you is in that item: the two unstable features, the stand-in's marked `unsafe impl Send for
+  Memory`, and a `Send` bound on the system interface's futures, which would let the kernel drop
+  the return type notation.
+
+- KC (first run; the second run's entry above replaces it): the system's `async fn`s carry no
+  `Send` bound. Example: a browser system whose `send_request` future holds a JavaScript value
+  polled from a worker other than the one that made it.
 - KC: `Kernel::run(&self, executor)` cannot be built: the executor interface has no call that
   runs a thread, and `suspend_tasks`, `suspend_process` and `copy_process_context` are given no
   executor, though each reads the threads' registers from it. Example: `suspend_tasks(&[task])`
@@ -124,11 +1280,11 @@ side of each is worked around without changing the interface.
   them must own its executor (this one's `KernelWithExecutor` does, KA, third run), and how a
   driver then runs threads on that executor is undefined (here, `parts` hands both out). Example: `ProcessController::suspend_tasks(&mut self, tasks)`
   must read each task's registers from the executor, which it is not given.
-- With the async ruling, answers come back as the results of the system's `async` calls, but three
-  things a system tells the kernel unasked still have no call: a FUSE notice (Linux's
-  `fuse_notify`, such as INVAL_INODE when a file changed on the backend), a terminal's new size,
-  and a new connection waiting on a listener that is not being waited on. Example: the test
-  backend's INVAL_INODE notice still reaches the kernel as the abi's `Event::BackendNotice`.
+- With the async ruling, answers come back as the results of the system's `async` calls, but
+  things a system tells the kernel unasked had no call: a FUSE notice (settled by
+  `FuseServer::receive_notice`, which the kernel waits on from KC's fourth run), a terminal's new
+  size (ruled out of the interface), and a new connection waiting on a listener that is not being
+  waited on.
 - `FuseServer` has only `send_request`, which returns a reply, but FUSE has messages with no
   reply (FORGET, BATCH_FORGET, NOTIFY_REPLY). The kernel keeps such a message's call until the
   system finishes it, so a system must finish it once sent (the test host does, with an empty
@@ -289,6 +1445,62 @@ side of each is worked around without changing the interface.
 
 ## For the orchestrator
 
+- KC, thirteenth run: the three files below were fixed by this track (920abe37, c027d2e0,
+  2ca8530e) and the whole workspace's check passes on both machines; the item is settled.
+- KC, eighth run: KC's whole-workspace check fails only in other tracks' files, unchanged since
+  the owner's merges of 2026-11-23: crates/precise-instruction-set/implementation/measured/tests.rs:59
+  (both machines; the instruction design track's), crates/translator-test/tests/layer1.rs
+  lines 499, 690 and 715 (ARM64 only: they import `guest::x86_64::native` without the x86-64 cfg
+  that module has; the native track's) and
+  crates/executor/implementation/hardware-virtualization/tests/guest_memory.rs:222 (ARM64 only, type
+  annotations; the executors job's). Please hand each to its track; KC passes once they build.
+  Still unchanged at 06:35 UTC on 2026-11-24 (ninth run), and failing the same way at 9d374918
+  at 07:15 UTC (tenth run; layer1.rs changed in 108d7566 without the cfg), and untouched from
+  07:17 to 07:47 UTC (eleventh run). The fixes as read: guest_memory.rs:222
+  compares `Vec<u64>` with `[]` (e.g. `assert!(reached.is_empty(), ..)`); layer1.rs's
+  `the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64`,
+  `answered_as_the_meaning` and `the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64`
+  (and the tests calling the helper) lack the `#[cfg(all(target_os = "linux", target_arch =
+  "x86_64"))]` their siblings have; measured/tests.rs's `Counted` needs the executor's new items.
+
+- KF, seventh run: `Start::ceiling` (the highest address the executor can give now, if below
+  the address space's end) has no embedder that sets it today: the single-kernel runtime and
+  hardware-virtualization-inside pass `None`, as their executors' address space is their ceiling,
+  and only the stand-in's embedder tests give one. The ceiling in effect is the lowest of it, the
+  executor's address space's end and the width. It is kept because the brief asks for the
+  executor's ceiling given at start and the streams track's `on_process_outgrown` hook is built on
+  it; dropping it (the executor's address space alone giving the ceiling) is a one-field change
+  if you rule so.
+
+- KF, sixth run: the literal check reports lines in this track's files that restate values other
+  tracks named after the lines were written, which rule 8 of docs/literals.md asks the namer to
+  settle; this track may not edit those crates. Coincidences of value, not the same facts: the
+  stand-in's backend.rs `FUSE_DEVICE_LINK` and tests/busybox.rs `du -s` against the ICMP suite's
+  `STATISTICS` ("-s"); tests/outside.rs's 1500-byte UDP buffer against its `NARROW_LINK_MTU`;
+  tests/startoptions.rs "40000" (an out-of-range msgmni) against the route resolver suite's
+  `SOURCE_PORT`, and "dev" (a mount) against the ICMP suite's `DEVICE`; the kernel's seccomp.rs
+  test values 258 and 1100 against the ICMP suite's `SEQUENCE` and `PACED_MESSAGE`. The same
+  facts in crates neither may import: the kernel's network.rs `MTU` and syscall/socket/inet.rs
+  `ROUTE_MTU` (65535) against the host route resolver's `IP_MAX_MTU`, and network.rs
+  `LOOPBACK_MTU` (65536) against the route resolver suite's `LOOPBACK_DEVICE_MTU`: one shared
+  home (an interface crate both use, or wcontainers-abi with the route resolver importing it)
+  needs a ruling. Of the fifth run's four, three stay as they are (`WRITE_NOT_READ` is settled).
+
+- KC, fourth run: the abi's `Event` lost its `BackendNotice` variant and with it its lifetime, so
+  this track changed one line of the runtime track's crate to build (single-kernel net.rs,
+  `fn event(&mut self, arrival: &Arrival) -> Option<Event>`) and corrected that crate's
+  `receive_notice` comment (system.rs: its file server sends no notices), in a commit of their
+  own.
+- KC, fourth run (settled in KF's eighth run): hardware-virtualization-inside's `WRITE_NOT_READ`
+  now comes from the arm64 architecture crate, which the inside depends on (`no_std`, it needs
+  only `aarch64-cpu`). host-process's native.rs keeps its own copy (that track's).
+
+- KC: should a guest's TCP `bind` bind at the system (networking-fixes/tcp/for-implementers.md),
+  though the container has its own network namespace and its connects leave through the exit
+  node's NAT? Example: a client that binds port 5000 and connects to a server outside would then
+  hold port 5000 of the exit node, which on Docker it does not. Until a ruling, the kernel binds
+  inside the container and asks the system only at listen (Departures, KC).
+
 - KA, sixteenth run: three test literals in this track's embedders became `restated` findings when
   other tracks named the same value (docs/literals.md rule 8), and none is the named fact:
   hardware-virtualization-inside container.rs `"/bin"` (the stand-in's `IMAGE_BINARIES`, which that
@@ -386,7 +1598,8 @@ side of each is worked around without changing the interface.
   know (the WebAssembly ceiling is the wasmtime crate's, from the translator's contract). A ruling
   or a shared constant in wcontainers-abi for that tier would settle it (Departures).
 
-- KF, fourth run: every start value the runtime asked for is now built, with these limits,
+- KF, fourth run (sixth run: execCPUAffinity, which the fourth run left out, is built too): every
+  start value the runtime asked for is now built, with these limits,
   each refused at start (counted, the start fails) where it is not built, so nothing pretends:
   - sysctls: the IPC namespace's (`kernel.msg*`, `kernel.sem`, `kernel.shm{max,all,mni}`,
     `fs.mqueue.*`) are state the IPC calls honour. Others fail the start, counted "sysctl not
@@ -415,11 +1628,13 @@ orchestrator's ruling of 2026-11-20 they do not hold K6c's check, which confirms
 this cause and no other. 13 tests:
 - mincore03: page residency is not known (the Cpu trait does not report touched pages).
 - mlock201: page residency (mlock2's on-fault counts).
-- mlock05: page residency (smaps has no Rss lines).
+- mlock05: page residency (`/proc/<pid>/smaps` is not built: the test's fopen gets ENOENT,
+  counted "proc entry not built"; its Rss lines need residency).
 - mmap12: page residency (pagemap is not built).
 - vma01: page residency (whether neighbouring anonymous mappings were written before a fork,
   which decides Linux's merge, cannot be seen).
-- setsockopt11: IPV6_RTHDR (the made-up network has no IPv6 route outside the container).
+- setsockopt11: IPV6_RTHDR is not built (the setsockopt itself fails with ENOPROTOOPT, counted
+  "socket option not built"; Linux takes it on any IPv6 socket, inside the container too).
 - cve-2026-53362: IPV6_RTHDR, as setsockopt11.
 - fork09: the test harness (the backend server holds a host descriptor per open file and stops
   near 524273 open files, before the guest's RLIMIT_NOFILE).
@@ -434,6 +1649,76 @@ this cause and no other. 13 tests:
   readers (ADSP030 to 037) the same program gives the reference's verdict.
 
 ## Where things stand
+
+KF, eighth run: hardware-virtualization-inside imports `WRITE_NOT_READ`, the kernel's
+unit-test executor conforms to the executor interface (the kernel's unit tests build again), the
+literal fix list's steps 4 and 5 are done and the stand-in's test uses the abi's lowest address
+(baseline 27616 to 27582). In this track's files the literal check now fails only on the 14 lines
+For the orchestrator names, each a value another track named later or a fact without a shared
+home. The kernel, the inside and the stand-in take the owner's volatile bytes; the kernel's tests
+and the stand-in wait on the runtime track's and the executor suite's conversion to build, and
+then the whole suite is to run once (it did not run this run: the ARM64 machine's disk filled).
+
+KF, seventh run: every finding of the third check is fixed or recorded (see "KF, seventh run"):
+placement falls back to the gap below the stack when nothing fits below the mmap base, a hint
+below the lowest address is moved up to it and `/proc/sys/vm/mmap_min_addr` shows it, a width of
+part pages is cut and counted, and a width too small for the first program fails the start. The
+whole suite at 376fba71's code fails only the ARM list (405 passed, 35 failed, 8 ignored) and the
+whole LTP comparison matches the K6c bar with every verdict as before. The literal check still
+exits 1 only on the lines For the orchestrator names in this track's files. KF goes to its
+independent check.
+
+KF, sixth run: every finding of the second check is fixed or recorded (see "KF, sixth run"):
+`execCPUAffinity` is built, placement is compared with the reference and anonymous memory of
+whole PMDs lands on a PMD's boundary as on Linux, a given memory size and widths have tests, a
+width past 2^48 is counted and warned of, `MAX_ARG_STRLEN` uses the page size, and placement
+independent of the executor is the next milestone (Departures). The whole suite at 3dc17db7
+fails only the ARM list and one hung reference run that passes alone; the whole LTP comparison
+matches the K6c bar with every verdict as before. KF goes to its independent check.
+
+KF, fifth run: every finding of the check is fixed or recorded (see "KF, fifth run"): the test
+server lists `.` and `..`, an opened name taken away shows as deleted, the LTP watchdog waits
+for the backend's container, the gap list's two causes are exact, the bar's clippy command and the
+ignored list are complete. The literal fix list's time and size units are named (baseline 43
+lines smaller). KF's items are all built. The whole suite
+at a9f8631e fails only the ARM list (394 passed, 35 failed, 8 ignored), and the whole LTP
+comparison matches the K6c bar (4169 of 4226) with every verdict as before. KF goes to its
+independent check.
+
+KC, fourth run: every finding of KC's third check is fixed or answered (see "KC, fourth run"):
+the kernel waits on the file server's notices through `receive_notice` and the test host keeps
+the reply rule, programs are told the kernel's parallelism as the processors online, the unsafe
+code of KC is reported in the ruling's form, and `Runner::run`'s reason is corrected. Next, in
+order: the kernel's fallbacks as `Kernel::Fallback` through `FallbackObserver`, and its hooks as
+`ProcessTracer` (both answered by the owner on 2026-11-22); the kernel's state made shareable
+between host threads; a run on the executor's single-instruction call as a slow path.
+
+KC, third run: the kernel builds again against the owner's runner interface (2b546ee0), and every
+finding of KC's second check is fixed or recorded (see "KC, third run"). The whole suite fails
+only the ARM list and the LTP verdicts match the K6c bar (4169 of 4226). KC goes back to its
+independent check.
+
+KC, second run: every finding of KC's independent check is fixed or recorded (see "KC, second
+run"); `Kernel: Sync` now holds because everything sharing the kernel's records is touched under
+its lock, with the system's waits the stated condition of an `unsafe` start. KC goes back to its
+independent check.
+
+KC, first run: the kernel, its suite, the stand-in, the runtime's single kernel and the test
+policy build against the owner's interfaces of 2026-11-22, and the whole workspace's `cargo check
+--all-targets` passes on the ARM64 machine. The kernel suite passes (16, two new checks of
+threads across processes), the whole suite fails only the ARM list (and one backend flake that
+then passed five times), and the whole LTP comparison is no worse than at K6c's bar. No interface
+file was edited. Not built, For the owner: `Kernel::run` (no executor call runs a thread) and a
+state truly shareable between host threads (`Sync` is asserted). KC goes to its independent check.
+Next, in order (after KC's second check): a wait on `FuseServer::receive_notice` in the kernel
+instead of the abi's `Event::BackendNotice`, with the held answers of the test harness kept to the
+notice rule; the kernel's fallbacks as a real enum (`Kernel::Fallback`, one variant per slow path
+it counts and warns of today) reported through `FallbackObserver`, and the kernel's hooks as the
+interface's `ProcessTracer`, both answered by the owner on 2026-11-22 (interface-changes.md) and
+ruled out of KA only; the kernel's state made shareable between host threads (the owner's "start
+on that"; the second run put everything handed out under the kernel's lock). The executor
+interface of bb91b32c is merged and implemented (dfbae092, 9465a86a, a6cf3a3b, 82f86e61). See "KC,
+second run".
 
 KA, sixteenth run: every finding of KA's second independent check is fixed or answered: an
 outside connection shut for reading still queues and reads what its peer sends (a test that failed
@@ -4747,19 +6032,44 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 
 Everything a reviewer should know about what is not compared, in one place.
 
+- KF: the bar's parts and where each is tested. The two bugs: backend
+  `arguments_taken_once_match_reference` (O_EXCL and O_TRUNC on CREATE, guest/backendrace.c) and
+  `cached_files_changed_outside_match_reference` (pages dropped on a change, guest/backendchanged.c).
+  Stable ids: `Kernel::next_object` and `ObjectId` (KF, first run); /proc/net's numbers (K6c).
+  Record and replay: replay.rs, run by every busybox and shell comparison and by layer 1's
+  `sequences_replay_from_their_record` (`LAYER1_REPLAY_CASES`, `LAYER1_SEED`); the stand-in and
+  the buffer CPU compare a digest of every guest memory. Placement: kernel unit test
+  `placement_fills_the_lowest_tier_first_whatever_the_ceiling_and_width` (widths 2^36, 2^40,
+  2^48, ceilings 4 GiB, 16 GiB and the width); compared with the reference: tests/placement.rs
+  (KF, sixth run, with the PMD alignment) and `the_edges_of_the_space_match_reference` (KF,
+  seventh run: a hint below `mmap_min_addr`, and the stack's gap filled once nothing fits below);
+  the memory size and widths given, a width of part pages and one too small for the first
+  program: tests/machine.rs.
+  The start values: tests/startoptions.rs (16, against `docker run` options or the reference's
+  own call where Docker has none). The
+  whole suite and LTP comparison: scratch kernel/kf7/whole.sh; the literal check at the committed
+  tip: kernel/kf7/literals.sh. The lowest tier under the WebAssembly ceiling is For the
+  orchestrator (KF, first run), not built.
 - KC: the build is `cargo check --workspace --all-targets` on the ARM64 machine (passed at
   0ce16ef9 with no error or warning line). The kernel suite is `cargo test -p
   wcontainers-kernel-linux --test conformance` (16 checks; it builds guest/forked.c with zig and
   runs it on the stand-in), with the stand-in's `--test round_trips` (4). The whole suite and the
   whole LTP comparison are one command: scratch kernel/kc/whole.sh (log beside it); the LTP
   verdicts compare against ltp/reference-20260930.tsv and against ours-20260930-91d85e31.tsv, the
-  last whole run at K6c's bar. Interface files: `git diff main --` of every interface.rs and the
-  kernel's data files shows only abi, executor, instruction-set and processor-architecture, which
-  main changed after the last merge into agents (bb91b32c and two before it), none by this track.
-  Not built and recorded For the owner: `Kernel::run` (panics as not built), shareable state
-  behind the asserted `Sync`. Places to break for the check: executing.rs `suspend_threads` (pass
-  `None` to `take_tasks` through `Kernel::suspend_tasks` instead), system.rs `response_of` (map
-  every error to `WellKnown`), outside.rs `local_end_error`.
+  last whole run at K6c's bar. Interface files: compare with origin/main (local main follows
+  agents): `git diff origin/main --` of every interface.rs and the kernel's data files shows only
+  crates/abi/interface.rs (this track's) and crates/instruction-input-domain/interface.rs (the
+  owner's 78fc0da9, not yet merged into agents). Not built and recorded For the owner:
+  `Runner::run` (panics as not built; it was `Kernel::run` before 2b546ee0). From the third run
+  the whole suite and LTP comparison are scratch kernel/kc3/whole.sh, comparing against
+  ours-20260930-0ce16ef9.tsv (KC's first run). Places to break for the check: executing.rs
+  `suspend_threads` (pass `None` to `take_tasks` through `Kernel::suspend_tasks` instead),
+  system.rs `response_of` (map every error to `WellKnown`), executing.rs `Held`'s drop (drop the
+  value without the lock: round_trips `copies_are_made_and_let_go_of_on_several_threads` aborts),
+  inet.rs `disconnect_tcp` (leave out its `outside::disconnect`: outside
+  `a_disconnected_connection_resets_its_outside_end` fails, the server hearing nothing).
+  outside.rs `local_end_error`'s release of a socket given back is never reached (the kernel never
+  passes `TcpLocalEnd::Bound`; Departures, KC), so breaking it shows nothing.
 
 - KA (by the orchestrator's rulings of 2026-11-22): the hooks as `ProcessTracer` and warnings
   through `FallbackObserver` are the owner's interface questions and are not part of KA; the
@@ -4826,6 +6136,19 @@ Ignored tests (each attribute gives the reason):
   that exit is tested through a misaligned jump in tests/faults.rs, which QEMU does report.
 - cachestat `mapped_file_pages`: the page a private mapping's read fault brings into a tmpfs file is
   counted by the reference and not known here (counted "page residency not tracked").
+- align `unaligned_exclusive_matches_reference` under the runtime feature: the translator raises
+  an alignment fault for the same load (a translator difference).
+- away `a_threads_timer_firing_while_it_is_away_interrupts_its_read_though_the_byte_came`: a
+  read whose wait was met while its task was taken off the kernel answers the data, where Linux
+  gives EINTR (a real difference; status-streams.md has its detail).
+- inotify `inotify_matches_reference_on_backend_root`: on a backend root, events through a file
+  renamed since it was opened name its old name (Linux's dentry moved to the new one).
+- waitcost's measurement: run by name, not a check.
+- sharedviews `code_written_through_one_view_runs_through_the_other` without the runtime feature:
+  Unicorn runs stale code after it is written through another view or by another process (a
+  stand-in difference).
+Without the runtime feature the whole suite ignores these 8: busybox 1, align 2, cachestat 1,
+away 1, inotify 1, waitcost 1, sharedviews 1.
 
 Comparisons that are subsets rather than equality, and why:
 - tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
@@ -5315,8 +6638,8 @@ Missing (5, each counted "system call not implemented" and ENOSYS), with what ea
 The LTP tests these excuse, as decided in K6c's eleventh run without the owner's answers
 (Questions; each also under Departures):
 - Page residency is not known: the Cpu trait does not say which pages a program has touched, so
-  every mapped page counts as resident (mincore, counted "residency not tracked"), smaps has no
-  Rss lines, pagemap is not built, mlock2's on-fault counts and the cgroup's memory counts are
+  every mapped page counts as resident (mincore, counted "residency not tracked"), smaps is not
+  built (its Rss lines need residency; mlock05 fails at its open, ENOENT), pagemap is not built, mlock2's on-fault counts and the cgroup's memory counts are
   not kept. Excused: mincore03, mlock201, mlock05, mmap12, vma01. Built when the CPU side reports
   touched pages (the streams track's written-page record is a start: it reports writes only).
   vma01 has no warning: whether two neighbouring anonymous mappings' pages were written before
@@ -5337,14 +6660,18 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
   turns after every reader; the same program with 6 to 512 readers (ADSP030 to 037) gives the
   reference's verdict ("K6c, sixteenth run" has the measurements). No warning beyond the
   backend's per-message counts: nothing in the kernel knows that a wait is long.
-- IPV6_RTHDR (setsockopt11, cve-2026-53362): routing headers reroute IPv6 packets, and the made-up
-  network has no IPv6 route outside the container; section 15's "the network is not Linux's
-  network stack".
+- IPV6_RTHDR (setsockopt11, cve-2026-53362): the option is not built, so the setsockopt fails
+  with ENOPROTOOPT, counted "socket option not built", where Linux takes it on any IPv6 socket
+  (inside the container too). Building it means keeping the routing header and applying it to what
+  the socket sends; section 15's "the network is not Linux's network stack".
 - The test harness, not the kernel: the test backend (fuse-backend-rs's passthrough) holds host
   descriptors for each open file and stops near 524273 (fork09, creat05, fcntl12, fcntl12_64,
   where the guest's opens fail before RLIMIT_NOFILE), and has no TMPFILE (openat03, answered as
   Linux's FUSE answers with such a server). (copy_file_range03 left this list in the
-  fourteenth run: LTP's waits on ours now take their time.)
+  fourteenth run: LTP's waits on ours now take their time.) Until KF's fifth run the server also
+  listed no `.` or `..` (the passthrough leaves them out on purpose), so every listing of the root
+  on the backend lacked them where the reference's overlayfs has both; the test server now lists
+  them first (backend/src/announcing.rs `dots`), as Linux's own file systems do.
 - The reference host's timer precision (section 15's "clock and timer precision are the
   host's", from the reference's side): Docker Desktop's reference oversleeps in clock_nanosleep02,
   select02 and prctl09 and fails them every time; ours and the ARM64 machine's native reference
@@ -5374,7 +6701,10 @@ The LTP tests these excuse, as decided in K6c's eleventh run without the owner's
   uid_map, smaps, entropy_avail and more; proclist prints them): ENOENT, counted "proc entry not
   built" with the entry in the detail. Those programs commonly read come before K6's bar.
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen
-  (directories are followed live).
+  (directories are followed live). An opened name taken away while other links stay (unlinked,
+  or replaced by a rename) shows " (deleted)" as Linux's unhashed dentry does (from KF's fifth
+  run; tests/dentries.rs). `/proc/<pid>/maps`, `exe` and core dumps still decide by the inode's
+  link count alone, so they show the plain path in that case.
 - Inodes of `/proc` are made at each lookup. chown of a process's entries succeeds with no effect, as
   on Linux; utimensat on them succeeds with no effect (Linux keeps the times while the inode is
   cached). Entries outside the process directories keep their changes (above).
@@ -6243,6 +7573,20 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- KC: a guest's TCP `bind` does not bind at the system, though networking-fixes/tcp/
+  for-implementers.md asks the guest kernel to (bind at `bind`, then hand `Bound(it)` to connect
+  or listen, with `disconnect` and the releases of round-2-tcp-bound-socket). This kernel keeps a
+  network namespace of its own for the container: a guest's bind takes a port in that namespace
+  (and fails with EADDRINUSE there, as Linux does), a connect leaves through the exit node with the
+  port the exit node chooses (`LocalPort::ChosenByExitNode`, as Docker's NAT does), and only a
+  listen asks the exit node for the guest's port (`LocalPort::Requested`), as a published port
+  does. Binding at the system at every bind would claim an exit-node port for each client that
+  binds before it connects, which no container on Docker does. So connect and listen pass
+  `TcpLocalEnd::Unbound`; the release of a socket given back in a connect's or listen's error is
+  not reached (outside.rs `local_end_error` keeps it for when it is). A guest's connect to
+  `AF_UNSPEC` does reach the system's `disconnect` (KC, third run), and a socket it gives back is
+  released. Asked of the orchestrator under "For the orchestrator".
+
 - KA, second and fifteenth runs: a waiting call is not always dropped and asked again at a
   restore, as the brief says. A restore on the same system (the same `Arc`, as the stand-in's
   saves do) keeps the backend's requests under way, since asking again would send a request twice
@@ -6278,6 +7622,23 @@ All on this shared Mac; noisy, not benchmarks.
 - KF, second run: Docker has no option for the first process's umask, so startoptions' reference
   runs `umask` in its shell before the same commands; ours starts with the mask.
 
+- KF, seventh run: the lowest address a mapping may take is `wcontainers_abi::LOWEST_ADDRESS`,
+  65536, which `/proc/sys/vm/mmap_min_addr` shows; the reference machine's is 32768. The tests
+  compare placement against the value each side's file shows, not the number.
+- KF, seventh run: Linux's fallback, when its top-down search finds no room below the mmap base,
+  is a bottom-up search from `TASK_UNMAPPED_BASE` (a quarter of the space) to the space's top.
+  Ours makes it in the lowest placement range only (a quarter of that range's top up to it, which
+  holds the stack's gap), before any higher range; higher ranges hold no stack and are searched
+  top-down whole. Under a width of 4 GiB or less (the WebAssembly case) this is Linux's search.
+
+- KF, sixth run: placement independent of the executor (the brief's ask of 2026-11-23) is taken
+  as the milestone after KF, not in KF. Why: it moves every address the stand-in's tests see
+  (the lowest tier's top must then be one value at or below every executor's ceiling, the
+  WebAssembly back end's about 0xFF00_0000 included), which is a change of its own with its own
+  whole-suite run, and the value needs the executors' lowest ceiling, which the kernel does not
+  know today. Until then, as KF built it: under a ceiling below 4 GiB the stack, the mmap base
+  and the range they are drawn from move down with it (the check measured 4, 3, 2 and 1 GiB);
+  at or above 4 GiB, and for widths 2^36, 2^40 and 2^48, placement does not change.
 - KF: the lowest placement tier is capped by the executor's ceiling (For the orchestrator), so
   placement depends on the ceiling below 4 GiB. The brief's ceiling "fails as out of memory,
   counted and warned" is the streams track's `PROCESS_OUTGROWN` counter and hook, kept as built.
@@ -6881,6 +8242,11 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 
 ## Known issues
 
+- KF, sixth run: backend `mapped_pages_read_when_touched_match_reference` once hung on the
+  reference side in a whole-suite run (guest backendmaps.c blocked in Linux's `anon_pipe_write` on
+  its own pipe under the test server with `--cached`, 98 minutes, until killed); alone it passed 3
+  of 3. Its cause on Linux is not found; a test hang limit for reference runs would bound it.
+
 - Settled in the seventeenth run (Departures): terminal `splice_holds_the_pipe` (guest/ttylock.c, `cat /dev/tty | cat`) failed 1 time in the
   fifteenth run's whole suite on the ARM machine and 2 times in 9 run alone there, as before in
   K3's sixth run and K6c's ninth: ours printed the typed line once ("abc\r\n", the echo), the
@@ -6926,7 +8292,9 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
   `inotify_matches_reference_on_backend_root`, ignored with its reason): after the fixes, events
   through an open file whose name was unlinked while another link names it still reach watches
   with IN_EXCL_UNLINK (guest/inotify.c's "writes after unlink"). Backend directories hold no
-  entries here, so whether a name still names the inode is judged by its link count.
+  entries here, so whether a name still names the inode is judged by its link count. From KF's fifth run the inode keeps the names taken from it (`Inode::removed_names`), so that
+  part matches; what still differs is a file renamed since it was opened, whose events name its
+  old name on the backend (the new one in Linux, whose dentry moved).
 - K6b, first run: test_mmap's LargeMmapTests map sparse files past 4 GiB; the backend reads a
   mapped file whole (counted "backend file read whole when mapped"), which took the run past 30
   minutes on the stand-in, so only test_mmap.MmapTests runs. Reading only the pages a mapping
@@ -7055,6 +8423,20 @@ Earlier: none open. (Answered: the alignment fault exit exists now; the machine 
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+KF, after its sixth run:
+1. The independent check (For the independent check, entry KF).
+2. The milestone after KF: placement independent of the executor (the brief's ask of
+   2026-11-23; Departures, KF, sixth run), then items 2 and 4 below.
+
+KF, after its fifth run:
+1. The independent check (For the independent check, entry KF).
+2. The literal fix list's step 4 on (widths of plain integers, the counters' detail word, ...),
+   in the audit's order, each unit kept crate-private where naming it in the abi would make other
+   crates' tests restate it.
+3. The lowest placement tier under the WebAssembly ceiling (For the orchestrator).
+4. A moved-name note beside `removed_names`, so that fd links and backend inotify events follow
+   a rename (inotify's ignored backend-root test, the fd link gap).
 
 KA, after its fourth run (the third run's list stands, with these notes):
 1. Read the whole suite at 02f8fb99 (third run's item 1) if nobody has.
@@ -7360,9 +8742,10 @@ K6c, in this order (after the seventh run):
    the memory ceiling; the runtime's start values) are not started.
 
 After K6b (fifth run), in this order (none of these holds K6b):
-1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
-   to know that the name an open file was opened by was unlinked while another link names the
-   inode (Linux's `d_unlinked` of that dentry); the kernel keeps no dentries for backend names.
+1. inotify on a backend root (tests/inotify.rs, ignored with its reason): the unlinked part is
+   built (KF, fifth run); left is a file renamed since it was opened, whose events and fd link
+   should follow the new name (a moved-name note beside `removed_names` would do it, for tmpfs's
+   fd links too).
 2. A call that copies part of its bytes and then reaches backend pages not read yet keeps its
    short result (counted "copy short of backend pages"), where Linux's copy waits; a call
    with progress of its own (pipe writes) could wait there instead. Not seen in any run.

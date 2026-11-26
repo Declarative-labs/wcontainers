@@ -4,9 +4,9 @@
 //! A pipe one of whose sides is an end knows that end, and the credit it has given it.
 
 use alloc::collections::VecDeque;
-use alloc::rc::Weak;
+use alloc::sync::Weak;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use wcontainers_abi::PAGE_SIZE;
 
@@ -36,17 +36,16 @@ struct Slot {
     merge: bool,
 }
 
-#[derive(Clone)]
 pub(crate) struct Pipe {
     slots: VecDeque<Slot>,
     /// How many slots it may hold (`max_usage`).
     pub capacity: usize,
     /// The open files of its ends, for counting readers and writers, each with the count of writers
     /// it has seen opened (`f_pipe`), which a named pipe's `POLLHUP` needs.
-    ends: Vec<(Weak<RefCell<OpenFile>>, u32)>,
+    ends: Vec<(Weak<AtomicRefCell<OpenFile>>, u32)>,
     /// At least how many of its open ends have `FASYNC` set: none means no end hears I/O signals,
     /// so a read or write looks at no end for them.
-    asynchronous: core::cell::Cell<usize>,
+    asynchronous: crossbeam_utils::atomic::AtomicCell<usize>,
     /// The end whose kernel side is this pipe's reader: a write goes straight to it.
     pub reading_end: Option<crate::ends::EndNumber>,
     /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
@@ -57,10 +56,27 @@ pub(crate) struct Pipe {
     pub held_by: Option<crate::process::Tid>,
     /// A named pipe's inode on the backend, whose attributes stay the backend's while its buffer
     /// is the kernel's (a FUSE inode keeps its inode operations under `pipefifo_fops`).
-    pub backend: Option<alloc::rc::Rc<crate::fs::backend::Remote>>,
+    pub backend: Option<alloc::sync::Arc<crate::fs::backend::Remote>>,
     /// Its slots in its maker's count of pipe pages (`nr_accounted`); a named pipe's are not
     /// counted.
     pub accounted: Option<crate::process::Charge>,
+}
+
+impl Clone for Pipe {
+    fn clone(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            capacity: self.capacity,
+            ends: self.ends.clone(),
+            asynchronous: crossbeam_utils::atomic::AtomicCell::new(self.asynchronous.load()),
+            reading_end: self.reading_end,
+            opened_readers: self.opened_readers,
+            opened_writers: self.opened_writers,
+            held_by: self.held_by,
+            backend: self.backend.clone(),
+            accounted: self.accounted.clone(),
+        }
+    }
 }
 
 impl Pipe {
@@ -79,7 +95,7 @@ impl Pipe {
             slots: VecDeque::new(),
             capacity: DEFAULT_SLOTS,
             ends: Vec::new(),
-            asynchronous: core::cell::Cell::new(0),
+            asynchronous: crossbeam_utils::atomic::AtomicCell::new(0),
             reading_end: None,
             opened_readers: 0,
             opened_writers: 0,
@@ -91,9 +107,12 @@ impl Pipe {
 
     /// An unnamed pipe whose slots count against its maker's pages (`alloc_pipe_info`): a user
     /// past the soft limit, without CAP_SYS_RESOURCE or CAP_SYS_ADMIN, gets a small one.
-    pub fn counted(count: &alloc::rc::Rc<core::cell::Cell<u64>>, privileged: bool) -> Self {
+    pub fn counted(
+        count: &alloc::sync::Arc<crossbeam_utils::atomic::AtomicCell<u64>>,
+        privileged: bool,
+    ) -> Self {
         let mut slots = DEFAULT_SLOTS;
-        if count.get() + slots as u64 > USER_PAGES_SOFT && !privileged {
+        if count.load() + slots as u64 > USER_PAGES_SOFT && !privileged {
             slots = MIN_SLOTS;
         }
         Self {
@@ -110,7 +129,7 @@ impl Pipe {
             return true;
         };
         let count = old.count().clone();
-        let total = count.get() - old.amount() + slots as u64;
+        let total = count.load() - old.amount() + slots as u64;
         if slots > self.capacity && total > USER_PAGES_SOFT && !privileged {
             return false;
         }
@@ -123,7 +142,7 @@ impl Pipe {
     pub fn opened(&mut self, file: &FileRef, seen_writers: u32) {
         self.ends.retain(|(end, _)| end.strong_count() > 0);
         self.ends
-            .push((alloc::rc::Rc::downgrade(file), seen_writers));
+            .push((alloc::sync::Arc::downgrade(file), seen_writers));
         if file.borrow().flags & FASYNC != 0 {
             self.async_changed(true);
         }
@@ -131,8 +150,8 @@ impl Pipe {
 
     /// Notes that an open file of one of its ends set (or cleared) `FASYNC`.
     pub fn async_changed(&self, set: bool) {
-        let count = self.asynchronous.get();
-        self.asynchronous.set(match set {
+        let count = self.asynchronous.load();
+        self.asynchronous.store(match set {
             true => count + 1,
             false => count.saturating_sub(1),
         });
@@ -140,7 +159,7 @@ impl Pipe {
 
     /// The open files of its reading (or writing) ends with `FASYNC` set, which I/O signals go to.
     pub fn async_ends(&self, readers: bool) -> Vec<FileRef> {
-        if self.asynchronous.get() == 0 {
+        if self.asynchronous.load() == 0 {
             return Vec::new();
         }
         let mut asynchronous = 0;
@@ -161,7 +180,7 @@ impl Pipe {
             })
             .collect();
         // Ends closed with `FASYNC` set are no longer counted.
-        self.asynchronous.set(asynchronous);
+        self.asynchronous.store(asynchronous);
         ends
     }
 

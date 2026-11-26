@@ -1,0 +1,65 @@
+[package]
+name = "wcontainers-webassembly-engine-wasmedge"
+description = "The WebAssembly engine interface run by WasmEdge's ahead-of-time compiler."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+required-features = ["wasmedge"]
+
+[[test]]
+name = "beyond_the_suite"
+path = "beyond_the_suite.rs"
+required-features = ["wasmedge"]
+
+[[test]]
+name = "proposals"
+path = "proposals.rs"
+required-features = ["wasmedge"]
+
+[[bench]]
+name = "engine"
+path = "benchmark.rs"
+harness = false
+required-features = ["wasmedge"]
+
+[features]
+# Builds the engine on the installed WasmEdge library; without it the crate is empty, so that the workspace builds
+# where WasmEdge is not installed.
+wasmedge = ["dep:wasmedge-sdk", "dep:wasmedge-sys"]
+
+[dependencies]
+wcontainers-webassembly-engine = { path = "../.." }
+# The library itself is found where WASMEDGE_DIR points, or in WasmEdge's usual install locations.
+wasmedge-sdk = { version = "0.17.1", default-features = false, features = ["aot"], optional = true }
+wasmedge-sys = { version = "0.21.1", default-features = false, features = ["aot"], optional = true }
+# Writes the modules that link imports by name and reach what the bindings give no direct access to.
+wasm-encoder = { version = "0.263.0", features = ["wasmparser"] }
+# Reads a module's exact types, which the bindings' types cannot describe.
+wasmparser = { version = "0.263.0", default-features = false, features = ["std"] }
+# A private folder for each compiled library.
+tempfile = "3.27.0"
+thiserror = { version = "2.0.21", default-features = false }
+# Warns the first time each slow path is taken.
+log = "0.4.35"
+
+[target.'cfg(unix)'.dependencies]
+# The mode bits of the private folder.
+rustix = { version = "1.1.6", default-features = false, features = ["fs", "std"] }
+
+[dev-dependencies]
+wcontainers-webassembly-engine-conformance = { path = "../../conformance" }
+# Writes the modules of the proposal checks from their text.
+wat = "1.263.0"
+
+[lints]
+workspace = true

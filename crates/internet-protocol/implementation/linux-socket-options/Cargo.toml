@@ -23,14 +23,19 @@ etherparse.workspace = true
 rustix = { version = "1.1.6", features = ["event", "net"] }
 # Creating, binding and connecting sockets, sendmsg, and the socket options it covers.
 socket2 = { version = "0.6.5", features = ["all"] }
-# The host's readiness of sockets (epoll on Linux, kqueue on the BSDs), which registers a socket of any kind on every system.
-polling = "3.11.0"
+# The host's readiness of sockets (epoll on Linux, kqueue on the BSDs), registering a socket of any kind by its descriptor.
+mio = { version = "1.2.5", default-features = false, features = ["os-ext"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The Linux uapi constants and structures that rustix does not wrap.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "net", "no_std"] }
-# setsockopt and getsockopt for the options rustix does not wrap, and the control messages of sendmsg and recvmsg.
+# setsockopt and getsockopt for the options rustix does not wrap, and the control messages of sendmsg.
 libc = "0.2.191"
+# The filesystem user a socket is opened as, the host's interfaces, and recvmsg with its control messages as bytes.
+nix = { version = "0.31.3", default-features = false, features = ["fs", "net", "uio", "user"] }
+# The uapi structures read from and written as bytes.
+zerocopy.workspace = true
 
-[lints]
-workspace = true
+# TODO: remove this crate's 2 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

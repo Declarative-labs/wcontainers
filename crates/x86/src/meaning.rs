@@ -5,7 +5,8 @@ use crate::decode::{Instruction, claim, told_feature};
 use crate::flags::{Flag, Flags, KEPT_BY_SHIFT, Unmoved};
 use crate::guest::{Control, Hook, Reason, Trap};
 use crate::operand::*;
-use crate::{ALIGNMENT_CHECK, ALWAYS, ARITHMETIC_FLAGS, DF, ID, NT, TF, X86_64};
+use crate::strings::{BULK_STRING_BYTES, StringKind};
+use crate::{ALIGNMENT_CHECK, ALWAYS, ARITHMETIC_FLAGS, DF, TF, X86_64};
 use iced_x86::{Mnemonic, OpKind};
 use wasm_encoder::{BlockType, ValType};
 use wcontainers_guest_cpu::{Access, Emitter, Target};
@@ -774,7 +775,7 @@ pub(crate) fn push_value<E: Emitter<X86_64> + ?Sized>(
 }
 
 /// `enter` takes its nesting level modulo this.
-const ENTER_LEVELS: u8 = 32;
+pub(crate) const ENTER_LEVELS: u8 = 32;
 
 /// `enter size, level`: push rbp, copy `level - 1` frame pointers down from the old frame and push the new
 /// frame's address, then rbp is the new frame and rsp moves down by `size`. Each access is checked just before
@@ -1017,21 +1018,8 @@ fn syscall<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     e.syscall();
 }
 
-/// The bytes one bulk pass of `rep movs` or `rep stos` moves at most, so a stop waits for no more than this.
-pub const BULK_STRING_BYTES: u64 = 1 << 20;
-
-/// What each element of a string instruction does.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StringKind {
-    Move,
-    Store,
-    Load,
-    Compare,
-    Scan,
-}
-
 impl StringKind {
-    fn of(m: Mnemonic) -> Self {
+    pub fn of(m: Mnemonic) -> Self {
         use Mnemonic::*;
         match m {
             Movsb | Movsw | Movsd | Movsq => StringKind::Move,
@@ -1040,19 +1028,6 @@ impl StringKind {
             Cmpsb | Cmpsw | Cmpsd | Cmpsq => StringKind::Compare,
             _ => StringKind::Scan,
         }
-    }
-
-    /// It reads at rsi.
-    fn source(self) -> bool {
-        matches!(
-            self,
-            StringKind::Move | StringKind::Load | StringKind::Compare
-        )
-    }
-
-    /// It reads or writes at rdi.
-    fn destination(self) -> bool {
-        self != StringKind::Load
     }
 }
 
@@ -3544,9 +3519,7 @@ fn time_stamp<E: Emitter<X86_64> + ?Sized>(e: &mut E, processor: bool) {
     }
 }
 
-/// The bits outside the six flags that `popf` writes at CPL 3; it leaves IOPL, IF, RF, VIF and VIP, and AC
-/// is never held (section 5.1 of the plan).
-const POPPED_CONTROL: u64 = TF | DF | NT | ID;
+use crate::answer::POPPED_CONTROL;
 
 /// `popf`: the six flags and TF, DF, NT and ID from the stack, of them only the low 16 bits with 66.
 fn pop_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {

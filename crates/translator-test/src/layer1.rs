@@ -16,12 +16,12 @@ fn memory<G: GuestTest>() -> u64 {
 }
 
 /// The code region around the instruction, which holds the guest's filler.
-fn code_area<G: GuestTest>() -> std::ops::Range<u64> {
+pub(crate) fn code_area<G: GuestTest>() -> std::ops::Range<u64> {
     CODE - G::CODE_SPAN..CODE + G::CODE_SPAN
 }
 
 /// The data area, the code region and what each allows.
-fn regions<G: GuestTest>() -> [(std::ops::Range<u64>, Permissions); 3] {
+pub(crate) fn regions<G: GuestTest>() -> [(std::ops::Range<u64>, Permissions); 3] {
     [
         (
             DATA..DATA + DATA_WRITABLE,
@@ -33,7 +33,7 @@ fn regions<G: GuestTest>() -> [(std::ops::Range<u64>, Permissions); 3] {
 }
 
 /// The data area's contents at the start of a case.
-fn start_data(case: &Case) -> Vec<u8> {
+pub(crate) fn start_data(case: &Case) -> Vec<u8> {
     let mut data = vec![0u8; DATA_BYTES as usize];
     fill(case.seed, &mut data);
     crate::layout::place(&case.placed, &mut data);
@@ -51,7 +51,7 @@ fn start_thread<G: GuestTest>(case: &Case) -> Vec<u8> {
 }
 
 /// The data bytes that differ from the case's start.
-fn changed(case: &Case, now: &[u8]) -> Vec<(u32, u8)> {
+pub(crate) fn changed(case: &Case, now: &[u8]) -> Vec<(u32, u8)> {
     now.iter()
         .zip(&start_data(case))
         .enumerate()

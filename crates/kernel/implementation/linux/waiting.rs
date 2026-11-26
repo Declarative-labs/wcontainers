@@ -14,8 +14,6 @@ use core::task::{Context, Poll, Waker};
 
 use smallbox::SmallBox;
 
-pub(crate) use smallbox::smallbox as waiting_call;
-
 /// What a waiting call is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaitFor {
@@ -27,6 +25,8 @@ pub(crate) enum WaitFor {
     Ready(u32),
     /// A stream endpoint of an end becoming ready, by the end's number.
     Stream(crate::ends::EndNumber),
+    /// The file backend's next notice.
+    Notice,
 }
 
 /// What a finished waiting call gives the kernel.
@@ -39,6 +39,8 @@ pub(crate) enum Answer {
     Name(Result<(), wcontainers_abi::HostError>, Vec<u8>),
     /// What a connection, listener or stream endpoint is ready for.
     Ready(Result<wcontainers_readiness::ReadinessReport, wcontainers_abi::HostError>),
+    /// Whether the backend sent a notice, and the buffer the call was given, which then holds it.
+    Notice(Result<(), wcontainers_abi::HostError>, Vec<u8>),
 }
 
 /// Reads a finished wait on a handle's readiness, a failed wait as an error on the handle.
@@ -55,7 +57,12 @@ pub(crate) fn report_of(
 pub(crate) type Room = smallbox::space::S32;
 
 /// A waiting call, made with [`waiting_call`].
-pub(crate) type Call = SmallBox<dyn Future<Output = Answer>, Room>;
+pub(crate) type Call = SmallBox<dyn Future<Output = Answer> + Send, Room>;
+
+/// The waiting call `future`.
+pub(crate) fn waiting_call(future: impl Future<Output = Answer> + Send + 'static) -> Call {
+    SmallBox::new(future)
+}
 
 /// The waker of one cell: it marks the cell, and the kernel's note that some cell is marked.
 struct Mark {
@@ -110,6 +117,9 @@ impl crate::Kernel {
             }
             (WaitFor::Stream(end), Answer::Ready(ready)) => {
                 self.end_ready(cx, end, ready);
+            }
+            (WaitFor::Notice, Answer::Notice(notice, bytes)) => {
+                self.notice_came(cx, notice, bytes);
             }
             (about, _) => {
                 debug_assert!(false, "{about:?} answered as another call");
@@ -217,6 +227,17 @@ impl Waiting {
         None
     }
 
+    /// The answer of the kept call `about`, if polling it now, woken or not, finds one.
+    pub fn poll_now(&mut self, about: WaitFor) -> Option<Answer> {
+        let index = self.live.iter().position(|(kept, _)| *kept == about)?;
+        let Poll::Ready(answer) = self.live[index].1.poll() else {
+            return None;
+        };
+        let (_, cell) = self.live.swap_remove(index);
+        self.recycle(cell);
+        Some(answer)
+    }
+
     /// Drops the calls `which` names, unanswered: each is cancelled as its system's future says.
     pub fn drop_where(&mut self, mut which: impl FnMut(&WaitFor) -> bool) {
         let mut index = 0;
@@ -239,11 +260,13 @@ impl Waiting {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use core::cell::Cell as Shared;
+    use crossbeam_utils::atomic::AtomicCell as Shared;
 
-    /// Allocations this thread has made so far.
-    pub(crate) fn allocations() -> u64 {
-        ALLOCATIONS.with(Shared::get)
+    extern crate std;
+
+    /// The allocations `run` makes on this thread.
+    pub(crate) fn allocations_of(run: impl FnOnce()) -> u64 {
+        allocation_counter::measure(run).count_total
     }
 
     /// What a test system's call waits behind: shut, it keeps the waker it was last polled with;
@@ -295,14 +318,14 @@ pub(crate) mod tests {
     /// A future that finishes once `ready` is set, keeping the waker it was last given.
     struct Gate<'a> {
         ready: &'a Shared<bool>,
-        waker: &'a core::cell::RefCell<Option<Waker>>,
+        waker: &'a atomic_refcell::AtomicRefCell<Option<Waker>>,
     }
 
     impl Future for Gate<'_> {
         type Output = Answer;
 
         fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Answer> {
-            if self.ready.get() {
+            if self.ready.load() {
                 return Poll::Ready(Answer::Backend(
                     Err(wcontainers_abi::HostError::Closed),
                     Vec::new(),
@@ -318,7 +341,7 @@ pub(crate) mod tests {
         let mut waiting = Waiting::default();
         let answer = waiting.start(
             about(1),
-            waiting_call!(async {
+            waiting_call(async {
                 Answer::Backend(Err(wcontainers_abi::HostError::Closed), Vec::new())
             }),
         );
@@ -330,15 +353,16 @@ pub(crate) mod tests {
     #[test]
     fn a_woken_call_is_answered_and_its_cell_used_again() {
         let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
-        let waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
         let mut waiting = Waiting::default();
         for round in 0..3 {
-            ready.set(false);
+            ready.store(false);
             let gate = Gate { ready, waker };
-            assert!(waiting.start(about(round), waiting_call!(gate)).is_none());
+            assert!(waiting.start(about(round), waiting_call(gate)).is_none());
             assert!(!waiting.woken());
             assert!(waiting.next_answer().is_none());
-            ready.set(true);
+            ready.store(true);
             waker.borrow_mut().take().expect("a waker").wake();
             assert!(waiting.woken());
             let (answered, _) = waiting.next_answer().expect("answered");
@@ -348,49 +372,58 @@ pub(crate) mod tests {
         }
     }
 
-    extern crate std;
-
-    /// Counts the allocations of the thread that makes them.
-    struct Counting;
-
-    std::thread_local! {
-        static ALLOCATIONS: Shared<u64> = const { Shared::new(0) };
+    #[test]
+    fn a_call_polled_now_answers_before_its_waker_fires_and_only_itself() {
+        let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
+        let waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
+        let other: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
+        let other_waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
+        let mut waiting = Waiting::default();
+        assert!(
+            waiting
+                .start(about(1), waiting_call(Gate { ready, waker }))
+                .is_none()
+        );
+        let gate = Gate {
+            ready: other,
+            waker: other_waker,
+        };
+        assert!(waiting.start(about(2), waiting_call(gate)).is_none());
+        assert!(waiting.poll_now(about(1)).is_none());
+        assert!(waiting.poll_now(about(3)).is_none());
+        ready.store(true);
+        other.store(true);
+        assert!(!waiting.woken());
+        assert!(matches!(
+            waiting.poll_now(about(1)),
+            Some(Answer::Backend(Err(wcontainers_abi::HostError::Closed), _))
+        ));
+        assert!(waiting.poll_now(about(1)).is_none());
+        assert_eq!(waiting.live.len(), 1);
+        assert_eq!(waiting.live[0].0, about(2));
     }
-
-    // SAFETY: every call goes to the system allocator unchanged.
-    unsafe impl core::alloc::GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.alloc(layout) }
-        }
-
-        unsafe fn dealloc(&self, pointer: *mut u8, layout: core::alloc::Layout) {
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.dealloc(pointer, layout) }
-        }
-    }
-
-    #[global_allocator]
-    static COUNTING: Counting = Counting;
 
     #[test]
     fn a_call_that_waits_allocates_nothing_once_its_cell_exists() {
         let ready: &'static Shared<bool> = Box::leak(Box::new(Shared::new(false)));
-        let waker: &'static core::cell::RefCell<Option<Waker>> = Box::leak(Box::default());
+        let waker: &'static atomic_refcell::AtomicRefCell<Option<Waker>> =
+            Box::leak(Box::default());
         let mut waiting = Waiting::default();
         let mut round = |number| {
-            ready.set(false);
-            waiting.start(about(number), waiting_call!(Gate { ready, waker }));
-            ready.set(true);
+            ready.store(false);
+            waiting.start(about(number), waiting_call(Gate { ready, waker }));
+            ready.store(true);
             waker.borrow_mut().take().expect("a waker").wake();
             waiting.next_answer().expect("answered");
         };
         round(0);
-        let before = ALLOCATIONS.with(Shared::get);
-        for number in 1..100 {
-            round(number);
-        }
-        assert_eq!(ALLOCATIONS.with(Shared::get), before);
+        let counted = allocations_of(|| {
+            for number in 1..100 {
+                round(number);
+            }
+        });
+        assert_eq!(counted, 0);
     }
 }

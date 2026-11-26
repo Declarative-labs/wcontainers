@@ -192,7 +192,15 @@ pub struct user_pt_regs {
 }
 #[repr(C)]
 #[repr(align(16))]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct user_fpsimd_state {
     pub vregs: [__uint128_t; 32usize],
     pub fpsr: __u32,
@@ -1058,14 +1066,6 @@ impl<T> __IncompleteArrayField<T> {
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self as *mut _ as *mut T
-    }
-    #[inline]
-    pub unsafe fn as_slice(&self, len: usize) -> &[T] {
-        ::core::slice::from_raw_parts(self.as_ptr(), len)
-    }
-    #[inline]
-    pub unsafe fn as_mut_slice(&mut self, len: usize) -> &mut [T] {
-        ::core::slice::from_raw_parts_mut(self.as_mut_ptr(), len)
     }
 }
 impl<T> ::core::fmt::Debug for __IncompleteArrayField<T> {

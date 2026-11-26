@@ -4,11 +4,14 @@
 
 #![allow(dead_code)]
 
+use core::convert::Infallible;
 use linux_raw_sys::general::{S_IRGRP, S_IROTH, S_IRWXU, S_IXGRP, S_IXOTH};
 use std::sync::{Mutex, PoisonError};
 
 use wcontainers_abi::{Host, HostError, Warning};
 use wcontainers_arm64::Arm64;
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_executor_hardware_virtualization::{
     Exit as VcpuExit, Loaded, Memory, Register, VirtualCpu, VirtualMachine, boot,
     link as link_page, routines, translate::Translator,
@@ -24,6 +27,7 @@ use wcontainers_executor_wasmtime::{Compiler, CpuSide, LookAhead, Optimise};
 use wcontainers_kernel_linux::FileRecord;
 use wcontainers_runtime_single_kernel::{Ending, Kernel, drive};
 use wcontainers_system_seeded_test_policy::{ERROR, TestPolicy, Warned};
+use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::FromZeros;
 
 use crate::common::{MEMORY, ONE_CPU, build, look_ahead, machine, setting};
@@ -103,14 +107,64 @@ impl wcontainers_clock::Clock for Recording {
     }
 }
 
-impl wcontainers_random_source::RandomSource for Recording {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
-        self.random
+/// The host's seeded random bytes, which record each fill, and whether the bytes have read them.
+struct Seeded<'host> {
+    host: &'host Recording,
+    read: bool,
+}
+
+impl ByteSource for Seeded<'_> {
+    type Error = Infallible;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, Infallible> {
+        self.read = true;
+        self.host
+            .random
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .fill(into);
-        self.call(format!("random {into:02x?}"));
+        self.host.call(format!("random {into:02x?}"));
+        Ok(into.len())
+    }
+}
+
+impl wcontainers_random_source::RandomSource for Recording {
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
+        let mut seeded = Seeded {
+            host: self,
+            read: false,
+        };
+        let Ok(_) = into.write_from(&mut seeded);
+        if !seeded.read {
+            let Ok(_) = seeded.read(&mut []);
+        }
         Ok(())
+    }
+}
+
+/// An output end of the host, which records each send and keeps its bytes.
+struct Output<'record> {
+    record: &'record mut Recorded,
+    peer: u32,
+    written: bool,
+}
+
+impl ByteSink for Output<'_> {
+    type Error = Infallible;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, Infallible> {
+        self.written = true;
+        self.record.calls.push(format!(
+            "output {:?} {:?}",
+            self.peer,
+            String::from_utf8_lossy(bytes)
+        ));
+        match self.peer {
+            ERROR => &mut self.record.stderr,
+            _ => &mut self.record.stdout,
+        }
+        .extend_from_slice(bytes);
+        Ok(bytes.len())
     }
 }
 
@@ -123,20 +177,20 @@ impl Host for Recording {
 impl wcontainers_system::StreamTransport for Recording {
     type Endpoint = u32;
 
-    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+    fn send_stream(&self, peer: &u32, payload: &impl VolatileBytes) -> Result<usize, HostError> {
         let mut record = self.record.lock().unwrap_or_else(PoisonError::into_inner);
-        record.calls.push(format!(
-            "output {peer:?} {:?}",
-            String::from_utf8_lossy(bytes)
-        ));
-        match *peer {
-            ERROR => &mut record.stderr,
-            _ => &mut record.stdout,
+        let mut output = Output {
+            record: &mut record,
+            peer: *peer,
+            written: false,
+        };
+        let Ok(sent) = payload.read_to(&mut output);
+        if !output.written {
+            let Ok(_) = output.write(&[]);
         }
-        .extend_from_slice(bytes);
-        Ok(bytes.len())
+        Ok(sent)
     }
-    fn receive_stream(&self, _peer: &u32, _into: &mut [u8]) -> Result<usize, HostError> {
+    fn receive_stream(&self, _peer: &u32, _into: &impl VolatileBytes) -> Result<usize, HostError> {
         Err(HostError::NotSupported)
     }
     fn close_stream(&self, peer: &u32) {

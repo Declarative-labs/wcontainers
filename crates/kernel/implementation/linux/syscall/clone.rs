@@ -176,7 +176,10 @@ fn make_child<S: crate::System>(
             .memory_duplicate(parent.memory)
             .map_err(|error| cx.cpu_error(error))?;
         match copy_map(cx.cpu, &parent.map.borrow(), memory) {
-            Ok(map) => (memory, alloc::rc::Rc::new(core::cell::RefCell::new(map))),
+            Ok(map) => (
+                memory,
+                alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(map)),
+            ),
             Err(error) => {
                 cx.cpu.memory_drop(memory);
                 return Err(error);
@@ -207,7 +210,7 @@ fn make_child<S: crate::System>(
     let mut process = parent.clone();
     if flags & CLONE_SIGHAND == 0 {
         let actions = *process.actions.borrow();
-        process.actions = alloc::rc::Rc::new(core::cell::RefCell::new(actions));
+        process.actions = alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(actions));
     }
     process.pid = child;
     process.memory = memory;
@@ -343,11 +346,11 @@ fn copy_map(
 fn share_or_copy(thread: &mut crate::process::Thread, flags: u32, child: Tid) {
     if flags & CLONE_FILES == 0 {
         let copy = thread.files.borrow().duplicate(child as u64);
-        thread.files = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+        thread.files = alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(copy));
     }
     if flags & CLONE_FS == 0 {
         let copy = thread.fs.borrow().clone();
-        thread.fs = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+        thread.fs = alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(copy));
     }
 }
 

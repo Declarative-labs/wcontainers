@@ -1,5 +1,6 @@
 //! Reading, writing and moving around in open files, and what descriptors refer to.
 
+use crate::linux_extra::NANOSECONDS_PER_MILLISECOND;
 use alloc::vec;
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
@@ -1366,7 +1367,7 @@ pub(super) fn lock_backend_writes(
     node: &crate::fs::Node,
 ) -> Result<(), Errno> {
     let holder = match &node.borrow().content {
-        Content::Backend(remote) if !node.borrow().is_directory() => remote.writer.get(),
+        Content::Backend(remote) if !node.borrow().is_directory() => remote.writer.load(),
         _ => return Ok(()),
     };
     kernel.take_lock(
@@ -1375,7 +1376,7 @@ pub(super) fn lock_backend_writes(
         Channel::Held(crate::process::ObjectId::of_node(node)),
     )?;
     if let Content::Backend(remote) = &node.borrow().content {
-        remote.writer.set(Some(tid));
+        remote.writer.store(Some(tid));
     }
     Ok(())
 }
@@ -1685,7 +1686,7 @@ fn write_bytes_after<S: crate::System>(
         Content::Regular(regular) => regular,
         Content::Backend(remote) => {
             let offset = if append {
-                kernel.settle_once(tid, remote.size.get())
+                kernel.settle_once(tid, remote.size.load())
             } else {
                 at.unwrap_or(file.borrow().offset)
             };
@@ -1713,7 +1714,7 @@ fn write_bytes_after<S: crate::System>(
             };
             // `fuse_write_update_attr`: the file ends at least where the write did.
             if let Content::Backend(remote) = &node.borrow().content
-                && remote.size.get() < offset + written
+                && remote.size.load() < offset + written
             {
                 remote.set_size(offset + written);
             }
@@ -2155,7 +2156,7 @@ pub(super) fn lseek<S: crate::System>(
             _ => file.offset as i64,
         },
         Content::Backend(remote) => {
-            let size = remote.size.get() as i64;
+            let size = remote.size.load() as i64;
             match whence {
                 SEEK_SET => offset,
                 SEEK_CUR => current()?,
@@ -2831,12 +2832,12 @@ fn record_lock<S: crate::System>(
     let pid = kernel.threads[&tid].process;
     let request = RecordLock {
         owner: if private {
-            LockOwner::File(alloc::rc::Rc::downgrade(file))
+            LockOwner::File(alloc::sync::Arc::downgrade(file))
         } else {
             LockOwner::Table(kernel.files(tid).lock_owner())
         },
         pid,
-        file: alloc::rc::Rc::downgrade(file),
+        file: alloc::sync::Arc::downgrade(file),
         write,
         start: start as u64,
         end: end as u64,
@@ -3000,7 +3001,10 @@ fn fcntl_other<S: crate::System>(
         F_CREATED_QUERY => Ok(u64::from(descriptor.file.borrow().created)),
         F_DUPFD_QUERY => {
             let other = files.borrow().file(argument as i32)?;
-            Ok(u64::from(alloc::rc::Rc::ptr_eq(&other, &descriptor.file)))
+            Ok(u64::from(alloc::sync::Arc::ptr_eq(
+                &other,
+                &descriptor.file,
+            )))
         }
         // No lease can be taken, so a file never holds one.
         F_GETLEASE if !path_only => Ok(super::lease::get(kernel, cx, &descriptor.file)),
@@ -3377,7 +3381,7 @@ pub(super) fn start_wait<S: crate::System>(
             0
         } else {
             // 0.1% of the time left (0.5% for a nice thread), at most 100 ms, at least the slack.
-            const MAX_SLACK: u64 = 100_000_000;
+            const MAX_SLACK: u64 = 100 * NANOSECONDS_PER_MILLISECOND;
             let divisor = if thread.schedule.nice > 0 { 200 } else { 1000 };
             (duration / divisor).min(MAX_SLACK).max(thread.timer_slack)
         };
@@ -3541,6 +3545,14 @@ fn select_typed<S: crate::System>(
         };
     }
     let asked = |set: &[u8], fd: u64| set[(fd / 8) as usize] & (1 << (fd % 8)) != 0;
+    for fd in 0..count {
+        if wanted.iter().any(|set| asked(set, fd)) {
+            let found = kernel.files(tid).file(fd as i32);
+            if let Ok(file) = found {
+                super::socket::hear_outside(kernel, cx, &file);
+            }
+        }
+    }
     let files = kernel.files(tid);
     let mut watching = false;
     for fd in 0..count {
@@ -3613,8 +3625,10 @@ fn ppoll_typed<S: crate::System>(
         let revents = if fd < 0 {
             0
         } else {
-            match kernel.files(tid).file(fd) {
+            let found = kernel.files(tid).file(fd);
+            match found {
                 Ok(file) => {
+                    super::socket::hear_outside(kernel, cx, &file);
                     poll_mask(kernel, tid, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
                 }
                 Err(_) => POLLNVAL as u16,

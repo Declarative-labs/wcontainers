@@ -1,10 +1,11 @@
 //! What a container's configuration sets at its start beyond its program (the user and group,
 //! the umask, resource limits, no_new_privs, the `oom_score_adj`, the domain name, capabilities,
-//! seccomp, scheduling, the I/O priority, the personality, the sysctls and the default mounts),
-//! compared with the reference given the same through Docker's options, or through the reference
-//! shell where Docker has none.
+//! seccomp, scheduling, the I/O priority, the processor affinity, the personality, the sysctls
+//! and the default mounts), compared with the reference given the same through Docker's options,
+//! or through the reference shell where Docker has none.
 
 use core::mem::offset_of;
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
@@ -12,7 +13,7 @@ use wcontainers_abi::NANOSECONDS_PER_SECOND;
 use linux_raw_sys::general::RLIMIT_NOFILE;
 use wcontainers_executor_unicorn::assert_same_output_with;
 use wcontainers_executor_unicorn::busybox::{run_ours_with, try_ours_with};
-use wcontainers_executor_unicorn::driver::Failure;
+use wcontainers_executor_unicorn::driver::{Failure, program_exit_code_with};
 use wcontainers_executor_unicorn::reference::{self, docker};
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel_linux::linux::general::{
@@ -537,4 +538,36 @@ fn time_offsets_out_of_range_fail_the_start() {
             "{offset:?}"
         );
     }
+}
+
+/// Docker has no option for the first process's affinity (`--cpuset-cpus` limits the container's
+/// cgroup instead): the reference's guest sets the mask itself and runs itself again, as runc sets
+/// `execCPUAffinity`'s final set before the program; ours starts with it, on as many processors as
+/// the guest's code shows.
+#[test]
+fn a_processor_affinity_matches_reference() {
+    const MASK: u8 = 0b1010;
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = wcontainers_executor_unicorn::guest::build("affinity", &[], &out);
+    let theirs = reference::run(&program, &[&format!("{MASK:x}")]);
+    let options = StartOptions {
+        cpu_affinity: Some(&[MASK]),
+        ..Default::default()
+    };
+    let processors = NonZeroUsize::new(MASK.ilog2() as usize + 1).expect("some processors");
+    let ours = program_exit_code_with("affinity", &[], &out, processors, options);
+    assert_eq!(ours, theirs.exit_code, "{theirs:?}");
+}
+
+/// A mask of no processor online fails the start, as `sched_setaffinity` refuses it.
+#[test]
+fn a_processor_affinity_of_no_processor_online_fails_the_start() {
+    let ours = try_ours_with(
+        &["true"],
+        StartOptions {
+            cpu_affinity: Some(&[0b10]),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(ours, Err(Failure::Start(Errno::EINVAL))));
 }

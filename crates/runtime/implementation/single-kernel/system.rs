@@ -5,22 +5,23 @@
 use core::ops::ControlFlow;
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::task::{Poll, Waker};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wcontainers_abi::{Cpu, Event, Host, HostError, PAGE_SIZE, Warning};
 use wcontainers_kernel_linux::{Kernel, Standard};
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system::StreamTransport;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
 use crate::net::Network;
+use crate::timer::{SliceTimer, nanoseconds_since};
 use crate::{Execution, StopFlag, System, TerminalSize, Turn};
 
 /// A warning as the system keeps it: the kernel's or the executor's, by reason.
@@ -57,15 +58,21 @@ const INPUT_NOT_READ: &str = "standard input not read";
 const OUTPUT_NOT_WRITTEN: &str = "standard output not written";
 const ERROR_NOT_WRITTEN: &str = "standard error not written";
 
-/// The names of the system's threads.
-const TIMER_THREAD: &str = "wcontainers timer";
+/// The name of the thread that reads the input.
 const INPUT_THREAD: &str = "wcontainers input";
 
-/// The local system.
-pub struct LocalSystem {
+/// The local system, serving a kernel whose threads run on the executor `E`.
+pub struct LocalSystem<E = ()> {
     state: Mutex<LocalState>,
     /// Set with the stop flag, before the first turn.
-    timer: OnceLock<Timer>,
+    timer: OnceLock<SliceTimer>,
+    /// The memory programs are told the machine has, set when the container is made.
+    pub(crate) machine_memory: OnceLock<u64>,
+    /// Made at the container's first use of each.
+    pub(crate) icmp: OnceLock<Result<wcontainers_icmp_sockets_host::HostIcmpSockets, HostError>>,
+    pub(crate) raw: OnceLock<Result<wcontainers_raw_sockets_host::HostRawSockets, HostError>>,
+    pub(crate) routes: OnceLock<wcontainers_route_resolver_host::HostRouteResolver>,
+    executor: PhantomData<fn() -> E>,
 }
 
 /// What the local system changes as the kernel asks.
@@ -92,29 +99,16 @@ pub(crate) struct LocalState {
     published: Vec<(u16, SocketAddr)>,
 }
 
-/// Raises the stop flag at the deadline the last turn set, on its own thread.
-struct Timer {
-    started: Instant,
-    shared: Arc<Deadline>,
-    thread: Option<JoinHandle<()>>,
-}
-
-/// A deadline that never comes.
-const NEVER: u64 = u64::MAX;
-
-struct Deadline {
-    /// Nanoseconds after `started` at which the running turn ends; `NEVER` for no end.
-    at: AtomicU64,
-    /// The deadline the thread sleeps towards: a turn with an earlier one wakes it.
-    sleeping: AtomicU64,
-    /// Whether the system is gone.
-    gone: Mutex<bool>,
-    wake: Condvar,
-}
-
 impl LocalSystem {
     /// A system writing the container's standard output and error to these streams.
     pub fn new(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
+        Self::serving(output, error)
+    }
+}
+
+impl<E> LocalSystem<E> {
+    /// A system for a kernel on the executor `E`, writing the container's standard output and error to these streams.
+    pub fn serving(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
         let state = LocalState {
             started: Instant::now(),
             output,
@@ -135,7 +129,17 @@ impl LocalSystem {
         Self {
             state: Mutex::new(state),
             timer: OnceLock::new(),
+            machine_memory: OnceLock::new(),
+            icmp: OnceLock::new(),
+            raw: OnceLock::new(),
+            routes: OnceLock::new(),
+            executor: PhantomData,
         }
+    }
+
+    /// Sets the memory size in bytes programs are told the machine has, as the container is made; else the size set before.
+    pub fn describe_memory(&self, bytes: u64) -> Result<(), u64> {
+        self.machine_memory.set(bytes)
     }
 
     /// Gives the container's first process `input` as its standard input, as `docker run --interactive`
@@ -171,12 +175,12 @@ impl LocalSystem {
     /// Drops the deadline of the turn that ended.
     fn turn_over(&self) {
         if let Some(timer) = self.timer.get() {
-            timer.shared.at.store(NEVER, Ordering::SeqCst);
+            timer.turn_over();
         }
     }
 }
 
-impl LocalSystem {
+impl<E: 'static> LocalSystem<E> {
     /// Takes what arrived: the input, and the network's readiness, none of it while the state is
     /// held. Whether anything did.
     fn deliver(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
@@ -294,7 +298,7 @@ impl LocalState {
         nanoseconds_since(self.started)
     }
 
-    fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
+    pub(crate) fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
         match self
             .warnings
             .iter_mut()
@@ -314,72 +318,12 @@ impl LocalState {
     }
 }
 
-impl Drop for LocalSystem {
-    /// Stops the timer thread, and the input's reader once it next waits for room (one blocked
-    /// reading is left to end with the process).
+impl<E> Drop for LocalSystem<E> {
+    /// Stops the input's reader once it next waits for room (one blocked reading is left to end with
+    /// the process); the timer's thread ends as the timer is dropped.
     fn drop(&mut self) {
         self.state_mut().input_credit.stop();
-        if let Some(timer) = self.timer.get_mut() {
-            *timer
-                .shared
-                .gone
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = true;
-            timer.shared.wake.notify_one();
-            if let Some(thread) = timer.thread.take() {
-                let _ = thread.join();
-            }
-        }
     }
-}
-
-/// The timer thread: sleeps to the deadline, raises the flag when it has passed, and sleeps again
-/// when the deadline moved on meanwhile.
-///
-/// A turn stores its deadline and then reads the one slept towards; the thread stores the one it sleeps
-/// towards and then reads the deadline again, holding the lock until it waits. So either the thread
-/// sees the new deadline, or the turn sees an earlier one slept towards and wakes the thread once it
-/// waits.
-fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
-    let mut gone = shared.gone.lock().unwrap_or_else(PoisonError::into_inner);
-    loop {
-        if *gone {
-            return;
-        }
-        let at = shared.at.load(Ordering::SeqCst);
-        shared.sleeping.store(at, Ordering::SeqCst);
-        if shared.at.load(Ordering::SeqCst) != at {
-            continue;
-        }
-        let now = nanoseconds_since(started);
-        if at <= now {
-            // A deadline a turn ended before, or moved, is not raised.
-            if shared
-                .at
-                .compare_exchange(at, NEVER, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                flag.raise();
-            }
-            continue;
-        }
-        gone = if at == NEVER {
-            shared
-                .wake
-                .wait(gone)
-                .unwrap_or_else(PoisonError::into_inner)
-        } else {
-            let wait = Duration::from_nanos(at - now);
-            match shared.wake.wait_timeout(gone, wait) {
-                Ok((guard, _)) => guard,
-                Err(poisoned) => poisoned.into_inner().0,
-            }
-        };
-    }
-}
-
-fn nanoseconds_since(started: Instant) -> u64 {
-    started.elapsed().as_nanos() as u64
 }
 
 /// The room the kernel gave for input and the reader has not used, shared with the reader.
@@ -511,7 +455,11 @@ impl LocalState {
     /// Input held for the kernel; the reader may read as much again.
     fn receive_stream(&mut self, peer: u32, into: &mut [u8]) -> Result<usize, HostError> {
         if Some(peer) != self.input_end {
-            return Err(HostError::NotSupported);
+            // A terminal with no input is one nobody types on, as `docker run --tty` without `--interactive` gives.
+            return Err(match peer {
+                TERMINAL => HostError::WouldBlock,
+                _ => HostError::NotSupported,
+            });
         }
         if self.input_held.is_empty() {
             return Err(match self.input_ended && peer == INPUT {
@@ -539,7 +487,7 @@ impl LocalState {
 /// The kernel's calls, each made on the state held for it.
 macro_rules! host_on_state {
     ($host:ty, $this:ident => $state:expr) => {
-        impl wcontainers_clock::Clock for $host {
+        impl<E> wcontainers_clock::Clock for $host {
             fn monotonic_nanoseconds(&self) -> u64 {
                 let $this = self;
                 $state.monotonic_nanoseconds()
@@ -551,32 +499,43 @@ macro_rules! host_on_state {
             }
         }
 
-        impl wcontainers_random_source::RandomSource for $host {
-            fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+        impl<E> wcontainers_random_source::RandomSource for $host {
+            fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
                 let $this = self;
-                $state.random(into);
+                crate::host_call::receive_into(into, |bytes| {
+                    $state.random(bytes);
+                    Ok(bytes.len())
+                })?;
                 Ok(())
             }
         }
 
-        impl Host for $host {
+        impl<E> Host for $host {
             fn warn(&self, warning: Warning<'_>) {
                 let $this = self;
                 $state.warn(warning);
             }
         }
 
-        impl StreamTransport for $host {
+        impl<E> StreamTransport for $host {
             type Endpoint = u32;
 
-            fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
+            fn send_stream(
+                &self,
+                peer: &u32,
+                payload: &impl VolatileBytes,
+            ) -> Result<usize, HostError> {
                 let $this = self;
-                $state.send_stream(*peer, bytes)
+                crate::host_call::send_from(payload, |bytes| $state.send_stream(*peer, bytes))
             }
 
-            fn receive_stream(&self, peer: &u32, into: &mut [u8]) -> Result<usize, HostError> {
+            fn receive_stream(
+                &self,
+                peer: &u32,
+                into: &impl VolatileBytes,
+            ) -> Result<usize, HostError> {
                 let $this = self;
-                $state.receive_stream(*peer, into)
+                crate::host_call::receive_into(into, |bytes| $state.receive_stream(*peer, bytes))
             }
 
             fn close_stream(&self, peer: &u32) {
@@ -585,7 +544,7 @@ macro_rules! host_on_state {
             }
         }
 
-        impl Readiness<u32> for $host {
+        impl<E> Readiness<u32> for $host {
             async fn wait_until_ready(
                 &self,
                 peer: &u32,
@@ -606,23 +565,22 @@ macro_rules! host_on_state {
         }
 
         /// Every task id is free.
-        impl wcontainers_system::TaskIdAllocator for $host {
+        impl<E> wcontainers_system::TaskIdAllocator for $host {
             fn free_task_id(&self, _: wcontainers_kernel_linux::TaskId) {}
         }
 
         /// No hook does anything.
-        impl wcontainers_kernel_linux::System for $host {}
+        impl<E: 'static> wcontainers_kernel_linux::System for $host {}
     };
 }
 
-host_on_state!(LocalSystem, system => system.state());
+host_on_state!(LocalSystem<E>, system => system.state());
 
-impl wcontainers_system::FuseServer for LocalSystem {
+impl<E> wcontainers_system::FuseServer for LocalSystem<E> {
     type Reply = Vec<u8>;
     type Notice = Vec<u8>;
 
-    /// Not built: this system hands its notices to the kernel as the abi's
-    /// `Event::BackendNotice`, until the kernel keeps a wait for them.
+    /// This system's file server sends no notices.
     async fn receive_notice(
         &self,
         applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
@@ -636,7 +594,7 @@ impl wcontainers_system::FuseServer for LocalSystem {
     }
 }
 
-impl wcontainers_system::DomainNameResolver for LocalSystem {
+impl<E> wcontainers_system::DomainNameResolver for LocalSystem<E> {
     type AnswerBytes = Vec<u8>;
 
     async fn resolve_domain(
@@ -648,7 +606,7 @@ impl wcontainers_system::DomainNameResolver for LocalSystem {
     }
 }
 
-impl System for LocalSystem {
+impl<E: 'static> System for LocalSystem<E> {
     /// The local system never ends a run itself.
     type End = core::convert::Infallible;
 
@@ -660,42 +618,13 @@ impl System for LocalSystem {
     fn stop_flag(&self, flag: StopFlag) {
         let state = self.state();
         state.arrivals.set_flag(flag.clone());
-        let shared = Arc::new(Deadline {
-            at: AtomicU64::new(NEVER),
-            sleeping: AtomicU64::new(NEVER),
-            gone: Mutex::new(false),
-            wake: Condvar::new(),
-        });
-        let started = state.started;
-        self.timer.get_or_init(|| {
-            let thread = {
-                let shared = shared.clone();
-                std::thread::Builder::new()
-                    .name(TIMER_THREAD.to_string())
-                    .spawn(move || time(&shared, started, &flag))
-                    .expect("a timer thread")
-            };
-            Timer {
-                started,
-                shared,
-                thread: Some(thread),
-            }
-        });
+        self.timer.get_or_init(|| SliceTimer::new(flag));
     }
 
     /// A free turn, ended by the timer thread when the kernel's slice has passed.
     fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
         if let Some(timer) = self.timer.get() {
-            let at = slice_nanoseconds.map_or(NEVER, |slice| {
-                nanoseconds_since(timer.started).saturating_add(slice)
-            });
-            let shared = &timer.shared;
-            shared.at.store(at, Ordering::SeqCst);
-            // The thread sleeps to a later deadline or none: it must wake for this one.
-            if at < shared.sleeping.load(Ordering::SeqCst) {
-                let _gone = shared.gone.lock().unwrap_or_else(PoisonError::into_inner);
-                shared.wake.notify_one();
-            }
+            timer.turn(slice_nanoseconds);
         }
         Turn::Free
     }
@@ -709,10 +638,10 @@ impl System for LocalSystem {
     }
 
     /// The turn is over, so its deadline is dropped: an idle past it raises nothing.
-    fn stopped<E: Execution>(
+    fn stopped<C: Execution>(
         self: &Arc<Self>,
         _: &mut Kernel,
-        _: &mut E,
+        _: &mut C,
     ) -> ControlFlow<Self::End> {
         self.turn_over();
         ControlFlow::Continue(())
@@ -789,7 +718,7 @@ impl System for LocalSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalSystem, NEVER, Ordering};
+    use super::LocalSystem;
     use crate::{StopFlag, System};
     use std::time::Duration;
 
@@ -820,7 +749,6 @@ mod tests {
         system.turn_over();
         std::thread::sleep(PAST_IT);
         assert!(!flag.take());
-        let timer = system.timer.get().expect("a timer");
-        assert_eq!(timer.shared.at.load(Ordering::SeqCst), NEVER);
+        assert!(system.timer.get().expect("a timer").idle());
     }
 }

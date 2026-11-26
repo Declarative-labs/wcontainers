@@ -10,11 +10,11 @@ use wcontainers_executor_hardware_virtualization_inside::link::Link;
 use wcontainers_executor_hardware_virtualization_inside::translation::{self, Piece, Translate};
 use wcontainers_guest_cpu::Native;
 use wcontainers_translator::{LookAhead, translate_native};
+use zerocopy::FromZeros;
 
 /// A link page on the heap, as the inside writes one.
 fn link() -> Box<Link> {
-    // SAFETY: a link is plain words and bytes, for which all zeros is valid.
-    unsafe { Box::new_zeroed().assume_init() }
+    Link::new_box_zeroed().expect("memory for a link")
 }
 
 /// The piece `translator` answers for `bytes` at `at`.

@@ -397,20 +397,13 @@ fn notes<S: crate::System>(
         }
         let fpsimd = user_fpsimd_state {
             vregs: core::array::from_fn(|index| {
-                u128::from(registers.v[index][0]) | (u128::from(registers.v[index][1]) << 64)
+                u128::from(registers.v[index][0]) | (u128::from(registers.v[index][1]) << u64::BITS)
             }),
             fpsr: registers.fpsr,
             fpcr: registers.fpcr,
             __reserved: [0; 2],
         };
-        // SAFETY: `user_fpsimd_state` is plain integers with no padding.
-        let fpsimd = unsafe {
-            core::slice::from_raw_parts(
-                (&fpsimd as *const user_fpsimd_state).cast::<u8>(),
-                size_of::<user_fpsimd_state>(),
-            )
-        };
-        notes.push(Note::core(NT_PRFPREG, fpsimd.to_vec()));
+        notes.push(Note::core(NT_PRFPREG, fpsimd.as_bytes().to_vec()));
         // TPIDR_EL0, then TPIDR2_EL0, which this machine does not have (zero, as Linux gives).
         let mut tls = registers.tpidr_el0.to_le_bytes().to_vec();
         tls.extend_from_slice(&[0; 8]);
@@ -443,7 +436,7 @@ const PROC_FIELDS_CORE: u64 = 6;
 fn timeval(nanoseconds: u64) -> [i64; 2] {
     [
         (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
-        (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
+        (nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
     ]
 }
 

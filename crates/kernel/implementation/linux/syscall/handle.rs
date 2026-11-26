@@ -39,7 +39,7 @@ pub(super) fn encode(
     inode: &Inode,
     identifier: bool,
 ) -> Result<(i32, Vec<u32>), Errno> {
-    let ino = [inode.ino as u32, (inode.ino >> 32) as u32];
+    let ino = [inode.ino as u32, (inode.ino >> u32::BITS) as u32];
     match inode.fs.kind {
         Kind::Tmpfs => Ok((
             FILEID_INO32_GEN,
@@ -60,7 +60,10 @@ pub(super) fn encode(
         // `fuse_encode_fh`: the node number's high and low words and its generation.
         Kind::Fuse => {
             let nodeid = crate::fs::backend::remote_number(inode);
-            Ok((0x81, alloc::vec![(nodeid >> 32) as u32, nodeid as u32, 0]))
+            Ok((
+                0x81,
+                alloc::vec![(nodeid >> u32::BITS) as u32, nodeid as u32, 0],
+            ))
         }
         // `ovl_encode_fh` without `nfs_export`: identifiers only, as `struct ovl_fh` (three bytes
         // of padding, version 0, magic 0xfb, length 29, the upper layer's flag, FILEID_INO32_GEN,

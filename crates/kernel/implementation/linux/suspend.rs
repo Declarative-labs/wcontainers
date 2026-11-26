@@ -1,8 +1,8 @@
 //! Taking tasks and process contexts off a kernel, and putting them on a kernel again.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use wcontainers_abi::{Cpu, MemoryId, RegisterBlock, Resume};
 
@@ -162,13 +162,13 @@ impl Kernel {
         process
             .map
             .borrow_mut()
-            .note_to(alloc::rc::Rc::clone(&self.map_notes));
+            .note_to(alloc::sync::Arc::clone(&self.map_notes));
         self.maps_away
             .borrow_mut()
-            .retain(|(_, map)| map.strong_count() > 0 && map.as_ptr() != Rc::as_ptr(&process.map));
+            .retain(|(_, map)| map.strong_count() > 0 && map.as_ptr() != Arc::as_ptr(&process.map));
         // What it maps of shared memory is compared with what it was told when the kernel next
         // announces.
-        self.map_notes.sharing_changed.set(true);
+        self.map_notes.sharing_changed.store(true);
         self.shared_announced.extend(announced);
         let pid = process.pid;
         let unwanted = Kernel::children_unwanted(&process);
@@ -288,7 +288,7 @@ impl Kernel {
         let shared = self
             .processes
             .values()
-            .any(|other| Rc::ptr_eq(&other.map, &process.map));
+            .any(|other| Arc::ptr_eq(&other.map, &process.map));
         if !shared {
             process.map.borrow_mut().stop_noting_to(&self.map_notes);
         }
@@ -320,9 +320,9 @@ impl Kernel {
         let mut process = self.processes[&pid].clone();
         let mut map = process.map.borrow().clone();
         map.notes_to_none();
-        process.map = Rc::new(RefCell::new(map));
+        process.map = Arc::new(AtomicRefCell::new(map));
         let actions = *process.actions.borrow();
-        process.actions = Rc::new(RefCell::new(actions));
+        process.actions = Arc::new(AtomicRefCell::new(actions));
         self.hold_map(&process);
         process.pending = Pending::default();
         for away in process.away.values_mut() {
@@ -360,7 +360,7 @@ impl Kernel {
     fn hold_map(&self, process: &crate::process::Process) {
         let mut held = self.maps_away.borrow_mut();
         held.retain(|(_, map)| map.strong_count() > 0);
-        held.push((process.memory, Rc::downgrade(&process.map)));
+        held.push((process.memory, Arc::downgrade(&process.map)));
     }
 
     /// The maps of contexts off this kernel that still live, with their memory.

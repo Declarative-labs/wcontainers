@@ -171,6 +171,27 @@ pub fn run_ours_with(
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
 }
 
+/// As [`run_ours`], with the kernel's start changed by `prepare`.
+pub fn run_ours_prepared(
+    command: &[&str],
+    prepare: impl FnOnce(&mut driver::Prepared),
+) -> driver::Run {
+    try_ours_prepared(command, prepare)
+        .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
+}
+
+/// As [`run_ours_prepared`], with a start that fails given back.
+pub fn try_ours_prepared(
+    command: &[&str],
+    prepare: impl FnOnce(&mut driver::Prepared),
+) -> Result<driver::Run, driver::Failure> {
+    let path = on_path(command[0]);
+    let container = container(command, &path, None);
+    let mut prepared = driver::prepare(&container);
+    prepare(&mut prepared);
+    driver::run_prepared(prepared, &container, 0, Default::default())
+}
+
 /// As [`run_ours_with`], with a start that fails given back.
 pub fn try_ours_with(
     command: &[&str],

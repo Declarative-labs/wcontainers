@@ -1404,7 +1404,7 @@ pub(super) fn futex_wake<S: crate::System>(
     [address, mask, count, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     let shared = futex2_flags(kernel, cx, __NR_futex_wake, flags as u32)?;
-    if mask >> 32 != 0 {
+    if mask >> u32::BITS != 0 {
         return Err(Errno::EINVAL);
     }
     wake(
@@ -1432,7 +1432,7 @@ pub(super) fn futex_wait<S: crate::System>(
         Ok(shared) => shared,
         Err(error) => return Err(error).into(),
     };
-    if value >> 32 != 0 || mask >> 32 != 0 {
+    if value >> u32::BITS != 0 || mask >> u32::BITS != 0 {
         return Err(Errno::EINVAL).into();
     }
     let timeout = match futex2_timeout(kernel, cx, tid, timeout, clock) {
@@ -1468,7 +1468,7 @@ fn parse_waitv<S: crate::System>(
         return Err(Errno::EINVAL);
     }
     let shared = futex2_flags(kernel, cx, number, entry.flags)?;
-    if entry.val >> 32 != 0 {
+    if entry.val >> u32::BITS != 0 {
         return Err(Errno::EINVAL);
     }
     Ok((entry.uaddr, entry.val as u32, shared))

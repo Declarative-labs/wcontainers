@@ -1,9 +1,9 @@
 //! Open files and file descriptor tables.
 
 use alloc::collections::BTreeMap;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use crate::Errno;
 use crate::fs::Node;
@@ -44,11 +44,11 @@ pub(crate) struct OpenFile {
     /// `mq_mnt`), which has no mount flags, rather than through a mount in the file tree.
     pub internal_mount: bool,
     /// For a file on a backend, its handle there.
-    pub backend: Option<Rc<crate::fs::backend::Handle>>,
+    pub backend: Option<Arc<crate::fs::backend::Handle>>,
     /// The thread whose call took its position last (`io::lock_position`).
     pub position_holder: Option<crate::process::Tid>,
     /// The directory and name it was opened by, for its directory's inotify watches.
-    pub dentry: Option<(alloc::rc::Weak<RefCell<crate::fs::Inode>>, Vec<u8>)>,
+    pub dentry: Option<(alloc::sync::Weak<AtomicRefCell<crate::fs::Inode>>, Vec<u8>)>,
     /// For `/proc/<pid>/mem`, the memory it was opened on (Linux's `private_data` mm).
     pub memory: Option<wcontainers_abi::MemoryId>,
     /// Made without an open (`alloc_file_pseudo`, memory files), so not counted as a writer of
@@ -64,16 +64,16 @@ pub(crate) enum Anon {
     /// A timer descriptor and its timer.
     Timer(u64),
     /// An event counter (`eventfd`).
-    Event(Rc<RefCell<crate::syscall::eventfd::Counter>>),
+    Event(Arc<AtomicRefCell<crate::syscall::eventfd::Counter>>),
     /// An epoll instance.
     Epoll(crate::syscall::epoll::EpollRef),
     /// An inotify instance.
-    Inotify(Rc<RefCell<crate::syscall::inotify::Instance>>),
+    Inotify(Arc<AtomicRefCell<crate::syscall::inotify::Instance>>),
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
 pub(crate) struct TerminalEnd {
-    pub pty: Rc<RefCell<crate::tty::Pty>>,
+    pub pty: Arc<AtomicRefCell<crate::tty::Pty>>,
     pub side: usize,
     pub hung_up: bool,
 }
@@ -98,12 +98,12 @@ pub(crate) enum OwnerKind {
     Group,
 }
 
-pub(crate) type FileRef = Rc<RefCell<OpenFile>>;
+pub(crate) type FileRef = Arc<AtomicRefCell<OpenFile>>;
 
 impl OpenFile {
     pub fn new(id: u64, node: Node, flags: u32, path: Vec<u8>, opener: u64) -> FileRef {
         let direct_io = node.borrow().takes_direct_io();
-        Rc::new(RefCell::new(Self {
+        Arc::new(AtomicRefCell::new(Self {
             id,
             node,
             flags,
@@ -131,6 +131,17 @@ impl OpenFile {
     /// given to its inode later names another.
     pub fn unnamed(&self) -> bool {
         self.flags & (O_TMPFILE & !O_DIRECTORY) != 0
+    }
+
+    /// Whether its path is shown as deleted (`d_path` of an unlinked dentry): its inode has no
+    /// name left, or the name it was opened by was taken from it after the open.
+    pub fn shown_deleted(&self) -> bool {
+        let inode = self.node.borrow();
+        inode.shown_deleted()
+            || self
+                .dentry
+                .as_ref()
+                .is_some_and(|(directory, name)| inode.name_removed_since(directory, name, self.id))
     }
 
     pub fn readable(&self) -> bool {

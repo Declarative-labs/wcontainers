@@ -260,14 +260,14 @@ mod hosted {
             protocol::Request::Write => {
                 let Write { at } = page.get();
                 let bytes = page.data();
-                // SAFETY: the inside gave this frame for the write and runs nothing from it until answered.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        bytes.as_ptr(),
-                        shared.memory.host(at),
-                        bytes.len(),
-                    )
-                };
+                let host = shared.memory.host_bytes(at, bytes.len() as u64);
+                // SAFETY: the bytes lie in guest memory; the inside gave this frame for the write and runs nothing
+                // from it until answered; nothing shows the test's other virtual CPUs cannot reach it.
+                #[expect(
+                    unsafe_code,
+                    reason = "UNEXPLAINED: a plain copy into the frame the inside gave for the write while the test's other virtual CPUs run, which nothing shows cannot reach that frame; host_bytes checked the range; test only, Words replaces it"
+                )]
+                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), host, bytes.len()) };
             }
             protocol::Request::Report => {
                 let Report { case, passed } = page.get();
@@ -443,6 +443,10 @@ mod hosted {
 
     /// The host's counter, which the guest's counts from less the counter offset.
     #[cfg(target_os = "macos")]
+    #[expect(
+        unsafe_code,
+        reason = "a plain read of the host's clock with no memory effect; test only, Instant replaces it"
+    )]
     fn now() -> u64 {
         // SAFETY: a plain clock read.
         unsafe { libc::mach_absolute_time() }
@@ -452,6 +456,10 @@ mod hosted {
     fn ticks_to_nanos(ticks: u64) -> f64 {
         let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
         // SAFETY: fills the struct.
+        #[expect(
+            unsafe_code,
+            reason = "fills a live local struct with the clock's timebase; test only, Instant replaces it"
+        )]
         unsafe { libc::mach_timebase_info(&mut info) };
         ticks as f64 * f64::from(info.numer) / f64::from(info.denom)
     }
@@ -459,8 +467,16 @@ mod hosted {
     #[cfg(target_os = "macos")]
     fn footprint() -> u64 {
         // SAFETY: a zeroed plain struct the call fills.
+        #[expect(
+            unsafe_code,
+            reason = "a zeroed plain C struct the call then fills, valid as zeros; test only"
+        )]
         let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
         // SAFETY: the buffer is the size the flavour names.
+        #[expect(
+            unsafe_code,
+            reason = "fills the local struct, whose size the V4 flavor names, with this process's usage; test only"
+        )]
         let done = unsafe {
             libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V4, (&raw mut info).cast())
         };

@@ -1,9 +1,9 @@
 //! A process's address space as the kernel keeps it: the ranges it has mapped and what each allows.
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::Cell;
+use crossbeam_utils::atomic::AtomicCell;
 
 use rangemap::RangeSet;
 use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
@@ -47,6 +47,9 @@ const SMALLEST_64_BIT_SPACE: u64 = 1 << 39;
 
 /// Linux's `MAX_GAP`, the most room left above the mapping base, as a share of the space.
 const MAX_GAP_SHARE: (u64, u64) = (5, 6);
+
+/// Linux's `TASK_UNMAPPED_BASE`, where its bottom-up search starts, as the space divided by it.
+const UNMAPPED_BASE_DIVISOR: u64 = 4;
 
 /// `CONFIG_ARCH_MMAP_RND_BITS` and `CONFIG_ARCH_MMAP_RND_COMPAT_BITS`, at ARM64's defaults for
 /// 4 KiB pages.
@@ -113,6 +116,9 @@ impl LayoutRandomization {
 /// space's end: a mapping goes above one only when the program asks for an address there or the
 /// range below is full. They are the ceilings of a 32 bit memory and of a browser's 64 bit one.
 pub const PLACEMENT_TIERS: [u64; 2] = [1 << 32, 1 << 34];
+
+/// The size of a PMD's huge page, which anonymous mappings of whole ones are aligned to.
+const PMD_SIZE: u64 = crate::hugetlb::DEFAULT_SIZE * crate::hugetlb::KIB;
 
 /// The top of the lowest range placement fills, which the stack and the mmap base are placed
 /// under: the lowest tier, or the executor's ceiling where that is lower.
@@ -378,16 +384,16 @@ pub(crate) struct AddressMap {
     /// The embedder's watches on these pages and its record of the pages written.
     pub watches: Watches,
     /// What the map notes for the kernels its processes are on.
-    notes: Vec<Rc<MapNotes>>,
+    notes: Vec<Arc<MapNotes>>,
 }
 
 /// What address maps note for a kernel, one value shared by every map on it.
 #[derive(Debug, Default)]
 pub(crate) struct MapNotes {
     /// The length a placement asked for that found no room below the ceiling.
-    pub outgrown: Cell<Option<u64>>,
+    pub outgrown: AtomicCell<Option<u64>>,
     /// A shared mapping was put in or taken out of some map.
-    pub sharing_changed: Cell<bool>,
+    pub sharing_changed: AtomicCell<bool>,
 }
 
 /// How much of a page's access a watch brings back: none, writes, everything.
@@ -554,7 +560,7 @@ impl Watches {
 
 impl AddressMap {
     /// A map of `end`'s width whose stack's top is at the ceiling.
-    pub fn new(end: u64, ceiling: u64, notes: Rc<MapNotes>) -> Self {
+    pub fn new(end: u64, ceiling: u64, notes: Arc<MapNotes>) -> Self {
         Self {
             mappings: BTreeMap::new(),
             used: BTreeMap::new(),
@@ -605,15 +611,15 @@ impl AddressMap {
     }
 
     /// Notes what changes for a kernel it is put on, too.
-    pub fn note_to(&mut self, notes: Rc<MapNotes>) {
-        if !self.notes.iter().any(|known| Rc::ptr_eq(known, &notes)) {
+    pub fn note_to(&mut self, notes: Arc<MapNotes>) {
+        if !self.notes.iter().any(|known| Arc::ptr_eq(known, &notes)) {
             self.notes.push(notes);
         }
     }
 
     /// Stops noting for a kernel no process of which runs in it any more.
-    pub fn stop_noting_to(&mut self, notes: &Rc<MapNotes>) {
-        self.notes.retain(|known| !Rc::ptr_eq(known, notes));
+    pub fn stop_noting_to(&mut self, notes: &Arc<MapNotes>) {
+        self.notes.retain(|known| !Arc::ptr_eq(known, notes));
     }
 
     /// Notes for no kernel, as a copy not yet put on one.
@@ -1016,22 +1022,38 @@ impl AddressMap {
             .is_none_or(|mapping| mapping.start_gap() >= end)
     }
 
-    /// Bytes new mappings with no address can still take: the gaps below the mmap base.
+    /// Bytes new mappings with no address can still take in the lowest range: the gaps below the
+    /// mmap base and those the search falls back to above it.
     pub fn placeable(&self) -> u64 {
+        let (fallback_floor, top) = self.fallback_range();
+        self.free_in(LOWEST_ADDRESS, self.mmap_base)
+            + self.free_in(fallback_floor.max(self.mmap_base), top)
+    }
+
+    /// The free bytes in `[floor, top)`, the guard gap below a mapping that grows down not free.
+    fn free_in(&self, floor: u64, top: u64) -> u64 {
         let mut free = 0;
-        let mut at = LOWEST_ADDRESS;
+        let mut at = floor;
         for mapping in self
             .mappings
-            .range(..self.mmap_base)
+            .range(..top.saturating_add(STACK_GUARD_GAP))
             .map(|(_, mapping)| mapping)
         {
             if mapping.end <= at {
                 continue;
             }
-            free += mapping.start_gap().min(self.mmap_base).saturating_sub(at);
+            free += mapping.start_gap().min(top).saturating_sub(at);
             at = mapping.end;
         }
-        free + self.mmap_base.saturating_sub(at)
+        free + top.saturating_sub(at)
+    }
+
+    /// The range Linux's top-down search falls back to searching bottom-up when there is no room
+    /// below the mmap base: from `TASK_UNMAPPED_BASE`, a quarter of the way up, to the top of the
+    /// lowest range, which takes the gap between the mmap base and the stack.
+    fn fallback_range(&self) -> (u64, u64) {
+        let top = first_tier_top(self.ceiling);
+        (page_up(top / UNMAPPED_BASE_DIVISOR), top)
     }
 
     /// Whether a request for `length` bytes ending at `end` reaches past the ceiling; if so it is
@@ -1040,13 +1062,14 @@ impl AddressMap {
         if end <= self.ceiling {
             return false;
         }
-        self.note(|notes| notes.outgrown.set(Some(length)));
+        self.note(|notes| notes.outgrown.store(Some(length)));
         true
     }
 
     /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search,
-    /// which goes on below the program and its heap down to the lowest address, then in each
-    /// higher tier in turn, top-down from its top.
+    /// which goes on below the program and its heap down to the lowest address, then bottom-up
+    /// above the mmap base as Linux falls back to, then in each higher tier in turn, top-down from
+    /// its top.
     pub fn find_free(&self, length: u64) -> Option<u64> {
         self.find_free_beside(length, &[])
     }
@@ -1054,6 +1077,24 @@ impl AddressMap {
     /// Free space as [`AddressMap::find_free`] finds it with `taken` in use too: where the loader
     /// will place a new program's parts.
     pub fn find_free_beside(&self, length: u64, taken: &[core::ops::Range<u64>]) -> Option<u64> {
+        self.search(length, taken, false)
+    }
+
+    /// Free space as [`AddressMap::find_free`] finds it for anonymous private memory placed with
+    /// no hint: a length of whole PMDs starts on a PMD's boundary where its range has room for
+    /// that, as Linux places it for its transparent huge pages (`__thp_get_unmapped_area`).
+    pub fn find_free_anonymous(&self, length: u64) -> Option<u64> {
+        self.search(length, &[], length.is_multiple_of(PMD_SIZE))
+    }
+
+    /// The search of [`AddressMap::find_free_beside`], range by range, and on a PMD's boundary
+    /// first if `on_boundary`; when it finds no space below a ceiling it is noted as outgrown.
+    fn search(
+        &self,
+        length: u64,
+        taken: &[core::ops::Range<u64>],
+        on_boundary: bool,
+    ) -> Option<u64> {
         let mut ranges = alloc::vec![(LOWEST_ADDRESS, self.mmap_base)];
         let mut floor = first_tier_top(self.ceiling);
         for tier in PLACEMENT_TIERS.into_iter().chain([self.end]) {
@@ -1063,18 +1104,41 @@ impl AddressMap {
                 floor = top;
             }
         }
-        for (floor, top) in ranges {
+        for (index, (floor, top)) in ranges.into_iter().enumerate() {
             // A range the executor cannot give is never filled in part, so that placement is the
             // same on every executor.
             if top > self.ceiling {
                 break;
             }
-            if let Some(start) = self.find_free_between(floor, top, length, taken) {
+            // Linux's search: top-down, and in the lowest range, which holds the stack, bottom-up
+            // above the mmap base when that finds nothing.
+            let find = |length: u64| {
+                self.find_free_between(floor, top, length, taken)
+                    .or_else(|| {
+                        let (floor, top) = self.fallback_range();
+                        let lowest = index == 0;
+                        lowest
+                            .then(|| self.find_lowest_free_between(floor, top, length, taken))
+                            .flatten()
+                    })
+            };
+            // Linux's search for one PMD more, then the boundary in that space, or one PMD higher
+            // when the space starts on one, as its layout is top-down.
+            let padded = length.checked_add(PMD_SIZE).filter(|_| on_boundary);
+            if let Some(start) = padded.and_then(find) {
+                let to_boundary = start.wrapping_neg() & (PMD_SIZE - 1);
+                return Some(if to_boundary == 0 {
+                    start + PMD_SIZE
+                } else {
+                    start + to_boundary
+                });
+            }
+            if let Some(start) = find(length) {
                 return Some(start);
             }
         }
         if self.ceiling < self.end {
-            self.note(|notes| notes.outgrown.set(Some(length)));
+            self.note(|notes| notes.outgrown.store(Some(length)));
         }
         None
     }
@@ -1114,13 +1178,46 @@ impl AddressMap {
         }
     }
 
+    /// The lowest free space for `length` bytes in `[floor, top)`, with `taken` in use too.
+    fn find_lowest_free_between(
+        &self,
+        floor: u64,
+        top: u64,
+        length: u64,
+        taken: &[core::ops::Range<u64>],
+    ) -> Option<u64> {
+        let mut start = floor;
+        loop {
+            let end = start.checked_add(length).filter(|end| *end <= top)?;
+            // The highest mapping that, with the guard gap below one that grows down, overlaps
+            // [start, end): nothing below its end is free for the length.
+            let mapped = self
+                .mappings
+                .range(..end.saturating_add(STACK_GUARD_GAP))
+                .rev()
+                .map(|(_, mapping)| mapping)
+                .find(|mapping| mapping.start_gap() < end)
+                .filter(|mapping| mapping.end > start)
+                .map(|mapping| mapping.end);
+            let reserved = taken
+                .iter()
+                .filter(|range| range.start < end && range.end > start)
+                .map(|range| range.end)
+                .max();
+            match mapped.max(reserved) {
+                Some(above) => start = above,
+                None => return Some(start),
+            }
+        }
+    }
+
     /// Takes a range out of the table, splitting mappings at its ends, and returns what was there;
     /// its pages' watches and record go with them.
     pub fn remove(&mut self, start: u64, end: u64) -> Vec<Mapping> {
         self.watches.forget(start, end);
         let removed = self.split_out(start, end);
         if removed.iter().any(|mapping| mapping.shared) {
-            self.note(|notes| notes.sharing_changed.set(true));
+            self.note(|notes| notes.sharing_changed.store(true));
         }
         removed
     }
@@ -1133,7 +1230,7 @@ impl AddressMap {
     /// Notes that the processes using this map changed, if it shows shared memory.
     pub fn note_sharers_changed(&self) {
         if self.has_shared() {
-            self.note(|notes| notes.sharing_changed.set(true));
+            self.note(|notes| notes.sharing_changed.store(true));
         }
     }
 
@@ -1183,7 +1280,7 @@ impl AddressMap {
             cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
         }
         if mapping.shared {
-            self.note(|notes| notes.sharing_changed.set(true));
+            self.note(|notes| notes.sharing_changed.store(true));
         }
         self.mappings.insert(mapping.start, mapping);
         self.merge_around();
@@ -1251,7 +1348,7 @@ impl AddressMap {
             .mappings
             .values()
             .filter(|mapping| {
-                matches!(&mapping.backing, Backing::File { node: mapped, .. } if alloc::rc::Rc::ptr_eq(mapped, node))
+                matches!(&mapping.backing, Backing::File { node: mapped, .. } if alloc::sync::Arc::ptr_eq(mapped, node))
             })
             .map(|mapping| mapping.start)
             .collect();
@@ -1543,7 +1640,7 @@ impl AddressMap {
                             ..
                         },
                     ) if mapping.shared
-                        && alloc::rc::Rc::ptr_eq(node, next_node)
+                        && alloc::sync::Arc::ptr_eq(node, next_node)
                         && !node.borrow().is_segment()
                         && offset + (last.end - last.start) == *next_offset
                         && (*file_end == last.end || *next_file_end == mapping.start) =>
@@ -1799,21 +1896,112 @@ mod tests {
         while placed.len() < count
             && let Some(start) = map.find_free(length)
         {
-            let mapping = Mapping {
-                start,
-                end: start + length,
-                permissions: Permissions::READ,
-                allowed: Permissions::all(),
-                shared: false,
-                locked: Lock::None,
-                grows_down: false,
-                on_fork: OnFork::default(),
-                backing: Backing::Anonymous,
-            };
-            map.mappings.insert(start, mapping);
+            place(map, start, length);
             placed.push(start);
         }
         placed
+    }
+
+    #[test]
+    fn anonymous_memory_of_whole_pmds_starts_on_a_boundary() {
+        let notes = Arc::new(MapNotes::default());
+        let mut map = AddressMap::new(PLACEMENT_TIERS[1], PLACEMENT_TIERS[1], notes);
+        // Below an odd page, as below a vDSO.
+        let odd = map.find_free(PAGE_SIZE).expect("space");
+        place(&mut map, odd, PAGE_SIZE);
+        // Each goes below the one before (what an alignment leaves above it is too small for the
+        // next); the last follows one that starts on a boundary, so the space below ends on one.
+        let mut top = odd;
+        for (length, aligned) in [
+            (PMD_SIZE, true),
+            (PMD_SIZE + PAGE_SIZE, false),
+            (2 * PMD_SIZE, true),
+            (PMD_SIZE, true),
+        ] {
+            let start = map.find_free_anonymous(length).expect("space");
+            // The highest start below what is mapped, on a boundary for whole PMDs.
+            let highest = top - length;
+            let expected = if aligned {
+                highest & !(PMD_SIZE - 1)
+            } else {
+                highest
+            };
+            assert_eq!(start, expected, "{length:#x}");
+            place(&mut map, start, length);
+            top = start;
+        }
+    }
+
+    /// The lowest range's room for a PMD but not for one on a boundary keeps the mapping there
+    /// unaligned, under any ceiling, rather than sending it to a higher range.
+    #[test]
+    fn a_pmd_stays_in_the_lowest_range_without_its_boundary() {
+        let hole = PMD_SIZE + PAGE_SIZE;
+        for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1]] {
+            let notes = Arc::new(MapNotes::default());
+            let mut map = AddressMap::new(PLACEMENT_TIERS[1], ceiling, notes);
+            let base = map.mmap_base;
+            place(
+                &mut map,
+                LOWEST_ADDRESS + hole,
+                base - LOWEST_ADDRESS - hole,
+            );
+            let top = first_tier_top(ceiling);
+            place(&mut map, base, top - base);
+            let start = map.find_free_anonymous(PMD_SIZE);
+            assert_eq!(
+                start,
+                Some(LOWEST_ADDRESS + hole - PMD_SIZE),
+                "{ceiling:#x}"
+            );
+        }
+    }
+
+    /// With no room below the mmap base, placement goes bottom-up in the lowest range above it,
+    /// the gap Linux leaves for the stack, before any higher range; and Linux's search there for a
+    /// PMD more gives a boundary.
+    #[test]
+    fn a_full_space_below_the_mmap_base_falls_back_to_the_gap_above_it() {
+        for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1]] {
+            let notes = Arc::new(MapNotes::default());
+            let mut map = AddressMap::new(PLACEMENT_TIERS[1], ceiling, notes);
+            let base = map.mmap_base;
+            let top = first_tier_top(ceiling);
+            place(&mut map, LOWEST_ADDRESS, base - LOWEST_ADDRESS);
+            let stack = top - STACK_LIMIT;
+            place(&mut map, stack, STACK_LIMIT);
+            map.mappings.get_mut(&stack).unwrap().grows_down = true;
+            let before = map.placeable();
+            assert_eq!(before, stack - STACK_GUARD_GAP - base, "{ceiling:#x}");
+            assert_eq!(map.find_free(PAGE_SIZE), Some(base), "{ceiling:#x}");
+            let aligned = (base + PMD_SIZE) & !(PMD_SIZE - 1);
+            assert_eq!(
+                map.find_free_anonymous(PMD_SIZE),
+                Some(aligned),
+                "{ceiling:#x}"
+            );
+            // The gap below the stack's guard gap is filled to its end, never into it.
+            let room = before & !(PAGE_SIZE - 1);
+            assert_eq!(map.find_free(room), Some(base), "{ceiling:#x}");
+            let higher = (ceiling > top).then_some(PLACEMENT_TIERS[1] - room - PAGE_SIZE);
+            assert_eq!(map.find_free(room + PAGE_SIZE), higher, "{ceiling:#x}");
+        }
+    }
+
+    /// Maps `length` bytes of anonymous memory at `start`.
+    fn place(map: &mut AddressMap, start: u64, length: u64) {
+        let mapping = Mapping {
+            start,
+            end: start + length,
+            permissions: Permissions::READ,
+            allowed: Permissions::all(),
+            shared: false,
+            locked: Lock::None,
+            grows_down: false,
+            on_fork: OnFork::default(),
+            backing: Backing::Anonymous,
+        };
+        map.mappings.insert(start, mapping);
     }
 
     #[test]
@@ -1824,7 +2012,7 @@ mod tests {
         for width in [1 << 36, 1 << 40, crate::user::ADDRESS_LIMIT] {
             let mut first = None;
             for ceiling in [PLACEMENT_TIERS[0], PLACEMENT_TIERS[1], width] {
-                let notes = Rc::new(MapNotes::default());
+                let notes = Arc::new(MapNotes::default());
                 let mut map = AddressMap::new(width, ceiling, notes.clone());
                 let placed = fill(&mut map, length, count);
                 assert!(
@@ -1849,7 +2037,7 @@ mod tests {
                         .all(|pair| tier_of(pair[0]) <= tier_of(pair[1]))
                 );
                 let ended = placed.len() < count;
-                assert_eq!(notes.outgrown.get().is_some(), ended && ceiling < width);
+                assert_eq!(notes.outgrown.load().is_some(), ended && ceiling < width);
                 assert_eq!(
                     ended,
                     ceiling < width,

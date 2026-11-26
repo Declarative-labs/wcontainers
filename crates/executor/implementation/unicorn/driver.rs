@@ -25,16 +25,29 @@ use wcontainers_system_seeded_test_policy::{
 };
 
 use crate::hooks::{BetweenSteps, Hooks, NoHooks};
-use crate::replay::{Entry, MemoryDigests, OwnedEvent, Tape};
+use crate::replay::{Entry, MemoryDigests, Tape};
 use crate::standin::Unsupported;
 use crate::streams::{StreamClient, StreamHost, Streams};
 use crate::{image, reference, streams};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 #[path = "tcp.rs"]
 mod tcp;
 #[path = "udp.rs"]
 mod udp;
 use tcp::Readied;
+
+/// The number of bytes a system call's buffer holds.
+fn length(bytes: &impl VolatileBytes) -> usize {
+    usize::try_from(bytes.len()).expect("a buffer fits in memory")
+}
+
+/// A copy of a system call's buffer.
+fn copied(bytes: &impl VolatileBytes) -> Vec<u8> {
+    let mut copy = vec![u8::MIN; length(bytes)];
+    bytes.read(&mut copy);
+    copy
+}
 
 /// Why a run on our kernel gave no outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -232,6 +245,9 @@ pub struct Run {
     pub tape: Option<Tape>,
     /// What every guest memory held, for a run that kept a record.
     pub memories: MemoryDigests,
+    /// What the stand-in refused in a copy made at a save, which ends without dropping it, handed
+    /// back so the process it was copied from fails the test as its own stand-in goes.
+    pub refused: Vec<crate::standin::Refused>,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -264,6 +280,8 @@ pub struct TestHost<H = NoHooks> {
     pub(crate) backend: Mutex<Option<crate::backend::Backend>>,
     /// The backend's replies the kernel's calls wait for.
     replies: Mutex<Replies>,
+    /// The backend's notices, for the kernel's wait on them.
+    notices: Mutex<Notices>,
     /// The resolver's answers the kernel's calls wait for, by the number of each question.
     names: Mutex<Replies>,
     /// The number of the last name question.
@@ -287,14 +305,32 @@ pub struct TestHost<H = NoHooks> {
     hooks: Mutex<H>,
     /// The record of what this host gives the kernel, kept or answered from.
     tape: Option<Mutex<Tape>>,
+    /// Ends the back end's turns once their time has passed on the machine's clock, for a run on it.
+    #[cfg(feature = "runtime")]
+    timer: Option<wcontainers_runtime_single_kernel::SliceTimer>,
 }
 
 /// The backend's replies that arrived for the kernel's calls and are not taken yet, and the waker of
-/// each call that waits for its reply, by request number.
+/// each call that waits for its reply, by request number. A reply completes only once the kernel
+/// has applied every notice sent before it arrived, as the FUSE server interface's rule says.
 #[derive(Default)]
 struct Replies {
-    arrived: BTreeMap<u64, Vec<u8>>,
+    /// Each reply, with how many notices had been sent when it arrived.
+    arrived: BTreeMap<u64, (u64, Vec<u8>)>,
     waiting: BTreeMap<u64, Waker>,
+    /// How many of the backend's notices the kernel has applied.
+    applied: u64,
+}
+
+/// The backend's notices sent and not yet taken by the kernel's wait, and that wait's waker.
+#[derive(Default)]
+struct Notices {
+    queued: std::collections::VecDeque<Vec<u8>>,
+    waker: Option<Waker>,
+    /// How many were sent.
+    sent: u64,
+    /// Whether the kernel holds one it has not yet said it applied.
+    held: bool,
 }
 
 /// What a driven run has done to it at moments drawn from its seed, and where it is.
@@ -310,7 +346,7 @@ struct Injecting {
     turns: u64,
     saved: usize,
     /// In a copy, where its run is reported to the process it was copied from.
-    report: Option<i32>,
+    report: Option<std::os::fd::OwnedFd>,
 }
 
 impl Injecting {
@@ -347,6 +383,7 @@ impl TestHost {
             kernel_work: AtomicU64::default(),
             backend: Mutex::default(),
             replies: Mutex::default(),
+            notices: Mutex::default(),
             names: Mutex::default(),
             last_name: AtomicU64::default(),
             ready: Mutex::default(),
@@ -358,6 +395,8 @@ impl TestHost {
             waits: false,
             hooks: Mutex::new(NoHooks),
             tape: None,
+            #[cfg(feature = "runtime")]
+            timer: None,
         }
     }
 
@@ -389,6 +428,7 @@ impl TestHost {
             kernel_work: self.kernel_work,
             backend: self.backend,
             replies: self.replies,
+            notices: self.notices,
             names: self.names,
             last_name: self.last_name,
             ready: self.ready,
@@ -400,6 +440,8 @@ impl TestHost {
             waits: self.waits,
             hooks: Mutex::new(hooks),
             tape: self.tape,
+            #[cfg(feature = "runtime")]
+            timer: self.timer,
         }
     }
 }
@@ -670,9 +712,10 @@ where
             loop {
                 let entry = lock(tape).take();
                 match entry {
-                    Entry::Event(event) => kernel.event(cpu, self, event.event()),
+                    Entry::Event(event) => kernel.event(cpu, self, event),
                     Entry::Kill(signal) => kernel.kill(cpu, self, signal),
                     Entry::BackendAnswered(unique, reply) => self.reply_arrived(unique, reply),
+                    Entry::NoticeSent(notice) => self.notice_sent(notice),
                     Entry::NameAnswered(number, answer) => self.name_arrived(number, answer),
                     Entry::SocketReady(number, ready) => self.socket_ready(number, ready),
                     Entry::StreamReady(end, ready) => self.stream_readied(end, ready),
@@ -695,11 +738,20 @@ where
 
     /// Hands the kernel an event from the outside, kept in the record; in a replay, one the
     /// driver's own work hands must be the one the record holds.
-    pub(crate) fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
-        self.kept_in_step(Entry::Event(OwnedEvent::of(&event)));
+    pub(crate) fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event) {
+        self.kept_in_step(Entry::Event(event));
         let was = self.set_outside(false);
         kernel.event(cpu, self, event);
         self.set_outside(was);
+    }
+
+    /// The backend sends a notice, kept in the record; the kernel then settles, as for a reply.
+    fn send_notice(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, notice: Vec<u8>) {
+        if self.taped_run() {
+            self.kept_in_step(Entry::NoticeSent(notice.clone()));
+        }
+        self.notice_sent(notice);
+        self.hand(kernel, cpu, Event::Timer);
     }
 
     /// Sends a signal from the outside to the first process, kept in the record.
@@ -775,20 +827,20 @@ impl<H: Send> wcontainers_clock::Clock for TestHost<H> {
 }
 
 impl<H: Send> wcontainers_random_source::RandomSource for TestHost<H> {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
         let bytes = self.answer(
             Entry::Random,
             |entry| match entry {
-                Entry::Random(bytes) if bytes.len() == into.len() => Ok(bytes),
+                Entry::Random(bytes) if bytes.len() == length(into) => Ok(bytes),
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![0; into.len()];
+                let mut bytes = vec![0; length(into)];
                 lock(&self.random).fill_bytes(&mut bytes);
                 bytes
             },
         );
-        into.copy_from_slice(&bytes);
+        into.write(&bytes);
         Ok(())
     }
 }
@@ -821,14 +873,19 @@ impl<H: Send> wcontainers_system::StreamTransport for TestHost<H> {
     type Endpoint = crate::streams::End;
 
     /// In a replay the client still shows what the record says was taken.
-    fn send_stream(&self, peer: &crate::streams::End, bytes: &[u8]) -> Result<usize, HostError> {
+    fn send_stream(
+        &self,
+        peer: &crate::streams::End,
+        payload: &impl VolatileBytes,
+    ) -> Result<usize, HostError> {
+        let bytes = copied(payload);
         let result = self.answer(
             Entry::StreamSent,
             |entry| match entry {
                 Entry::StreamSent(result) => Ok(result),
                 other => Err(other),
             },
-            || lock(&self.streams).send(*peer, bytes),
+            || lock(&self.streams).send(*peer, &bytes),
         );
         if let Ok(taken) = result
             && self.replaying()
@@ -841,24 +898,24 @@ impl<H: Send> wcontainers_system::StreamTransport for TestHost<H> {
     fn receive_stream(
         &self,
         peer: &crate::streams::End,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<usize, HostError> {
         let (result, bytes) = self.answer(
             |(result, bytes)| Entry::StreamReceived(result, bytes),
             |entry| match entry {
-                Entry::StreamReceived(result, bytes) if bytes.len() <= into.len() => {
+                Entry::StreamReceived(result, bytes) if bytes.len() <= length(into) => {
                     Ok((result, bytes))
                 }
                 other => Err(other),
             },
             || {
-                let mut bytes = vec![u8::MIN; into.len()];
+                let mut bytes = vec![u8::MIN; length(into)];
                 let result = lock(&self.streams).receive(*peer, &mut bytes);
                 bytes.truncate(*result.as_ref().unwrap_or(&usize::MIN));
                 (result, bytes)
             },
         );
-        into[..bytes.len()].copy_from_slice(&bytes);
+        into.write(&bytes);
         result
     }
 
@@ -876,7 +933,7 @@ impl<H: Send> wcontainers_readiness::Readiness<crate::streams::End> for TestHost
         if !self.replaying() {
             lock(&self.streams).arm(*peer, interest);
         }
-        Ok(Readied::wait(&self.stream_ready, peer.0).await)
+        Ok(Readied::wait(&self.stream_ready, peer.0, || None).await)
     }
 }
 
@@ -886,14 +943,38 @@ impl<H: Send> wcontainers_system::FuseServer for TestHost<H> {
     type Reply = Vec<u8>;
     type Notice = Vec<u8>;
 
-    /// Not built: this system hands its notices to the kernel as the abi's
-    /// `Event::BackendNotice`, until the kernel keeps a wait for them.
+    /// The next notice sent, once the kernel has said how the one before was applied, which lets
+    /// through the replies that waited for it.
     async fn receive_notice(
         &self,
         applied: Option<Result<(), Errno>>,
     ) -> Result<Vec<u8>, HostError> {
-        let _ = applied;
-        Err(HostError::NotSupported)
+        let held = std::mem::take(&mut lock(&self.notices).held);
+        if held != applied.is_some() {
+            let broken = if held {
+                format!("a notice's wait told {applied:?} where it was given a notice")
+            } else {
+                format!("a notice's wait told {applied:?} where it was given none")
+            };
+            lock(&self.streams).broken.push(broken);
+        }
+        if held {
+            Replies::notice_applied(&self.replies);
+        }
+        std::future::poll_fn(|context| {
+            let mut notices = lock(&self.notices);
+            match notices.queued.pop_front() {
+                Some(notice) => {
+                    notices.held = true;
+                    Poll::Ready(Ok(notice))
+                }
+                None => {
+                    notices.waker = Some(context.waker().clone());
+                    Poll::Pending
+                }
+            }
+        })
+        .await
     }
 
     async fn send_request(&self, request: &[u8]) -> Result<Vec<u8>, HostError> {
@@ -967,9 +1048,12 @@ impl Replies {
         let _forget = Forget(replies, key);
         std::future::poll_fn(|context| {
             let mut replies = lock(replies);
-            match replies.arrived.remove(&key) {
-                Some(reply) => Poll::Ready(reply),
-                None => {
+            let applied = replies.applied;
+            match replies.arrived.entry(key) {
+                std::collections::btree_map::Entry::Occupied(reply) if reply.get().0 <= applied => {
+                    Poll::Ready(reply.remove().1)
+                }
+                _ => {
                     replies.waiting.insert(key, context.waker().clone());
                     Poll::Pending
                 }
@@ -978,14 +1062,38 @@ impl Replies {
         .await
     }
 
-    /// The reply to `key` arrived: the call waiting for it is woken.
-    fn arrived(replies: &Mutex<Replies>, key: u64, reply: Vec<u8>) {
+    /// The reply to `key` arrived, after `notices` notices were sent: the call waiting for it is
+    /// woken once they are applied.
+    fn arrived(replies: &Mutex<Replies>, key: u64, notices: u64, reply: Vec<u8>) {
         let waiting = {
             let mut replies = lock(replies);
-            replies.arrived.insert(key, reply);
-            replies.waiting.remove(&key)
+            replies.arrived.insert(key, (notices, reply));
+            (notices <= replies.applied)
+                .then(|| replies.waiting.remove(&key))
+                .flatten()
         };
         if let Some(waker) = waiting {
+            waker.wake();
+        }
+    }
+
+    /// The kernel applied one more notice: the calls whose replies waited for it are woken.
+    fn notice_applied(replies: &Mutex<Replies>) {
+        let woken: Vec<Waker> = {
+            let mut replies = lock(replies);
+            replies.applied += 1;
+            let Replies {
+                arrived,
+                waiting,
+                applied,
+            } = &mut *replies;
+            arrived
+                .iter()
+                .filter(|(_, (notices, _))| notices == applied)
+                .filter_map(|(key, _)| waiting.remove(key))
+                .collect()
+        };
+        for waker in woken {
             waker.wake();
         }
     }
@@ -994,12 +1102,26 @@ impl Replies {
 impl<H> TestHost<H> {
     /// The backend's reply to request `unique` arrived: the call waiting for it is woken.
     fn reply_arrived(&self, unique: u64, reply: Vec<u8>) {
-        Replies::arrived(&self.replies, unique, reply);
+        let notices = lock(&self.notices).sent;
+        Replies::arrived(&self.replies, unique, notices, reply);
     }
 
     /// The resolver's answer to question `number` arrived: the call waiting for it is woken.
     fn name_arrived(&self, number: u64, answer: Vec<u8>) {
-        Replies::arrived(&self.names, number, answer);
+        Replies::arrived(&self.names, number, 0, answer);
+    }
+
+    /// The backend sent a notice: the kernel's wait for one is woken.
+    fn notice_sent(&self, notice: Vec<u8>) {
+        let waker = {
+            let mut notices = lock(&self.notices);
+            notices.sent += 1;
+            notices.queued.push_back(notice);
+            notices.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 
     /// Socket `number` became ready: the wait on it is woken.
@@ -1014,6 +1136,19 @@ impl<H> TestHost<H> {
 
     pub(crate) fn socket_ready(&self, number: u32, ready: wcontainers_readiness::ReadinessReport) {
         Readied::arrive(&self.ready, number, ready);
+    }
+
+    /// What socket `number` is ready for now, asked of the socket as a host's wait asks when it is
+    /// polled; none in a run that keeps or answers from a record, which hears the outside only
+    /// between turns, where its record keeps what it heard.
+    pub(crate) fn socket_ready_now(
+        &self,
+        number: u32,
+    ) -> Option<wcontainers_readiness::ReadinessReport> {
+        if self.taped_run() {
+            return None;
+        }
+        lock(&self.network).ready_now(number)
     }
 }
 
@@ -1036,7 +1171,7 @@ where
             .change(path, bytes);
     }
 
-    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>) {
+    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event) {
         TestHost::hand(self, kernel, cpu, event);
     }
 
@@ -1067,8 +1202,8 @@ pub fn exit_code(wait_status: i32) -> i32 {
 }
 
 /// How many turns on the CPU side this process's runs have ended, backend answers they have
-/// taken and steps of deadlines they have waited for, for a watchdog that tells a run that is
-/// slow from one stuck inside a single call or turn.
+/// taken, steps of deadlines they have waited for and backends they have started, for a watchdog
+/// that tells a run that is slow from one stuck inside a single call or turn.
 pub static PROGRESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What a container starts with: its files and its first process.
@@ -1201,6 +1336,10 @@ pub struct Prepared {
     pub hooks: Option<Box<dyn Hooks>>,
     /// The executor's ceiling given at start, if below the address space's end.
     pub ceiling: Option<u64>,
+    /// The container's address-space size given at start.
+    pub address_space_bytes: u64,
+    /// The memory size the guest is told, if not the executor's address space's end.
+    pub memory_bytes: Option<u64>,
     /// Whether the guest's clocks are the machine's and its waits take their time, so a test that
     /// runs for a span of time takes that span, rather than moving only with the work run.
     pub wall_clock: bool,
@@ -1223,6 +1362,8 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         client: StreamClient::default(),
         hooks: None,
         ceiling: None,
+        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
+        memory_bytes: None,
         wall_clock: false,
         tape: None,
         options: Default::default(),
@@ -1270,40 +1411,57 @@ pub fn run_prepared(
     }
 }
 
-/// A kernel with the container started on the stand-in, as the kernel interface sees it: its first
-/// process, with `state`, is loaded and has not run.
-pub fn started_with_executor<State: Clone + 'static>(
+/// A kernel interface's kernel on the stand-in, with the embedder's state `State`.
+pub type InterfaceKernel<State> =
+    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State, TestHost>;
+
+/// A runner of an [`InterfaceKernel`].
+pub type InterfaceRunner<State> =
+    wcontainers_kernel_linux::KernelRunner<crate::standin::StandIn, State, TestHost>;
+
+/// A kernel with the container started on the stand-in, made through the kernel interface with
+/// `parallelism` runners, and those runners: its first process, with `state`, is loaded and has
+/// not run.
+pub fn started_with_executor<State: Clone + Send + 'static>(
     prepared: Prepared,
     container: &Container<'_>,
     state: State,
+    parallelism: std::num::NonZeroUsize,
 ) -> (
-    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, State, TestHost>,
+    InterfaceKernel<State>,
+    Vec<InterfaceRunner<State>>,
     Arc<TestHost>,
 ) {
+    use wcontainers_kernel::Kernel as _;
+    /// The interface's configuration holds a start that lives as long as the kernel: what it
+    /// names lives as long as the test.
+    fn kept(bytes: &[u8]) -> &'static [u8] {
+        Box::leak(bytes.into())
+    }
     let host = TestHost::repeatable(0, None);
     *host.streams() = Streams::new(prepared.client);
     let arguments: Vec<&[u8]> = container
         .arguments
         .iter()
-        .map(|argument| argument.as_bytes())
+        .map(|argument| kept(argument.as_bytes()))
         .collect();
     let environment: Vec<&[u8]> = container
         .environment
         .iter()
-        .map(|variable| variable.as_bytes())
+        .map(|variable| kept(variable.as_bytes()))
         .collect();
     let cpu = crate::standin::StandIn::with_space(container.address_space);
     let start = Start {
-        path: container.path.as_bytes(),
-        arguments: &arguments,
-        environment: &environment,
-        working_directory: container.working_directory.as_bytes(),
+        path: kept(container.path.as_bytes()),
+        arguments: Box::leak(arguments.into_boxed_slice()),
+        environment: Box::leak(environment.into_boxed_slice()),
+        working_directory: kept(container.working_directory.as_bytes()),
         hostname: reference::HOSTNAME.as_bytes(),
-        groups: &prepared.groups,
+        groups: Box::leak(prepared.groups.into_boxed_slice()),
         backend: None,
         standard: host.standard(),
-        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
-        memory_bytes: cpu.address_space().end,
+        address_space_bytes: prepared.address_space_bytes,
+        memory_bytes: prepared.memory_bytes.unwrap_or(cpu.address_space().end),
         ceiling: prepared.ceiling,
         options: prepared.options,
     };
@@ -1313,16 +1471,17 @@ pub fn started_with_executor<State: Clone + 'static>(
         translator: (),
     };
     let host = Arc::new(host);
-    let kernel = wcontainers_kernel_linux::KernelWithExecutor::start(
+    let config = wcontainers_kernel_linux::KernelConfig::new(
         prepared.kernel,
         cpu,
-        &host,
+        Arc::clone(&host),
         start,
         config,
         state,
-    )
-    .expect("the kernel runs a process serially with exact replay");
-    (kernel, host)
+    );
+    let (kernel, runners) = wcontainers_kernel_linux::KernelWithExecutor::new(config, parallelism);
+    let runners = runners.collect();
+    (kernel, runners, host)
 }
 
 /// The id of a container's first process, as the kernel numbers it inside the container.
@@ -1336,7 +1495,30 @@ pub fn program_not_run(
     link_flags: &[&str],
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
-    program_started(name, link_flags, out).0
+    program_started(
+        name,
+        link_flags,
+        out,
+        std::num::NonZeroUsize::MIN,
+        Default::default(),
+    )
+    .0
+}
+
+/// A kernel on the stand-in made through the kernel interface with `parallelism` runners, with a
+/// container started with the guest program `name`, built with `link_flags` into `out`, whose
+/// first process has not run; its runners; and its system.
+pub fn program_on_runners(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
+) -> (
+    InterfaceKernel<u64>,
+    Vec<InterfaceRunner<u64>>,
+    Arc<TestHost>,
+) {
+    program_started(name, link_flags, out, parallelism, Default::default())
 }
 
 /// As [`program_not_run`], run until every thread waits with no deadline.
@@ -1345,40 +1527,90 @@ pub fn program_waiting(
     link_flags: &[&str],
     out: &std::path::Path,
 ) -> wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost> {
-    let (mut started, host) = program_started(name, link_flags, out);
-    let (kernel, cpu) = started.parts();
-    loop {
-        match kernel.next() {
-            Next::Run {
-                thread,
-                resume,
-                slice_nanoseconds,
-            } => {
-                let exit = cpu
-                    .run(thread, resume, slice_nanoseconds)
-                    .expect("the stand-in runs the program");
-                kernel.exit(cpu, &host, exit);
-            }
-            Next::Idle {
-                until_nanoseconds: Some(0),
-            } => kernel.event(cpu, &host, Event::Timer),
-            Next::Idle {
-                until_nanoseconds: None,
-            } => break,
-            other => panic!("the program waits for ever, not {other:?}"),
-        }
-    }
+    let (mut started, _, host) = program_started(
+        name,
+        link_flags,
+        out,
+        std::num::NonZeroUsize::MIN,
+        Default::default(),
+    );
+    let finished = run_started(&mut started, &host);
+    assert_eq!(finished, None, "the program waits for ever");
     started
 }
 
+/// The exit code of the guest program `name`, built with `link_flags` into `out`, run to its end
+/// on a kernel made with `parallelism` runners.
+pub fn program_exit_code(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
+) -> i32 {
+    program_exit_code_with(name, link_flags, out, parallelism, Default::default())
+}
+
+/// As [`program_exit_code`], with what the container's configuration sets beyond its program.
+pub fn program_exit_code_with(
+    name: &str,
+    link_flags: &[&str],
+    out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
+    options: wcontainers_kernel_linux::StartOptions<'static>,
+) -> i32 {
+    let (mut started, _, host) = program_started(name, link_flags, out, parallelism, options);
+    let status = run_started(&mut started, &host).expect("the program ends");
+    exit_code(status)
+}
+
+/// Runs a started kernel's threads until its container ends, with its wait status, or every
+/// thread waits with no deadline.
+fn run_started(
+    started: &mut wcontainers_kernel_linux::KernelWithExecutor<
+        crate::standin::StandIn,
+        u64,
+        TestHost,
+    >,
+    host: &Arc<TestHost>,
+) -> Option<i32> {
+    started.with_parts(|kernel, machine| {
+        loop {
+            match kernel.next() {
+                Next::Run {
+                    thread,
+                    resume,
+                    slice_nanoseconds,
+                } => {
+                    let (standin, registers, memory) = machine.thread_parts(thread);
+                    let exit = standin
+                        .run_on(registers, memory, resume, slice_nanoseconds)
+                        .expect("the stand-in runs the program");
+                    kernel.exit(machine, host, exit);
+                }
+                Next::Idle {
+                    until_nanoseconds: Some(0),
+                } => kernel.event(machine, host, Event::Timer),
+                Next::Idle {
+                    until_nanoseconds: None,
+                } => return None,
+                Next::Finished { status } => return Some(status),
+                other => panic!("the program waits for its deadline, not {other:?}"),
+            }
+        }
+    })
+}
+
 /// A container started with the guest program `name`, built with `link_flags` into `out`, and
-/// its system.
+/// `options`, on a kernel with `parallelism` runners, and its system.
 fn program_started(
     name: &str,
     link_flags: &[&str],
     out: &std::path::Path,
+    parallelism: std::num::NonZeroUsize,
+    options: wcontainers_kernel_linux::StartOptions<'static>,
 ) -> (
-    wcontainers_kernel_linux::KernelWithExecutor<crate::standin::StandIn, u64, TestHost>,
+    InterfaceKernel<u64>,
+    Vec<InterfaceRunner<u64>>,
     Arc<TestHost>,
 ) {
     let program = crate::guest::build(name, link_flags, out);
@@ -1401,7 +1633,11 @@ fn program_started(
         root_image: None,
         address_space: crate::standin::SPACE_32_BIT,
     };
-    started_with_executor(prepare(&container), &container, u64::MIN)
+    let prepared = Prepared {
+        options,
+        ..prepare(&container)
+    };
+    started_with_executor(prepared, &container, u64::MIN, parallelism)
 }
 
 fn run_hosted<H: BetweenSteps + Send>(
@@ -1412,7 +1648,9 @@ fn run_hosted<H: BetweenSteps + Send>(
     injections: Injections,
 ) -> Result<Run, Failure>
 where
-    TestHost<H>: System + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>,
+    TestHost<H>: System
+        + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>
+        + wcontainers_readiness::Readiness<crate::streams::End, wait_until_ready(..): Send>,
 {
     let Prepared {
         mut kernel,
@@ -1420,6 +1658,8 @@ where
         echo,
         client,
         ceiling,
+        address_space_bytes,
+        memory_bytes,
         wall_clock,
         options,
         ..
@@ -1437,6 +1677,13 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     let mut cpu = back_end(seed, container.address_space, wall_clock);
+    // On the machine's clock a unit of the back end's progress takes what it takes, so its turns end
+    // once their time has passed, as the stand-in's do.
+    #[cfg(feature = "runtime")]
+    if wall_clock {
+        use wcontainers_runtime_single_kernel::{Executor as _, SliceTimer};
+        host.timer = Some(SliceTimer::new(cpu.stop_flag()));
+    }
     #[cfg(not(feature = "runtime"))]
     let taped = host.tape.is_some();
     #[cfg(not(feature = "runtime"))]
@@ -1463,6 +1710,7 @@ where
             served,
             container.cached,
         ));
+        PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let arguments: Vec<&[u8]> = container
         .arguments
@@ -1483,8 +1731,8 @@ where
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
         standard: host.standard(),
-        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
-        memory_bytes: cpu.address_space().end,
+        address_space_bytes,
+        memory_bytes: memory_bytes.unwrap_or(cpu.address_space().end),
         ceiling,
         options,
     };
@@ -1496,6 +1744,14 @@ where
     let ending = wcontainers_runtime_single_kernel::drive(&mut kernel, &mut cpu, &host);
     let status = match ending {
         Ok(Ending::Finished { status }) => status,
+        // A copy made at a save ran the rest: what its stand-in refused fails the test as this
+        // process's stand-in goes, as its own refusals do.
+        #[cfg(not(feature = "runtime"))]
+        Ok(Ending::Ended(mut run)) => {
+            cpu.refused_in_a_copy(std::mem::take(&mut run.refused));
+            return Ok(run);
+        }
+        #[cfg(feature = "runtime")]
         Ok(Ending::Ended(run)) => return Ok(run),
         // A copy cannot hand a failure back; it says what it was and ends.
         Err(failure) if host.injecting().report.is_some() => {
@@ -1542,9 +1798,18 @@ where
         );
     }
     let (report, saved, turns) = {
-        let injecting = host.injecting();
-        (injecting.report, injecting.saved, injecting.turns)
+        let mut injecting = host.injecting();
+        (injecting.report.take(), injecting.saved, injecting.turns)
     };
+    // A copy ends without dropping its stand-in, so it reports what the stand-in refused.
+    #[cfg(not(feature = "runtime"))]
+    let refused = if report.is_some() {
+        cpu.take_refused()
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "runtime")]
+    let refused = Vec::new();
     let streams = std::mem::take(&mut *host.streams());
     let run = Run {
         outcome: Outcome {
@@ -1564,6 +1829,7 @@ where
         input_closed,
         tape,
         memories,
+        refused,
     };
     Ok(finish(run, report))
 }
@@ -1617,6 +1883,11 @@ where
                 .random_range(1..=ANSWER_ARRIVES_WITHIN);
             limit = Some(limit.map_or(arrival, |l| l.min(arrival)));
         }
+        #[cfg(feature = "runtime")]
+        if let Some(timer) = &self.timer {
+            timer.turn(limit);
+            return Turn::Free;
+        }
         Turn::Counted { limit }
     }
 
@@ -1644,7 +1915,7 @@ where
                 injecting.notice_at.remove(0);
                 notice(&mut injecting.notices)
             };
-            self.hand(kernel, cpu, Event::BackendNotice { notice: &notice });
+            self.send_notice(kernel, cpu, notice);
         }
         while self.injecting().signal_at.first() == Some(&turns) {
             let signal = {
@@ -1671,27 +1942,28 @@ where
                 injecting.at.remove(0);
                 injecting.saved += 1;
             }
-            let mut ends = [0; 2];
-            // SAFETY: plain system calls; the copy goes on in this thread alone and ends with
-            // `_exit` once it has reported.
-            unsafe {
-                assert_eq!(libc::pipe(ends.as_mut_ptr()), 0, "a pipe for the copy");
-                match libc::fork() {
-                    copy if copy < 0 => panic!("fork failed"),
-                    0 => {
-                        libc::close(ends[0]);
-                        std::panic::set_hook(Box::new(|info| panic_in_copy(&info.to_string())));
-                        if let Some(earlier) = self.injecting().report.replace(ends[1]) {
-                            libc::close(earlier);
-                        }
-                    }
-                    copy => {
-                        libc::close(ends[1]);
-                        // The copy alone holds the network from here on.
-                        drop(std::mem::take(&mut *lock(&self.network)));
-                        let report = self.injecting().report;
-                        return ControlFlow::Break(finish(copied_run(copy, ends[0]), report));
-                    }
+            let (reading, writing) = rustix::pipe::pipe().expect("a pipe for the copy");
+            // SAFETY: NOT shown. The copy goes on in this thread alone and ends with `_exit` once it
+            // has reported, but this process has other threads (kernel runners, the backend's and
+            // the network's), so the copy may start with a lock one of them held.
+            #[expect(
+                unsafe_code,
+                reason = "UNSOUND: forks a process that has other threads, so the copy may start holding a lock one of them held; no primitive replaces it, step one re-runs the test binary with Command instead"
+            )]
+            match unsafe { libc::fork() } {
+                copy if copy < 0 => panic!("fork failed"),
+                0 => {
+                    drop(reading);
+                    std::panic::set_hook(Box::new(|info| panic_in_copy(&info.to_string())));
+                    // An earlier report end, of the process this copy was copied from, closes.
+                    drop(self.injecting().report.replace(writing));
+                }
+                copy => {
+                    drop(writing);
+                    // The copy alone holds the network from here on.
+                    drop(std::mem::take(&mut *lock(&self.network)));
+                    let report = self.injecting().report.take();
+                    return ControlFlow::Break(finish(copied_run(copy, reading), report));
                 }
             }
             *cpu = cpu.restored();
@@ -1782,7 +2054,9 @@ where
 /// What the loop asks of the test host between turns.
 impl<H: BetweenSteps + Send + 'static> wcontainers_runtime_single_kernel::System for TestHost<H>
 where
-    Self: System + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>,
+    Self: System
+        + wcontainers_system::StreamTransport<Endpoint = crate::streams::End>
+        + wcontainers_readiness::Readiness<crate::streams::End, wait_until_ready(..): Send>,
 {
     /// The run of a copy made at a save, as the process it was copied from gets it.
     type End = Run;
@@ -1865,6 +2139,10 @@ where
         kernel: &mut Kernel,
         cpu: &mut E,
     ) -> ControlFlow<Run> {
+        #[cfg(feature = "runtime")]
+        if let Some(timer) = &self.timer {
+            timer.turn_over();
+        }
         self.stopped_live(kernel, cpu)
     }
 
@@ -2113,28 +2391,29 @@ fn deliver_live<H: Send>(
             host.reply_arrived(unique, reply);
             host.hand(kernel, cpu, Event::Timer);
         }
-        crate::backend::Message::Notice(notice) => {
-            host.hand(kernel, cpu, Event::BackendNotice { notice: &notice });
-        }
+        crate::backend::Message::Notice(notice) => host.send_notice(kernel, cpu, notice),
     }
 }
 
 /// A run's end: returned, or in a copy made at a save reported to the process it was copied from,
 /// which ends the copy.
-fn finish(run: Run, report: Option<i32>) -> Run {
+fn finish(run: Run, report: Option<std::os::fd::OwnedFd>) -> Run {
     if let Some(fd) = report {
         let bytes = encode(&run);
-        // SAFETY: writes to the pipe this copy was given, then ends the copy without unwinding.
-        unsafe {
-            let mut written = 0;
-            while written < bytes.len() {
-                let count =
-                    libc::write(fd, bytes[written..].as_ptr().cast(), bytes.len() - written);
-                assert!(count > 0, "reporting a copy's run");
-                written += count as usize;
-            }
-            libc::_exit(0);
+        let mut written = 0;
+        while written < bytes.len() {
+            let count = rustix::io::write(&fd, &bytes[written..]).expect("reporting a copy's run");
+            assert!(count > 0, "reporting a copy's run");
+            written += count;
         }
+        // SAFETY: ends the copy without unwinding into the harness it was copied with.
+        #[expect(
+            unsafe_code,
+            reason = "ends the forked copy at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+        )]
+        unsafe {
+            libc::_exit(0)
+        };
     }
     run
 }
@@ -2143,30 +2422,44 @@ fn finish(run: Run, report: Option<i32>) -> Run {
 /// must not unwind into the test harness it was copied with.
 fn panic_in_copy(why: &str) -> ! {
     let message = format!("a copy made at a save failed: {why}\n");
-    // SAFETY: a write to the standard error, then the copy ends.
+    let _ = rustix::io::write(rustix::stdio::stderr(), message.as_bytes());
+    // SAFETY: the copy ends.
+    #[expect(
+        unsafe_code,
+        reason = "ends the forked copy at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+    )]
     unsafe {
-        libc::write(2, message.as_ptr().cast(), message.len());
         libc::_exit(1)
-    }
+    };
 }
 
 /// The run of a copy made at a save, read from its pipe once it has ended.
-fn copied_run(copy: libc::pid_t, fd: i32) -> Run {
+fn copied_run(copy: libc::pid_t, fd: std::os::fd::OwnedFd) -> Run {
     use std::io::Read;
-    use std::os::fd::{FromRawFd, OwnedFd};
     let mut bytes = Vec::new();
-    // SAFETY: the read end of the copy's pipe, which only this function uses and closes.
-    std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) })
+    std::fs::File::from(fd)
         .read_to_end(&mut bytes)
         .expect("the copy's pipe reads to its end");
-    let mut status = 0;
-    // SAFETY: reaps the copy, a child of this process.
-    unsafe { libc::waitpid(copy, &mut status, 0) };
+    let ended = reap(rustix::process::Pid::from_raw(copy).expect("the copy's id"));
     assert!(
-        !bytes.is_empty() && status == 0,
-        "the copy made at a save ended without a run (wait status {status}); why is above"
+        !bytes.is_empty() && ended == Ok(0),
+        "the copy made at a save ended without a run ({ended:?}); why is above"
     );
     decode(&bytes)
+}
+
+/// Waits for a child of this process to end and returns its wait status, waiting again when a
+/// signal interrupts the wait; any other failure to wait is returned as text, so the copy counts as
+/// failed rather than as ended cleanly.
+fn reap(child: rustix::process::Pid) -> Result<i32, String> {
+    loop {
+        match rustix::process::waitpid(Some(child), rustix::process::WaitOptions::empty()) {
+            Ok(Some((_, status))) => return Ok(status.as_raw()),
+            Ok(None) => return Err("waiting gave no status".to_owned()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(format!("waiting for it failed: {error}")),
+        }
+    }
 }
 
 /// A run as bytes, for a copy to hand it to the process it was copied from.
@@ -2214,6 +2507,18 @@ fn encode(run: &Run) -> Vec<u8> {
         number(&mut out, file.gid.into());
         bytes(&mut out, &file.contents);
         number(&mut out, file.rdev);
+    }
+    number(&mut out, run.refused.len() as u64);
+    for refused in &run.refused {
+        match refused {
+            crate::standin::Refused::DroppingAShownBlock { block, shown_in } => {
+                number(&mut out, block.0.into());
+                number(&mut out, shown_in.len() as u64);
+                for memory in shown_in {
+                    number(&mut out, memory.0.into());
+                }
+            }
+        }
     }
     out
 }
@@ -2277,6 +2582,14 @@ fn decode(input: &[u8]) -> Run {
             rdev: reader.number(),
         })
         .collect();
+    let refused = (0..reader.number())
+        .map(|_| crate::standin::Refused::DroppingAShownBlock {
+            block: wcontainers_abi::SharedId(reader.number() as u32),
+            shown_in: (0..reader.number())
+                .map(|_| wcontainers_abi::MemoryId(reader.number() as u32))
+                .collect(),
+        })
+        .collect();
     Run {
         outcome: Outcome {
             stdout,
@@ -2296,5 +2609,28 @@ fn decode(input: &[u8]) -> Run {
         // A copy made at a save keeps no record.
         tape: None,
         memories: Vec::new(),
+        refused,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reap;
+
+    #[test]
+    #[expect(
+        clippy::zombie_processes,
+        reason = "the child is waited for by reap, the function under test, not by Child::wait"
+    )]
+    fn a_child_is_reaped_once_and_a_second_wait_fails_without_a_panic() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .expect("starting a shell");
+        let pid = rustix::process::Pid::from_raw(child.id() as i32).expect("the child's id");
+        // Linux's wait status of a child that called exit(3).
+        assert_eq!(reap(pid), Ok(3 << 8));
+        // The child is reaped, so waiting again fails (ECHILD) and says so.
+        assert!(reap(pid).is_err_and(|why| why.starts_with("waiting for it failed")));
     }
 }

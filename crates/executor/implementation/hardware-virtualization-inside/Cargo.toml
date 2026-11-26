@@ -16,11 +16,14 @@ wcontainers-abi.workspace = true
 wcontainers-arm64 = { path = "../../../arm64", default-features = false }
 # The position map, which stops are resolved with.
 wcontainers-guest-cpu = { path = "../../../guest-cpu", default-features = false }
+# Stops resolved in every way of running translated code.
+wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 # The kernel, which runs inside.
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-system = { path = "../../../system" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 wcontainers-clock = { path = "../../../clock" }
 wcontainers-random-source = { path = "../../../random-source" }
 # The loop, which runs inside beside the kernel.
@@ -37,6 +40,8 @@ zerocopy.workspace = true
 aarch64-paging = { version = "0.12.3", default-features = false }
 # System register fields.
 aarch64-cpu = "12.0.0"
+# The syndrome bits the architecture's model names.
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 arm-sysregs = { version = "0.5.2", features = ["el1"] }
 # The interrupt controller.
 arm-gic = "0.11.0"
@@ -84,5 +89,8 @@ wcontainers-arm64 = { path = "../../../arm64", default-features = false }
 # Assembles Arm's memcpy.
 cc = "1.11.2"
 
-[lints]
-workspace = true
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`; a reason
+# starting "UNSOUND:" or "UNEXPLAINED:" marks a use nobody has shown sound, and names what replaces it.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

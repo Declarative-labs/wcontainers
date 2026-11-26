@@ -110,25 +110,32 @@ fn mount(server: Arc<Server<Arc<Announcing>>>, at: &Path, command: &[String]) {
     });
     let mut run = std::process::Command::new(&command[0]);
     run.args(&command[1..]).current_dir(at);
-    // SAFETY: only sets the umask and drops capabilities between fork and exec.
+    // SAFETY: only sets the umask between fork and exec, a call that is async-signal-safe; the
+    // closure allocates nothing and takes no lock, as the server's thread is running.
+    #[expect(
+        unsafe_code,
+        reason = "std's pre_exec runs the closure between fork and exec, where only async-signal-safe calls may be made; it calls only umask, which is, and allocates nothing"
+    )]
     unsafe {
         run.pre_exec(|| {
             // The server works with no umask; the command starts with Docker's.
             libc::umask(0o022);
-            use caps::{CapSet, Capability};
-            for set in [
-                CapSet::Bounding,
-                CapSet::Effective,
-                CapSet::Permitted,
-                CapSet::Inheritable,
-            ] {
-                caps::drop(None, set, Capability::CAP_SYS_ADMIN)
-                    .map_err(|error| std::io::Error::other(error.to_string()))?;
-            }
             Ok(())
         });
     }
-    let status = run.status().expect("the command started");
+    // A thread's capabilities are its own, and a command starts with those of the thread that
+    // starts it: that thread gives up CAP_SYS_ADMIN where exec would hand it on (the bounding and
+    // inheritable sets, and so the ambient one), and this one keeps it to unmount.
+    let status = std::thread::spawn(move || {
+        use caps::{CapSet, Capability};
+        for set in [CapSet::Bounding, CapSet::Inheritable] {
+            caps::drop(None, set, Capability::CAP_SYS_ADMIN).expect("dropping CAP_SYS_ADMIN");
+        }
+        run.status()
+    })
+    .join()
+    .expect("the thread that runs the command")
+    .expect("the command started");
     let code = match (
         status.code(),
         std::os::unix::process::ExitStatusExt::signal(&status),

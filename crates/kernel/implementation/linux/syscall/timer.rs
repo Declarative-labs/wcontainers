@@ -5,9 +5,10 @@
 //! "wake me at this time" comes from; one on a CPU clock is looked at whenever a thread of its
 //! process comes back from running, and the running thread's turn ends when it is due.
 
+use crate::linux_extra::{MICROSECONDS_PER_SECOND, NANOSECONDS_PER_MICROSECOND};
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::rc::{Rc, Weak};
-use core::cell::RefCell;
+use alloc::sync::{Arc, Weak};
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use super::{Args, guest};
@@ -53,7 +54,7 @@ enum Owner {
         which: u32,
     },
     Descriptor {
-        file: Weak<RefCell<OpenFile>>,
+        file: Weak<AtomicRefCell<OpenFile>>,
     },
     /// A thread sleeping on a CPU clock (`do_cpu_nanosleep`), with the time its call was given.
     Sleep {
@@ -63,11 +64,11 @@ enum Owner {
     /// The end of a TCP connection's deferral (TCP_DEFER_ACCEPT) on a listener, or a held
     /// connection's client sending again to a listener gone.
     Deferral {
-        listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+        listener: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     },
     /// A TCP connection's probe timer, which sends the bytes it holds back (`tcp_probe_timer`).
     HeldBytes {
-        socket: Weak<RefCell<crate::syscall::socket::Socket>>,
+        socket: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     },
 }
 
@@ -618,7 +619,7 @@ pub(super) fn start_cpu_sleep(
 /// (or, on a client, sends again what its gone listener dropped).
 pub(crate) fn start_deferral(
     kernel: &mut Kernel,
-    listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    listener: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     until: u64,
 ) {
     start_once(kernel, Owner::Deferral { listener }, until);
@@ -627,7 +628,7 @@ pub(crate) fn start_deferral(
 /// Starts a connection's probe timer at `until` on the monotonic clock; its id, to stop it.
 pub(crate) fn start_held_bytes(
     kernel: &mut Kernel,
-    socket: Weak<RefCell<crate::syscall::socket::Socket>>,
+    socket: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     until: u64,
 ) -> u64 {
     start_once(kernel, Owner::HeldBytes { socket }, until)
@@ -1069,7 +1070,7 @@ fn interval_value(kernel: &Kernel, pid: Pid, which: u32) -> (u64, u64) {
     // the CPU ones (`itimer_get_remtime`, `get_cpu_itimer`).
     let left = match expires.checked_sub(clock_now).filter(|left| *left > 0) {
         Some(left) => left,
-        None if which == ITIMER_REAL => 1000,
+        None if which == ITIMER_REAL => NANOSECONDS_PER_MICROSECOND,
         None => 4_000_000,
     };
     (left, timer.interval)
@@ -1084,7 +1085,7 @@ fn write_itimerval<S: crate::System>(
 ) -> Result<(), Errno> {
     let timeval = |nanoseconds: u64| __kernel_old_timeval {
         tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
-        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
+        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
     };
     let out = __kernel_old_itimerval {
         it_interval: timeval(interval),
@@ -1119,12 +1120,12 @@ pub(super) fn setitimer<S: crate::System>(
     if new != 0 {
         let given: __kernel_old_itimerval = guest(kernel, cx, tid).read_value(new)?;
         let micro = |time: __kernel_old_timeval| {
-            if time.tv_sec < 0 || !(0..1_000_000).contains(&time.tv_usec) {
+            if time.tv_sec < 0 || !(0..MICROSECONDS_PER_SECOND as i64).contains(&time.tv_usec) {
                 return Err(Errno::EINVAL);
             }
             Ok((time.tv_sec as u64)
                 .saturating_mul(NANOSECONDS_PER_SECOND)
-                .saturating_add(time.tv_usec as u64 * 1000))
+                .saturating_add(time.tv_usec as u64 * NANOSECONDS_PER_MICROSECOND))
         };
         value = micro(given.it_value)?;
         interval = micro(given.it_interval)?;
@@ -1204,7 +1205,7 @@ pub(super) fn timerfd_create<S: crate::System>(
     );
     let id = kernel.timers.add(Timer {
         owner: Owner::Descriptor {
-            file: Rc::downgrade(&file),
+            file: Arc::downgrade(&file),
         },
         clock: Clock::Wall,
         expires: None,

@@ -3,19 +3,22 @@
 //! run; code is translated at first use and kept in a cache shared by every executor of a [`Compiler`].
 
 pub mod cli;
+mod guest_memory;
 mod memory;
 pub mod single_instruction;
 pub mod starts;
 
+use aarch64_cpu::registers::ESR_EL1;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::io::Write;
-use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -23,24 +26,32 @@ use std::time::Instant;
 use wasmtime::{
     AsContextMut, Caller, Config, Engine, Extern, Func, FuncType, Global, GlobalType, Instance,
     Memory, MemoryType, Module, Mutability, Ref, SharedMemory, Store, StoreLimits,
-    StoreLimitsBuilder, Table, Trap, TypedFunc, Val, ValRaw,
+    StoreLimitsBuilder, Table, Trap, TypedFunc, Val,
 };
 use wcontainers_abi::{
     Access, AddressSpace, CounterReading, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
     RegisterBlock, Resume, SharedId, SystemCallNumber, SystemCallRequest, ThreadId, Warning,
 };
+use wcontainers_executor::{
+    ExecutionInterrupter, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
+};
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_processor_architecture::MemoryDelta;
-use wcontainers_processor_architecture_arm64::Processor;
+use wcontainers_processor_architecture_arm64::syndrome::{FaultStatus, encode_syndrome};
+use wcontainers_processor_architecture_arm64::{
+    DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch, PagePermission, Processor,
+};
 use wcontainers_runtime_single_kernel::{
     Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag, Turn,
 };
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
-use zerocopy::{FromBytes, IntoBytes};
+use zerocopy::IntoBytes;
 
+use guest_memory::World;
+pub use guest_memory::{GuestBytes, GuestMemory};
 pub use memory::Layout;
-use memory::SLOT_BYTES;
+use memory::{Region, SLOT_BYTES};
 pub use starts::Sources;
 pub use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
@@ -61,6 +72,9 @@ pub mod reason {
     pub const CODE_OUTSIDE_ANNOUNCED_RANGE: &str = "code outside an announced range";
     /// The thread left `run` because code it may be running was dropped.
     pub const LEFT_CODE_CHANGED_UNDER_IT: &str = "left run: code changed under it";
+    /// The thread left `run` because the kernel took access from a page of its memory while it was in a hook, so
+    /// no piece in progress goes on with what it found out about that page before.
+    pub const LEFT_PERMISSIONS_NARROWED: &str = "left run: permissions narrowed under it";
     /// Leaving `run` from a hook, the slow twin of answering in it, by why. The detail is the call
     /// number, or [`NOT_A_CALL`] after a stop.
     pub const LEFT_CALL_WAITS: &str = "left run: the call waits";
@@ -93,7 +107,8 @@ pub struct Compiler<G: Guest> {
     engine: Engine,
     thread_module: Module,
     /// Dropped only in the process that made it: in a copy made by fork its threads are not there.
-    pool: ManuallyDrop<rayon::ThreadPool>,
+    /// None only while the compiler is dropped.
+    pool: Option<rayon::ThreadPool>,
     /// The process the pool's threads are in.
     process: u32,
     host: G::Host,
@@ -240,7 +255,7 @@ impl<G: Guest> Compiler<G> {
         Arc::new(Self {
             engine,
             thread_module,
-            pool: ManuallyDrop::new(pool),
+            pool: Some(pool),
             process: std::process::id(),
             host,
             modules: Mutex::new(HashMap::new()),
@@ -289,7 +304,12 @@ impl<G: Guest> Compiler<G> {
         for CacheModule { pieces: list, code } in body {
             // SAFETY: the file was written by `store` from wasmtime's own serialisation, and
             // wasmtime checks it was made by a compatible engine and build.
-            let module = unsafe { Module::deserialize(engine, code) }.ok()?;
+            #[expect(
+                unsafe_code,
+                reason = "wasmtime loads compiled code only through its unsafe deserialize; the cache's directory is written only by compilers"
+            )]
+            let module = unsafe { Module::deserialize(engine, code) };
+            let module = module.ok()?;
             modules.push(module);
             pieces.push(list.into_owned());
         }
@@ -298,6 +318,13 @@ impl<G: Guest> Compiler<G> {
             count: pieces.iter().map(|p| p.len() as u32).sum(),
             pieces,
         })
+    }
+
+    /// Returns the pool translation and compiling run in.
+    fn pool(&self) -> &rayon::ThreadPool {
+        self.pool
+            .as_ref()
+            .expect("the pool, which only dropping the compiler takes")
     }
 
     /// Keeps a translation in the cache's directory, written whole or not at all.
@@ -367,7 +394,7 @@ impl<G: Guest> Compiler<G> {
         let started = Instant::now();
         let length = bytes.len() as u64;
         let translation = self
-            .pool
+            .pool()
             .install(|| {
                 translate::<G>(
                     bytes,
@@ -384,7 +411,7 @@ impl<G: Guest> Compiler<G> {
             .unwrap_or_else(|error| panic!("translating {length} bytes: {error:?}"));
         let translated = started.elapsed().as_nanos() as u64;
         let started = Instant::now();
-        let modules: Vec<Module> = self.pool.install(|| {
+        let modules: Vec<Module> = self.pool().install(|| {
             translation
                 .modules
                 .iter()
@@ -441,9 +468,9 @@ impl<G: Guest> Drop for Compiler<G> {
     fn drop(&mut self) {
         // Ending the pool wakes its threads, which in a copy made by fork can wait for ever on a lock
         // a thread of the parent held at the fork; a copy leaves the pool as it is.
-        if self.process == std::process::id() {
-            // SAFETY: dropped once, here, and not used after.
-            unsafe { ManuallyDrop::drop(&mut self.pool) };
+        let pool = self.pool.take();
+        if self.process != std::process::id() {
+            std::mem::forget(pool);
         }
     }
 }
@@ -505,6 +532,8 @@ struct Running {
     thread: ThreadId,
     /// Code of the running process was dropped while the thread was in a hook.
     code_dropped: bool,
+    /// A page of the running process lost read or write while the thread was in a hook.
+    narrowed: bool,
 }
 
 /// One guest process: its store, its memories and what the executor keeps about its pages and code.
@@ -512,9 +541,10 @@ struct Process<G: Guest> {
     /// None while one of its threads runs.
     store: Option<Store<Data<G>>>,
     memory: Memory,
-    base: *mut u8,
+    /// The guest memory's bytes, which the store above keeps.
+    guest_bytes: Region,
     state: SharedMemory,
-    state_base: *mut u8,
+    state_bytes: Region,
     hooks: Vec<(&'static str, Func)>,
     pages: Pages,
     /// Ranges that show a block of shared pages, by start.
@@ -613,6 +643,21 @@ impl Pages {
         }
     }
 
+    /// Whether the record of any page of `pages` passes `test`; a page in no chunk holds nothing.
+    fn any(&self, pages: Range<u64>, test: impl Fn(&Page) -> bool) -> bool {
+        let (mut page, end) = (pages.start as usize, pages.end as usize);
+        while page < end {
+            let index = page / CHUNK;
+            let (first, last) = (page % CHUNK, (end - index * CHUNK).min(CHUNK));
+            page = index * CHUNK + last;
+            let held = self.0.get(index).and_then(Option::as_ref);
+            if held.is_some_and(|chunk| chunk[first..last].iter().any(&test)) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The pages of every chunk there, in order.
     fn chunks(&self) -> impl Iterator<Item = Range<u64>> + '_ {
         self.0.iter().enumerate().filter_map(|(index, chunk)| {
@@ -649,6 +694,8 @@ struct Shown {
     end: u64,
     block: SharedId,
     offset: u64,
+    /// Whether the run is the memory's own pages that other memories map, rather than a mapping of it.
+    lent: bool,
 }
 
 /// The bytes of a range of code and their hash.
@@ -708,7 +755,8 @@ struct Data<G: Guest> {
     memory: MemoryId,
     thread: ThreadId,
     block_at: u32,
-    state_base: *mut u8,
+    /// The state memory of the process the thread runs in; none until it first runs.
+    state: Option<Region>,
     /// Progress in this turn, which a counted turn's limit is compared with.
     progress: u64,
     /// The part of `progress` the system was already told by a clock read.
@@ -780,11 +828,11 @@ where
         let mut registers = RegisterBlock::ZERO;
         Cpu::registers(self, thread, &mut registers);
         self.single_instruction = Some(registers.pc);
-        let mut ending = Ending(None);
+        let mut ending = Ending::of_one_instruction();
         let Ok(()) = Execution::run(self, thread, Resume::FromRegisters, Turn::Free, &mut ending);
         self.single_instruction = None;
         ending
-            .0
+            .exit
             .expect("a run of one instruction ends with an exit")
     }
 
@@ -826,10 +874,9 @@ where
         }
     }
 
-    fn send_warnings(&mut self, answer: NonNull<dyn Answer>) {
+    fn send_warnings(&mut self, answer: &mut dyn Answer) {
         for warning in std::mem::take(&mut self.unsent) {
-            // SAFETY: the answer of the run in progress, alive until `run` returns.
-            unsafe { &mut *answer.as_ptr() }.warn(warning);
+            answer.warn(warning);
         }
     }
 
@@ -844,23 +891,18 @@ where
         }
     }
 
-    /// Bytes of a thread's state. They are the state memory's, which is shared, not the executor's.
-    #[allow(clippy::mut_from_ref)]
-    fn block_bytes(&self, memory: MemoryId, block_at: u32, length: usize) -> &mut [u8] {
-        let process = self.process(memory);
-        // SAFETY: inside the state memory's thread blocks; no guest thread runs or is in a hook that
-        // reads these bytes while the executor changes them.
-        unsafe { std::slice::from_raw_parts_mut(process.state_base.add(block_at as usize), length) }
-    }
-
     fn read_block(&self, thread: &Thread) -> RegisterBlock {
-        let bytes = self.block_bytes(thread.memory, thread.block_at, size_of::<RegisterBlock>());
-        RegisterBlock::read_from_bytes(bytes).expect("a register block")
+        let mut registers = RegisterBlock::ZERO;
+        self.process(thread.memory)
+            .state_bytes
+            .read(thread.block_at as usize, registers.as_mut_bytes());
+        registers
     }
 
     fn write_block(&self, thread: &Thread, registers: &RegisterBlock) {
-        self.block_bytes(thread.memory, thread.block_at, size_of::<RegisterBlock>())
-            .copy_from_slice(registers.as_bytes());
+        self.process(thread.memory)
+            .state_bytes
+            .write(thread.block_at as usize, registers.as_bytes());
     }
 
     /// What a page allows once the locks are taken off what the kernel said.
@@ -880,18 +922,17 @@ where
     fn write_table(&self, memory: MemoryId, pages: Range<u64>) {
         let process = self.process(memory);
         let last = self.layout.permission_pages;
-        for page in pages.start.saturating_sub(1)..pages.end.min(last) {
-            let byte = contract::permission_byte(
-                Self::effective(process, page),
-                Self::effective(process, page + 1),
-            );
-            // SAFETY: inside the permission table; no thread of the process is running guest code.
-            unsafe {
-                *process
-                    .state_base
-                    .add(self.layout.permissions_at as usize + page as usize) = byte;
-            }
-        }
+        let first = pages.start.saturating_sub(1);
+        let bytes: Vec<u8> = (first..pages.end.min(last))
+            .map(|page| {
+                contract::permission_byte(
+                    Self::effective(process, page),
+                    Self::effective(process, page + 1),
+                )
+            })
+            .collect();
+        let at = self.layout.permissions_at as usize + first as usize;
+        process.state_bytes.write(at, &bytes);
     }
 
     fn slot_entry(&self, address: u64) -> Option<usize> {
@@ -903,14 +944,16 @@ where
         let Some(at) = self.slot_entry(address) else {
             return 0;
         };
-        // SAFETY: an aligned entry of the array of slots in the state memory.
-        unsafe { (self.process(memory).state_base.add(at) as *const u32).read() }
+        let mut entry = [u8::MIN; SLOT_BYTES as usize];
+        self.process(memory).state_bytes.read(at, &mut entry);
+        u32::from_le_bytes(entry)
     }
 
     fn set_slot(&self, memory: MemoryId, address: u64, slot: u32) {
         if let Some(at) = self.slot_entry(address) {
-            // SAFETY: as for `slot`; no thread of the process is running guest code.
-            unsafe { (self.process(memory).state_base.add(at) as *mut u32).write(slot) }
+            self.process(memory)
+                .state_bytes
+                .write(at, &slot.to_le_bytes());
         }
     }
 
@@ -921,16 +964,12 @@ where
         let mut dropped = false;
         if start < end {
             let first = self.slot_entry(start).expect("an entry");
-            let count = ((end - start).div_ceil(G::ALIGN)) as usize;
-            // SAFETY: entries of the array of slots for addresses under the ceiling.
-            let entries = unsafe {
-                std::slice::from_raw_parts_mut(
-                    self.process(memory).state_base.add(first) as *mut u32,
-                    count,
-                )
-            };
-            dropped = entries.iter().any(|&slot| slot != 0);
-            entries.fill(0);
+            let length = ((end - start).div_ceil(G::ALIGN) * SLOT_BYTES) as usize;
+            let state = &self.process(memory).state_bytes;
+            let mut entries = vec![u8::MIN; length];
+            state.read(first, &mut entries);
+            dropped = entries.iter().any(|&byte| byte != u8::MIN);
+            state.zero(first, length);
         }
         for thread in self.threads.values_mut().filter(|t| t.memory == memory) {
             thread.exact.retain(|address, _| !range.contains(address));
@@ -991,25 +1030,15 @@ where
     }
 
     fn copy_out(&self, memory: MemoryId, address: u64, into: &mut [u8]) {
-        // SAFETY: the caller checked the range is under the ceiling, inside the guest memory.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                self.process(memory).base.add(address as usize),
-                into.as_mut_ptr(),
-                into.len(),
-            )
-        }
+        self.process(memory)
+            .guest_bytes
+            .read(address as usize, into);
     }
 
     fn copy_in(&self, memory: MemoryId, address: u64, from: &[u8]) {
-        // SAFETY: as for `copy_out`; no guest thread of the process is running guest code.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                from.as_ptr(),
-                self.process(memory).base.add(address as usize),
-                from.len(),
-            )
-        }
+        self.process(memory)
+            .guest_bytes
+            .write(address as usize, from);
     }
 
     /// The look-ahead of code reached at run time with no piece.
@@ -1274,12 +1303,9 @@ where
             Resume::Continue => {}
             Resume::FromRegisters => {
                 // The CPU side's own words start as a new thread's.
-                self.block_bytes(
-                    record.memory,
-                    record.block_at + G::BLOCK_SIZE as u32,
-                    G::PRIVATE_BYTES,
-                )
-                .fill(0);
+                self.process(record.memory)
+                    .state_bytes
+                    .zero(record.block_at as usize + G::BLOCK_SIZE, G::PRIVATE_BYTES);
             }
         }
     }
@@ -1295,7 +1321,7 @@ where
                 memory: id,
                 thread: ThreadId(0),
                 block_at: 0,
-                state_base: std::ptr::null_mut(),
+                state: None,
                 progress: 0,
                 reported: 0,
                 turn: Turn::Free,
@@ -1326,16 +1352,23 @@ where
             self.slow_path(reason::PROCESS_MEMORY_REFUSED, 0, 0);
             return Err(CpuError::OutOfMemory);
         };
-        let base = memory.data_ptr(&store);
-        let state_base = state.data().as_ptr() as *mut u8;
+        // SAFETY: the guest memory of the store, which the process holds as long as the region; its
+        // memory is made by `HostMemories` and never moves or shrinks.
+        #[expect(
+            unsafe_code,
+            reason = "the region outlives every borrow of the store it reaches into, which the process holds beside it"
+        )]
+        let guest_bytes =
+            unsafe { Region::of_store_memory(memory.data_ptr(&store), memory.data_size(&store)) };
+        let state_bytes = Region::of_shared_memory(&state);
         let hooks = hooks::<G>(&mut store);
         let pages = layout.permission_pages as usize;
         Ok(Process {
             store: Some(store),
             memory,
-            base,
+            guest_bytes,
             state,
-            state_base,
+            state_bytes,
             hooks,
             pages: Pages::new(pages as u64),
             shown: BTreeMap::new(),
@@ -1360,7 +1393,7 @@ where
             "the copies of shared pages are made first"
         );
         let host_page = memory::host_page();
-        let copy = |from: *mut u8, to: *mut u8, runs: &mut dyn Iterator<Item = Range<u64>>| {
+        let copy = |from: &Region, to: &Region, runs: &mut dyn Iterator<Item = Range<u64>>| {
             let mut merged: Vec<Range<usize>> = Vec::new();
             for run in runs {
                 let run = (run.start / host_page * host_page) as usize
@@ -1370,13 +1403,12 @@ where
                     _ => merged.push(run),
                 }
             }
-            // SAFETY: runs of whole host pages, in order, inside the two processes' own mappings, the
-            // new one still all zeros; no guest of either runs meanwhile.
-            unsafe { memory::copy_pages(from, to, &merged) }
+            // Runs of whole host pages, in order, the new process's still all zeros.
+            from.copy_pages_to(to, &merged);
         };
         copy(
-            source.base,
-            into.base,
+            &source.guest_bytes,
+            &into.guest_bytes,
             &mut source
                 .pages
                 .data_runs()
@@ -1402,7 +1434,11 @@ where
             });
             let mut runs: Vec<Range<u64>> = table.chain(slots).collect();
             runs.sort_by_key(|run| run.start);
-            copy(source.state_base, into.state_base, &mut runs.into_iter());
+            copy(
+                &source.state_bytes,
+                &into.state_bytes,
+                &mut runs.into_iter(),
+            );
             into.ranges.clone_from(&source.ranges);
             into.loads.clone_from(&source.loads);
             into.next_slot = source.next_slot;
@@ -1503,14 +1539,7 @@ where
                 if from < to {
                     let into = start + (from - shown.offset);
                     let part = &bytes[(from - offset) as usize..(to - offset) as usize];
-                    // SAFETY: inside the memory's shown range, under the ceiling; no guest runs.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            part.as_ptr(),
-                            process.base.add(into as usize),
-                            part.len(),
-                        )
-                    }
+                    process.guest_bytes.write(into as usize, part);
                 }
             }
         }
@@ -1709,10 +1738,13 @@ where
 }
 
 /// A thread's stop flag.
-fn flag<G: Guest>(state_base: *mut u8, block_at: u32) -> &'static AtomicU32 {
-    // SAFETY: an aligned word inside the state memory, which lives as long as the process; it is
-    // reached only through atomics or the guest's own loads.
-    unsafe { &*(state_base.add(block_at as usize + G::STOP_FLAG_OFFSET) as *const AtomicU32) }
+fn flag<G: Guest>(state: &Region, block_at: u32) -> &'static AtomicU32 {
+    state.stop_flag(block_at as usize + G::STOP_FLAG_OFFSET)
+}
+
+/// Returns the state memory of the thread a hook runs for.
+fn running_state<G: Guest>(data: &Data<G>) -> &Region {
+    data.state.as_ref().expect("a thread that runs")
 }
 
 /// Grows a thread's lookup table to `slots`.
@@ -1776,6 +1808,10 @@ fn instantiate<G: Guest>(
 }
 
 /// The executor a hook's store belongs to.
+#[expect(
+    unsafe_code,
+    reason = "a hook reaches the executor that called into wasmtime through the store's data, which wasmtime requires to be 'static"
+)]
 fn side<'a, G: Guest>(caller: &Caller<'_, Data<G>>) -> &'a mut CpuSide<G> {
     // SAFETY: set by `run` for the call in progress, which has given up its own use of the executor
     // until the call returns; the running store is not inside the executor.
@@ -1783,6 +1819,10 @@ fn side<'a, G: Guest>(caller: &Caller<'_, Data<G>>) -> &'a mut CpuSide<G> {
 }
 
 /// The answer of the run in progress.
+#[expect(
+    unsafe_code,
+    reason = "a hook reaches the answer of the run that called into wasmtime through the store's data, which wasmtime requires to be 'static"
+)]
 fn answer<'a, G: Guest>(caller: &Caller<'_, Data<G>>) -> &'a mut dyn Answer {
     let answer = caller.data().answer.expect("a run in progress");
     // SAFETY: the answer `run` was given, alive until it returns.
@@ -1799,9 +1839,9 @@ where
     side.flush(memory);
     let progress = caller.data_mut().end_turn();
     let answer = answer(caller);
-    side.send_warnings(caller.data().answer.expect("a run"));
+    side.send_warnings(answer);
     let carry = answer.exit(side, exit, progress);
-    side.send_warnings(caller.data().answer.expect("a run"));
+    side.send_warnings(answer);
     carry
 }
 
@@ -1814,19 +1854,28 @@ where
     let data = caller.data_mut();
     data.turn = turn;
     if matches!(turn, Turn::Counted { .. }) {
-        flag::<G>(data.state_base, data.block_at).store(1, Ordering::SeqCst);
+        flag::<G>(running_state(data), data.block_at).store(1, Ordering::SeqCst);
     }
     let running = side.running.as_mut().expect("a run");
-    if std::mem::take(&mut running.code_dropped) {
+    let (code_dropped, narrowed) = (
+        std::mem::take(&mut running.code_dropped),
+        std::mem::take(&mut running.narrowed),
+    );
+    if code_dropped || narrowed {
         data.rerun = Some(turn);
         leave(data);
-        side.slow_path(reason::LEFT_CODE_CHANGED_UNDER_IT, 0, 0);
+        let why = if code_dropped {
+            reason::LEFT_CODE_CHANGED_UNDER_IT
+        } else {
+            reason::LEFT_PERMISSIONS_NARROWED
+        };
+        side.slow_path(why, 0, 0);
     }
 }
 
 fn leave<G: Guest>(data: &mut Data<G>) {
     data.leaving = true;
-    flag::<G>(data.state_base, data.block_at).store(1, Ordering::SeqCst);
+    flag::<G>(running_state(data), data.block_at).store(1, Ordering::SeqCst);
 }
 
 /// Leaves `run` from a hook because the answer said so: counted by why, with the call number.
@@ -1872,7 +1921,7 @@ where
     G: Guest<Block = RegisterBlock>,
 {
     let data = caller.data_mut();
-    let flag = flag::<G>(data.state_base, data.block_at);
+    let flag = flag::<G>(running_state(data), data.block_at);
     flag.store(0, Ordering::SeqCst);
     if data.leaving {
         return 1;
@@ -2236,11 +2285,12 @@ where
             HookBody::Clock => Func::wrap(&mut *store, |mut caller: Caller<'_, Data<G>>| -> i64 {
                 let progress = caller.data_mut().report();
                 let side = side(&caller);
+                let answer = answer(&caller);
                 if side.restored {
                     side.slow_path(reason::COUNTER_WITHOUT_KERNEL_OFFSET, 0, 0);
-                    side.send_warnings(caller.data().answer.expect("a run"));
+                    side.send_warnings(answer);
                 }
-                answer(&caller).clock(progress) as i64
+                answer.clock(progress) as i64
             }),
             HookBody::CodeChanged { line } => Func::wrap(
                 &mut *store,
@@ -2250,7 +2300,6 @@ where
             ),
             HookBody::Cpu => {
                 const {
-                    assert!(G::HOOKS.len() <= CPU_HOOKS);
                     let mut i = 0;
                     while i < G::HOOKS.len() {
                         let hook = &G::HOOKS[i];
@@ -2263,16 +2312,7 @@ where
                     hook.params.iter().map(|&t| val_type(t)),
                     hook.results.iter().map(|&t| val_type(t)),
                 );
-                [
-                    cpu_hook_func::<G, 0>,
-                    cpu_hook_func::<G, 1>,
-                    cpu_hook_func::<G, 2>,
-                    cpu_hook_func::<G, 3>,
-                    cpu_hook_func::<G, 4>,
-                    cpu_hook_func::<G, 5>,
-                    cpu_hook_func::<G, 6>,
-                    cpu_hook_func::<G, 7>,
-                ][index](store, ty)
+                cpu_hook_func::<G>(store, index, ty)
             }
         };
         hooks.push((hook.name, func));
@@ -2280,55 +2320,70 @@ where
     hooks
 }
 
-/// The most hooks of its own a guest has, and the most arguments one takes.
-const CPU_HOOKS: usize = 8;
+/// The most arguments one of a guest's own hooks takes.
 const CPU_HOOK_ARGUMENTS: usize = 8;
 
-/// The guest's own hook `I` as a function of the store, made for that index at compile time so its
-/// types and state range are constants in its body.
-fn cpu_hook_func<G, const I: usize>(store: &mut Store<Data<G>>, ty: FuncType) -> Func
+/// The guest's own hook at the index as a function of the store, which wasmtime checks the values of.
+fn cpu_hook_func<G>(store: &mut Store<Data<G>>, index: usize, ty: FuncType) -> Func
 where
     G: Guest<Block = RegisterBlock>,
 {
-    // SAFETY: `cpu_hook` reads the arguments and writes the results of exactly this type.
-    unsafe {
-        Func::new_unchecked(store, ty, |caller, values| {
-            cpu_hook::<G, I>(&caller, values);
-            Ok(())
-        })
-    }
+    Func::new(store, ty, move |caller, arguments, results| {
+        cpu_hook::<G>(&caller, index, arguments, results);
+        Ok(())
+    })
 }
 
-/// A guest's own hook: its work by `Guest::run_hook`, in place on the bytes of the thread's state it
-/// names, counted as the slow path it says it was. `values` holds the arguments and takes the results.
-fn cpu_hook<G, const I: usize>(caller: &Caller<'_, Data<G>>, values: &mut [MaybeUninit<ValRaw>])
+/// A guest's own hook: its work by `Guest::run_hook`, on a copy of the bytes of the thread's state it
+/// names, written back after, counted as the slow path it says it was.
+fn cpu_hook<G>(caller: &Caller<'_, Data<G>>, index: usize, values: &[Val], results: &mut [Val])
 where
     G: Guest<Block = RegisterBlock>,
 {
-    let hook = &G::HOOKS[I];
+    let hook = &G::HOOKS[index];
     let mut arguments = [0i64; CPU_HOOK_ARGUMENTS];
-    for (i, ty) in hook.params.iter().enumerate() {
-        // SAFETY: wasmtime has checked the arguments against the hook's type.
-        let value = unsafe { values[i].assume_init() };
-        arguments[i] = match ty {
-            wasm_encoder::ValType::I32 => i64::from(value.get_i32()),
-            _ => value.get_i64(),
+    for (argument, value) in arguments.iter_mut().zip(values) {
+        *argument = match value {
+            Val::I32(value) => i64::from(*value),
+            Val::I64(value) => *value,
+            other => unreachable!("a hook takes integers, not {other:?}"),
         };
     }
     let side = side(caller);
     let data = caller.data();
     let range = hook.state.range();
-    let bytes = side.block_bytes(data.memory, data.block_at + range.start as u32, range.len());
-    let done = G::run_hook(I, &arguments[..hook.params.len()], bytes);
-    for (i, ty) in hook.results.iter().enumerate() {
-        values[i] = MaybeUninit::new(match ty {
-            wasm_encoder::ValType::I32 => ValRaw::i32(done.results[i] as i32),
-            _ => ValRaw::i64(done.results[i]),
-        });
+    let state = &side.process(data.memory).state_bytes;
+    let at = data.block_at as usize + range.start;
+    let mut bytes = vec![u8::MIN; range.len()];
+    state.read(at, &mut bytes);
+    let done = G::run_hook(index, &arguments[..hook.params.len()], &mut bytes);
+    state.write(at, &bytes);
+    for ((result, ty), done) in results.iter_mut().zip(hook.results).zip(done.results) {
+        *result = match ty {
+            wasm_encoder::ValType::I32 => Val::I32(done as i32),
+            _ => Val::I64(done),
+        };
     }
     if let Some(reason) = done.reason {
         let name = Reason::name_of::<G>(reason).expect("a known reason");
         side.slow_path(name, arguments[0] as u32 as u64, 0);
+    }
+}
+
+/// Returns the answer as the store's data holds it while a run calls into wasmtime.
+///
+/// `run` clears it from the store before it returns, and uses the answer itself only while no hook runs.
+#[expect(
+    unsafe_code,
+    reason = "the store's data must be 'static, so the answer's lifetime is erased while the run that holds it calls into wasmtime"
+)]
+fn erase_lifetime(answer: &mut dyn Answer) -> NonNull<dyn Answer> {
+    // SAFETY: only the lifetime is erased; the pointer is used only by the hooks of the call in
+    // progress, which ends before the answer is used again.
+    unsafe {
+        std::mem::transmute::<NonNull<dyn Answer + '_>, NonNull<dyn Answer + 'static>>(
+            NonNull::from(answer),
+        )
     }
 }
 
@@ -2346,13 +2401,6 @@ where
         turn: Turn,
         answer: &mut dyn Answer,
     ) -> Result<(), Infallible> {
-        // SAFETY: only the lifetime is erased; the pointer is used only until this call returns and is
-        // cleared from the store before then.
-        let answer: NonNull<dyn Answer> = unsafe {
-            std::mem::transmute::<NonNull<dyn Answer + '_>, NonNull<dyn Answer + 'static>>(
-                NonNull::from(answer),
-            )
-        };
         let memory = self.threads[&thread].memory;
         let mut store = self
             .processes
@@ -2365,6 +2413,7 @@ where
             memory,
             thread,
             code_dropped: false,
+            narrowed: false,
         });
         if matches!(turn, Turn::Counted { .. }) {
             self.slow_path(reason::PROGRESS_BY_STOP_CHECKS, 0, 0);
@@ -2390,24 +2439,27 @@ where
             {
                 self.step(&mut store, thread);
             }
+            // A narrowing made while the thread was out of `run` finds no piece in progress.
+            if let Some(running) = self.running.as_mut() {
+                running.narrowed = false;
+            }
             let block_at = self.threads[&thread].block_at;
-            let state_base = self.process(memory).state_base;
+            let state = self.process(memory).state_bytes.clone();
+            let flag = flag::<G>(&state, block_at);
             let data = store.data_mut();
             data.side = self;
-            data.answer = Some(answer);
+            data.answer = Some(erase_lifetime(&mut *answer));
             data.memory = memory;
             data.thread = thread;
             data.block_at = block_at;
-            data.state_base = state_base;
+            data.state = Some(state);
             if let Some(turn) = fresh.take() {
                 (data.progress, data.reported, data.turn) = (0, 0, turn);
             }
             data.leaving = false;
-            let flag = flag::<G>(state_base, block_at);
             let counted = matches!(data.turn, Turn::Counted { .. });
             flag.store(u32::from(counted), Ordering::SeqCst);
-            // SAFETY: the flag is in the state memory, which outlives the run; `left` follows it.
-            unsafe { self.stop_flag.entered(flag) };
+            self.stop_flag.entered(flag);
             let result = instance.run.call(&mut store, ());
             flag.store(0, Ordering::SeqCst);
             let data = store.data_mut();
@@ -2446,8 +2498,7 @@ where
             let progress = store.data_mut().end_turn();
             self.flush(memory);
             self.send_warnings(answer);
-            // SAFETY: the answer this call was given.
-            match unsafe { &mut *answer.as_ptr() }.exit(self, exit, progress) {
+            match answer.exit(self, exit, progress) {
                 Carry::On {
                     resume: then,
                     turn: next,
@@ -2492,10 +2543,11 @@ where
             side.processes.insert(id, process);
             side.write_table(id, 0..side.layout.permission_pages);
         }
-        let bytes = self.layout.thread_bytes as usize;
+        let mut bytes = vec![u8::MIN; self.layout.thread_bytes as usize];
         for (&id, thread) in &self.threads {
-            side.block_bytes(thread.memory, thread.block_at, bytes)
-                .copy_from_slice(self.block_bytes(thread.memory, thread.block_at, bytes));
+            let at = thread.block_at as usize;
+            self.process(thread.memory).state_bytes.read(at, &mut bytes);
+            side.process(thread.memory).state_bytes.write(at, &bytes);
             side.threads.insert(
                 id,
                 Thread {
@@ -2596,15 +2648,11 @@ where
             address.next_multiple_of(host_page),
             (address + length) / host_page * host_page,
         );
-        let base = self.process(memory).base;
-        let zero_bytes = |from: u64, to: u64| {
-            // SAFETY: inside the guest memory, under the ceiling; no guest runs meanwhile.
-            unsafe { std::ptr::write_bytes(base.add(from as usize), 0, (to - from) as usize) }
-        };
+        let guest = &self.process(memory).guest_bytes;
+        let zero_bytes = |from: u64, to: u64| guest.zero(from as usize, (to - from) as usize);
         if first < end {
             zero_bytes(address, first);
-            // SAFETY: whole host pages inside the guest memory, which no guest runs in meanwhile.
-            unsafe { memory::fresh_pages(base.add(first as usize), (end - first) as usize) };
+            guest.fresh_pages(first as usize, (end - first) as usize);
             zero_bytes(end, address + length);
         } else {
             zero_bytes(address, address + length);
@@ -2622,11 +2670,21 @@ where
         self.check(address, length)?;
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
         let process = self.processes.get_mut(&memory).expect("a memory");
+        let access = Permissions::READ | Permissions::WRITE;
+        let narrows = process
+            .pages
+            .any(pages.clone(), |p| !permissions.contains(p.allows & access));
         process.pages.update(pages.clone(), |p| {
             p.allows = permissions;
             p.data |= !permissions.is_empty();
         });
         self.write_table(memory, pages);
+        // A piece in progress keeps what it found out about its own stack frame until its function's next entry
+        // (the translator's contract): the thread leaves `run` before it carries on, so the narrowing holds for
+        // its next access.
+        if narrows && let Some(running) = self.running.as_mut().filter(|r| r.memory == memory) {
+            running.narrowed = true;
+        }
         Ok(())
     }
 
@@ -2721,6 +2779,7 @@ where
                 end: address + length,
                 block: shared,
                 offset,
+                lent: false,
             },
         );
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
@@ -2792,7 +2851,9 @@ where
                 return Err(CpuError::OutOfMemory);
             }
         };
-        self.block_bytes(memory, block_at, bytes as usize).fill(0);
+        self.process(memory)
+            .state_bytes
+            .zero(block_at as usize, bytes as usize);
         let id = ThreadId(self.fresh());
         self.threads.insert(
             id,
@@ -3021,7 +3082,7 @@ mod tests {
             // waking each round.
             std::thread::sleep(std::time::Duration::from_millis(2));
             for _ in 0..8 {
-                compiler.pool.spawn(|| {
+                compiler.pool().spawn(|| {
                     let _ = (0..2_000u64).fold(0u64, |a, b| a.wrapping_mul(31) ^ b);
                 });
             }
@@ -3029,26 +3090,40 @@ mod tests {
                 std::hint::spin_loop();
             }
             // SAFETY: the copy only drops the compiler and leaves with `_exit`.
+            #[expect(
+                unsafe_code,
+                reason = "the test copies its process with fork, which neither std nor rustix offers safely"
+            )]
             let child = unsafe { libc::fork() };
             assert!(child >= 0, "fork");
             if child == 0 {
                 drop(compiler);
                 // SAFETY: ends the copy without running anything of the parent's.
-                unsafe { libc::_exit(0) };
+                #[expect(
+                    unsafe_code,
+                    reason = "the copy leaves with _exit, since exit would run the parent's handlers in it"
+                )]
+                unsafe {
+                    libc::_exit(0)
+                };
             }
+            let child = rustix::process::Pid::from_raw(child).expect("the copy's process");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            let mut status = 0;
-            // SAFETY: waits for the copy made above, and kills it if it never ends.
-            unsafe {
-                while libc::waitpid(child, &mut status, libc::WNOHANG) != child {
-                    if std::time::Instant::now() > deadline {
-                        libc::kill(child, libc::SIGKILL);
-                        panic!("dropping the compiler in the copy did not finish in 20 s");
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+            let status = loop {
+                let waited =
+                    rustix::process::waitpid(Some(child), rustix::process::WaitOptions::NOHANG)
+                        .expect("waiting for the copy");
+                if let Some((_, status)) = waited {
+                    break status;
                 }
-            }
-            assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+                if std::time::Instant::now() > deadline {
+                    rustix::process::kill_process(child, rustix::process::Signal::KILL)
+                        .expect("killing the copy");
+                    panic!("dropping the compiler in the copy did not finish in 20 s");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            assert_eq!(status.exit_status(), Some(0));
         }
     }
 
@@ -3086,20 +3161,51 @@ mod tests {
     }
 }
 
-/// What a run of one instruction answers: it keeps the exit and leaves.
-struct Ending(Option<Exit>);
+/// What a run answers when its exit is handled after it left, with nothing of the executor borrowed.
+struct Ending {
+    exit: Option<Exit>,
+    /// Returns the guest's clock in nanoseconds.
+    clock: fn() -> u64,
+}
+
+impl Ending {
+    /// Returns the answer of a run of one instruction, whose execution state holds no clock.
+    fn of_one_instruction() -> Self {
+        Self {
+            exit: None,
+            clock: || panic!("an execution state holds no clock for the guest to read"),
+        }
+    }
+
+    /// Returns the answer of a run of `execute`, whose guest reads the system's monotonic clock.
+    fn of_execute() -> Self {
+        Self {
+            exit: None,
+            clock: monotonic_nanoseconds,
+        }
+    }
+}
 
 impl Answer for Ending {
     fn exit(&mut self, _: &mut dyn Cpu, exit: Exit, _: u64) -> Carry {
-        self.0 = Some(exit);
+        self.exit = Some(exit);
         Carry::Leave(Leaving::SystemAsked)
     }
 
     fn clock(&mut self, _: u64) -> u64 {
-        panic!("an execution state holds no clock for the guest to read")
+        (self.clock)()
     }
 
     fn warn(&mut self, _: Warning<'_>) {}
+}
+
+/// Returns the nanoseconds the system's monotonic clock reads.
+fn monotonic_nanoseconds() -> u64 {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let seconds = u64::try_from(now.tv_sec).expect("the monotonic clock is past its start");
+    let nanoseconds = u32::try_from(now.tv_nsec).expect("nanoseconds below a second");
+    let elapsed = std::time::Duration::new(seconds, nanoseconds).as_nanos();
+    u64::try_from(elapsed).unwrap_or(u64::MAX)
 }
 
 /// How the translator works for a container: it changes speed, never behaviour, and is part of
@@ -3155,29 +3261,55 @@ impl Default for TranslatorConfig {
     }
 }
 
-/// The WebAssembly executor of ARM64: each instruction runs through the translator, as the precise instruction set
-/// `Translator` describes.
+/// The WebAssembly executor of ARM64, running each instruction as the precise instruction set `Translator` describes.
 pub struct Arm64Executor {
-    side: CpuSide<wcontainers_arm64::Arm64>,
+    world: World<wcontainers_arm64::Arm64>,
 }
 
 impl Arm64Executor {
-    /// TODO: temporary placeholder until the executor interface says how an executor is built.
+    /// Returns an executor translating as the configuration says, keeping its translations in memory.
     pub fn new(translator: TranslatorConfig) -> Self {
+        let side = CpuSide::new(
+            Compiler::new(None),
+            translator.look_ahead,
+            translator.optimise,
+            (),
+        );
         Self {
-            side: CpuSide::new(
-                Compiler::new(None),
-                translator.look_ahead,
-                translator.optimise,
-                (),
-            ),
+            world: Rc::new(RefCell::new(side)),
         }
     }
 }
 
+/// The host refused the memories of a new guest space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostRefusedMemoryError;
+
 impl wcontainers_executor::Executor for Arm64Executor {
     type Architecture = wcontainers_processor_architecture_arm64::Arm64;
     type TranslatorConfig = TranslatorConfig;
+    type GuestMemory = GuestMemory<wcontainers_arm64::Arm64>;
+    type CreateGuestMemoryError = HostRefusedMemoryError;
+    type Interrupter = Arm64Interrupter;
+
+    fn create_guest_memory(&self) -> Result<Self::GuestMemory, HostRefusedMemoryError> {
+        GuestMemory::new(self.world.clone()).map_err(|_| HostRefusedMemoryError)
+    }
+
+    fn execute<'execution>(
+        &'execution mut self,
+        processor: Processor,
+        memory: &'execution Self::GuestMemory,
+        handler: &'execution mut impl TrapHandler,
+    ) -> (
+        impl Future<Output = Processor> + 'execution,
+        Arm64Interrupter,
+    ) {
+        let stop_flag = StopFlag::default();
+        let interrupter = Arm64Interrupter(stop_flag.clone());
+        let execution = async move { run_to_trap(processor, memory, handler, &stop_flag) };
+        (execution, interrupter)
+    }
 
     fn execute_single_instruction_in_place(
         &mut self,
@@ -3186,11 +3318,121 @@ impl wcontainers_executor::Executor for Arm64Executor {
         on_memory_mutated: impl FnMut(MemoryDelta<'_, Self::Architecture>),
     ) {
         single_instruction::execute_on_cpu(
-            &mut self.side,
+            &mut *self.world.borrow_mut(),
             processor,
             memory,
             on_memory_mutated,
             CpuSide::run_one_instruction,
         );
     }
+}
+
+/// Raises the interrupt of one execution of an [`Arm64Executor`] through the stop flag only that execution runs with.
+pub struct Arm64Interrupter(StopFlag);
+
+impl ExecutionInterrupter for Arm64Interrupter {
+    fn interrupt(&self) {
+        self.0.raise();
+    }
+}
+
+/// Returns the processor state the guest stops at, run on the space until a trap the handler does not let it go on from.
+fn run_to_trap(
+    processor: Processor,
+    memory: &GuestMemory<wcontainers_arm64::Arm64>,
+    handler: &mut impl TrapHandler,
+    stop_flag: &StopFlag,
+) -> Processor {
+    let world = &memory.world;
+    world.borrow_mut().stop_flag = stop_flag.clone();
+    if stop_flag.take() {
+        match handler.handle_interrupt() {
+            InterruptResponse::Continue => {}
+            InterruptResponse::Terminate => return processor,
+        }
+    }
+    let thread = world
+        .borrow_mut()
+        .thread_new(memory.memory)
+        .expect("a thread block is free while no other processor runs on the space");
+    let registers = single_instruction::to_register_block(&processor);
+    world.borrow_mut().set_registers(thread, &registers);
+    let mut resume = Resume::FromRegisters;
+    let (mut registers, exit) = loop {
+        let mut ending = Ending::of_execute();
+        let Ok(()) = Execution::run(
+            &mut *world.borrow_mut(),
+            thread,
+            resume,
+            Turn::Free,
+            &mut ending,
+        );
+        let exit = ending
+            .exit
+            .expect("a run the executor left ends with an exit");
+        let mut registers = RegisterBlock::ZERO;
+        world.borrow_mut().registers(thread, &mut registers);
+        let next = match exit {
+            Exit::Syscall(call) => match handler.handle_system_call(call) {
+                SystemCallResponse::Return(value) => Some(Resume::Return(value)),
+                SystemCallResponse::Terminate => None,
+            },
+            Exit::Stop => match handler.handle_interrupt() {
+                InterruptResponse::Continue => Some(Resume::Continue),
+                InterruptResponse::Terminate => None,
+            },
+            Exit::MemoryFault { address, access } => {
+                match handler.handle_memory_fault(address, access) {
+                    MemoryFaultResponse::Retry => Some(Resume::Continue),
+                    MemoryFaultResponse::Terminate => None,
+                }
+            }
+            Exit::MemoryFaultWithoutRegisters
+            | Exit::AlignmentFault { .. }
+            | Exit::IllegalInstruction
+            | Exit::Breakpoint { .. } => None,
+        };
+        match next {
+            Some(then) => resume = then,
+            None => break (registers, exit),
+        }
+    };
+    let mut side = world.borrow_mut();
+    side.thread_drop(thread);
+    // A stop leaves the program counter on the instruction that trapped, the system call too.
+    if let Exit::Syscall(_) = exit {
+        registers.pc -= INSTRUCTION_BYTES;
+    }
+    let mut word = [u8::MIN; INSTRUCTION_BYTES as usize];
+    if side.read(memory.memory, registers.pc, &mut word).is_err() {
+        word = [u8::MIN; INSTRUCTION_BYTES as usize];
+    }
+    let process = side.process(memory.memory);
+    let permission_at = |address: u64| {
+        if process.pages.get(address / PAGE_SIZE).allows.is_empty() {
+            PagePermission::Unmapped
+        } else {
+            PagePermission::Mapped {
+                data_access: DataAccess::Forbidden,
+                instruction_fetch: InstructionFetch::Forbidden,
+            }
+        }
+    };
+    let exception = match exit {
+        // The engine stopped an access past the whole space, so the address is not known.
+        Exit::MemoryFaultWithoutRegisters => Some(Exception {
+            syndrome: encode_syndrome(
+                ESR_EL1::EC::Value::DataAbortLowerEL,
+                FaultStatus::TranslationFaultLevel3 as u64,
+            ),
+            fault_address: None,
+        }),
+        other => single_instruction::to_exception(
+            other,
+            u32::from_le_bytes(word),
+            registers.pc,
+            permission_at,
+        ),
+    };
+    single_instruction::to_processor(&registers, exception)
 }

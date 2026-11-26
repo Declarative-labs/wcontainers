@@ -42,11 +42,9 @@ pub struct CounterReading {
 /// Something that happened outside, handed to the kernel by the driver. If a guest thread is running when
 /// one arrives, the driver raises that thread's stop flag first and delivers the event once it comes back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Event<'a> {
+pub enum Event {
     /// The time given in [`crate::Next::Idle`] has come.
     Timer,
-    /// The backend sent a FUSE notice that was not asked for, such as "this file changed".
-    BackendNotice { notice: &'a [u8] },
     /// The terminal of the first process's standard streams changed size.
     TerminalResized { columns: u16, rows: u16 },
 }

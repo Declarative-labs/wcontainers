@@ -22,6 +22,9 @@ wcontainers-docker = { path = "../../../docker" }
 wcontainers-translator = { path = "../../../translator" }
 wcontainers-guest-cpu = { path = "../../../guest-cpu" }
 wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The fields and exception classes of ESR_EL1 (MIT OR Apache-2.0), as the ARM64 architecture uses them.
@@ -29,7 +32,8 @@ aarch64-cpu = "12.0.0"
 wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
 # The hook types the guest interface describes are wasm-encoder's.
 wasm-encoder = "0.263.0"
-rustix = { version = "1.1.6", features = ["mm", "param"] }
+# The process feature waits for and kills the copies the fork tests make.
+rustix = { version = "1.1.6", features = ["mm", "param", "process", "time"] }
 blake3 = "1"
 object = { version = "0.41", default-features = false, features = ["read_core", "elf"] }
 gimli = { version = "0.34.0", default-features = false, features = ["read"] }
@@ -59,6 +63,7 @@ cargo-lock = "11.1.0"
 
 [dev-dependencies]
 wcontainers-executor-conformance = { path = "../../conformance" }
+wcontainers-volatile-bytes-conformance = { path = "../../../volatile-bytes/conformance" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 wcontainers-precise-instruction-set-translator = { path = "../../../precise-instruction-set/implementation/translator" }
@@ -75,7 +80,13 @@ sha2 = "0.10.9"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
-[lints]
-workspace = true
+[[test]]
+name = "volatile_bytes"
+path = "volatile_bytes.rs"
+
+# An executor may use unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

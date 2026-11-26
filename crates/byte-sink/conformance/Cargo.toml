@@ -5,19 +5,19 @@ edition = "2024"
 publish = false
 
 [lib]
-path = "conformance.rs"
+path = "suite.rs"
 
 [[test]]
 name = "queue"
-path = "../foreign_implementation/queue/conformance.rs"
+path = "../foreign_implementation/queue/conformance_run.rs"
 
 [[test]]
 name = "slice"
-path = "../foreign_implementation/slice/conformance.rs"
+path = "../foreign_implementation/slice/conformance_run.rs"
 
 [[test]]
 name = "vector"
-path = "../foreign_implementation/vector/conformance.rs"
+path = "../foreign_implementation/vector/conformance_run.rs"
 
 [dependencies]
 wcontainers-byte-sink = { path = ".." }

@@ -518,7 +518,7 @@ impl Kernel {
     fn give_back(&mut self, taken: alloc::vec::Vec<crate::file::FileRef>) {
         let only_held = taken
             .into_iter()
-            .filter(|file| alloc::rc::Rc::strong_count(file) == 1);
+            .filter(|file| alloc::sync::Arc::strong_count(file) == 1);
         self.released.extend(only_held);
     }
 
@@ -637,7 +637,7 @@ impl Kernel {
                 self.announce_kernel_writes(cx);
                 continue;
             }
-            if self.map_notes.sharing_changed.get() {
+            if self.map_notes.sharing_changed.load() {
                 self.announce_sharing(cx);
                 continue;
             }
@@ -1125,7 +1125,7 @@ impl Kernel {
         );
         let map = core::mem::replace(
             &mut process.map,
-            alloc::rc::Rc::new(core::cell::RefCell::new(empty)),
+            alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(empty)),
         );
         process.peak_mapped = map
             .borrow()
@@ -1515,7 +1515,7 @@ impl Kernel {
             crate::syscall::socket::netlink::send_from_kernel(self, cx, &socket, cookie);
         }
         let sockets = files.iter().any(|file| {
-            alloc::rc::Rc::strong_count(file) == 1
+            alloc::sync::Arc::strong_count(file) == 1
                 && crate::syscall::socket::of(file).is_some_and(|socket| socket.borrow().local())
         });
         let nodes: alloc::vec::Vec<_> = files
@@ -1524,7 +1524,7 @@ impl Kernel {
             .collect();
         // A socket whose last file went is released (`sock_close`).
         for file in &files {
-            if alloc::rc::Rc::strong_count(file) == 1
+            if alloc::sync::Arc::strong_count(file) == 1
                 && let Some(socket) = crate::syscall::socket::of(file)
             {
                 crate::syscall::socket::released(self, cx, &socket);
@@ -1534,7 +1534,7 @@ impl Kernel {
         // An open file's last close (`__fput`): inotify's close event, and an instance lets go of
         // its watches.
         for file in &files {
-            if alloc::rc::Rc::strong_count(file) != 1 {
+            if alloc::sync::Arc::strong_count(file) != 1 {
                 continue;
             }
             crate::syscall::lease::released(self, file);

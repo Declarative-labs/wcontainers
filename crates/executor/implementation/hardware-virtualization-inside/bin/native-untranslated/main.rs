@@ -56,12 +56,22 @@ mod untranslated {
     }
 
     /// The bytes of the program's memory at `address`.
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: a private safe fn returning a &'static slice of the program's memory, which the guest writes again once it runs; its one caller uses it only while the guest waits in its write call; the range lies in one region whose frames are one run, through the linear map; test program only, Words replaces it"
+    )]
     fn bytes(regions: &[Region], address: u64, length: u64) -> &'static [u8] {
         let region = regions
             .iter()
-            .find(|r| address >= r.address && address + length <= r.address + r.length)
+            .find(|r| {
+                address >= r.address
+                    && address
+                        .checked_add(length)
+                        .is_some_and(|end| end <= r.address + r.length)
+            })
             .expect("the program wrote from its own memory");
-        // SAFETY: the region's frames are one run, reached through the linear map.
+        // SAFETY: not shown: the region's frames are one run, reached through the linear map, but the guest
+        // writes them again while the `'static` slice may live (see the reason).
         unsafe {
             core::slice::from_raw_parts(
                 linear(region.frame + (address - region.address)) as *const u8,
@@ -70,6 +80,10 @@ mod untranslated {
         }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "exports floor_main under its own name for the entry assembly to call, a name nothing else defines; test program only, a sym operand would remove it"
+    )]
     #[unsafe(no_mangle)]
     extern "C" fn floor_main(start: &Start) -> ! {
         let mut floor = Floor::boot(start);
@@ -92,9 +106,17 @@ mod untranslated {
             } else {
                 guest_read_only()
             };
+            assert!(
+                segment.file_length <= segment.memory_length,
+                "a segment's file bytes fit its memory"
+            );
             let region = map(&space, first, length, attributes);
             let at = region.frame + (segment.address - first);
             // SAFETY: the region's frames are one fresh run, reached through the linear map.
+            #[expect(
+                unsafe_code,
+                reason = "a mutable slice of a segment's file bytes in the region just mapped, whose frames are one fresh run, kept inside its memory by the assert above; test program only, Words replaces it"
+            )]
             let into = unsafe {
                 core::slice::from_raw_parts_mut(linear(at) as *mut u8, segment.file_length as usize)
             };

@@ -16,6 +16,7 @@ use wcontainers_udp_sockets::{
 };
 
 use crate::TestPolicy;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 impl<H: Host> UdpSockets for TestPolicy<H> {
     type Socket = Infallible;
@@ -61,7 +62,11 @@ impl<H: Host> UdpSockets for TestPolicy<H> {
         match *socket {}
     }
 
-    fn receive(&self, socket: &Self::Socket, _into: &mut [u8]) -> Result<UdpReceived, HostError> {
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        _into: &impl VolatileBytes,
+    ) -> Result<UdpReceived, HostError> {
         match *socket {}
     }
 

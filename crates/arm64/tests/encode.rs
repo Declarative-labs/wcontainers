@@ -86,6 +86,13 @@ fn every_encoding_decodes_as_meant() {
                 "address moves of {constant:#x}"
             );
             assert!(words.len() < (u64::BITS / u16::BITS) as usize);
+            for (part, &word) in words.iter().enumerate() {
+                assert_eq!(encode::move_address_word(rd, constant, part), word);
+            }
+        }
+        // Any other value's words, each made alone, are move_constant's.
+        for (part, &word) in encode::move_address(rd, value | 1 << 62).iter().enumerate() {
+            assert_eq!(encode::move_address_word(rd, value | 1 << 62, part), word);
         }
 
         let lsb = rng.u32(..u64::BITS);

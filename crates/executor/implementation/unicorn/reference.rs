@@ -307,7 +307,7 @@ pub fn run_with_client(
     stream_client: &crate::streams::StreamClient,
 ) -> Outcome {
     use std::io::Write;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::OwnedFd;
     use std::process::Stdio;
 
     use crate::streams::Step;
@@ -361,89 +361,68 @@ pub fn run_with_client(
     let mut master: Option<std::fs::File> = None;
     let mut input: Option<std::sync::mpsc::Sender<Vec<u8>>> = None;
     let mut threads = Vec::new();
-    let mut child =
-        if let (Some((columns, rows)), true) = (stream_client.terminal, stream_client.input) {
-            let mut master_fd = libc::c_int::default();
-            let mut slave_fd = libc::c_int::default();
-            let mut size = libc::winsize {
-                ws_row: rows,
-                ws_col: columns,
-                ws_xpixel: 0,
-                ws_ypixel: 0,
-            };
-            // SAFETY: openpty fills the two descriptors; the slave is made raw so the client's
-            // terminal passes bytes unchanged both ways, as the client itself sets it.
-            let (master_file, slave) = unsafe {
-                assert_eq!(
-                    libc::openpty(
-                        &mut master_fd,
-                        &mut slave_fd,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        // Linux takes the size as a constant pointer, macOS as a mutable one.
-                        &raw mut size
-                    ),
-                    0,
-                    "openpty"
-                );
-                let mut settings: libc::termios = std::mem::zeroed();
-                assert_eq!(libc::tcgetattr(slave_fd, &mut settings), 0, "tcgetattr");
-                libc::cfmakeraw(&mut settings);
-                assert_eq!(
-                    libc::tcsetattr(slave_fd, libc::TCSANOW, &settings),
-                    0,
-                    "tcsetattr"
-                );
-                (
-                    std::fs::File::from_raw_fd(master_fd),
-                    OwnedFd::from_raw_fd(slave_fd),
-                )
-            };
-            let child = client
-                .stdin(Stdio::from(slave.try_clone().expect("slave")))
-                .stdout(Stdio::from(slave.try_clone().expect("slave")))
-                .stderr(Stdio::from(slave))
-                .spawn()
-                .expect("running docker");
-            // The command holds the slave's copies until it goes; the master reads EIO only once
-            // every copy is closed.
-            drop(client);
-            threads.push(reader(
-                master_file.try_clone().expect("master"),
-                false,
-                pace,
-            ));
-            master = Some(master_file);
-            child
-        } else {
-            let mut child = client
-                .stdin(if stream_client.input {
-                    Stdio::piped()
-                } else {
-                    Stdio::null()
-                })
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("running docker");
-            let stdout = std::fs::File::from(OwnedFd::from(child.stdout.take().expect("stdout")));
-            let stderr = std::fs::File::from(OwnedFd::from(child.stderr.take().expect("stderr")));
-            threads.push(reader(stdout, false, pace));
-            threads.push(reader(stderr, true, None));
-            if let Some(mut stdin) = child.stdin.take() {
-                let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
-                input = Some(sender);
-                std::thread::spawn(move || {
-                    for bytes in receiver {
-                        // A container that closed its input leaves the rest unread.
-                        if stdin.write_all(&bytes).is_err() {
-                            break;
-                        }
-                    }
-                });
-            }
-            child
+    let mut child = if let (Some((columns, rows)), true) =
+        (stream_client.terminal, stream_client.input)
+    {
+        let size = nix::pty::Winsize {
+            ws_row: rows,
+            ws_col: columns,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
         };
+        // The slave is made raw so the client's terminal passes bytes unchanged both ways, as
+        // the client itself sets it.
+        let pair = nix::pty::openpty(&size, None).expect("openpty");
+        let mut settings = nix::sys::termios::tcgetattr(&pair.slave).expect("tcgetattr");
+        nix::sys::termios::cfmakeraw(&mut settings);
+        nix::sys::termios::tcsetattr(&pair.slave, nix::sys::termios::SetArg::TCSANOW, &settings)
+            .expect("tcsetattr");
+        let (master_file, slave) = (std::fs::File::from(pair.master), pair.slave);
+        let child = client
+            .stdin(Stdio::from(slave.try_clone().expect("slave")))
+            .stdout(Stdio::from(slave.try_clone().expect("slave")))
+            .stderr(Stdio::from(slave))
+            .spawn()
+            .expect("running docker");
+        // The command holds the slave's copies until it goes; the master reads EIO only once
+        // every copy is closed.
+        drop(client);
+        threads.push(reader(
+            master_file.try_clone().expect("master"),
+            false,
+            pace,
+        ));
+        master = Some(master_file);
+        child
+    } else {
+        let mut child = client
+            .stdin(if stream_client.input {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("running docker");
+        let stdout = std::fs::File::from(OwnedFd::from(child.stdout.take().expect("stdout")));
+        let stderr = std::fs::File::from(OwnedFd::from(child.stderr.take().expect("stderr")));
+        threads.push(reader(stdout, false, pace));
+        threads.push(reader(stderr, true, None));
+        if let Some(mut stdin) = child.stdin.take() {
+            let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+            input = Some(sender);
+            std::thread::spawn(move || {
+                for bytes in receiver {
+                    // A container that closed its input leaves the rest unread.
+                    if stdin.write_all(&bytes).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        child
+    };
     let mut found = crate::streams::Found::default();
     for step in &stream_client.script {
         match step {
@@ -478,22 +457,17 @@ pub fn run_with_client(
             },
             Step::Resize { columns, rows } => {
                 let master = master.as_ref().expect("a terminal with input to resize");
-                let size = libc::winsize {
+                let size = rustix::termios::Winsize {
                     ws_row: *rows,
                     ws_col: *columns,
                     ws_xpixel: 0,
                     ws_ypixel: 0,
                 };
-                // SAFETY: sets the client's terminal size and tells the client, as a terminal
-                // window does.
-                unsafe {
-                    assert_eq!(
-                        libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size),
-                        0,
-                        "setting the terminal size"
-                    );
-                    libc::kill(child.id() as i32, libc::SIGWINCH);
-                }
+                // Sets the client's terminal size and tells the client, as a terminal window does.
+                rustix::termios::tcsetwinsize(master, size).expect("setting the terminal size");
+                let client =
+                    rustix::process::Pid::from_raw(child.id() as i32).expect("a process id");
+                let _ = rustix::process::kill_process(client, rustix::process::Signal::WINCH);
             }
             Step::CloseInput => {
                 assert!(master.is_none(), "the reference's terminal is not closed");

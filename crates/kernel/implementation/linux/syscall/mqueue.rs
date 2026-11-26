@@ -4,9 +4,10 @@
 //! receive hands the first of them what it waited for.
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
+use atomic_refcell::AtomicRefCell;
+use crossbeam_utils::atomic::AtomicCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use zerocopy::IntoBytes;
@@ -24,8 +25,8 @@ use crate::{Context, Errno, Kernel};
 /// user's take against `RLIMIT_MSGQUEUE` (`UCOUNT_RLIMIT_MSGQUEUE`).
 #[derive(Default)]
 pub(crate) struct Usage {
-    queues: Cell<u64>,
-    bytes: RefCell<BTreeMap<u32, u64>>,
+    queues: AtomicCell<u64>,
+    bytes: AtomicRefCell<BTreeMap<u32, u64>>,
 }
 
 /// A queue's limits (`struct mq_attr`'s first fields).
@@ -80,14 +81,14 @@ pub(crate) struct MessageQueue {
     senders: Vec<Sender>,
     receivers: Vec<(Tid, i32)>,
     pub notify: Option<Notify>,
-    charge: Option<(Rc<Usage>, u32, u64)>,
+    charge: Option<(Arc<Usage>, u32, u64)>,
 }
 
 impl Drop for MessageQueue {
     /// `mqueue_evict_inode`: the queue's bytes and its place in the namespace are given back.
     fn drop(&mut self) {
         if let Some((usage, uid, bytes)) = &self.charge {
-            usage.queues.set(usage.queues.get() - 1);
+            usage.queues.store(usage.queues.load() - 1);
             if let Some(held) = usage.bytes.borrow_mut().get_mut(uid) {
                 *held -= bytes;
             }
@@ -192,7 +193,7 @@ pub(crate) fn new_queue(
     let usage = &kernel.ipc.mq_usage;
     let resource = credentials.has(CAP_SYS_RESOURCE);
     let namespace = kernel.ipc.limits;
-    if usage.queues.get() >= u64::from(namespace.mq_queues_max as u32) && !resource {
+    if usage.queues.load() >= u64::from(namespace.mq_queues_max as u32) && !resource {
         return Err(Errno::ENOSPC);
     }
     // `mq_attr_ok` checks only limits the caller gave.
@@ -230,7 +231,7 @@ pub(crate) fn new_queue(
         return Err(Errno::EMFILE);
     }
     usage.bytes.borrow_mut().insert(uid, held);
-    usage.queues.set(usage.queues.get() + 1);
+    usage.queues.store(usage.queues.load() + 1);
     Ok(MessageQueue {
         limits,
         messages: BTreeMap::new(),
@@ -506,7 +507,7 @@ fn touch(node: &Node, now: crate::fs::Time) {
 /// Parks a sender or receiver just put in the queue's line until it is handed what it waits for,
 /// its time is up or a signal comes.
 fn park(kernel: &mut Kernel, tid: Tid, node: &Node, deadline: Option<u64>) -> Result<u64, Errno> {
-    kernel.ipc.mq_waiting.insert(tid, Rc::downgrade(node));
+    kernel.ipc.mq_waiting.insert(tid, Arc::downgrade(node));
     let thread = kernel.thread_mut(tid);
     thread.call.started = true;
     thread.call.deadline = deadline;

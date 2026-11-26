@@ -2,7 +2,7 @@
 //! first process.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -71,7 +71,8 @@ pub struct Start<'a, E> {
     /// What descriptors 0 to 2 are.
     pub standard: Standard<E>,
     /// The container's address-space size: one past the highest address its processes may use,
-    /// at most [`crate::ARM64_ADDRESS_SPACE_BYTES`], the reference's.
+    /// at most [`crate::ARM64_ADDRESS_SPACE_BYTES`], the reference's; a larger one is cut to it,
+    /// counted and warned of.
     pub address_space_bytes: u64,
     /// The memory size the guest is told (`/proc/meminfo`, `sysinfo`, tmpfs's limits).
     pub memory_bytes: u64,
@@ -111,6 +112,9 @@ pub struct StartOptions<'a> {
     pub scheduler: Option<sched_attr>,
     /// Its I/O priority, as `ioprio_set` takes it.
     pub io_priority: u32,
+    /// The processors it may run on (`execCPUAffinity`'s final set), as `sched_setaffinity` takes
+    /// them: a bit for each processor, lowest first; none for every one.
+    pub cpu_affinity: Option<&'a [u8]>,
     /// Its execution domain and flags, as `personality` takes them.
     pub personality: u32,
     /// The container's sysctls (`--sysctl`): each key, dotted, and the value written to its file.
@@ -189,6 +193,7 @@ impl Default for StartOptions<'_> {
             seccomp: Seccomp::DockerProfile,
             scheduler: None,
             io_priority: 0,
+            cpu_affinity: None,
             personality: 0,
             sysctls: &[],
             mounts: &DOCKER_MOUNTS,
@@ -436,7 +441,7 @@ fn mount_tmpfs(
     now: Time,
     kind: Kind,
     flags: u32,
-    space: Option<Rc<fs::Space>>,
+    space: Option<Arc<fs::Space>>,
 ) -> Node {
     let root = file_system_root(numbers, mode, now, kind, flags, space);
     fs::mount(on, &root);
@@ -450,7 +455,7 @@ fn file_system_root(
     now: Time,
     kind: Kind,
     flags: u32,
-    space: Option<Rc<fs::Space>>,
+    space: Option<Arc<fs::Space>>,
 ) -> Node {
     let mut fs = numbers.file_system(kind, flags);
     fs.space = space;
@@ -993,9 +998,18 @@ impl Kernel {
         cx.random(&mut self.boot_id);
         cx.random(&mut self.files.generation_key);
         self.machine.memory_bytes = start.memory_bytes;
-        let space = start
-            .address_space_bytes
-            .min(crate::ARM64_ADDRESS_SPACE_BYTES);
+        let space = crate::memory::page_down(
+            start
+                .address_space_bytes
+                .min(crate::ARM64_ADDRESS_SPACE_BYTES),
+        );
+        if space != start.address_space_bytes {
+            self.counters.count(
+                cx.host,
+                crate::counters::reason::ADDRESS_SPACE_NARROWED,
+                start.address_space_bytes,
+            );
+        }
         self.machine.address_space_bytes = space;
         self.ceiling = start
             .ceiling
@@ -1037,11 +1051,13 @@ impl Kernel {
             group: pid,
             session: pid,
             memory: wcontainers_abi::MemoryId(0),
-            map: Rc::new(core::cell::RefCell::new(crate::memory::AddressMap::new(
-                self.machine.address_space_bytes,
-                self.ceiling,
-                self.map_notes.clone(),
-            ))),
+            map: Arc::new(atomic_refcell::AtomicRefCell::new(
+                crate::memory::AddressMap::new(
+                    self.machine.address_space_bytes,
+                    self.ceiling,
+                    self.map_notes.clone(),
+                ),
+            )),
             threads: vec![pid],
             limits: limits_from(start.options.limits),
             executable: (root.clone(), Vec::new()),
@@ -1076,7 +1092,7 @@ impl Kernel {
             oom_score_adj_min: start.options.oom_score_adj,
             terminal: None,
             terminal_old_group: None,
-            actions: Rc::new(core::cell::RefCell::new(
+            actions: Arc::new(atomic_refcell::AtomicRefCell::new(
                 [kernel_sigaction {
                     sa_handler_kernel: crate::linux_extra::SIG_DFL,
                     sa_flags: 0,
@@ -1087,12 +1103,14 @@ impl Kernel {
         };
         self.processes.insert(pid, process);
         // Its CPU side thread is made once its program is loaded.
-        let files = Rc::new(core::cell::RefCell::new(FdTable::new(pid as u64)));
-        let fs = Rc::new(core::cell::RefCell::new(crate::process::FsContext {
-            root: root.clone(),
-            cwd: root.clone(),
-            umask: start.options.umask,
-        }));
+        let files = Arc::new(atomic_refcell::AtomicRefCell::new(FdTable::new(pid as u64)));
+        let fs = Arc::new(atomic_refcell::AtomicRefCell::new(
+            crate::process::FsContext {
+                root: root.clone(),
+                cwd: root.clone(),
+                umask: start.options.umask,
+            },
+        ));
         let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs, credentials);
         self.threads.insert(pid, thread);
         if let Err(error) = self.apply_start_options(&mut cx, pid, &start.options) {
@@ -1165,10 +1183,13 @@ impl Kernel {
             crate::syscall::set_own_schedule(self, pid, attributes)?;
         }
         crate::syscall::set_io_priority(self, cx, pid, options.io_priority)?;
+        if let Some(mask) = options.cpu_affinity {
+            crate::syscall::set_own_affinity(self, pid, mask)?;
+        }
         crate::syscall::set_personality(self, cx, pid, options.personality)?;
         if let Seccomp::Filter(program) = options.seccomp {
             let filter = crate::seccomp::Filter::new(program.into())?;
-            self.thread_mut(pid).filters.push(Rc::new(filter));
+            self.thread_mut(pid).filters.push(Arc::new(filter));
         }
         Ok(())
     }
@@ -1322,7 +1343,12 @@ impl Kernel {
                 return Ok(());
             }
         };
-        self.standard_descriptors(cx, pid, starting.standard, null)?;
+        // A start that waits for its ends loads its program again, and one that cannot make them
+        // ends: either way the memory the program was loaded into goes, with the blocks it shows.
+        if let Err(error) = self.standard_descriptors(cx, pid, starting.standard, null) {
+            cx.cpu.memory_drop(image.memory);
+            return Err(error);
+        }
         let thread = match cx.cpu.thread_new(image.memory) {
             Ok(thread) => thread,
             Err(error) => {
@@ -1444,7 +1470,7 @@ impl Kernel {
         let first = self.init.is_none();
         let old_memory = core::mem::replace(&mut process.memory, image.memory);
         process.map.borrow().note_sharers_changed();
-        process.map = Rc::new(core::cell::RefCell::new(image.map));
+        process.map = Arc::new(atomic_refcell::AtomicRefCell::new(image.map));
         process.executable = image.executable;
         process.starting_stack = image.starting_stack;
         process.vdso = image.vdso;
@@ -1473,7 +1499,7 @@ impl Kernel {
         thread.credentials.serial = self.last_credentials;
         // Handlers shared with another process are copied first (`unshare_sighand`).
         let actions = *process.actions.borrow();
-        process.actions = Rc::new(core::cell::RefCell::new(actions));
+        process.actions = Arc::new(atomic_refcell::AtomicRefCell::new(actions));
         for action in process.actions.borrow_mut().iter_mut() {
             if action.sa_handler_kernel != crate::linux_extra::SIG_IGN {
                 action.sa_handler_kernel = crate::linux_extra::SIG_DFL;
@@ -1530,7 +1556,7 @@ impl Kernel {
     }
 
     /// A tmpfs's count, kept for the machine's memory in use.
-    fn new_space(&mut self, max_blocks: u64, max_inodes: u64) -> Rc<fs::Space> {
+    fn new_space(&mut self, max_blocks: u64, max_inodes: u64) -> Arc<fs::Space> {
         let space = fs::Space::new(max_blocks, max_inodes);
         self.files.spaces.push(space.clone());
         space
@@ -1825,7 +1851,7 @@ impl Kernel {
             let scsi = empty_root(empty_fs.clone());
             {
                 let mut inode = scsi.borrow_mut();
-                inode.place.parent = Some(Rc::downgrade(&proc_root));
+                inode.place.parent = Some(Arc::downgrade(&proc_root));
                 inode.place.name = b"scsi".to_vec();
                 inode.place.mount_root = true;
             }
@@ -1967,7 +1993,7 @@ fn collect(cpu: &mut dyn Cpu, directory: &Node, path: &[u8], out: &mut Vec<FileR
         let is_mount_point = child.place.mounted.is_some();
         let is_directory = child.is_directory();
         drop(child);
-        if is_directory && !is_mount_point && !Rc::ptr_eq(node, directory) {
+        if is_directory && !is_mount_point && !Arc::ptr_eq(node, directory) {
             collect(cpu, node, &child_path, out);
         }
     }

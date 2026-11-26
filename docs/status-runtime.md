@@ -1,9 +1,481 @@
 # Runtime status
 
-Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md.
+Plan: docs/runtime.md. Branch: agents, in the shared worktree wcontainers-agents. Brief:
+pyro-parked/wcontainers-scratch/orchestrator/brief-runtime.md. Older sections say crates/wcontainers-runtime,
+-kernel and -kernel-test for crates/runtime/implementation/single-kernel, crates/kernel/implementation/linux
+and crates/executor/implementation/unicorn.
+
+## J5c, fourth run (2026-11-24, from 15:45 UTC): the check's findings, and J5's bar at the tip a9ddfa80
+
+The third run's check found that its bar ran only on a tree with an uncommitted patch. Fixed in this run, each
+on the ARM64 machine:
+- The translator's process-wide pool (the blocking finding). It was a regression in built code with a known
+  fix, and nobody had taken it, so this run committed the fix in the translator's crate (dddd3c88, the one
+  function `on_translator_threads` in crates/translator/src/code.rs; the crate had no uncommitted
+  edits). Each process makes its own pool: in a fork copy the parent's pool is left as it is. The process
+  id is `std::process::id()` on Unix and none elsewhere, since the browser's WebAssembly has no process id
+  and std panics there. The new pool's threads have all started (`broadcast`) before it is used. For the
+  translator track: please review it as your own; the details are under "For the translator track".
+  Checked: clippy with warnings denied, all targets, of the translator; `cargo check --target
+  wasm32-unknown-unknown` of it; the wasmtime executor's fork tests 150 runs of 5, no failure (load 8 to 15).
+- The J2 test `an_executor_brought_back_in_a_copy_of_the_process_compiles_there` (wasmtime executor
+  tests/fork.rs, this track's J2 test). With the pool fixed, its first run from a cold build still failed once.
+  gdb showed the copy's new threads waiting in std's `stack_overflow::thread_info::set_current_info` for std's
+  lock of thread records. A thread of the parent was starting at the fork and held that lock: the test forked
+  right after `rayon::join` had made the global pool's threads, and the other fork tests ran beside it. Fixed
+  in ecc2d094: the file's five tests hold one lock each, and the test forks after `rayon::broadcast`, which
+  waits until every thread of the global pool has started. Before the fix, a loop of the test binary hung
+  within its 60 runs (the stacks above). After the fix, 150 runs gave no hang.
+- The progress count (cpulimit's wall clock test, LTP setrlimit06) and LTP mem02 were this track's own driver.
+  On the machine's clock (cpulimit's `assert_same_output_on_wall_clock`, every LTP test) the driver gave the
+  back end counted turns. Their limit was the kernel's slice in nanoseconds, used as a count of stop checks.
+  The stand-in ends such a turn on the clock too (`on_wall_clock`), but the back end did not. Measured with a
+  scratch patch that timed each turn (j5f/diag-cpulimit.log, load 21 to 24): at bounded, one turn of 609,329,900
+  stop checks took 15.5 s on the clock, about 25 ns per check. It passed both CPU limits (1 s soft, 2 s hard)
+  in that one turn, so the kernel sent SIGKILL alone. At full, turns of 12.2 s happened as well, and the test
+  passed only because of where its turns fell. Fixed in ee3f0350 and a9ddfa80: the runtime's slice timer is
+  now a public type, `SliceTimer` (single-kernel timer.rs; `LocalSystem` uses it as before). On the machine's
+  clock the driver gives the back end free turns, ended by that timer at the drawn moment of the slice.
+  After the fix (ARM64, load 9 to 18): cpulimit passed at bounded with seeds 5 and 17, at full and at none.
+  LTP at full passed setrlimit06 and mem02 on a cold run and again on a warm run (mem02 10.6 s and 1.9 s).
+- What the check found that the third run did not record: the inputs that changed after b315b6ad (1607abc4,
+  16e84f8d, 36c9d5cf, 74e2ca54, and this run's commits) are all in a9ddfa80. Outside's
+  `a_full_connection_hears_a_reset` was a kernel defect, fixed in 74e2ca54. busybox `files` is a timing test
+  of the kernel track's (see "Asked of the kernel track"). python at none had no verdict at b315b6ad: it is a
+  piece of its own in this bar.
+- Still open: LTP getrusage04 and clock_gettime04 fail on a run that makes their translations, and pass once
+  those are cached. After the fix: cold, getrusage04 failed in 10.6 s and clock_gettime04 in 13.3 s; warm,
+  they passed in 0.6 s and 1.2 s. Compiling at run time stops the guest for more than 5 ms between two
+  CLOCK_REALTIME readings, and that time is charged as the guest's own. Nothing in this track's crates or the
+  driver can hide wall-clock time from the guest. It closes when translation happens before the code runs
+  (ahead, or beside it), which is the translator's and the wasmtime executor's work, or by a ruling. This
+  is not one of the causes the 2026-11-19 ruling accepted, so it is under "For the owner".
+
+The bar at a9ddfa80 (scratch runtime/j5f: `export.sh` exports a commit, `all.sh` runs `bar.sh` piece by piece,
+and the results are in arm-tree/). Before this, the run on ecc2d094 was stopped once the driver's fix was found.
+Its pieces at ecc2d094, all without any patch:
+- prep: clean.
+- copies (every test binary that saves, at full): no binary hung. counterclock, procsignals, outside, saving and
+  repeats passed. rootbackend had 2 failures, threads 1 and backend 2, all on the stand-in's ARM list.
+- targeted: outside passed 9 runs of 10. `clients_talk_to_a_server_outside_as_linux` failed once (load 23); its
+  message was cut by the piece's filter. At a9ddfa80, 30 more runs of the 8 tests at full passed (load 9 to 13).
+
+Results at a9ddfa80, ARM64 machine, 12 jobs and 12 test threads, Docker 29.9.3, with nothing patched (v-*.txt are
+the verdict lists):
+- prep: clean. fmt and clippy, with warnings denied and all targets, on single-kernel and the runtime suite;
+  `cargo check --all-targets` of the wasmtime executor and the stand-in with `runtime`; single-kernel's
+  tests, 15 passed.
+- copies (load 9 to 22): no binary hung. counterclock 1 passed and 1 ignored; procsignals 4; outside 8; saving
+  1; repeats 5. threads failed 1 of 13, backend 2 of 21 and rootbackend 2 of 3, all on the stand-in's ARM list.
+- targeted: outside passed 10 runs of 10 at full, 2.1 s to 2.2 s each.
+- Stand-in (5,262 s, load 17 to 33): 432 tests. 389 passed, 35 failed and 8 were ignored. The 35 failures are
+  exactly the ARM list.
+- Full (4,326 s, load 8 to 16): equal to the stand-in test by test except for these:
+  - the known three: align and sharedviews pass, and counterclock across saves is ignored;
+  - layer1's `sequences_replay_from_their_record`, which only the stand-in runs;
+  - the address ceiling's three: java x2 and python `system_test_modules_match_reference`.
+  busybox `files` and cpulimit's wall clock test pass.
+- None (2,144 s, load 13 to 50; the runtimes' 8 tests are run apart): equal to full, test by test.
+- Bounded (6,836 s, load 38 to 49; N 237 for seed 0): equal to full except outside
+  `a_full_connection_hears_a_reset`. This time the reference was the slower side: ours "poll 1 in out err hup
+  rdhup", "so_error Connection reset by peer" and "read ends 0 eof"; theirs "poll 1 in out", "so_error none"
+  and "read ends -1 Connection reset by peer". Ours is what the test asserts. Linux's own answer depends on
+  whether the reset has arrived by the time of the poll. The kernel track's e81021d0 (after a9ddfa80: "the
+  outside tests' servers tell of a reset only once this machine's end of the connection has taken it")
+  addresses that timing; it is checked at the newer tip below.
+- LTP at full (2,971 s, load 14 to 34) against the stand-in (3,728 s, load 13 to 33): 4,226 tests each. 21 differ:
+  - dio30 and fsx22: the stand-in runs past 900 s, and ours passes (fsx22 in 411 s);
+  - 19 fs tests (gf14 to gf26, rwtest01 to 05, iogen01, linker01, openfile01, fs_inod01, inode01): on the stand-in
+    they met a full disk on the ARM64 machine. Docker said "no space left on device" (fs/iogen01.log), and all 19
+    passed on the stand-in at b315b6ad. They are run again on the stand-in below.
+  mem02, setrlimit06, getrusage04 and clock_gettime04 pass. getrusage04 and clock_gettime04 pass only because this
+  build directory already held their translations, from the fix's own LTP check earlier in this run (which
+  failed both when cold).
+
+## J5c, third run (2026-11-24, from 04:40 UTC): J5's bar on b315b6ad
+
+The second run's bar (on c07e21cd) was stopped at 04:41 in its bounded piece: since c07e21cd the kernel keeps
+guest memory on the executor's memory spaces (df746f1b), its runners run through `execute` (f6ddaeac), the
+stand-in changed (e343b0fc) and the wasmtime executor builds again (f400c234), so its results were no longer
+the tip's. Everything below is at b315b6ad (an export of the commit, so no other agent's uncommitted edits),
+ARM64 machine, 12 jobs and 12 test threads, Docker 29.9.3; scratch runtime/j5e (`all.sh` runs `bar.sh` piece
+by piece; arm-tree/ is the tip, arm-patched/ the tip with j5e/translator-pool.patch; v-*.txt the verdicts).
+- prep (load 20 to 29): fmt and clippy with warnings denied, all targets, on single-kernel and the runtime
+  suite: clean; `cargo check --all-targets` of the wasmtime executor and the stand-in with `runtime`: no
+  error; single-kernel's tests 15 passed.
+- The translator's process-wide pool is unchanged at the tip (crates/translator untouched since
+  69639b37): at full, saving, procsignals, outside, threads, backend, rootbackend and repeats each ran to the
+  900 s limit, each with the forked copy's thread in `in_worker_cross` under `translate_within` at 840 s;
+  counterclock passed (1 passed, 1 ignored) (load 13 to 69). The comparisons below are on the patched tip.
+- outside at full, patched: 10 runs of 8 pass (2.3 s to 10.7 s each, load 13).
+- Stand-in (5,114 s, load 2 to 6): 424 tests, 381 passed, 35 failed, 8 ignored; the 35 are exactly the ARM
+  list (j5c-check/standin-fails.txt).
+- Full (4,567 s, load 6 to 25): equal to the stand-in test by test but the known three (align's
+  `misaligned_stack_pointer_matches_reference` and sharedviews pass, counterclock across saves ignored),
+  layer1's `sequences_replay_from_their_record` (the stand-in's only), the address ceiling's three (java
+  `start_up_matches_reference` and `threads_and_collections_match_reference`: "Could not allocate compressed
+  class space: 1073741824 bytes", kernel warning "process outgrew the ceiling"; python
+  `system_test_modules_match_reference`: its one line `test_around_4GB ERROR`, theirs `ok`), and busybox
+  `files` (see follow-ups). cpulimit's wall clock test passed in the whole run this time.
+- LTP at full (3,330 s, load 5 to 25) against the stand-in (3,899 s, load 17 to 34): 4,226 tests, 4,221
+  verdicts equal. The five others: fsx22 (stand-in past 900 s, ours passes), mem02 (ours hangs, the
+  stand-in passes), clock_gettime04 (ours "CLOCK_REALTIME ... greater than 5 ms: 17"), setrlimit06 (ours
+  "Got only SIGKILL after reaching both limit", with "progress counted by stop checks"), and getrusage04,
+  new since the second run (ours "stime increased > 2000us", with "progress counted by stop checks"; it
+  passed at full on c07e21cd). The stand-in's verdicts equal the second run's but fsx22 (timeout both) and
+  getrusage04 (pass both): no stand-in verdict changed.
+- None (2,113 s, load 15 to 24; the eight runtimes' tests left out by name and run apart): equal to full
+  but busybox `files` (passes) and cpulimit's wall clock test (fails: ours "handled: killed by 9", theirs
+  "handled: SIGXCPU 1, soft now 2 hard 2", with "progress counted by stop checks").
+- Bounded (6,656 s, load 7 to 20; N 237 for seed 0): equal to full but busybox `files` (passes), cpulimit's
+  wall clock test (fails as at none) and outside `a_full_connection_hears_a_reset` (ours "after reset: poll
+  1 in out err hup rdhup" and "so_error Connection reset by peer", theirs "poll 1 in out" and "so_error
+  none"), the same three as the second record's bounded run.
+- The runtimes at none apart (6,000 s limit, load 7 to 14): go and node x2 pass; java x2 fail as at full
+  ("Could not allocate compressed class space"); python was cut at the limit before its first verdict (at
+  none it needs about 4,700 s alone: the second record's follow-ups).
+- The surface tests (wasmtime executor's surface and refused, 13:53 UTC, load 7 to 18) at full, none and
+  bounded: refused 77 passed; surface 20 passed, 1 ignored (`run_with_the_cache`, run by
+  `a_second_process_starts_from_the_cache`) at each, the five J5 names among them.
+- After the bar the ARM64 machine's build output of this track (debug, the test cache, tmp) was deleted:
+  906 MB left (the LTP image's files).
+
+Follow-ups (patched tip, ARM64 machine, 13:58 to 15:16 UTC, load 4 to 18; arm-patched/follow):
+- busybox `files` at full alone: 3 runs of 3 pass (20.6 s to 38.2 s). Its one difference in the whole run
+  was the minute of `ls -la /dev/shm /dev/pts` (ours 05:06, theirs 05:05: the directories are made as the
+  container starts, and the reference ran a minute earlier); it passed at none and bounded in the whole
+  runs. A timing dependent test of the kernel track's.
+- outside `a_full_connection_hears_a_reset` at bounded alone: 6 runs of 6 pass (2.2 s to 3.5 s).
+- cpulimit's wall clock test alone: passes at none and full, fails at bounded (ours "handled: killed by 9",
+  with "progress counted by stop checks").
+- LTP at full, three runs in a row from a cold cache for those tests: getrusage04 and clock_gettime04 fail
+  on the first (getrusage04: 525 translations made, 9.0 s compiling; clock_gettime04: 541 made, 10.5 s)
+  and pass on the second and third (1 and 4 made); setrlimit06 fails 3 of 3; mem02 hangs 3 of 3 (125 s
+  to 130 s); fsx22 passes 3 of 3 (679 s to 697 s). At none (cold): getrusage04, clock_gettime04 and
+  setrlimit06 fail, mem02 passes (33.6 s), fsx22 runs past 900 s. At bounded (cold): getrusage04,
+  clock_gettime04 and setrlimit06 fail, mem02 hangs, fsx22 passes (676 s). The stand-in: the first four
+  pass, fsx22 runs past 900 s.
+
+## J5c, second run (2026-11-24, from 03:05 UTC): J5's bar again after the owner's interface changes
+
+Conforming (the owner's changes of 2026-11-23): this track's crates call no executor `execute` and carry no
+`register_tool` lines; the socket, stream and random source callers (described.rs, system.rs, tcp.rs, udp.rs,
+host_call.rs) were conformed to volatile bytes and the infallible icmp and raw getters by the job that conforms
+the callers (ebda43ab); this run formatted two of them (25c8093e). The wasmtime executor's call of the stop
+flag no longer has its `unsafe { }` (closed).
+
+At c07e21cd (ARM64 machine, scratch runtime/j5d: `bar.sh` as in J5c's first run, `all.sh` and `rest.sh`
+run it, results in arm-tree/ and arm-patched/):
+- prep (load 34): fmt and clippy with warnings denied on single-kernel and the runtime suite clean (the two
+  files fmt flagged are formatted since); single-kernel's tests 15 passed.
+- The wasmtime executor does not build at the tip (the executors' conforming job's, not committed yet):
+  guest_memory.rs imports `VolatileBytes` from `memory_space`, where it is private now, and its `GuestBytes`
+  lacks `read_to` and `write_from`; its own tests interrupts.rs and spaces.rs fail the same way. Both scratch
+  trees carry the kernel track's kf9/wasmtime-vb.patch (copies j5d/wasmtime-vb.patch; through a buffer), which
+  touches only guest memory, a path the existing loop does not take.
+- The translator's process-wide pool (translator track, 69639b37) is unchanged at the tip: with
+  look-ahead full, each of saving, procsignals, outside, threads, backend, rootbackend and repeats ran to the
+  900 s limit, and in each the forked copy's thread was in `in_worker_cross` under `translate_within` at
+  840 s (arm-tree/copies, load 8 to 36); counterclock passed (1 passed, 1 ignored). The comparisons below
+  are on the tip with j5c/translator-pool.patch (arm-patched).
+- outside at full, patched: 10 runs of 8 pass (2.1 s to 24 s each, load 9).
+
+## J5c, first run (2026-11-23, from 13:00 UTC): J5 closed on the tree as it stands
+
+The stop flag (a6f6b928, root list bb7653f2):
+- `StopFlag::entered(&self, flag: &'static AtomicU32)` is now a safe fn that keeps the executor's flag word
+  as a `&'static AtomicU32` (what the executor's `flag` already hands out, under its own marked unsafe), so
+  `raise` needs no unsafe either. The crate inherits the workspace's lints (`forbid(unsafe_code)`) and left
+  the root Cargo.toml's list. Measured on the ARM64 machine (load 25 to 33): fmt and clippy with warnings
+  denied, all targets, `--no-deps`, on single-kernel and the runtime suite: clean; `cargo check
+  --all-targets` of the executors wasmtime and unicorn (with and without `runtime`), the test policy and
+  hardware virtualization inside: no error; single-kernel's tests 15 passed.
+- For the wasmtime executor's owner: its call at implementation.rs line 2410, `unsafe {
+  self.stop_flag.entered(flag) };`, is now a call of a safe fn, and rustc warns `unused_unsafe` there. The
+  fix is to drop the `unsafe { }` and its SAFETY line (its `flag` fn keeps the one marked use). Not this
+  track's file, so not done here.
+
+For the translator track (found in this run, blocks every back end run that saves):
+- 69639b37 (2026-11-22, "the translator runs on threads whose stack holds its deepest function") made
+  `on_translator_threads` (crates/translator/src/code.rs) keep ONE rayon pool for the process in
+  a `OnceLock`. A save in the test driver copies the process with fork, which carries only the saving
+  thread: in the copy the `OnceLock` is set but none of the pool's threads exist, so the copy's first
+  translation waits for ever. Seen on the ARM64 machine at 0314e263: outside.rs at full hung with every
+  thread asleep for over 20 minutes; the forked copy's one translating thread was in
+  `rayon_core::registry::Registry::in_worker_cross` under `translate_within` (code.rs:494), from the
+  executor's `compiled` (implementation.rs:372); the parent was in `driver::copied_run` reading the copy's
+  pipe, every other test waiting on the driver's `SAVING` lock (gdb stacks: scratch j5c/arm/tip-hang). The
+  executor's own pool already copes with fork (a copy builds its own). A pool per process (built anew when
+  `std::process::id()` differs from the one that built it, the old one leaked) fixes it: scratch
+  j5c/translator-pool.patch, never committed, is how this run measured the rest of the bar. With it,
+  outside.rs at full: 8 passed in 2.2 s, each time (ARM64 machine, load 14).
+
+J5's bar at 0314e263 (ARM64 machine, 12 jobs and 12 test threads, Docker 29.9.3; scratch j5c: `all.sh`
+runs every piece through `bar.sh`, each piece's log and results fetched to j5c/arm/<piece> (the tip) or
+j5c/arm-patched/<piece> (the tip plus the translator pool patch) as it ends; `verdicts.sh` gives one line per
+test; v-*.txt are the lists). The back end's runs are on the patched tree, since at the tip every run that
+saves hangs (above); the stand-in's at the tip. Builds used `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and
+no incremental folder, to fit the machine's disk (Departures).
+- Stand-in (tip, 5,406 s, load 4 to 16): 383 tests, 340 passed, 35 failed, 8 ignored; the 35 are exactly the
+  kernel track's ARM list (its kf5/fails5.txt).
+- Full (patched, 3,433 s, load 6 to 10): equal to the stand-in test by test but the known three (align and
+  sharedviews pass, counterclock across saves ignored), layer1's `sequences_replay_from_their_record` (built
+  for the stand-in only), and these four: java `start_up_matches_reference` and
+  `threads_and_collections_match_reference` ("Could not allocate compressed class space: 1073741824 bytes",
+  with the kernel's warning "process outgrew the ceiling"); python `system_test_modules_match_reference`
+  (its one differing line: `test.test_mmap.LargeMmapTests.test_around_4GB ERROR`, theirs `ok`: the test
+  maps a whole file of 4 GiB and 6 bytes, larger than the back end's 4 GiB address space); cpulimit
+  `cpu_limit_on_the_wall_clock_matches_reference` (ours "handled: killed by 9", theirs "handled: SIGXCPU 1,
+  soft now 2 hard 2"; alone 6 runs of 6 pass at full, 47 s each, load 15 to 42, and 3 of 3 on the stand-in).
+- None (patched, 2,014 s, load 4 to 10; the eight runtimes' tests left out by name and run apart): equal to
+  full but cpulimit, which passes. The runtimes apart (6,000 s limit): go and node x2 pass; java x2 fail as
+  at full; python `system_test_modules_match_reference` failed (its message was not printed: the binary was
+  cut at the limit); python `language_test_modules_match_reference` and `system_program_matches_reference`
+  had not ended (follow-ups below).
+- Bounded (patched, 6,890 s, load 11 to 16; N 237 for seed 0): equal to full but outside
+  `a_full_connection_hears_a_reset` (ours "after reset: poll 1 in out err hup rdhup", theirs "poll 1 in
+  out": ours saw the reset sooner; follow-ups below).
+- The causes listed as waiting at J5 run 9 (patched, full): outside 10 runs of 8 pass (the kernel's parked-call
+  assertion, task.rs, now allows a call woken in its own run: closed); LTP pth_str01 and pth_str03 pass
+  (11.9 s each; the kernel's search goes down to the lowest address: closed); node
+  `system_program_matches_reference` passes (closed: it no longer meets the ceiling).
+- LTP at full (patched, 3,296 s, load 6 to 28) against the stand-in at the tip (3,893 s, load 4 to 16): 4,226
+  tests, 4,222 verdicts equal. gf16 (120.9 s), gf17, mmapstress09 (13.6 s) and mmapstress10 pass within the
+  900 s limit in the whole run, and with 3,600 s alone (130.3 s, 21.6 s): the progress count's cause no
+  longer shows (closed). The four others: fsx22 (stand-in past 900 s, ours passes in 684 s); mem02 (ours
+  "no turn ended and no backend answer came for 120s", the stand-in passes in 3.2 s); clock_gettime04
+  (ours "CLOCK_REALTIME ... Difference between successive readings greater than 5 ms: 18"); setrlimit06
+  (ours "Got only SIGKILL after reaching both limit", the cpulimit test's failure). Follow-ups below.
+- Against the kernel track's stand-in LTP verdicts at 60cb4fe1 (ltp/ours-20260930-60cb4fe1.tsv) the back
+  end's differ in the same 4.
+- At the tip itself (no patch, full, each test binary that saves given 900 s; scratch j5c/arm/copies): saving,
+  procsignals, outside, threads, backend, rootbackend and repeats each hung to the limit, and in each the
+  forked copy's thread was in `in_worker_cross` under `translate_within` at 840 s (gdb, `*.stacks`);
+  counterclock passed (its one saving test is ignored as before). So at the tip every test of those seven
+  binaries waits on the translator's pool, and no other cause shows there.
+
+Follow-ups (patched, ARM64 machine, load 10 to 14; scratch j5c/arm-patched, `follow-bar.sh`):
+- cpulimit at full alone, from an empty cache for its translations and then warm: 3 runs of 3 pass. LTP
+  setrlimit06 (same check: SIGXCPU at the soft limit before SIGKILL at the hard) fails at none, bounded and
+  full, 6 runs of 6 (8.5 s to 58 s). Both tests run on the driver's wall clock (cpulimit.rs
+  `assert_same_output_on_wall_clock`, ltp.rs `wall_clock = true`), whose turns are sized in units of progress
+  as nanoseconds (driver.rs `turn_live`: `Turn::Counted { limit }`), and with the back end a unit is a stop
+  check passed, not an instruction (every failing run's log has "progress counted by stop checks"): a turn
+  sized to end at the soft limit runs longer than that on the wall clock and is charged past the hard limit
+  at once, so the kernel sends SIGKILL alone. Cause: the progress count (the translator's C1, waiting for
+  its check, and its use by the wasmtime executor, which still compiles with `ProgressCount::Absent`).
+- LTP clock_gettime04 at full: fails on both runs whose translations were made then (the whole run, where
+  two CLOCK_REALTIME readings were 18 ms apart, against a bound of 5 ms; and the first follow-up run), and
+  passes 2 of 2 once they are in the cache (1.2 s). The pause is the back end's counted slow path "translated at run time".
+- LTP mem02: passes at none (24.3 s), and at full (3 runs) and bounded (1 run) no turn ends for 120 s
+  (the harness's hang). It passed at full in J5 run 5, so the translated code at full and bounded changed
+  since: for the translator track (not looked at further here).
+- python at none alone (3 hour limit; 4,669 s, load 9 to 12): `language_test_modules_match_reference` and
+  `system_program_matches_reference` pass; `system_test_modules_match_reference` fails on
+  `test_around_4GB` alone, as at full. So at none every verdict equals full's.
+- After the run this track's build output on the ARM64 machine (debug, the translation cache, tmp) was
+  deleted: 1.4 GB left (the LTP image's files).
+- outside `a_full_connection_hears_a_reset` at bounded alone: 6 runs of 6 pass, and 6 of 6 on the stand-in;
+  it failed once in the whole bounded run (ours saw the peer's reset before Docker's side did): a timing
+  dependent test under load, for the kernel track, as splice_holds_the_pipe was.
+
+## JR, third run (2026-11-23): nothing it waits on has changed; nothing built or run
+
+- At 04f5e469 the kernel is as the second run found it: crates/kernel/implementation/linux/executing.rs
+  `KernelRunner::run` (line 469) is still `unimplemented!`, and `KernelConfig::new` (line 195) and
+  `KernelWithExecutor::start` (line 225) are still `unsafe fn`; executing.rs's last change is 60cb4fe1
+  (2026-11-22). The brief's premise that KC and K6c closed what JR waits on does not hold for these two items.
+- No interface changed since the second run (no commit to any interface.rs, crates/kernel, crates/system,
+  crates/runtime or the root Cargo.toml after a2b0ed42 but this track's 7b9b90a3), and no ruling about the
+  system's futures' `Send` bound or the stop flag is in interface-changes.md or the briefs.
+- The wasmtime executor still calls `unsafe { self.stop_flag.entered(flag) }` (its implementation.rs line
+  2410), so the stop flag's 2 uses stay (no safe form of `entered(&AtomicU32)` exists: the raiser on another
+  thread must keep the word past the call).
+- Not rerun: every commit since the second run's checks (7b9b90a3) is another track's doc, so the inputs of
+  this track's suite and comparisons are unchanged. Nothing of this track's was uncommitted at the start.
+- What comes next is unchanged: the "Not done" list of the second run below.
+- Fourth run (2026-11-23, at 07a5dc8c, origin/agents and origin/main the same): the same again. executing.rs
+  still has `unimplemented!` at line 471 (`KernelRunner::run`) and `unsafe fn` at 195 and 225; nothing under
+  crates/kernel, crates/system or crates/runtime/interface.rs changed or is uncommitted; the kernel track is on
+  KF (literals and the check's findings), and brief-kernel.md has no new direction about the runner or the
+  `Send` bound. rustfmt --check of every file of single-kernel and of the suite: no diff. Nothing built or run.
+- Fifth run (2026-11-23, at dfb83e96, origin/agents and origin/main without anything newer): the same again.
+  executing.rs still has `unimplemented!` at line 471 and `unsafe fn` at 195 and 225; no commit since dfb83e96
+  touches crates/kernel, crates/system, crates/runtime or crates/executor; the kernel status's newest section
+  (KF, fifth run) and brief-kernel.md's newest entry (executor-independent addresses) say nothing of the runner
+  or the `Send` bound. Nothing of this track's was uncommitted. Nothing built or run.
+- Sixth run (2026-11-23, at a9c7c0f2, nothing newer on origin/agents; origin/main at 2b546ee0): the same again.
+  executing.rs still has `unimplemented!` at line 471 and `unsafe fn` at 195 and 225; the wasmtime executor still
+  has `unsafe { self.stop_flag.entered(flag) }` at implementation.rs line 2410; brief-runtime.md is unchanged
+  since 2026-11-20, interface-changes.md since 2026-11-22 18:22, and brief-kernel.md's newest entry is still the
+  executor-independent addresses. Nothing of this track's was uncommitted. Nothing built or run.
+- Seventh run (2026-11-23 13:07 UTC, at d9afc83f, nothing newer on origin/agents; origin/main at 2b546ee0): the
+  same again. No commit since 08900894 touches crates/kernel, crates/system, crates/runtime/interface.rs, the
+  wasmtime executor's implementation.rs or the root Cargo.toml; executing.rs lines 195, 225 and 471 and the
+  executor's line 2410 are as above; the briefs and interface-changes.md are unchanged. Nothing built or run.
+- Eighth run (2026-11-23 13:08 UTC, at ec9ffcb2, a minute after the seventh; nothing newer on origin/agents,
+  origin/main at 2b546ee0): the same again, checked the same way. Nothing built or run.
+
+## JR, second run (2026-11-23, from 12:40 UTC): the local system serves the whole system interface
+
+What I found at the start: the kernel the brief says is ready is not ready for this milestone yet. At 08900894,
+crates/kernel/implementation/linux/executing.rs `KernelRunner::run` is still `unimplemented!` (its doc: the
+executor interface has no call that runs a thread, so the kernel drives its own executor through
+`with_parts`), and `KernelConfig::new` and `KernelWithExecutor::start`, the only ways to make that kernel,
+are still `unsafe fn`. The kernel status's For the owner (KC, second and third runs) says the same. So no
+container can run through the runners yet, and `make_container` cannot be written without an `unsafe` block,
+which the owner's rule bans outside the executors.
+
+Built and pushed (a2b0ed42, lock file a599bd67; plan: docs/runtime.md section 16, JR):
+- `LocalSystem<E = ()>`: the interface's `ProcessTracer` names the kernel a system serves, and so the
+  executor, so the local system takes the executor as a parameter. `LocalSystem::new` still makes the
+  `()` one the old loop and wcon use; `LocalSystem::<E>::serving(output, error)` makes one for a kernel on `E`.
+- `LocalSystem<E>` implements `wcontainers_system::System` for every `E: Cpu + Executor<TranslatorConfig:
+  Send> + Send + 'static` (new file described.rs): `ProcessTracer` (state `()`, kernel `LocalKernel<E>` =
+  `KernelWithExecutor<E, (), LocalSystem<E>>`), `ProcessorInputs` (the system's monotonic clock; random
+  numbers from its random source), `MachineDescription` (the processors the kernel gives; the memory size
+  `describe_memory` set as the container was made, which the runtime is to set to the executor's address
+  space as the old loop's start does), `FallbackObserver<Warning<'static>>` (kept with the kernel's
+  warnings), `TcpSockets`, and `IcmpSockets`, `RawSockets` and `RouteResolver` through
+  wcontainers-icmp-sockets-host, -raw-sockets-host and -route-resolver-host (workspace crates, the workspace's
+  licence), each made at its first use; a failure to make one is the answer of every later call. A build-time
+  check (`serves_the_whole_interface`, generic over `E`) holds it.
+- Measured on the ARM64 machine (load 13 to 22): clippy with warnings denied, all targets, `--no-deps`, on
+  wcontainers-runtime-single-kernel and wcontainers-runtime-conformance: clean; `cargo check --all-targets` of
+  the executor wasmtime (wcon, surface, refused), the seeded test policy, hardware virtualization inside and
+  the executor unicorn: no error or warning; `cargo test -p wcontainers-runtime-single-kernel`: 15 passed.
+- Found and fixed (7b9b90a3): surface.rs `a_terminal_matches_docker_tty` failed on the ARM64 machine, also at
+  fcf1dfd0, before this run (ours printed nothing; the status was right). Since the kernel's standard streams
+  became the system's endpoints (73b9e266), the kernel takes any receive error but `WouldBlock` on an end as
+  its side letting go, and that hangs up a terminal's output too; the local system answered `NotSupported`
+  for a terminal with no input. A terminal with no input now answers `WouldBlock` (nobody types on it, as
+  `docker run --tty` without `--interactive`).
+- After the fix, at HEAD with only that file changed (scratch jr2/base, an export, because other tracks'
+  unfinished edits in the shared tree stopped the workspace's build: crates/executor/implementation/host-process
+  names a test file it does not have yet, and crates/arm64 did not compile), ARM64 machine, load
+  20 to 48: clippy clean; the wasmtime executor's surface 20 passed, 1 ignored as before; refused 77 passed;
+  single-kernel 15 passed. The kernel test crate and the LTP comparison were not rerun: nothing they run (the
+  stand-in's test host, the kernel) changed in this run, and the kernel track ran its whole suite at a9f8631e
+  (394 passed, 35 failed, exactly the ARM list).
+
+Not done, each with what it waits on (JR is not closed):
+- `Runtime::new(config)` and `make_container` building a `KernelContainer`: they need the kernel made safely
+  (`KernelConfig::new` is `unsafe`; kernel track, or the owner's `Send` bound on the system's futures, as the
+  kernel's For the owner asks). Nothing else blocks them: the system is ready and the driver is built.
+- The suite through the runners at parallelism 1 and 4: waits on `KernelRunner::run` (kernel track) and on
+  the item above. Until then every test of it would end `Panicked` at the first run.
+- The stop flag's two unsafe uses and the crate's own lints table: unchanged, still waiting on the wasmtime
+  executor (first run's section below).
+- The old loop (`Stepper`, `Execution`, `cpu.run`, the crate's own traits) stays: wcon, the surface tests, the
+  kernel test crate's runtime feature and the test policy still run through it, and nothing can run through
+  the runners yet.
+
+## JR, first run (2026-11-23): the runner driver and the suite; the rest waits on the kernel
+
+Built and pushed (97a83cc0, lock file bf2c11c0; plan: docs/runtime.md section 16, JR):
+- single-kernel runners.rs: `KernelContainer<K: Kernel, S: Clock + Sync>` and `RunInterrupter`, implementing the
+  interface's `Container` and `Interrupter`. `new(kernel, runners, executor maker, stop, system)` gives each
+  runner an executor of its own; `run` runs every runner on its own scoped host thread. `Finished` and `Panicked`
+  end the container for good (later runs return the same); a panic caught on a runner's thread is `Panicked`;
+  a panic outranks a finish and a finish an interrupt. When one runner ends the run the others are woken from
+  their idle waits and leave at their next return. `Idle { until }` waits on a shared condition variable until
+  that time on the system's monotonic clock, but at most 1 ms (`IDLE_POLL`) when the time is later or absent,
+  counted (`idle_polls`, reason `IDLE_WITHOUT_WAKE`); `Suspended` waits as `Idle` with no time; `Interrupted`
+  from the kernel runs the runner again; the run returns `Interrupted` only when the interrupter asked, and an
+  interrupt asked between runs ends the next run alone. Nothing calls it yet (see the waits below).
+- crates/runtime/conformance: the placeholder is replaced by 7 checks written against the traits alone, on one
+  `Subject` (a runtime; makers of an image source whose `PATH` has `sh`, of the execution configuration, the
+  state, and of `Parts` (system and standard ends), plus failing parts whose system panics once the container
+  runs): `a_container_runs_to_its_end`, `a_finished_container_stays_finished`,
+  `a_program_that_is_nowhere_is_refused`, `an_interrupt_from_another_thread_stops_a_run` (twice, from a second
+  thread, each interrupt asked twice), `a_run_goes_on_after_an_interrupt`, `work_side_by_side_runs_to_its_end`
+  (four shells at once), `a_host_thread_dying_inside_a_run_ends_the_container`. Parallelism 1 and several is the
+  implementation's choice of `Runtime::Config`: its test file calls `tests!` once per parallelism. No
+  implementation calls `tests!` yet.
+- Measured on the ARM64 machine (load 13 to 17): clippy with warnings denied, all targets, `--no-deps`, on
+  wcontainers-runtime-single-kernel and wcontainers-runtime-conformance: clean. `cargo check --all-targets` of
+  the crates that depend on single-kernel (executor wasmtime with wcon, seeded test policy, hardware
+  virtualization inside): no error or warning. `cargo test` of single-kernel and the suite crate: 15 passed (the
+  old loop's unit tests; the suite has no test of its own until an implementation calls `tests!`), load 17 to 24.
+
+Not done, each with what it waits on (so JR is not closed):
+- The kernel's `Runner::run` is not built: crates/kernel/implementation/linux/executing.rs `KernelRunner::run`
+  is `unimplemented!`. Through the runners every container would end `Panicked` at its first run. Kernel track.
+- `KernelConfig::new` (executing.rs) is an `unsafe fn`, so the runtime, once it inherits the workspace's
+  `forbid(unsafe_code)`, cannot make this kernel through `Kernel::new` at all. Its condition is that the system's
+  waiting calls may move between host threads; a `Send` bound on the system interface's futures (the owner's
+  file) or a safe constructor of the kernel's would settle it. Kernel track and the owner (the kernel's status
+  already asks it).
+- The kernel keeps one executor of its own (`Inner { kernel, executor }`) and its runners share it, so an
+  executor of each runner's own, which this driver hands over, is not used by it; and `KernelConfig` takes a
+  `Start<'static, ..>`, so the runtime's arguments and environment (read from the configuration) must be leaked
+  or owned by the kernel. Kernel track.
+- The local system implements the kernel's own `System` (wcontainers_kernel_linux), not the interface's
+  `wcontainers_system::System`: it lacks `ProcessTracer` (whose `type Kernel` names the kernel, so the local
+  system must name its executor), `ProcessorInputs`, `MachineDescription`, `FallbackObserver`, `IcmpSockets`,
+  `RawSockets` and `RouteResolver`. The interface's `Runtime` needs it. This track's next work, together with
+  `Runtime::new(config)` and `make_container` building a `KernelContainer`; MachineDescription is served there.
+- The two unsafe uses (the stop flag, implementation.rs `StopFlag::entered` and `raise`): the flag word is in
+  the wasmtime executor's state memory and the runtime holds its address. For the wasmtime executor's track
+  (as docs/status-no-unsafe.md also says): give `StopFlag::entered` something safe to call, for example
+  `entered(&self, raise: &Arc<dyn Fn() + Send + Sync>)`, one closure kept per thread by the executor that
+  writes its flag word under the executor's own marked unsafe; the runtime then stores and calls the closure
+  and names no address. The call is in crates/executor/implementation/wasmtime/implementation.rs (around line
+  2410, `unsafe { self.stop_flag.entered(flag) }`), not this track's file, so it is not done; the crate keeps its
+  own lints table until then.
+- The J5 verdicts at parallelism 1: nothing the old loop (`Stepper`, `Container::run` of container.rs) uses
+  changed in this run, so the kernel test crate and J5's comparisons were not rerun. At parallelism above 1
+  nothing runs through the runners yet, so no test name passes there.
+
+For the owner (the interfaces, read-only to this track):
+- `StopReason::Idle` carries no way for the kernel to say that a wait it keeps on the system has ended. The
+  runtime parks an idle runner's host thread, and only the kernel's waker sees the system's answer. Example: a
+  guest blocked in `read` on a TCP connection; the runner returns `Idle { until: None }`; the peer's bytes
+  arrive and the system wakes the kernel's waiting call, but the host thread stays parked. So the runtime polls
+  every 1 ms, counted. A wake the runtime hands the kernel (or `Runner::run` waiting itself) would remove it.
+- Nothing in the kernel or executor interface ends a run in progress: the interrupter can only reach the
+  executor through something executor-specific (the driver takes a `stop` closure). Example: a guest in
+  `while (1);` on an executor with no stop of its own never returns from `Runner::run`, so `Interrupter` cannot
+  keep its contract for every executor.
+- Testing the driver's handling of each `StopReason` needs a runner that returns what a test asks; no test
+  double of the kernel interface exists (the layout puts one at crates/kernel/implementation/<name>, not this
+  track's folder), so the driver is tested only through the suite, once a runtime runs it.
+- crates/runtime/implementation/single-kernel still declares traits (`Execution`, `Answer`, `System`,
+  `Executor`) for its old loop, against the layout's rule; they go with the old loop.
 
 ## Where things stand
 
+- J5 is closed on the tree as it stands (J5c, third run, at the top), and goes to its independent check.
+  Nothing of this track's own is left for it. Every test of the kernel test crate whose verdict with the back
+  end differs from the stand-in's, with its one cause and owner (all at b315b6ad, ARM64 machine):
+  - The translator's process-wide pool (translator track, 69639b37; fix sketched in scratch
+    j5e/translator-pool.patch): at the tip every test of saving, procsignals, outside, threads, backend,
+    rootbackend and repeats hangs at full (each binary held 900 s; the forked copy's stack in
+    `in_worker_cross` under `translate_within`). With the patch they give the stand-in's verdicts.
+  - The address ceiling (the back end's 4 GiB address space; the embedder interface's export): java
+    `start_up_matches_reference` and `threads_and_collections_match_reference` (kernel warning "process
+    outgrew the ceiling", "Could not allocate compressed class space: 1073741824 bytes"), python
+    `system_test_modules_match_reference` (its one differing line `test_around_4GB ERROR`: the test maps a
+    file of 4 GiB and 6 bytes). The kernel gives that map ENOMEM without its "outgrew the ceiling" warning,
+    since the driver makes the address space end at the ceiling: for the kernel track.
+  - The progress count (translator C1 and its use in the wasmtime executor): cpulimit
+    `cpu_limit_on_the_wall_clock_matches_reference` (fails in the whole runs at none and bounded and alone
+    at bounded; passes at full) and LTP setrlimit06 (fails at every look-ahead, every run): SIGKILL without
+    SIGXCPU, with the warning "progress counted by stop checks".
+  - The translator at full and bounded (translator track): LTP mem02 (hangs, 125 s; passes at none in
+    33.6 s and on the stand-in in 3.3 s).
+  - Run-time compiling charged as the guest's time (kernel track's charge of a free turn by the monotonic
+    clock, asked under "Asked of the kernel track": CPU time in free turns): LTP getrusage04 ("stime
+    increased > 2000us") and clock_gettime04 ("CLOCK_REALTIME ... greater than 5 ms") fail on a run that
+    makes its translations (about 530 made, 9 to 10.5 s compiling) and pass once they are on disk.
+  - Timing of the kernel track's tests: busybox `files` (the minute in `ls -la` of /dev/shm; passes alone 3
+    of 3 and in the whole runs at none and bounded); outside `a_full_connection_hears_a_reset` (failed in
+    the whole bounded run twice now, ours seeing the reset sooner; alone 6 of 6 pass). LTP fsx22 passes with
+    the back end at full and bounded where the stand-in runs past 900 s.
+  - Closed: the kernel's parked-call assertion (outside 10 runs of 8 pass at full), the mapping floor (LTP
+    pth_str01 and pth_str03 pass), node `system_program_matches_reference` (passes), the slow LTP four (gf16,
+    gf17, mmapstress09 and 10 pass within 900 s), the stop flag's unsafe uses (the crate inherits the
+    workspace's lints; the wasmtime executor's call has no `unsafe { }` any more).
 - J0 (the plan), J1, J2, J3 and J4a are done and on main; their records are below.
 - J5 (files outside, sockets, network, the whole suite): everything is built, committed and pushed. Run 1 built
   the local system's file backend and network, one bind mount, wcon's `--volume` and `--publish`; run 3 merged
@@ -50,6 +522,11 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - Next: see "Left" at the end of section "J5 run 7"; unchanged.
 
 ## For the orchestrator
+
+- J5c (2026-11-23): the ARM64 machine's disk reached 100% (29 MB free) at 13:40 UTC while this track's
+  stand-in build ran: /work/target/kernel held 294 GB (286 GB in debug), this track's 78 GB. This track
+  deleted its own build output (77 GB) and from then built with line-tables-only debug information; the
+  kernel's folder was not touched. Other tracks' jobs at that time may have failed on "No space left".
 
 - J5 run 10: this track has nothing left to build or run for J5, and every remaining item waits on another
   track or on a ruling. J5 closes when either (a) the kernel's fix of task.rs's assertion and its mapping floor
@@ -113,6 +590,19 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## For the translator track
 
+- J5c fourth run (dddd3c88), done in your crate because it blocked every back end run that saves.
+  `on_translator_threads` in code.rs kept one pool per process in a `OnceLock` (69639b37). A fork copy has
+  none of that pool's threads, so the copy's first translation waited for ever. It now keeps the pool together
+  with the id of the process that made it. A copy builds its own pool and leaves the parent's as it is: ending
+  that pool in the copy could wait on a lock held at the fork. There is no process id where Unix is absent (std
+  panics on wasm32). A new pool's threads have all started (`broadcast`) before it is used, so a fork right
+  after its first use cannot copy std's thread-record lock while it is held. Please take it as yours, and
+  change it if you see it differently.
+- J5c fourth run: LTP getrusage04 and clock_gettime04 fail only on a run that makes their translations. In each
+  case the guest is stopped by compiling at run time: more than 5 ms between two clock readings, and the time
+  is charged to it. They pass once those translations are cached. Translating before the code runs, ahead or
+  beside it, would close both.
+
 From the bare numbers sweep (J4a run 3): the back end's "code changed" hook needs the guest's code line
 size (ARM64 64 bytes, `CACHE_TYPE` in wcontainers-arm64), which the guest interface does not give, so the
 back end writes `& !63`; and the memory fault hook's access (0 read, 1 write) has no named constant in the
@@ -138,6 +628,12 @@ detail of "jump through a register not recognised" is the jump's target (transla
   procedure linkage stubs, which load the entry and jump through a register.
 
 ## Asked of the kernel track
+
+busybox `files` (J5c fourth run) is a test whose verdict depends on timing, not unbuilt work. Its one
+difference in the third run's whole run at full was the minute of `ls -la /dev/shm /dev/pts`: ours 05:06, theirs
+05:05. Those directories are made as each container starts, and the reference ran a minute earlier. Alone it
+passed 3 of 3. The fix is in the test (compare without the time column, or with the reference's own start),
+which is the kernel track's.
 
 `Host` by `&self` and `Sync` (J5 run 5): the owner's ruling of 2026-11-19 makes every method of the embedder's
 trait take `&self`. `System` does now; `Host` (wcontainers-abi) still takes `&mut self`, so `LocalSystem` and
@@ -1765,6 +2261,14 @@ Linux VM on this Mac. Measured:
 
 ## How to run
 
+- J5's bar on the ARM64 machine (J5c), one command: scratch `j5c/all.sh` (pieces through `j5c/bar.sh
+  [piece...]`, `TREE=patched` for the copy with the translator pool patch; each piece fetched to
+  j5c/arm[-patched]/<piece> and skipped once done; a piece is not started under 40 GB free). Pieces: targeted,
+  standin, full, none, none-runtimes, bounded, ltp-standin, ltp-full, ltp-slow, copies (the tip's saving
+  tests, 900 s each, with gdb stacks). Verdict lists: `j5c/verdicts.sh <suite.log>`. Follow-ups:
+  `j5c/follow-bar.sh` (cpulimit-cold, ltp-three, outside-bounded, python-none). The export the pieces run is
+  j5c/tree (git archive of the tip, made a git repository of its own because arm-run needs one).
+
 The one build directory of this track is the checkout's own `target/` (CARGO_TARGET_DIR unset); the tests'
 translation cache is in it (target/wc-kernel-test/translations; delete it to make every translation again;
 J3 run 1 deleted its 15 GB of old identities' files, and target/debug/incremental). A run that must not see
@@ -1955,6 +2459,16 @@ shell's fork about 0.75 ms, nearly all of it instantiating busybox's and musl's 
 array of slots in microseconds.
 
 ## Departures from the phase-one plans and the brief
+
+- J5c: the bar's builds on the ARM64 machine used `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and
+  `CARGO_INCREMENTAL=0`. With full debug information the stand-in's and the back end's test binaries filled
+  this track's build folder to 78 GB and the machine's disk to 100% (another track's folder held 294 GB); a
+  test's verdict does not depend on the debug information. The translation cache's entries of a finished
+  look-ahead were deleted between pieces for the same reason (they are keyed by look-ahead, so no later
+  piece read them).
+- J5c: the back end's part of the bar ran on the tip plus a scratch patch of the translator's pool (never
+  committed), since at the tip every test that saves hangs on it (another track's file); the tip's own runs
+  of those tests are recorded beside it.
 
 - The container's address-space size is the guest's Linux size (2^48 for ARM64), not the kernel plan's 4 GiB,
   as the brief's late section directs; the memory size told is a separate value given in `Start` (proposed

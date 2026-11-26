@@ -31,3 +31,7 @@ pub const LARGE_ENTRY_SPLIT: &str = "large entry split";
 /// Every reservation of a run of frames for a block-sized range broken to give its untaken frames back, because
 /// guest-physical memory ran out; the detail is how many frames came back.
 pub const RESERVATION_BROKEN: &str = "reservation broken";
+
+/// Every shared block the kernel dropped while a memory still showed it: its frames are kept, not given back,
+/// until no memory shows it; the detail is the block's number.
+pub const SHOWN_BLOCK_KEPT: &str = "shared block dropped while shown, kept";

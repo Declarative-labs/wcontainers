@@ -25,7 +25,7 @@ fn is_pipe(file: &FileRef) -> bool {
 }
 
 fn same_pipe(a: &FileRef, b: &FileRef) -> bool {
-    alloc::rc::Rc::ptr_eq(&a.borrow().node, &b.borrow().node)
+    alloc::sync::Arc::ptr_eq(&a.borrow().node, &b.borrow().node)
 }
 
 fn sigpipe<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, tid: Tid) {

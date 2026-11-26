@@ -3,9 +3,11 @@
 //! line discipline's waits, job control checks, the requests, controlling terminals, and what a
 //! side's last close does.
 
-use alloc::rc::Rc;
+use crate::linux_extra::DECISECONDS_PER_SECOND;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
+use wcontainers_abi::NANOSECONDS_PER_SECOND;
 
 use wcontainers_abi::Permissions;
 
@@ -22,7 +24,7 @@ use crate::process::{Channel, Pid, Tid};
 use crate::tty::{MASTER, Pty, SLAVE, load_speeds};
 use crate::{Context, Errno, Kernel};
 
-pub(crate) type PtyRef = Rc<RefCell<Pty>>;
+pub(crate) type PtyRef = Arc<AtomicRefCell<Pty>>;
 
 /// Docker mounts devpts with `gid=5,mode=620`: slaves belong to the tty group.
 const TTY_GROUP: u32 = 5;
@@ -74,7 +76,7 @@ pub(super) fn open<S: crate::System>(
                 .values()
                 .find(|pty| {
                     let pty = pty.borrow();
-                    !pty.closed[MASTER] && Rc::ptr_eq(&pty.slave_node, &node)
+                    !pty.closed[MASTER] && Arc::ptr_eq(&pty.slave_node, &node)
                 })
                 .cloned()
                 .ok_or(Errno::EIO)?;
@@ -129,12 +131,12 @@ fn open_master<S: crate::System>(
         .directory_mut()
         .expect("devpts is a directory")
         .insert(&name, slave_node.clone());
-    let pty = Rc::new(RefCell::new(Pty::new(
+    let pty = Arc::new(AtomicRefCell::new(Pty::new(
         index,
         kernel.next_object(),
         slave_node,
     )));
-    pty.borrow_mut().files[MASTER].push(Rc::downgrade(file));
+    pty.borrow_mut().files[MASTER].push(Arc::downgrade(file));
     file.borrow_mut().terminal = Some(TerminalEnd {
         pty: pty.clone(),
         side: MASTER,
@@ -167,7 +169,7 @@ fn open_slave<S: crate::System>(
         pair.sides[MASTER].other_closed = false;
         pair.closed[SLAVE] = false;
         pair.files[SLAVE].retain(|end| end.strong_count() > 0);
-        pair.files[SLAVE].push(Rc::downgrade(file));
+        pair.files[SLAVE].push(Arc::downgrade(file));
     }
     file.borrow_mut().terminal = Some(TerminalEnd {
         pty: pty.clone(),
@@ -207,7 +209,7 @@ fn is_controlling(kernel: &Kernel, tid: Tid, pty: &PtyRef, side: usize) -> bool 
             .process_of(tid)
             .terminal
             .as_ref()
-            .is_some_and(|terminal| Rc::ptr_eq(terminal, pty))
+            .is_some_and(|terminal| Arc::ptr_eq(terminal, pty))
 }
 
 /// `__tty_check_change`: a background process using its controlling terminal is sent `signal`
@@ -366,7 +368,7 @@ fn read_into<S: crate::System>(
     }
     // Non-canonical reads wait for `VMIN` bytes, or with no minimum for `VTIME` tenths of a
     // second at most; with both, `VTIME` is the longest gap between bytes.
-    let tenths = u64::from(vtime) * 100_000_000;
+    let tenths = u64::from(vtime) * (NANOSECONDS_PER_SECOND / DECISECONDS_PER_SECOND);
     let minimum = if canonical {
         1
     } else {
@@ -1190,7 +1192,7 @@ fn hang_up<S: crate::System>(
             if process
                 .terminal
                 .as_ref()
-                .is_some_and(|terminal| Rc::ptr_eq(terminal, pty))
+                .is_some_and(|terminal| Arc::ptr_eq(terminal, pty))
             {
                 process.terminal = None;
             }

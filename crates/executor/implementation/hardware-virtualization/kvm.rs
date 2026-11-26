@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::mem::offset_of;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, Ordering, fence};
 use std::sync::{Arc, Mutex, Once};
 
 use aarch64_cpu::registers::{CNTVCT_EL0, Read};
@@ -61,7 +61,7 @@ pub struct KvmVirtualMachine {
     timer: u32,
 }
 
-/// A virtual CPU, run by the thread that took it.
+/// A virtual CPU, run by one thread at a time.
 pub struct KvmCpu {
     vcpu: VcpuFd,
     remote: Arc<Remote>,
@@ -72,13 +72,30 @@ pub struct KvmCpu {
 struct Remote {
     run: NonNull<kvm_run>,
     bytes: usize,
-    /// The thread that runs the CPU, 0 once the CPU is gone.
+    /// The thread that ran the CPU last, [`NOT_RUN_BY_A_THREAD`] before its first run and once it is gone.
     thread: AtomicI32,
 }
 
-// SAFETY: the mapping is the kernel's shared run page, which is written only through atomics here.
+/// The thread of a virtual CPU that has never run or is gone: no thread has a negative number.
+const NOT_RUN_BY_A_THREAD: i32 = libc::pid_t::MIN;
+
+thread_local! {
+    /// The calling thread's number, which the stop signal is sent to.
+    static THREAD: i32 = rustix::thread::gettid().as_raw_nonzero().get();
+}
+
+// SAFETY: not shown: atomics here write the run page through a second mapping while kvm-ioctls holds
+// `&mut kvm_run` over the same page (see the reason).
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: promises Remote may move to another thread, from which it writes immediate_exit through its own second mapping of the run page while kvm-ioctls holds &mut kvm_run over that page on the CPU's thread (kvm-ioctls vcpu.rs:1690), the same fault as the Sync below; Kick replaces it"
+)]
 unsafe impl Send for Remote {}
 // SAFETY: as above.
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: lets another thread write the run page's immediate_exit while kvm-ioctls holds &mut kvm_run over the same page (kvm-ioctls vcpu.rs:1690); Kick replaces it"
+)]
 unsafe impl Sync for Remote {}
 
 /// Stops a virtual CPU: sets its run page's `immediate_exit`, which KVM_RUN reads when it starts, then signals its
@@ -101,18 +118,27 @@ fn stop_signal() -> c_int {
 /// The stop signal's handler does nothing: delivering it is what ends KVM_RUN.
 extern "C" fn on_stop_signal(_: c_int) {}
 
-/// Installs the stop signal's handler once per process. Calls the signal interrupts restart, so it never makes
-/// another call of a virtual CPU's thread fail.
+/// Installs the stop signal's handler once per process. Calls the signal interrupts restart where SA_RESTART
+/// applies; others, such as poll, fail with EINTR.
 fn install_stop_signal() -> Result<()> {
     static INSTALLED: Once = Once::new();
     let mut outcome = Ok(());
     INSTALLED.call_once(|| {
         // SAFETY: a zeroed `sigaction` is a valid start, and every field the call reads is set.
+        #[expect(
+            unsafe_code,
+            reason = "a zeroed libc sigaction, valid for this plain C struct, before the fields the call reads are set; Kick, by signal-hook, replaces it"
+        )]
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = on_stop_signal as extern "C" fn(c_int) as usize;
         action.sa_flags = libc::SA_RESTART;
         // SAFETY: a handler that touches nothing, for a signal of the application's own range.
-        if unsafe { libc::sigaction(stop_signal(), &action, ptr::null_mut()) } != 0 {
+        #[expect(
+            unsafe_code,
+            reason = "installs, once per process, a handler that does nothing, with SA_RESTART, for the real-time stop signal; Kick, by signal-hook, replaces it"
+        )]
+        let installed = unsafe { libc::sigaction(stop_signal(), &action, ptr::null_mut()) };
+        if installed != 0 {
             outcome = Err(Error::Host(std::io::Error::last_os_error()));
         }
     });
@@ -126,7 +152,12 @@ fn set_counter_offset(vm: &VmFd, offset: u64) -> Result<()> {
         ..Default::default()
     };
     // SAFETY: the machine's descriptor, with the argument the call reads.
-    if unsafe { ioctl_with_ref(vm, KVM_ARM_SET_COUNTER_OFFSET(), &offset) } < 0 {
+    #[expect(
+        unsafe_code,
+        reason = "calls KVM_ARM_SET_COUNTER_OFFSET on the machine's own descriptor with the struct the call reads; kvm-ioctls has no wrapper, so it stays a one-off"
+    )]
+    let done = unsafe { ioctl_with_ref(vm, KVM_ARM_SET_COUNTER_OFFSET(), &offset) };
+    if done < 0 {
         return Err(refused(format_args!(
             "setting the counter offset: {}",
             std::io::Error::last_os_error()
@@ -145,7 +176,12 @@ fn timer_interrupt(vcpu: &VcpuFd) -> Result<u32> {
         ..Default::default()
     };
     // SAFETY: a virtual CPU's descriptor, with an attribute whose value the call writes into `timer`.
-    if unsafe { ioctl_with_ref(vcpu, KVM_GET_DEVICE_ATTR(), &attribute) } < 0 {
+    #[expect(
+        unsafe_code,
+        reason = "calls KVM_GET_DEVICE_ATTR on a virtual CPU's descriptor, which writes one u32 into the live local the attribute points to; kvm-ioctls has no safe getter; setting it with set_device_attr may remove it"
+    )]
+    let done = unsafe { ioctl_with_ref(vcpu, KVM_GET_DEVICE_ATTR(), &attribute) };
+    if done < 0 {
         return Err(refused(format_args!(
             "reading the timer's interrupt: {}",
             std::io::Error::last_os_error()
@@ -272,6 +308,10 @@ const DOORBELL_FILTER: kvm_smccc_filter = kvm_smccc_filter {
 impl crate::VirtualMachine for KvmVirtualMachine {
     type Cpu = KvmCpu;
 
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: registers host memory as guest memory from a safe trait method that takes any pointer and length, so nothing keeps the range alive while it is mapped; Lend replaces it"
+    )]
     fn map(&self, host: NonNull<u8>, at: u64, length: u64) -> Result<()> {
         let region = kvm_userspace_memory_region {
             slot: self.next_slot.fetch_add(1, Ordering::Relaxed),
@@ -280,7 +320,8 @@ impl crate::VirtualMachine for KvmVirtualMachine {
             memory_size: length,
             userspace_addr: host.as_ptr() as u64,
         };
-        // SAFETY: the host range is the caller's memory and outlives the mapping.
+        // SAFETY: not shown: this safe method takes any pointer and length, and nothing keeps the range alive
+        // while it is mapped (see the reason).
         unsafe { self.vm.set_user_memory_region(region) }
             .map_err(|e| refused(format_args!("mapping memory: {e}")))
     }
@@ -288,9 +329,19 @@ impl crate::VirtualMachine for KvmVirtualMachine {
     /// Private anonymous memory reads as zeros once its pages are dropped, and KVM drops its own mappings of
     /// them with them.
     fn give_back(&self, memory: &Memory, at: u64, length: u64) -> Result<()> {
-        // SAFETY: the range is guest memory, which the caller no longer needs.
-        let done =
-            unsafe { libc::madvise(memory.host(at).cast(), length as usize, libc::MADV_DONTNEED) };
+        if !memory.contains(at, length) {
+            return Err(refused(format_args!(
+                "giving back {length:#x} bytes at {at:#x}, which are not all guest memory"
+            )));
+        }
+        let host = memory.host_bytes(at, length);
+        // SAFETY: the whole range is guest memory (checked); that nothing reaches it any more rests only on the
+        // inside's request, while virtual CPUs or the monitor's plain copies may still reach it.
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: drops the host pages of a range give_back checked is all guest memory, which then reads as zeros, from a safe method any thread may call while virtual CPUs or the monitor's plain copies reach that range; only the inside's request says nothing uses it; a hole punch in the memfd replaces it in step one"
+        )]
+        let done = unsafe { libc::madvise(host.cast(), length as usize, libc::MADV_DONTNEED) };
         if done != 0 {
             return Err(Error::Host(std::io::Error::last_os_error()));
         }
@@ -314,7 +365,12 @@ impl crate::VirtualMachine for KvmVirtualMachine {
             .pop_front()
             .ok_or_else(|| refused(format_args!("every virtual CPU of the machine is taken")))?;
         let bytes = self.vm.run_size();
-        // SAFETY: a shared mapping of the virtual CPU's run page, as KVM gives it to every mapper.
+        // SAFETY: not shown: a second shared mapping of the run page, through which `immediate_exit` is written
+        // while kvm-ioctls holds `&mut kvm_run` over the same page (see the reason).
+        #[expect(
+            unsafe_code,
+            reason = "UNSOUND: maps the virtual CPU's run page a second time, so immediate_exit is written through it while kvm-ioctls holds &mut kvm_run over the page; Kick's flag and repeated signal replace it"
+        )]
         let run = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -331,8 +387,7 @@ impl crate::VirtualMachine for KvmVirtualMachine {
         let remote = Arc::new(Remote {
             run: NonNull::new(run.cast()).expect("mmap gave null"),
             bytes,
-            // SAFETY: a plain query.
-            thread: AtomicI32::new(unsafe { libc::gettid() }),
+            thread: AtomicI32::new(NOT_RUN_BY_A_THREAD),
         });
         Ok(KvmCpu {
             vcpu,
@@ -350,9 +405,13 @@ impl crate::VirtualMachine for KvmVirtualMachine {
 }
 
 impl Remote {
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: an atomic view of immediate_exit in the second mapping of the run page, while kvm-ioctls holds &mut kvm_run over it; Kick's flag and repeated signal replace it"
+    )]
     fn immediate_exit(&self) -> &AtomicU8 {
-        // SAFETY: the field lies in the mapping, which lives as long as `self`; the kernel and every writer here
-        // reach it only through atomics or the kernel's own reads.
+        // SAFETY: not shown: the field lies in the mapping, which lives as long as `self`, but kvm-ioctls holds
+        // `&mut kvm_run` over the same page while this atomic view writes it (see the reason).
         unsafe { AtomicU8::from_ptr(&raw mut (*self.run.as_ptr()).immediate_exit) }
     }
 }
@@ -360,13 +419,17 @@ impl Remote {
 impl Drop for Remote {
     fn drop(&mut self) {
         // SAFETY: the mapping is this value's own.
+        #[expect(
+            unsafe_code,
+            reason = "unmaps the mapping of the run page this value made and alone holds, once nothing reaches it; Kick replaces it"
+        )]
         unsafe { libc::munmap(self.run.as_ptr().cast(), self.bytes) };
     }
 }
 
 impl Drop for KvmCpu {
     fn drop(&mut self) {
-        self.remote.thread.store(0, Ordering::Relaxed);
+        self.remote.thread.store(NOT_RUN_BY_A_THREAD, Ordering::SeqCst);
     }
 }
 
@@ -496,7 +559,11 @@ fn vector_id(n: u8) -> u64 {
 impl crate::VirtualCpu for KvmCpu {
     type Stopper = KvmStopper;
 
+    /// Records the calling thread first, so that a stop signals the thread that runs it now.
     fn run(&mut self) -> Result<Exit> {
+        self.remote.thread.store(THREAD.with(|thread| *thread), Ordering::SeqCst);
+        // Against the stopper's own fence: either KVM_RUN reads its `immediate_exit`, or it signals this thread.
+        fence(Ordering::SeqCst);
         loop {
             match self.vcpu.run() {
                 Ok(VcpuExit::Hypercall(call)) if call.nr == u64::from(DOORBELL_FUNCTION) => {
@@ -570,16 +637,66 @@ impl crate::VirtualCpu for KvmCpu {
 }
 
 impl crate::Stopper for KvmStopper {
+    /// Signals no thread when the CPU has never run or is gone: its next run, if any, reads `immediate_exit`.
     fn stop(&self) -> Result<()> {
-        let thread = self.remote.thread.load(Ordering::Relaxed);
-        if thread == 0 {
-            return Err(refused(format_args!("the virtual CPU is gone")));
+        self.remote.immediate_exit().store(u8::from(true), Ordering::SeqCst);
+        fence(Ordering::SeqCst);
+        let thread = self.remote.thread.load(Ordering::SeqCst);
+        if thread == NOT_RUN_BY_A_THREAD {
+            return Ok(());
         }
-        self.remote.immediate_exit().store(1, Ordering::Release);
-        // SAFETY: a signal whose handler does nothing, to a thread of this process.
-        if unsafe { libc::tgkill(libc::getpid(), thread, stop_signal()) } != 0 {
+        // SAFETY: a signal whose handler does nothing, to a thread of this process; the id may now name another
+        // thread, whose blocking call it can make fail with EINTR (see the reason).
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: sends the stop signal, whose handler does nothing, to the thread id of this process that last ran the CPU; that thread may have ended and its id gone to another thread of this process, where the signal can make a blocking call such as poll fail with EINTR even under SA_RESTART, which nothing shows that thread's code handles; Kick replaces it"
+        )]
+        let sent = unsafe { libc::tgkill(libc::getpid(), thread, stop_signal()) };
+        if sent != 0 {
             return Err(Error::Host(std::io::Error::last_os_error()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wcontainers_executor_hardware_virtualization_inside::layout::MEMORY_BASE;
+
+    use super::KernelVirtualMachine;
+    use crate::{Hypervisor, Memory, VirtualMachine};
+
+    /// Bytes of each reservation: whole pages whether the host's pages are 4 KiB or 64 KiB.
+    const RESERVATION: u64 = 1 << 16;
+
+    /// Reservations made at most before two are neighbors.
+    const TRIES: usize = 64;
+
+    /// A range given back that runs past guest memory is refused, and the host memory after it keeps its bytes.
+    #[test]
+    fn giving_back_past_guest_memory_is_refused() {
+        let machine = KernelVirtualMachine::machine(1).expect("a machine");
+        // The host maps a new reservation next to an earlier one, unless other tests' mappings come between.
+        let after = |memory: &Memory| memory.host(MEMORY_BASE).wrapping_add(RESERVATION as usize);
+        let mut reserved: Vec<Memory> = Vec::new();
+        let (lower, mut upper) = loop {
+            assert!(reserved.len() < TRIES, "two reservations are neighbors");
+            let memory = Memory::reserve(RESERVATION).expect("reserving memory");
+            if let Some(i) = (reserved.iter()).position(|m| after(&memory) == m.host(MEMORY_BASE)) {
+                break (memory, reserved.swap_remove(i));
+            }
+            if let Some(i) = (reserved.iter()).position(|m| after(m) == memory.host(MEMORY_BASE)) {
+                break (reserved.swap_remove(i), memory);
+            }
+            reserved.push(memory);
+        };
+        upper.bytes_mut(MEMORY_BASE, 1)[0] = 0xa5;
+        let given = machine.give_back(&lower, MEMORY_BASE, 2 * RESERVATION);
+        assert_eq!(
+            upper.bytes(MEMORY_BASE, 1)[0],
+            0xa5,
+            "the neighbor's byte survives"
+        );
+        assert!(given.is_err(), "the range is refused");
     }
 }

@@ -42,7 +42,7 @@ mod xattr;
 use wcontainers_abi::SystemCallRequest;
 
 pub(crate) use process::set_personality;
-pub(crate) use system::{set_io_priority, set_own_schedule};
+pub(crate) use system::{set_io_priority, set_own_affinity, set_own_schedule};
 pub(crate) use xattr::CAPABILITY;
 
 use crate::counters::reason;

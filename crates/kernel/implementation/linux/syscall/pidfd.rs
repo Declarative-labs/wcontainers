@@ -2,7 +2,7 @@
 //! descriptor lives, `pidfd_open`, `pidfd_send_signal` and `process_mrelease`; `waitid` and `clone`
 //! take and make them through `named` and `make`.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 
 use super::Args;
 use crate::file::{FileRef, OpenFile};
@@ -44,7 +44,7 @@ pub(super) fn named(kernel: &Kernel, file: &OpenFile) -> Result<Named, Errno> {
     let Content::Pidfd(pid, _) = file.node.borrow().content else {
         return Err(Errno::EBADF);
     };
-    let exists = inode_of(kernel, pid).is_some_and(|node| Rc::ptr_eq(node, &file.node));
+    let exists = inode_of(kernel, pid).is_some_and(|node| Arc::ptr_eq(node, &file.node));
     Ok(Named { pid, exists })
 }
 
