@@ -228,6 +228,7 @@ pub(crate) fn to_fingerprint(
         floating_point_control,
         floating_point_status,
         software_thread_id,
+        process_state_controls,
         exclusive_monitor,
         exception,
         level_specific: (),
@@ -242,6 +243,7 @@ pub(crate) fn to_fingerprint(
     floating_point_control.hash(&mut hasher);
     floating_point_status.hash(&mut hasher);
     software_thread_id.hash(&mut hasher);
+    process_state_controls.hash(&mut hasher);
     match exclusive_monitor {
         ExclusiveMonitor::Open => None,
         ExclusiveMonitor::Exclusive { address } => Some(address),
