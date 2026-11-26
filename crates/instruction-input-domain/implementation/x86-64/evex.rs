@@ -144,6 +144,15 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             rounding: op_code.can_use_rounding_control(),
             suppression: op_code.can_suppress_all_exceptions(),
         }),
+        // The singles' critical values also make bfloat16 pairs: each one's upper half is a bfloat16's.
+        EvexOperation::DotBfloat16 => OperandType::EvexFusedData(EvexFusedData {
+            order: FusedOrder::Order231,
+            precision: Precision::Single,
+            vector_bytes: form.vector_bytes(),
+            scalar: false,
+            register,
+            rounding: false,
+        }),
         EvexOperation::Compress { element_bytes } | EvexOperation::Expand { element_bytes } => {
             OperandType::EvexMoveData(EvexMoveData { element_bytes, vector_bytes: form.vector_bytes(), register })
         }
@@ -930,6 +939,7 @@ fn list_special_values(operation: SpecialOperation, precision: Precision) -> Vec
             normal(9, 0) | sign,
             normal(11, 0) | sign,
         ],
+        SpecialOperation::Range => vec![normal(0, 0) | sign, normal(0, half), normal(0, half) | sign, 1 | sign],
         SpecialOperation::GetMantissa | SpecialOperation::GetExponent | SpecialOperation::Class => {
             vec![normal(0, half), normal(1, half) | sign, normal(-1, 1) | sign, 1 | sign]
         }
@@ -942,7 +952,7 @@ fn list_special_values(operation: SpecialOperation, precision: Precision) -> Vec
 /// none and two; VRNDSCALE's and VREDUCE's each rounding mode, MXCSR's, suppression and scales 0, 1, 4 and 15.
 fn list_special_immediates(operation: SpecialOperation) -> Vec<u8> {
     match operation {
-        SpecialOperation::GetMantissa => (0..16).collect(),
+        SpecialOperation::GetMantissa | SpecialOperation::Range => (0..16).collect(),
         SpecialOperation::Class => vec![0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xFF, 0x00, 0x81],
         SpecialOperation::RoundScale | SpecialOperation::Reduce => vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x08, 0x10, 0x11, 0x41, 0x4A, 0xF0, 0xF3],
         SpecialOperation::GetExponent | SpecialOperation::Scale => vec![0],

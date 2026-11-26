@@ -15,7 +15,10 @@ use crate::evex::fused::multiply_add;
 use crate::evex::compare::compare;
 use crate::evex::special::{SpecialOperation, compute_special};
 use crate::evex::convert::to_bfloat16;
-use crate::float::{DENORMAL, FLAGS, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, ROUNDING_SHIFT};
+use crate::float::{
+    DENORMAL, DENORMALS_ARE_ZEROS, FLAGS, FLUSH_TO_ZERO, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, Precision,
+    ROUNDING_SHIFT,
+};
 
 /// The order a fused form takes NaNs in: the first multiplicand's, the second's, the addend's.
 const NAN_ORDER: [usize; 3] = [0, 1, 2];
@@ -113,6 +116,15 @@ pub(super) fn execute_evex(
             })?
         }
         EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => unreachable!("moved above"),
+        EvexOperation::DotBfloat16 => {
+            let mut sums = [0; 4];
+            for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
+                let (a, b) = (read_element(&first, index, 4), read_element(&second, index, 4));
+                let sum = dot_bfloat16(read_element(&old, index, 4), a, b);
+                write_element(&mut sums, index, 4, sum);
+            }
+            sums
+        }
         EvexOperation::Special { operation, precision, .. } => {
             let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
             let lanes = compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
@@ -167,6 +179,25 @@ pub(super) fn execute_evex(
     let target = if is_active(Bug::EvexHighRegistersAliasLow) { destination % 16 } else { destination };
     processor.write_zmm(target, result);
     Ok(())
+}
+
+/// One element of VDPBF16PS: the addend plus the upper pair's product, then plus the lower pair's, as singles, each
+/// sum rounded once.
+fn dot_bfloat16(addend: u64, first: u64, second: u64) -> u64 {
+    let control = ALL_MASKS | DENORMALS_ARE_ZEROS | FLUSH_TO_ZERO;
+    let widen = |pair: u64, upper: bool| if upper { pair & 0xFFFF_0000 } else { (pair & 0xFFFF) << 16 };
+    let order: [bool; 2] = if is_active(Bug::DotBfloat16LowerPairFirst) { [false, true] } else { [true, false] };
+    let is_nan = |single: u64| single & 0x7FFF_FFFF > 0x7F80_0000;
+    order.into_iter().fold(addend, |sum, upper| {
+        let (a, b) = (widen(first, upper), widen(second, upper));
+        // A NaN wins in the order the chip shows: the first source's, the second source's, the sum's.
+        let order = if is_active(Bug::DotBfloat16SumNanFirst) { [sum, a, b] } else { [a, b, sum] };
+        if let Some(nan) = order.into_iter().find(|&value| is_nan(value)) {
+            return nan | 0x40_0000;
+        }
+        // The product is exact: each step is one fused multiply-add.
+        multiply_add(a, b, sum, false, false, Precision::Single, control, NAN_ORDER).bits
+    })
 }
 
 /// Each selected element of a floating-point form computed under MXCSR or the embedded control; the flags found are
@@ -246,6 +277,8 @@ fn read_memory_source(
     let elements = if broadcast { form.vector_bytes() / bytes } else { form.memory_bytes() / bytes };
     let reference = if broadcast { bytes } else { form.memory_bytes() };
     let unchecked = processor.flags.difference(Flags::ALIGNMENT_CHECK);
+    // VCVTPH2PS's half-width source is never checked for alignment, as the chip shows.
+    let flags = if form.reports_denormal() { processor.flags } else { unchecked };
     let suppresses = form.suppresses_faults() || is_active(Bug::EvexPermuteFaultsSuppressed);
     let whole = !suppresses || is_active(Bug::EvexMaskedFaultNotSuppressed);
     let selected = if whole || (broadcast && selected != 0) { u64::MAX } else { selected };
@@ -257,13 +290,13 @@ fn read_memory_source(
     };
     if decoded.op_mask() == iced_x86::Register::None || whole {
         // Unmasked, the reference is checked as a legacy form's access is.
-        check_access(processor.flags, memory, operand, reference as u64, Access::Read)?;
+        check_access(flags, memory, operand, reference as u64, Access::Read)?;
     } else if (0..elements).any(read) {
         // Masked, the selected elements' bytes must be canonical before the reference's alignment is checked.
         for index in (0..elements).filter(|index| read(*index)) {
             check_canonical(to_element(index), bytes as u64)?;
         }
-        check_alignment(processor.flags, operand, reference as u64)?;
+        check_alignment(flags, operand, reference as u64)?;
     }
     for index in (0..elements).filter(|index| read(*index)) {
         let element = to_element(index);

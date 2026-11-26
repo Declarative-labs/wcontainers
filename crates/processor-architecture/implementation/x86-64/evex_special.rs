@@ -1,11 +1,10 @@
-//! The AVX-512 operations on one floating-point number's parts: VGETEXP, VGETMANT, VFPCLASS, VRNDSCALE, VREDUCE
-//! and VSCALEF, as the [Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
+//! The AVX-512 operations on one floating-point number's parts: VGETEXP, VGETMANT, VFPCLASS, VRNDSCALE, VREDUCE,
+//! VSCALEF and VRANGE, as the [Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 //! volume 2 describes them, for single, double and half precision.
 
 use crate::float::{
     Class, DENORMAL, DENORMALS_ARE_ZEROS, Exact, INEXACT, INVALID, LaneOutcome, MASK_SHIFT, Operand, Precision, Rounding,
-    UNDERFLOW,
-    read_rounding, round, round_to_integer,
+    UNDERFLOW, compare_less, read_rounding, round, round_to_integer,
 };
 use crate::planted::{Bug, is_active};
 
@@ -24,12 +23,15 @@ pub enum SpecialOperation {
     Reduce,
     /// The first element times 2 to the floor of the second.
     Scale,
+    /// The lesser or greater of the two elements, or of their magnitudes (the immediate's bits 1:0), signed as its
+    /// bits 3:2 say.
+    Range,
 }
 
 impl SpecialOperation {
     /// Whether the operation reads two elements.
     pub const fn is_binary(self) -> bool {
-        matches!(self, Self::Scale)
+        matches!(self, Self::Scale | Self::Range)
     }
 }
 
@@ -177,7 +179,49 @@ pub(crate) fn compute_special(
             }
         }
         SpecialOperation::Scale => scale(Operand::read(first, precision, daz), x, precision, mxcsr),
+        SpecialOperation::Range => range(Operand::read(first, precision, daz), x, precision, immediate),
     }
+}
+
+/// VRANGE of one element pair: a signaling NaN quieted (the first's first) with invalid, else a quiet NaN as it is,
+/// else the selected element (a denormal read as zero under DAZ) with the sign the immediate's bits 3:2 give.
+fn range(first: Operand, second: Operand, precision: Precision, immediate: u8) -> LaneOutcome {
+    let done = |bits: u64, before: u32| LaneOutcome { bits, before, after: 0 };
+    let quiet = precision.to_quiet_bit();
+    for operand in [first, second] {
+        if matches!(operand.class, Class::Nan { signaling: true }) {
+            return done(operand.bits | quiet, INVALID);
+        }
+    }
+    // A quiet NaN gives way to the other element, which is reported denormal only when neither is a NaN.
+    // Sign control 0 takes the first source's sign, a NaN's included.
+    let first_sign = first.bits & (1u64 << (precision.to_bits() - 1));
+    let (first, second, denormal) = match (first.is_nan(), second.is_nan()) {
+        (true, true) => (first, first, 0),
+        (true, false) => (second, second, 0),
+        (false, true) => (first, first, 0),
+        (false, false) => (first, second, if first.is_denormal() || second.is_denormal() { DENORMAL } else { 0 }),
+    };
+    let sign = 1u64 << (precision.to_bits() - 1);
+    // An operand as DAZ reads it: a denormal is a zero of its sign.
+    let as_read = |operand: Operand| if operand.class == Class::Zero { operand.bits & sign } else { operand.bits };
+    let magnitude = |operand: Operand| Operand { negative: false, ..operand };
+    let (absolute, greater) = (immediate & 2 != 0, immediate & 1 != 0);
+    let (a, b) = if absolute { (magnitude(first), magnitude(second)) } else { (first, second) };
+    let less = compare_less(a, b);
+    let equal = !less && !compare_less(b, a);
+    // Equal values of opposite signs: the lesser is the negative one.
+    let first_lesser = if equal && first.negative != second.negative { first.negative } else { less || equal };
+    let chosen = if first_lesser != greater { first } else { second };
+    let selected = as_read(chosen);
+    let bits = match (immediate >> 2) & 3 {
+        0 if is_active(Bug::RangeSignFromSelected) => selected,
+        0 => (selected & !sign) | first_sign,
+        1 => selected,
+        2 => selected & !sign,
+        _ => selected | sign,
+    };
+    done(bits, denormal)
 }
 
 /// VFPCLASS's test: whether the element is of a class the immediate's set bits name, in their order quiet NaN, +0,

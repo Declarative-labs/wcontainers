@@ -1047,6 +1047,12 @@ pub enum Bug {
     ClassNegativeFiniteIncludesZero,
     /// VRNDSCALE and VREDUCE report inexact even where the immediate's bit 3 suppresses it.
     RoundScaleSuppressionIgnored,
+    /// VDPBF16PS adds the lower pair's product first.
+    DotBfloat16LowerPairFirst,
+    /// VDPBF16PS keeps the sum's NaN over a source's.
+    DotBfloat16SumNanFirst,
+    /// VRANGE's sign control 0 keeps the selected element's sign rather than the first source's.
+    RangeSignFromSelected,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1522,6 +1528,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::ScaleTruncatesPower, "VSCALEF", Family::Evex(|form| is_special(form, SpecialOperation::Scale)), Origin::EvexRest),
     row(Bug::ClassNegativeFiniteIncludesZero, "VFPCLASS", Family::Evex(|form| is_special(form, SpecialOperation::Class)), Origin::EvexRest),
     row(Bug::RoundScaleSuppressionIgnored, "VRNDSCALE, VREDUCE", Family::Evex(|form| is_special(form, SpecialOperation::RoundScale) || is_special(form, SpecialOperation::Reduce)), Origin::EvexRest),
+    row(Bug::DotBfloat16LowerPairFirst, "VDPBF16PS", Family::Evex(|form| form.operation == EvexOperation::DotBfloat16), Origin::EvexRest),
+    row(Bug::DotBfloat16SumNanFirst, "VDPBF16PS", Family::Evex(|form| form.operation == EvexOperation::DotBfloat16), Origin::EvexRest),
+    row(Bug::RangeSignFromSelected, "VRANGE", Family::Evex(|form| is_special(form, SpecialOperation::Range)), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
     row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),

@@ -69,6 +69,9 @@ pub enum EvexOperation {
     },
     /// VGETEXP, VGETMANT, VFPCLASS, VRNDSCALE, VREDUCE and VSCALEF of each precision.
     Special { operation: SpecialOperation, precision: Precision, arrangement: Arrangement },
+    /// VDPBF16PS: each single of the destination plus the products of the sources' bfloat16 pairs, the upper pair's
+    /// first, each sum rounded to nearest with denormals read and written as zeros, MXCSR neither read nor written.
+    DotBfloat16,
     /// VCOMPRESSPS to VPCOMPRESSQ: the selected elements packed into the lowest, in order.
     Compress { element_bytes: usize },
     /// VEXPANDPS to VPEXPANDQ: the lowest elements, in order, into the selected ones.
@@ -450,6 +453,11 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vpexpandw, Any, EvexOperation::Expand { element_bytes: 2 }),
         (Mnemonic::Vpexpandd, Any, EvexOperation::Expand { element_bytes: 4 }),
         (Mnemonic::Vpexpandq, Any, EvexOperation::Expand { element_bytes: 8 }),
+        (Mnemonic::Vdpbf16ps, Any, EvexOperation::DotBfloat16),
+        (Mnemonic::Vrangeps, Any, special(SpecialOperation::Range, Single, Packed)),
+        (Mnemonic::Vrangepd, Any, special(SpecialOperation::Range, Double, Packed)),
+        (Mnemonic::Vrangess, Any, special(SpecialOperation::Range, Single, Scalar)),
+        (Mnemonic::Vrangesd, Any, special(SpecialOperation::Range, Double, Scalar)),
         (Mnemonic::Vgetexpps, Any, special(SpecialOperation::GetExponent, Single, Packed)),
         (Mnemonic::Vgetexppd, Any, special(SpecialOperation::GetExponent, Double, Packed)),
         (Mnemonic::Vgetexpph, Any, special(SpecialOperation::GetExponent, Half, Packed)),
@@ -547,6 +555,7 @@ impl EvexForm {
             | EvexOperation::Expand { element_bytes } => element_bytes,
             EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
             EvexOperation::ToBfloat16 { .. } => 2,
+            EvexOperation::DotBfloat16 => 4,
         }
     }
 
@@ -610,6 +619,7 @@ impl EvexForm {
             EvexOperation::Convert(conversion) => matches!(conversion.to, Number::Float(Precision::Half)),
             EvexOperation::Integer { .. }
             | EvexOperation::ToBfloat16 { .. }
+            | EvexOperation::DotBfloat16
             | EvexOperation::Compress { .. }
             | EvexOperation::Expand { .. } => false,
         }
@@ -646,7 +656,7 @@ impl EvexForm {
             | EvexOperation::Compare { .. }
             | EvexOperation::Special { .. }
             | EvexOperation::OrderedCompare { .. } => false,
-            EvexOperation::Fused { .. } => true,
+            EvexOperation::Fused { .. } | EvexOperation::DotBfloat16 => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
             EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => false,
         }
@@ -661,6 +671,7 @@ impl EvexForm {
             | EvexOperation::Convert(_)
             | EvexOperation::Compare { .. }
             | EvexOperation::Special { .. }
+            | EvexOperation::DotBfloat16
             | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
