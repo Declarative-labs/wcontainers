@@ -44,6 +44,26 @@ pub const SPACE_32_BIT: u64 = 1 << 32;
 /// sets (Chrome's 16 GiB).
 pub const SPACE_64_BIT: u64 = 16 << 30;
 
+/// How many guest instructions an execution retires before the stand-in asks its handler, as an interrupt from outside
+/// does, unless configured otherwise.
+pub const DEFAULT_SLICE_INSTRUCTIONS: u64 = 1_000_000;
+
+/// What the stand-in is configured with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandInConfig {
+    /// How many guest instructions an execution retires before it calls `TrapHandler::handle_interrupt`, counted from
+    /// its start and again after each interrupt, so where a slice ends repeats exactly.
+    pub slice_instructions: u64,
+}
+
+impl Default for StandInConfig {
+    fn default() -> Self {
+        Self {
+            slice_instructions: DEFAULT_SLICE_INSTRUCTIONS,
+        }
+    }
+}
+
 /// The register a system call's result goes in, x0 (<https://man7.org/linux/man-pages/man2/syscall.2.html>).
 const RESULT_REGISTER: usize = 0;
 /// A page's length as an index into host memory.
@@ -148,6 +168,7 @@ pub struct StandIn {
     pub last_instructions: u64,
     /// Whether the kernel's clock is the machine's, so a slice is also a span of it.
     wall_clock: bool,
+    config: StandInConfig,
 }
 
 /// The memories, threads and blocks of a stand-in, on its engine's thread.
@@ -213,7 +234,14 @@ impl StandIn {
             end,
             last_instructions: 0,
             wall_clock: false,
+            config: StandInConfig::default(),
         }
+    }
+
+    /// The same CPU side with the configuration given.
+    pub fn configured(mut self, config: StandInConfig) -> Self {
+        self.config = config;
+        self
     }
 
     /// The same CPU side for a kernel on the machine's clock: a turn also ends once its slice has
@@ -240,6 +268,7 @@ impl StandIn {
             end: self.end,
             last_instructions: 0,
             wall_clock: self.wall_clock,
+            config: self.config,
         }
     }
 
@@ -604,7 +633,8 @@ impl BehaviorSource for StandIn {
     }
 }
 
-/// The stand-in runs guest code as it is, with no translator to configure.
+/// The stand-in runs guest code as it is, with no translator to configure; its slice is set as it is built
+/// ([`StandIn::configured`]).
 impl Executor for StandIn {
     type TranslatorConfig = ();
     type GuestMemory = UnicornSpace;
@@ -629,7 +659,10 @@ impl Executor for StandIn {
         let interrupter = StandInInterrupter {
             raised: Arc::clone(&raised),
         };
+        let slice = self.config.slice_instructions;
         let execution = StandInExecution {
+            slice,
+            left_in_slice: slice,
             stand_in: self,
             registers: to_register_block(&processor),
             predicates: Predicates {
@@ -664,6 +697,9 @@ pub struct StandInExecution<'execution> {
     predicates: Predicates,
     memory: &'execution UnicornSpace,
     raised: Arc<AtomicBool>,
+    /// The instructions of a slice, and how many of the current slice the guest has yet to retire.
+    slice: u64,
+    left_in_slice: u64,
 }
 
 /// Why the stand-in stopped running the guest.
@@ -728,19 +764,23 @@ impl Execution for StandInExecution<'_> {
 }
 
 impl StandInExecution<'_> {
-    /// Runs the guest until it traps or an interrupt is raised, which unicorn answers at the next block.
+    /// Runs the guest until it traps, an interrupt is raised, which unicorn answers at the next block, or its slice
+    /// ends, which unicorn counts exactly.
     fn run_until_trap(&mut self) -> Stop {
         loop {
             if self.raised.swap(false, Ordering::AcqRel) {
+                self.left_in_slice = self.slice;
                 return Stop::Interrupted;
             }
             let (exit, instructions) = self.memory.run_turn(
                 &mut self.registers,
-                None,
+                Some(self.left_in_slice),
                 None,
                 Some(Arc::clone(&self.raised)),
             );
             self.stand_in.last_instructions = instructions;
+            // Unicorn counts whole blocks as they start, so a trap inside a block counts the block's rest too.
+            self.left_in_slice = self.left_in_slice.saturating_sub(instructions);
             let exit = match exit {
                 Ok(exit) => exit,
                 Err(Unsupported::AlignmentFault { pc }) => {
@@ -754,7 +794,11 @@ impl StandInExecution<'_> {
                 Exit::MemoryFault { address, access } => {
                     return Stop::MemoryFault { address, access };
                 }
-                // Only an interrupt stops a turn with no limit; it is answered at the top.
+                // A stop with no interrupt raised is the slice's end; an interrupt is answered at the top.
+                Exit::Stop if !self.raised.load(Ordering::Acquire) => {
+                    self.left_in_slice = self.slice;
+                    return Stop::Interrupted;
+                }
                 Exit::Stop => {}
                 Exit::IllegalInstruction => {
                     let pc = self.registers.pc;
