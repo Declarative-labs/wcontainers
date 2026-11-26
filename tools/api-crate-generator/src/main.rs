@@ -14,6 +14,7 @@ mod names;
 mod runtime;
 mod trust;
 mod undo;
+mod visibility;
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;

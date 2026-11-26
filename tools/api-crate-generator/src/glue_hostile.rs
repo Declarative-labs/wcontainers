@@ -203,6 +203,11 @@ fn lie(site: Site, what: &str) {
     }
 }
 
+/// The standard traits of an implementation's objects the glue never calls (src/trust.rs), by name.
+const CLONE_NAME: &str = "Clone";
+const PARTIAL_EQ_NAME: &str = "PartialEq";
+const HASH_NAME: &str = "Hash";
+
 /// A method the glue never calls: a call is a defect the tests see.
 fn never_asked(what: &str) -> ! {
     NEVER.fetch_add(1, Ordering::SeqCst);
@@ -587,6 +592,9 @@ impl FromRng for f64 {
     }
 }
 
+/// A fuzzed call's slices hold fewer elements than this, all of one call the same number.
+const SLICE_LENGTHS: usize = 4;
+
 /// The caller's bytes for a fuzzed call: a length that changes on every call, most often small.
 pub fn random_bytes(rng: &mut Rng) -> LyingBytes {
     let lengths: Vec<u64> = (0..1 + rng.below(3)).map(|_| [0, 1, 4, 8, 16, 64, 256, 4096, 1 << 20, u64::MAX][rng.below(10)]).collect();
@@ -908,7 +916,7 @@ impl Writer<'_, '_> {
             None => "&o.api",
         };
         // Every slice of one call has this length, so that the arrays a count covers agree.
-        prelude.push_str("        let count = r.below(4);\n");
+        prelude.push_str("        let count = r.below(SLICE_LENGTHS);\n");
         let mut counter = 0;
         let mut args = Vec::new();
         for (_, ty) in inputs {
@@ -1051,11 +1059,16 @@ impl Writer<'_, '_> {
         let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    o.kinds_held()\n}}\n");
         let _ = writeln!(text, "/// Calls every method the calling glue carries on every object held, and the library's exports, each with arguments of\n/// defaults and `bytes()` for every caller's bytes; returns what was called.\npub fn drive(o: &Objects, bytes: &dyn Fn() -> LyingBytes) -> Driven {{\n    drive_where(o, bytes, &|_| true)\n}}\n");
         let _ = writeln!(text, "/// `drive`, of the methods of the interfaces (or the exports) `wanted` names only.\npub fn drive_where(o: &Objects, bytes: &dyn Fn() -> LyingBytes, wanted: &dyn Fn(&str) -> bool) -> Driven {{\n    let mut driven = Driven::default();");
+        let mut interface_names: BTreeSet<String> = BTreeSet::new();
         for (place, prelude, call) in &calls {
             let interface = place.split("::").next().unwrap_or(place).split(' ').next().unwrap_or(place);
-            let _ = writeln!(text, "    // {place}\n    if wanted(\"{interface}\") {{\n        driven.attempt(|| {{\n{prelude}        let _ = {call};\n        true\n        }});\n    }}");
+            interface_names.insert(interface.to_string());
+            let _ = writeln!(text, "    // {place}\n    if wanted({}) {{\n        driven.attempt(|| {{\n{prelude}        let _ = {call};\n        true\n        }});\n    }}", crate::names::snake_case(interface).to_ascii_uppercase());
         }
         let _ = writeln!(text, "    driven\n}}\n");
+        for interface in &interface_names {
+            let _ = writeln!(text, "/// The interface (or export) `{interface}`, by its name in the header.\nconst {}: &str = \"{interface}\";", crate::names::snake_case(interface).to_ascii_uppercase());
+        }
         // The effects judgments of the APIs in reach (src/api.rs), and the methods the rows keep from the system.
         let in_reach: BTreeSet<usize> = scope.iter().map(|&k| g.kinds[k].api).chain(std::iter::once(api)).collect();
         let mut groups: Vec<String> = Vec::new();
@@ -1087,11 +1100,10 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "    if r.below(one_in) == 0 {{\n        o.k{k} = None;\n    }}");
         }
         let _ = writeln!(text, "}}\n");
-        let _ = writeln!(text, "/// Calls `calls` methods picked at random, each of random arguments; every 4096 calls drops some objects and makes\n/// them again (`reseed` gives those of valid descriptions the makers cannot make). A call that panics back (the caller's own lie) is counted.\npub fn fuzz(o: &mut Objects, r: &mut Rng, calls: u64, reseed: &dyn Fn(&mut Objects)) -> Fuzzed {{\n    let mut fuzzed = Fuzzed::default();\n    for n in 0..calls {{\n        if n % 4096 == 4095 {{\n            drop_some(o, r, 4);\n            make_all(o);\n            reseed(o);\n            make_all(o);\n            fuzzed.remade += 1;\n        }}\n        let objects = &*o;\n        match r.below({}) {{", fuzzed.len().max(1));
-        for index in 0..fuzzed.len() {
-            let _ = writeln!(text, "            {index} => fuzzed.driven.attempt(|| fuzz_{index}(objects, r)),");
-        }
-        let _ = writeln!(text, "            _ => {{}}\n        }}\n    }}\n    fuzzed\n}}");
+        let listed: Vec<String> = (0..fuzzed.len()).map(|index| format!("fuzz_{index}")).collect();
+        let _ = writeln!(text, "/// Every method's fuzzer, picked from at random.\nconst FUZZERS: [fn(&Objects, &mut Rng) -> bool; {}] = [{}];\n", fuzzed.len(), listed.join(", "));
+        let _ = writeln!(text, "/// Calls `calls` methods picked at random, each of random arguments; every `REMAKE_EVERY` calls drops some objects and\n/// makes them again (`reseed` gives those of valid descriptions the makers cannot make). A call that panics back (the caller's own lie) is counted.\npub fn fuzz(o: &mut Objects, r: &mut Rng, calls: u64, reseed: &dyn Fn(&mut Objects)) -> Fuzzed {{\n    let mut fuzzed = Fuzzed::default();\n    for n in 1..=calls {{\n        if n % REMAKE_EVERY == 0 {{\n            drop_some(o, r, DROP_ONE_IN);\n            make_all(o);\n            reseed(o);\n            make_all(o);\n            fuzzed.remade += 1;\n        }}\n        let objects = &*o;\n        if let Some(fuzzer) = FUZZERS.get(r.below(FUZZERS.len())) {{\n            fuzzed.driven.attempt(|| fuzzer(objects, r));\n        }}\n    }}\n    fuzzed\n}}");
+        let _ = writeln!(text, "\n/// How many fuzzed calls between two drops and remakes of objects.\nconst REMAKE_EVERY: u64 = 4096;\n\n/// One object in this many is dropped at a remake.\nconst DROP_ONE_IN: usize = 4;");
         (text, calls.len(), makers.len())
     }
 }
@@ -1446,11 +1458,15 @@ impl Writer<'_, '_> {
             let wanted: Vec<String> = maker.stores.iter().map(|(k, _)| format!("o.k{k}.is_none()")).collect();
             let answer = if maker.fallible { "answer.ok()" } else { "Some(answer)" };
             let _ = writeln!(text, "        // {}\n        if {} {{\n            let answer = {{\n                let o = &*o;\n                made(|| {{\n{}        let answer = {};\n        {answer}\n                }})\n            }};", maker.place, wanted.join(" || "), maker.prelude, maker.call);
-            let _ = writeln!(text, "            if let Some({}) = answer {{", maker.pattern);
-            for (kind, var) in &maker.stores {
-                let _ = writeln!(text, "                if o.k{kind}.is_none() {{\n                    o.k{kind} = Some({var});\n                }}");
+            if let [(kind, var)] = maker.stores.as_slice() {
+                let _ = writeln!(text, "            if let Some({}) = answer\n                && o.k{kind}.is_none()\n            {{\n                o.k{kind} = Some({var});\n            }}\n        }}", maker.pattern);
+            } else {
+                let _ = writeln!(text, "            if let Some({}) = answer {{", maker.pattern);
+                for (kind, var) in &maker.stores {
+                    let _ = writeln!(text, "                if o.k{kind}.is_none() {{\n                    o.k{kind} = Some({var});\n                }}");
+                }
+                let _ = writeln!(text, "            }}\n        }}");
             }
-            let _ = writeln!(text, "            }}\n        }}");
         }
         let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    o.kinds_held()\n}}\n");
         let _ = writeln!(text, "/// Calls every method on every object held, and the exports, each answer checked.\nfn drive<A: {top}>(o: &Objects<A>) -> Driven {{\n    let mut driven = Driven::default();");

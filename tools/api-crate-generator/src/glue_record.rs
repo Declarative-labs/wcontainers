@@ -324,9 +324,9 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "impl<A> {name}<A> {{\n    /// A new object, of an identity of its own.\n    pub fn new() -> {name}<A> {{\n        {name} {{ live: Live::new(), api: PhantomData }}\n    }}\n\n    /// The object's identity.\n    pub fn identity(&self) -> u64 {{\n        self.live.0\n    }}\n}}\n");
             if self.hostile.get() {
                 // The glue never asks these (src/trust.rs): each panics, so that a call of one fails the tests.
-                let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        never_asked(\"Clone\")\n    }}\n}}\n");
-                let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        never_asked(\"PartialEq\")\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");
-                let _ = writeln!(text, "impl<A> Hash for {name}<A> {{\n    fn hash<H: Hasher>(&self, state: &mut H) {{\n        never_asked(\"Hash\")\n    }}\n}}\n");
+                let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        never_asked(CLONE_NAME)\n    }}\n}}\n");
+                let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        never_asked(PARTIAL_EQ_NAME)\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");
+                let _ = writeln!(text, "impl<A> Hash for {name}<A> {{\n    fn hash<H: Hasher>(&self, state: &mut H) {{\n        never_asked(HASH_NAME)\n    }}\n}}\n");
             } else {
                 let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        {name} {{ live: Arc::clone(&self.live), api: PhantomData }}\n    }}\n}}\n");
                 let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        self.live.0 == other.live.0\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");

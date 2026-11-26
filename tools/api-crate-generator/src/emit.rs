@@ -1791,6 +1791,11 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
         let _ = writeln!(mapping, "| {row:?} | {} |", row.statement());
     }
     std::fs::write(out.join("MAPPING.md"), mapping).map_err(|error| error.to_string())?;
+    // Each direct crate exports only what another crate of the set names (src/visibility.rs).
+    if writes_glue {
+        let folders: Vec<&str> = apis.iter().skip(1).map(|api| api.folder).collect();
+        report.push_str(&crate::visibility::narrow(out, &folders)?);
+    }
     format_written(out)?;
     report.push_str(&kinds_report);
     // Every mark's reason matched to what it relies on, and every hostile test the rows owe written.
