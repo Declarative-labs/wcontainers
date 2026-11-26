@@ -183,14 +183,12 @@ handle!(QuerySet, HeldQuerySet, QuerySetObj);
 handle!(Readback, HeldReadback, ReadbackObj);
 handle!(Surface, HeldSurface, SurfaceObj);
 
-/// The object a handle's number names in `table`, while it is not destroyed.
+/// Answers the object a handle's number names in `table`, while it is not destroyed.
 fn held<H: Clone>(table: &HashMap<u64, H>, number: u64) -> Option<H> {
     table.get(&number).cloned()
 }
 
-/// Why a call naming a destroyed object, or a number the back end never gave, is refused: a call
-/// that answers a result answers `Invalid`, and one that answers nothing loses the device with
-/// `Error`, as for any rule a recording call breaks (plan section 4.10).
+/// Why a call naming a destroyed or unknown object is refused (plan section 4.10).
 const GONE: &str = "a handle names an object destroyed before, or one this back end never made";
 
 fn buffer_of(gpu: &WebGpu, b: &Buffer) -> Option<Rc<BufferObj>> {
@@ -225,8 +223,7 @@ fn surface_of(gpu: &WebGpu, s: &Surface) -> Option<Rc<SurfaceObj>> {
     held(&gpu.objects.surfaces, s.0).map(|h| h.0)
 }
 
-/// Takes a texture the back end made for its own use out of the table once nothing names it by
-/// number any more; the work recorded with it keeps its own hold on it.
+/// Takes a texture the back end made for itself out of the table; recorded work keeps its hold.
 fn forget_texture(gpu: &mut WebGpu, t: &Texture) -> Option<Rc<TextureObj>> {
     gpu.objects.textures.remove(&t.0).map(|h| h.0)
 }
@@ -1816,7 +1813,7 @@ impl Gpu for WebGpu {
         match object {
             Object::Buffer(b) => {
                 let Some(b) = self.objects.buffers.remove(&b.0) else {
-                    return self.fail("destroy of a buffer destroyed before");
+                    return self.fail(GONE);
                 };
                 if b.0.in_arena {
                     return release_slice(self, &b.0);
@@ -1832,7 +1829,7 @@ impl Gpu for WebGpu {
             }
             Object::Texture(t) => {
                 let Some(t) = self.objects.textures.remove(&t.0) else {
-                    return self.fail("destroy of a texture destroyed before");
+                    return self.fail(GONE);
                 };
                 give_back_texture_spares(self, &t.0);
                 if pending(t.0.used_in.get()) {

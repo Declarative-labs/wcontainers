@@ -79,6 +79,9 @@ pub(crate) struct BlockTables {
 
 pub(crate) struct BlockTable<D>(HashMap<D, Weak<Block<D>>>);
 
+/// What one creation holds of a block or a binding set it gives out.
+const ONE_CREATION: u32 = 1;
+
 impl<D> Default for BlockTable<D> {
     fn default() -> Self {
         BlockTable(HashMap::new())
@@ -95,7 +98,7 @@ impl<D: Hash + Eq + Copy> BlockTable<D> {
         let b = Rc::new(Block {
             id,
             desc: *desc,
-            holders: Cell::new(1),
+            holders: Cell::new(ONE_CREATION),
         });
         self.0.insert(*desc, Rc::downgrade(&b));
         (b, true)
@@ -584,7 +587,7 @@ pub(crate) fn binding_set(
     let number = gpu.id();
     let set = Rc::new(SetObj {
         number,
-        holders: Cell::new(1),
+        holders: Cell::new(ONE_CREATION),
         key: layout_key,
         entries: res,
         groups: RefCell::new(Vec::new()),
