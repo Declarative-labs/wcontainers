@@ -52,6 +52,7 @@ mod sve_remaining_planted;
 mod sve_tests;
 pub mod system_instruction;
 pub mod system_register;
+pub mod system_state_planted;
 #[cfg(test)]
 mod tests;
 
@@ -179,6 +180,7 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
             && observed.floating_point_control == expected.floating_point_control
             && observed.floating_point_status == expected.floating_point_status
             && observed.software_thread_id == expected.software_thread_id
+            && observed.process_state_controls == expected.process_state_controls
             && observed.exception == expected.exception
             && observed.level_specific == expected.level_specific
     }
@@ -274,8 +276,8 @@ impl<Level: PrivilegeLevel> Iterator for Instructions<Level> {
 /// predicate holds one bit for each of its bytes.
 ///
 /// TODO: temporary placeholder until the rest of the state every level has is designed: TPIDRRO_EL0 and TPIDR2_EL0;
-/// PSTATE's DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA
-/// and ZT0; FPMR; GCSPR_EL0.
+/// PSTATE's BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA and ZT0; FPMR;
+/// GCSPR_EL0.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor<LevelSpecific> {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
@@ -294,6 +296,11 @@ pub struct Processor<LevelSpecific> {
     pub floating_point_status: u64,
     /// [TPIDR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TPIDR-EL0--EL0-Read-Write-Software-Thread-ID-Register).
     pub software_thread_id: u64,
+    /// PSTATE's [SSBS](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SSBS--Speculative-Store-Bypass-Safe),
+    /// [DIT](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/DIT--Data-Independent-Timing) and
+    /// [TCO](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCO--Tag-Check-Override), each at its
+    /// bit of SPSR_EL1 and of what MRS reads, every other bit zero.
+    pub process_state_controls: u64,
     pub exclusive_monitor: ExclusiveMonitor,
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
@@ -313,6 +320,7 @@ pub const ZERO_PROCESSOR: Processor<()> = Processor {
     floating_point_control: 0,
     floating_point_status: 0,
     software_thread_id: 0,
+    process_state_controls: 0,
     exclusive_monitor: ExclusiveMonitor::Open,
     exception: None,
     level_specific: (),

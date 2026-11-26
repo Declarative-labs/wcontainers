@@ -190,6 +190,9 @@ fn read_operand(
         OperandType::SoftwareThreadId => {
             Some(OperandValue::Bits(state.processor.software_thread_id))
         }
+        OperandType::ProcessStateControl(register) => Some(OperandValue::Bits(
+            state.processor.process_state_controls & register.to_process_state_bit().unwrap_or(0),
+        )),
         OperandType::Word(_) => Some(OperandValue::Bits(u64::from(word))),
         OperandType::ImplicitAddress(number) => {
             Some(OperandValue::Bits(registers[number as usize]))

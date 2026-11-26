@@ -177,6 +177,7 @@ fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
         floating_point_control,
         floating_point_status,
         software_thread_id,
+        process_state_controls,
         exclusive_monitor: _,
         exception,
         level_specific: (),
@@ -207,15 +208,23 @@ fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
         .chain(vector)
         .chain(predicate)
         .chain([(FIRST_FAULT_FIELD.to_owned(), format!("{first_fault:#x}"))])
+        .chain([(
+            PROCESS_STATE_CONTROLS_FIELD.to_owned(),
+            format!("{process_state_controls:#x}"),
+        )])
         .collect()
 }
 
 /// The name of FFR's field.
 const FIRST_FAULT_FIELD: &str = "ffr";
 
-/// Whether the field is a predicate's or FFR's.
+/// The name of the field of SSBS, DIT and TCO.
+const PROCESS_STATE_CONTROLS_FIELD: &str = "pstate";
+
+/// Whether the field is a predicate's, FFR's or the PSTATE controls', which the first state writes only where set.
 fn is_scalable_field(name: &str) -> bool {
     name == FIRST_FAULT_FIELD
+        || name == PROCESS_STATE_CONTROLS_FIELD
         || name
             .strip_prefix('p')
             .is_some_and(|number| number.parse::<usize>().is_ok())
@@ -235,6 +244,9 @@ fn from_fields(mut processor: Processor<()>, fields: &str) -> Option<Processor<(
             "tpidr_el0" => processor.software_thread_id = from_hex_number(value)?,
             "exception" => processor.exception = from_exception_text(value)?,
             FIRST_FAULT_FIELD => processor.first_fault_register = from_hex_number(value)?,
+            PROCESS_STATE_CONTROLS_FIELD => {
+                processor.process_state_controls = from_hex_number(value)?
+            }
             _ => match (name.strip_prefix('x'), name.strip_prefix('v')) {
                 (Some(number), None) => {
                     *processor
