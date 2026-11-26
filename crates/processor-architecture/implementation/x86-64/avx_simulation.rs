@@ -10,7 +10,7 @@ use wcontainers_processor_architecture::MemoryDelta;
 
 use super::{Memory, MemoryOperand, check_access, check_canonical, expect_code, find_fault, locate, read_register, store, write_register};
 use crate::avx::{AvxBehavior, AvxForm, AvxOperation, FusedSign, Wide, compare_strings, compute_integer};
-use crate::vector::{Lane, join};
+use crate::vector::{Lane, join, split, to_signed};
 use crate::behavior::StoreAcrossFault;
 use crate::float::{
     Arrangement, Conversion, FloatForm, FloatOperation, FusedLanes, ORDER_FLAGS, Precision, compare_half, convert_integer, dot_half,
@@ -57,6 +57,7 @@ pub(super) fn execute_avx(
         AvxOperation::MaskedLoad(_) | AvxOperation::MaskedStore(_) | AvxOperation::MaskedByteStore => {
             return execute_masked(form, behavior, processor, memory, decoded, on_memory_mutated);
         }
+        AvxOperation::Gather { data, index } => return execute_gather(data, index, processor, memory, decoded),
         _ => {}
     }
     let operands: Vec<u32> = (0..decoded.op_count()).filter(|&index| decoded.op_kind(index) != OpKind::Immediate8).collect();
@@ -310,6 +311,94 @@ fn compute_float(
 
 fn vec_of(result: Result<(u128, u32), u32>) -> Vec<Result<(u128, u32), u32>> {
     alloc::vec![result]
+}
+
+/// A gather: the lanes the mask selects loaded lowest first; at the first that faults, the lanes loaded so far stay
+/// loaded with their mask lanes cleared.
+fn execute_gather(
+    data: Lane,
+    index: Lane,
+    processor: &mut Processor,
+    memory: Memory<'_, '_>,
+    decoded: &Decoded,
+) -> Result<(), Exception> {
+    let (destination, mask, indices) = (decoded.op0_register(), decoded.op2_register(), decoded.memory_index());
+    let numbers = [destination.number(), mask.number(), indices.number()];
+    if numbers[0] == numbers[1] || numbers[0] == numbers[2] || numbers[1] == numbers[2] {
+        return Err(Exception::InvalidOpcode);
+    }
+    let read = |number: usize| -> Vec<u64> {
+        let halves = [processor.vector_registers[number], processor.upper_vector_halves[number]];
+        halves.iter().flat_map(|&half| split(data, half)).collect()
+    };
+    let index_lanes: Vec<u64> = [processor.vector_registers[numbers[2]], processor.upper_vector_halves[numbers[2]]]
+        .iter()
+        .flat_map(|&half| split(index, half))
+        .collect();
+    let count = (destination.size() as u32 * u8::BITS / data.to_bits()).min(indices.size() as u32 * u8::BITS / index.to_bits()) as usize;
+    let (mut values, mut selected) = (read(numbers[0]), read(numbers[1]));
+    let base = match decoded.memory_base() {
+        Register::None => 0,
+        register => read_register(processor, register),
+    };
+    let scale = u64::from(decoded.memory_index_scale());
+    let bytes = u64::from(data.to_bits() / u8::BITS);
+    let top = 1u64 << (data.to_bits() - 1);
+    let stack = matches!(decoded.memory_base(), Register::RSP | Register::RBP);
+    let mut fault = None;
+    for lane in 0..count {
+        if selected[lane] & top == 0 {
+            continue;
+        }
+        if fault.is_some() {
+            break;
+        }
+        let offset = (to_signed(index_lanes[lane], index.to_bits()) as u64).wrapping_mul(scale);
+        let address = base.wrapping_add(offset).wrapping_add(decoded.memory_displacement64());
+        let operand = MemoryOperand { address, stack };
+        let checked = check_canonical(operand, bytes).and_then(|()| match find_fault(memory, address, bytes, Access::Read) {
+            None => Ok(()),
+            Some((address, page_present)) => Err(Exception::PageFault { access: Access::Read, page_present, address }),
+        });
+        match checked {
+            Ok(()) => {
+                values[lane] = read_wide(memory, address, bytes)[0] as u64;
+                selected[lane] = 0;
+            }
+            Err(exception) => {
+                fault.get_or_insert(exception);
+            }
+        }
+    }
+    let per_half = (u128::BITS / data.to_bits()) as usize;
+    let write = |processor: &mut Processor, number: usize, lanes: &[u64], zero_above: bool| {
+        let kept: Vec<u64> = lanes.iter().enumerate().map(|(lane, &value)| if zero_above && lane >= count { 0 } else { value }).collect();
+        processor.vector_registers[number] = join(data, kept[..per_half].iter().copied());
+        processor.upper_vector_halves[number] = join(data, kept[per_half..].iter().copied());
+    };
+    match fault {
+        Some(exception) => {
+            // A fault leaves each mask lane all ones where it is still to be loaded, zero elsewhere and in the upper
+            // half of a form of 128 bits.
+            let remaining: Vec<u64> = selected.iter().map(|&lane| if lane & top != 0 { (top << 1).wrapping_sub(1) } else { 0 }).collect();
+            write(processor, numbers[0], &values, false);
+            write(processor, numbers[1], &remaining, false);
+            if destination.is_xmm() && indices.is_xmm() {
+                processor.upper_vector_halves[numbers[1]] = 0;
+            }
+            Err(exception)
+        }
+        None => {
+            write(processor, numbers[0], &values, true);
+            if !is_active(Bug::GatherMaskKept) {
+                write(processor, numbers[1], &alloc::vec![0; selected.len()], true);
+            }
+            if destination.is_xmm() {
+                processor.upper_vector_halves[numbers[0]] = 0;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// VMASKMOVPS to VPMASKMOVQ: each lane whose mask lane (the VEX.vvvv register) has its top bit set is loaded or

@@ -758,6 +758,8 @@ pub enum Bug {
     StringCompareMaskedPolarityIgnored,
     /// VMASKMOVDQU stores every byte whatever its mask.
     MaskedByteStoreEveryByte,
+    /// The gathers leave the mask as it was once they complete.
+    GatherMaskKept,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1099,6 +1101,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::DotProductEveryLane, "VDPPS, VDPPD", Family::Avx(|form| matches!(form.operation, AvxOperation::DotProduct(_))), Origin::Avx),
     row(Bug::StringCompareMaskedPolarityIgnored, "VPCMPESTRI, VPCMPISTRM", Family::Avx(|form| matches!(form.operation, AvxOperation::StringCompare { .. })), Origin::Avx),
     row(Bug::MaskedByteStoreEveryByte, "VMASKMOVDQU", Family::Avx(|form| form.operation == AvxOperation::MaskedByteStore), Origin::Avx),
+    row(Bug::GatherMaskKept, "VGATHERDPS, VPGATHERQQ", Family::Avx(|form| matches!(form.operation, AvxOperation::Gather { .. })), Origin::Avx),
     row(Bug::VexScalarUpperFromSecond, "VADDSS and the VEX scalar forms", Family::Avx(|form| matches!(form.operation, AvxOperation::Float { arrangement: crate::float::Arrangement::Scalar, operation, .. } if !operation.writes_flags())), Origin::Avx),
 ];
 

@@ -92,9 +92,11 @@ fn simulate_processor(
         }
         Err(exception) => {
             keep_planted_writes(behavior, exception, processor, &changed);
-            // An AVX store that faults keeps the MXCSR flags its computation set.
+            // An AVX store that faults keeps the MXCSR flags its computation set, and a gather the lanes it loaded.
             if matches!(behavior, PreciseInstruction::Avx { .. }) {
                 processor.mxcsr = changed.mxcsr;
+                processor.vector_registers = changed.vector_registers;
+                processor.upper_vector_halves = changed.upper_vector_halves;
             }
             // #XM leaves the flags of the exceptions it found in MXCSR.
             if exception == Exception::SimdFloatingPoint

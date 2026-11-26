@@ -124,6 +124,11 @@ pub enum AvxOperation {
     StringCompare { explicit: bool, index: bool, quadword_lengths: bool },
     /// VMASKMOVDQU: the bytes of the first source whose byte of the second has its top bit set, stored at RDI.
     MaskedByteStore,
+    /// VGATHERDPS to VPGATHERQQ: each lane of `data` bits whose mask lane (VEX.vvvv) has its top bit set loaded
+    /// from the base plus its index lane (of `index` bits, sign-extended) times the scale plus the displacement,
+    /// lowest first, its mask lane cleared once loaded; the whole mask zeroed at the end. A fault leaves the lanes
+    /// loaded before it, and #UD comes from any two of the destination, index and mask registers being one.
+    Gather { data: Lane, index: Lane },
 }
 
 /// Which way VPSLLVD to VPSRAVD shift.
@@ -626,7 +631,7 @@ use AvxOperation::{
     InsertLane, IntegerToScalar, LoadMxcsr, MaskedLoad, MaskedStore, MultipleSumsOfDifferences, PermuteDoublewords,
     PermuteHalves, PermuteQuadwords, PermuteVariable, RoundToIntegral, ScalarToInteger, ShiftByCount, ShiftByImmediate,
     ShiftEach, Signs, SingleToHalf, StoreMxcsr, Test, TestSigns, ZeroAll, ZeroUpper, DotProduct, StringCompare,
-    MaskedByteStore,
+    MaskedByteStore, Gather,
 };
 use Conversion::{DoubleToSingle, FloatToInteger, IntegerToFloat, SingleToDouble};
 use FloatOperation::{

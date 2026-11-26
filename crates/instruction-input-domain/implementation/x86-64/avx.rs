@@ -78,6 +78,8 @@ pub enum AvxDataSet {
     /// VPCMPESTRI to VPCMPISTRM: two strings, the lengths in RAX and RDX (the third vector's quadwords) and the
     /// immediate.
     Strings { explicit: bool, quadword_lengths: bool },
+    /// The gathers: the destination, the indices (the scale in the immediate) and the mask.
+    Gather { data: Lane, index: Lane },
 }
 
 impl AvxDataSet {
@@ -85,7 +87,7 @@ impl AvxDataSet {
     const fn count(self) -> usize {
         match self {
             Self::Compare { .. } | Self::Mask(_) | Self::Dot(_) => 2,
-            Self::Strings { .. } => 3,
+            Self::Strings { .. } | Self::Gather { .. } => 3,
             Self::Fused { .. } => 3,
             Self::Round { scalar, .. } => 1 + scalar as usize,
             Self::ToInteger { .. } | Self::HalfToSingle | Self::SingleToHalf => 1,
@@ -142,6 +144,7 @@ fn to_lane_bits(form: &AvxForm) -> u32 {
 pub fn list_operand_types(form: &AvxForm) -> Vec<OperandType> {
     let place = match (form.place, form.operation) {
         (_, AvxOperation::ZeroUpper | AvxOperation::ZeroAll) => OperandType::Encoding(0),
+        (_, AvxOperation::Gather { .. }) => OperandType::Encoding(2),
         (OperandPlace::Register, _) => OperandType::Encoding(2),
         _ => OperandType::Memory { splits: Splits::Allowed, offset: false },
     };
@@ -294,6 +297,14 @@ pub fn list_operand_types(form: &AvxForm) -> Vec<OperandType> {
             types.push(data(AvxDataSet::Strings { explicit, quadword_lengths }));
             (None, None)
         }
+        AvxOperation::Gather { data: lane, index } => {
+            types.extend([
+                OperandType::DataPagePermission(crate::DataPage::Lower),
+                OperandType::DataPagePermission(crate::DataPage::Upper),
+                data(AvxDataSet::Gather { data: lane, index }),
+            ]);
+            (None, None)
+        }
         AvxOperation::MaskedByteStore => {
             types.extend([
                 OperandType::AccessPlacement(Splits::Allowed),
@@ -325,6 +336,7 @@ pub fn generate_data(set: AvxDataSet) -> Vec<OperandValue> {
         AvxDataSet::Mask(lane) => generate_masks(lane),
         AvxDataSet::Dot(precision) => generate_dots(precision),
         AvxDataSet::Strings { explicit, quadword_lengths } => generate_strings(explicit, quadword_lengths),
+        AvxDataSet::Gather { data, index } => generate_gathers(data, index),
     };
     values.into_iter().map(OperandValue::AvxData).collect()
 }
@@ -707,6 +719,90 @@ fn generate_strings(explicit: bool, quadword_lengths: bool) -> Vec<AvxData> {
     data
 }
 
+/// A gather's indices, each set with its scale and every lane on one page, so that a lane faults only where the
+/// lowest lane selected does (a single step ends a gather that faults after loading a lane without the fault):
+/// consecutive lanes on the lower page; out of order on the upper; repeated, at scale 2; each across the boundary;
+/// negative, below the base on page zero; and far beyond, at 2 GiB or past the canonical half. Each with every
+/// mask of [`generate_masks`].
+fn generate_gathers(data: Lane, index: Lane) -> Vec<AvxData> {
+    let bytes = u64::from(data.to_bits() / u8::BITS);
+    let lanes = (u128::BITS / index.to_bits()) as usize;
+    let page = PAGE_BYTES;
+    let far = if index == Lane::Quadword { 1 << 62 } else { 0x7FFF_FFFF };
+    let sets: [(u8, [u64; 4]); 6] = [
+        (bytes as u8, [0, 1, 2, 3]),
+        (1, [page, page + 3 * bytes, page + bytes, page + 2 * bytes]),
+        (2, [3, 0, 3, 1]),
+        (1, [page - bytes / 2; 4]),
+        (1, [(-(page as i64) - 8) as u64, (-(page as i64) - 16) as u64, (-(page as i64) - 8) as u64, (-(page as i64) - 24) as u64]),
+        (1, [far, far + 8, far, far + 16]),
+    ];
+    let destination = join(data, (0..u128::BITS / data.to_bits()).map(|lane| 0x5AA5_C33C_0FF0_9669u64.rotate_left(8 * lane)));
+    let mut values = Vec::new();
+    for (scale, offsets) in sets {
+        let indices = join(index, (0..lanes).map(|lane| offsets[lane % 4]));
+        for mask in generate_masks(data) {
+            values.push(AvxData { vectors: [destination, indices, mask.vectors[0]], mxcsr: MXCSR_DEFAULT, immediate: scale });
+        }
+    }
+    values
+}
+
+/// Builds the state of a gather: the destination at ModRM.reg, the indices at the VSIB index the pair's other
+/// register names, the mask at VEX.vvvv, the base RBX at the lower data page.
+fn build_gather_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    use crate::{LOWER_DATA_ADDRESS, UPPER_DATA_ADDRESS, to_data_byte};
+    let mut processor = Processor {
+        general_purpose_registers: array::from_fn(|number| !(number as u64)),
+        instruction_pointer: CODE_ADDRESS,
+        vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: crate::fill_upper_vector_halves(),
+        ..ZERO_PROCESSOR
+    };
+    let (mut registers, mut layout) = ([0, 0], CodeLayout::PageStart);
+    let (mut lower, mut upper, mut chosen) = (PagePermission::Unmapped, PagePermission::Unmapped, None);
+    for (operand_type, operand) in operands {
+        match (operand_type, *operand) {
+            (OperandType::Encoding(_), OperandValue::Encoding(encoding)) => (registers, layout) = (encoding.registers, encoding.layout),
+            (OperandType::DataPagePermission(crate::DataPage::Lower), OperandValue::PagePermission(permission)) => lower = permission,
+            (OperandType::DataPagePermission(crate::DataPage::Upper), OperandValue::PagePermission(permission)) => upper = permission,
+            (OperandType::AvxData(_), OperandValue::AvxData(data)) => chosen = Some(data),
+            (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
+            (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
+        }
+    }
+    let chosen = chosen.expect("a gather's data");
+    let mask = to_vvvv(registers);
+    let lane_bits = to_lane_bits(form);
+    for (number, value) in [(registers[0], chosen.vectors[0]), (mask, chosen.vectors[2]), (registers[1], chosen.vectors[1])] {
+        processor.vector_registers[number] = value;
+        processor.upper_vector_halves[number] = value.rotate_left(lane_bits);
+    }
+    // RBX, register 3, is the base.
+    processor.general_purpose_registers[3] = LOWER_DATA_ADDRESS;
+    let kinds = form.code.op_code().op_kinds();
+    let to_vector = |wide: bool, number: usize| if wide { VECTOR_256[number] } else { VECTOR[number] };
+    let index_wide = matches!(kinds[1], Kind::mem_vsib32y | Kind::mem_vsib64y);
+    let destination_wide = kinds[0] == Kind::ymm_reg;
+    let memory = MemoryOperand::with_base_index_scale(Register::RBX, to_vector(index_wide, registers[1]), u32::from(chosen.immediate));
+    let encoded = Encoded::with3(form.code, to_vector(destination_wide, registers[0]), memory, to_vector(destination_wide, mask))
+        .unwrap_or_else(|error| panic!("{:?} takes its operands: {error}", form.code));
+    let (code_page, start, bytes) = lay_out(layout, &encode_at_code_address(&encoded), to_padding(None));
+    processor.instruction_pointer = start;
+    let executable = PagePermission::Mapped { data_access: DataAccess::ReadOnly, instruction_fetch: InstructionFetch::Allowed };
+    let pages: Vec<u8> = (LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES).map(to_data_byte).collect();
+    ExecutionState {
+        processor,
+        memory_mutations: vec![
+            MemoryDelta::PermissionAssignment { addresses: code_page..code_page + PAGE_BYTES, permission: executable },
+            MemoryDelta::ValueAssignment { start, bytes: Cow::Owned(bytes) },
+            MemoryDelta::ValueAssignment { start: LOWER_DATA_ADDRESS, bytes: Cow::Owned(pages) },
+            MemoryDelta::PermissionAssignment { addresses: LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS, permission: lower },
+            MemoryDelta::PermissionAssignment { addresses: UPPER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES, permission: upper },
+        ],
+    }
+}
+
 /// The VEX.vvvv register of the register form whose ModRM.reg and ModRM.rm registers are the pair.
 const fn to_vvvv(registers: [usize; 2]) -> usize {
     match registers {
@@ -752,6 +848,9 @@ fn place_at_rdi(placement: crate::AccessPlacement, lower: PagePermission, upper:
 
 /// Builds the state of an AVX form from one value of each of its operand types.
 pub fn build_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    if let AvxOperation::Gather { .. } = form.operation {
+        return build_gather_state(form, operands);
+    }
     let mut processor = Processor {
         general_purpose_registers: array::from_fn(|number| !(number as u64)),
         instruction_pointer: CODE_ADDRESS,
