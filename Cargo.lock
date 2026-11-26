@@ -1571,12 +1571,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hermit-abi"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
-
-[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4635,19 +4629,22 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-behavior-source",
+ "wcontainers-behavior-source-recording",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-clock",
- "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-executor",
  "wcontainers-executor-arm64-stop",
  "wcontainers-executor-conformance",
  "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
- "wcontainers-instruction-input-domain-arm64",
  "wcontainers-kernel-linux",
- "wcontainers-precise-instruction-set-translator",
+ "wcontainers-linux-process",
+ "wcontainers-linux-process-direct",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-measured",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
@@ -5145,6 +5142,34 @@ dependencies = [
  "wcontainers-volatile-bytes",
  "wcontainers-volatile-bytes-pointer",
  "wcontainers-volatile-bytes-shared-mapping",
+]
+
+[[package]]
+name = "wcontainers-linux-process"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
+name = "wcontainers-linux-process-conformance"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "rustix",
+ "wcontainers-linux-process",
+]
+
+[[package]]
+name = "wcontainers-linux-process-direct"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "linux-raw-sys",
+ "memmap2",
+ "rustix",
+ "wcontainers-linux-process",
+ "wcontainers-linux-process-conformance",
 ]
 
 [[package]]
