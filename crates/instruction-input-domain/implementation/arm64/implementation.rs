@@ -44,6 +44,7 @@ use wcontainers_processor_architecture_arm64::{
     writes_condition_flags,
 };
 
+pub mod advanced_simd;
 #[cfg(test)]
 mod tests;
 
@@ -210,6 +211,8 @@ pub enum OperandType {
     /// The whole word of an instruction whose operands no model reads: a word LLVM decodes as the instruction, or its
     /// fixed bits where the list has none.
     Word(u32),
+    /// An operand of an Advanced SIMD instruction of the architecture's `advanced_simd` module.
+    AdvancedSimd(advanced_simd::SimdOperand),
 }
 
 /// What every byte of the data pages holds before the instruction.
@@ -318,6 +321,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         instruction: Instruction<Infallible>,
     ) -> vec::IntoIter<OperandType> {
         use OperandType::{RegisterNumber, SignedImmediate, UnsignedImmediate};
+        if let Some(operand_types) = advanced_simd::list_operand_types(instruction) {
+            return operand_types.into_iter();
+        }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
         {
@@ -365,6 +371,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 .map(|encoding| OperandValue::Bits(u64::from(encoding)))
                 .collect(),
             OperandType::Word(word) => [OperandValue::Bits(u64::from(word))].to_vec(),
+            OperandType::AdvancedSimd(operand) => advanced_simd::generate_critical_values(operand),
             OperandType::SoftwareThreadId => to_register_values(RegisterWidth::Bits64),
             OperandType::VectorValue { bytes, .. } => to_vector_values(bytes),
             OperandType::WrittenConditionFlags => [ConditionFlags::empty(), ConditionFlags::all()]
@@ -561,6 +568,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         let mut lower = PagePermission::Unmapped;
         let mut upper = PagePermission::Unmapped;
         let mut register_values = Vec::new();
+        let mut simd_values = Vec::new();
         for (operand_type, operand) in typed {
             match operand_type {
                 OperandType::FloatingPointValue { field, precision }
@@ -601,6 +609,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                         reject_mismatch(operand_type, operand)
                     };
                     vector_values.push((field, bytes, value));
+                }
+                OperandType::AdvancedSimd(simd_operand) => {
+                    simd_values.push((simd_operand, operand))
                 }
                 // `encode_word` has put them in the word.
                 OperandType::RegisterNumber(_)
@@ -683,6 +694,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             let register = &mut processor.vector_registers[field.read(word) as usize];
             let mask = u128::MAX >> (u128::BITS - bytes * u8::BITS);
             *register = (*register & !mask) | (value & mask);
+        }
+        for (simd_operand, value) in simd_values {
+            advanced_simd::apply(simd_operand, value, word, &mut processor);
         }
         for (field, thirty_one, value) in register_values {
             match processor
@@ -796,6 +810,8 @@ pub fn encode_word(
         .to_record()
         .map_or(0, |record| record.should_be.value);
     let mut word = instruction.to_fixed_bits().value | should_be;
+    // An Advanced SIMD operand whose bits depend on the rest of the word goes in once the rest is there.
+    let mut deferred = Vec::new();
     for (operand_type, operand) in operands {
         match (operand_type, operand) {
             (
@@ -811,6 +827,7 @@ pub fn encode_word(
                 OperandValue::Bits(bits),
             ) => word |= field.to_bits(bits as u32),
             (OperandType::Word(_), OperandValue::Bits(bits)) => word = bits as u32,
+            (OperandType::AdvancedSimd(simd_operand), _) => deferred.push((simd_operand, operand)),
             (
                 OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields),
                 OperandValue::Bits(bits),
@@ -836,6 +853,10 @@ pub fn encode_word(
             ) => reject_mismatch(operand_type, operand),
             _ => {}
         }
+    }
+    let rest = word;
+    for (simd_operand, operand) in deferred {
+        word |= advanced_simd::encode(simd_operand, operand, rest);
     }
     word
 }

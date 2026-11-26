@@ -16,6 +16,8 @@ pub enum PlantedBy {
     CutCheck,
     FourthCheck,
     Sync,
+    /// The Advanced SIMD instructions beyond `simd.rs`.
+    AdvancedSimd,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
