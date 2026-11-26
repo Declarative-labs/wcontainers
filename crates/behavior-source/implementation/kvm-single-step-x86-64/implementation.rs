@@ -44,17 +44,18 @@ use zerocopy::{FromZeros, IntoBytes};
 use crate::handler::{Handler, VECTORS};
 use crate::layout::{
     ACCESSED, ADDRESS_MASK, ARENA, AVX_COMPONENT, DESCRIPTOR_ENTRIES, DIRTY, ENTRIES, ENTRY_BYTES,
-    EXTENDED_CONTROL_0, FAULT_STACK_TOP, FX_CONTROL_WORD, FX_MXCSR, FX_VECTOR_REGISTERS, FX_X87_REGISTERS, GLOBAL,
+    EXTENDED_CONTROL_0, FAULT_STACK_TOP, FX_MXCSR, FX_VECTOR_REGISTERS, GLOBAL,
     GLOBAL_DESCRIPTOR_TABLE, SAVED_COMPONENTS, SSE_COMPONENT, XSAVE_AVX, XSAVE_HEADER, XSAVE_IMAGE_BYTES, XsaveImage,
     HANDLER, HANDLER_BYTES, INTERRUPT_DESCRIPTOR_TABLE, KERNEL_CODE, KERNEL_DATA, KERNEL_DIRECTORY,
     KERNEL_DIRECTORY_POINTERS, KERNEL_ENTRY, KERNEL_PAGES, KERNEL_TABLE, LEVELS, MEMORY_BYTES, NO_EXECUTE,
     LARGE_PAGE, NOT_RUN, PAGE_BYTES, PRESENT, RESIDENT, Registers, SLOT, STACK_TOP, Slot, TASK_STATE,
     TASK_STATE_SEGMENT, TaskStateSegment, UPPER_HALF_DIRECTORY_POINTERS, USER, USER_CODE, USER_DATA, WRITABLE,
-    X87_CONTROL_DEFAULT, list_descriptors, to_gate, to_gate_privilege, to_index, to_interrupt_stack, to_kernel,
+    list_descriptors, to_gate, to_gate_privilege, to_index, to_interrupt_stack, to_kernel,
 };
 
 mod handler;
 mod layout;
+mod x87_image;
 
 /// The guest memory KVM gives the machine.
 type GuestMemory = <DirectKvm as Kvm>::GuestMemory;
@@ -190,7 +191,8 @@ pub enum Refusal {
         code_segment: u64,
         instruction_pointer: u64,
     },
-    /// The run changed state the processor does not model: the x87 state, IF, IOPL or VM.
+    /// The state holds what the architecture does not (an x87 register wider than 80 bits), or the run changed state the
+    /// processor does not model: IF, IOPL or VM.
     NotModeled(&'static str),
     /// A vector that does not end an instruction at ring 3.
     UnexpectedVector(u64),
@@ -899,7 +901,7 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         gs_base: processor.gs_base,
     };
     let mut image = XsaveImage { bytes: [0; XSAVE_IMAGE_BYTES] };
-    image.bytes[FX_CONTROL_WORD..FX_CONTROL_WORD + 2].copy_from_slice(&X87_CONTROL_DEFAULT.to_le_bytes());
+    x87_image::write_x87(&mut image.bytes, &processor.x87);
     image.bytes[FX_MXCSR..FX_MXCSR + 4].copy_from_slice(&processor.mxcsr.to_le_bytes());
     for (number, value) in processor.vector_registers.iter().enumerate() {
         let at = FX_VECTOR_REGISTERS + number * VECTOR_HALF_BYTES;
@@ -961,6 +963,11 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     }
     if processor.mxcsr > u32::from(u16::MAX) {
         return Err(Refusal::MxcsrReservedBits(processor.mxcsr));
+    }
+    if !x87_image::is_holdable(&processor.x87) {
+        return Err(Refusal::NotModeled(
+            "an x87 register wider than 80 bits, an opcode wider than 11 bits, a reserved bit of FCW, or FSW's ES or B not an unmasked flag",
+        ));
     }
     let mapped = to_page_permissions(memory)
         .values()
@@ -1086,7 +1093,7 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
 /// # Errors
 ///
 /// When the handler did not save the slot, the exception did not come from ring 3, or the run changed state the
-/// processor does not model: the x87 state, the selectors, IF, IOPL or VM.
+/// processor does not model: the selectors, IF, IOPL or VM.
 fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     let after = &slot.after;
     if slot.vector == NOT_RUN {
@@ -1103,12 +1110,7 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     if after.flags & (INTERRUPT_ENABLE | IO_PRIVILEGE | VIRTUAL_8086) != INTERRUPT_ENABLE {
         return Err(Refusal::NotModeled("RFLAGS changed IF, IOPL or VM"));
     }
-    let (before_x87, after_x87) = (&slot.before_xsave.bytes, &slot.after_xsave.bytes);
-    if !(before_x87[..FX_MXCSR] == after_x87[..FX_MXCSR]
-        && before_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS] == after_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS])
-    {
-        return Err(Refusal::NotModeled("the instruction changed the x87 state"));
-    }
+    let after_x87 = &slot.after_xsave.bytes;
     let mxcsr = u32::from_le_bytes(after_x87[FX_MXCSR..FX_MXCSR + 4].try_into().expect("four bytes"));
     let saved = u64::from_le_bytes(after_x87[XSAVE_HEADER..XSAVE_HEADER + 8].try_into().expect("eight bytes"));
     // A component XSAVE marks as in its initial state holds zeros, whatever its area of the image holds.
@@ -1133,6 +1135,7 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         mxcsr,
         vector_registers,
         upper_vector_halves,
+        x87: x87_image::read_x87(after_x87, saved),
         exception,
     })
 }

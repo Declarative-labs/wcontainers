@@ -16,7 +16,8 @@
 //!
 //! Flags are not data: they hold AC, which decides between faults, and the condition a form reads, so they keep
 //! every critical value. Where a store faults part-way, what it writes below the fault depends on the value in
-//! memory and, for CMPXCHG, on whether the accumulator equals it, so those keep every critical value there too.
+//! memory and, for CMPXCHG, on whether the accumulator equals it, and for an MMX store on the MMX value, so those keep
+//! every critical value there too.
 //!
 //! The flags of a form without a memory operand that reads none of them are the one exception: nothing reads them
 //! and AC decides nothing, so they only pass through. Where the form has another data operand they take their
@@ -43,6 +44,7 @@ use wcontainers_instruction_input_domain_x86_64::{
 use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::extension::{ExtensionForm, find_extension_form};
+use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -104,7 +106,9 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                 let counts = data_operands
                     .iter()
                     .map(|&index| match types[index] {
-                        OperandType::MemoryValue(_) | OperandType::Comparison if in_part => values[index].len(),
+                        OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..) if in_part => {
+                            values[index].len()
+                        }
                         _ => 1,
                     })
                     .collect();
@@ -115,7 +119,9 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                             .iter()
                             .zip(&data_operands)
                             .map(|(&value, &index)| match types[index] {
-                                OperandType::MemoryValue(_) | OperandType::Comparison if in_part => value,
+                                OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..) if in_part => {
+                                    value
+                                }
                                 _ => to_representative(types[index], values[index].len()),
                             })
                             .collect()
@@ -191,7 +197,9 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::Comparison
         | OperandType::CpuidLeaf
         | OperandType::CpuidSubleaf
-        | OperandType::CpuidUpperHalves => true,
+        | OperandType::CpuidUpperHalves
+        | OperandType::MmxValue(..)
+        | OperandType::X87Environment => true,
         _ => false,
     }
 }
@@ -199,6 +207,9 @@ fn is_data(operand_type: OperandType) -> bool {
 /// Whether the form writes its memory operand, and the alignment it requires; `None` for a form without one.
 fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
     use OpCodeOperandKind as Kind;
+    if let Some(form) = find_mmx_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape { write: form.writes_memory(), alignment: None });
+    }
     if let Some(form) = find_extension_form(instruction) {
         return (form.place != OperandPlace::Register).then_some(AccessShape {
             write: form.writes_memory(),
@@ -241,6 +252,9 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
         OperandValue::OperandSize(size) => Some(*size),
         _ => None,
     });
+    if let Some(form) = find_mmx_form(instruction) {
+        return form.memory_bytes();
+    }
     if let Some(form) = find_extension_form(instruction) {
         let code = match size {
             Some(OperandSize::Bits32) if form.codes.len() == 3 => form.codes[1],

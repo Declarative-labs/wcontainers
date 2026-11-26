@@ -62,6 +62,7 @@ fn simulate(
         mxcsr: expected.mxcsr,
         vector_registers: expected.vector_registers,
         upper_vector_halves: expected.upper_vector_halves,
+        x87: expected.x87,
         exception: expected.exception,
     };
     (processor, after.memory_mutations[start..].to_vec())

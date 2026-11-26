@@ -12,16 +12,26 @@ use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_x86_64::fixed::{FixedForm, FixedOutcome, MemoryVariation};
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
-    DataAccess, InstructionFetch, PagePermission, Processor, SAMPLE_ENCODINGS, X86_64, ZERO_PROCESSOR,
+    DataAccess, Instruction, InstructionFetch, PagePermission, Processor, SAMPLE_ENCODINGS, X86_64, ZERO_PROCESSOR,
 };
 
 use crate::integer::{Addressing, CodeLayout, encode_at_code_address, lay_out, place_memory_operand, to_padding};
 use crate::{BITNESS, CODE_ADDRESS, FlagSet, ImmediateClass, OperandType, OperandValue, Splits};
 
+/// UD0 as Intel's chips read it, with a ModRM byte, which XED's sample leaves out.
+const UNDEFINED_ZERO: [u8; 3] = [0x0F, 0xFF, 0xC0];
+
+/// The form's sample bytes.
+fn to_sample(form: &FixedForm) -> &'static [u8] {
+    match form.instruction {
+        Instruction::Ud0 => &UNDEFINED_ZERO,
+        instruction => SAMPLE_ENCODINGS[instruction as usize],
+    }
+}
+
 /// The form's sample, decoded at the code address.
 fn decode_sample(form: &FixedForm) -> Decoded {
-    let bytes = SAMPLE_ENCODINGS[form.instruction as usize];
-    Decoder::with_ip(BITNESS, bytes, CODE_ADDRESS, DecoderOptions::NONE).decode()
+    Decoder::with_ip(BITNESS, to_sample(form), CODE_ADDRESS, DecoderOptions::NONE).decode()
 }
 
 fn has_memory_operand(decoded: &Decoded) -> bool {
@@ -90,7 +100,7 @@ pub fn build_state(form: &FixedForm, operands: &[(OperandType, OperandValue)]) -
     let encoded = if changed {
         encode_at_code_address(&decoded)
     } else {
-        SAMPLE_ENCODINGS[form.instruction as usize].to_vec()
+        to_sample(form).to_vec()
     };
     let (code_page, start, bytes) = lay_out(layout, &encoded, to_padding(memory_operand));
     processor.instruction_pointer = start;

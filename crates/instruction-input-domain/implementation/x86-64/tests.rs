@@ -4,7 +4,7 @@ use iced_x86::{Decoder, DecoderOptions};
 
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_x86_64::{Flags, SAMPLE_ENCODINGS, X86_64, list_modeled_forms};
+use wcontainers_processor_architecture_x86_64::{Flags, Instruction, SAMPLE_ENCODINGS, X86_64, list_modeled_forms};
 
 use crate::{BITNESS, X86_64InputDomain};
 
@@ -24,8 +24,10 @@ fn every_state_holds_one_instruction_at_its_instruction_pointer() {
             let decoded = Decoder::with_ip(BITNESS, bytes, *start, DecoderOptions::NONE).decode();
             let too_long = bytes.len() > MAXIMUM_INSTRUCTION_BYTES;
             let past_the_edge = *start + bytes.len() as u64 == X86_64::ADDRESSABLE.end && decoded.is_invalid();
+            // iced-x86 decodes no 0xD6, which 64-bit mode leaves undefined.
+            let undefined = instruction == Instruction::Udb;
             assert!(
-                too_long || past_the_edge || (!decoded.is_invalid() && decoded.len() == bytes.len()),
+                too_long || past_the_edge || undefined || (!decoded.is_invalid() && decoded.len() == bytes.len()),
                 "{instruction:?}: {bytes:02x?}"
             );
         }

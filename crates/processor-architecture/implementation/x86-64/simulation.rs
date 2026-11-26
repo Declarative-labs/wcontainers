@@ -43,6 +43,8 @@ type Memory<'list, 'memory> = &'list [MemoryDelta<'memory, X86_64>];
 mod extension_simulation;
 #[path = "fixed_simulation.rs"]
 mod fixed_simulation;
+#[path = "mmx_simulation.rs"]
+mod mmx_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -111,6 +113,10 @@ fn simulate_processor(
                     && behavior == PreciseInstruction::Float(Instruction::SubssXmmssMemss))
             {
                 processor.mxcsr = changed.mxcsr;
+            }
+            // An MMX store that faults leaves the TOP it cleared first.
+            if matches!(behavior, PreciseInstruction::Mmx { .. }) {
+                processor.x87.status = changed.x87.status;
             }
             if exception.is_trap() {
                 processor.instruction_pointer = decoded.next_ip();
@@ -196,6 +202,9 @@ fn apply(
             }
         }
         PreciseInstruction::Fixed(instruction) => fixed_simulation::execute_fixed(instruction, processor, memory, decoded),
+        PreciseInstruction::Mmx { instruction, behavior } => {
+            mmx_simulation::execute_mmx(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Extension { instruction, behavior } => {
             extension_simulation::execute_extension(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }

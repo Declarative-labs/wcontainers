@@ -241,6 +241,7 @@ impl PreciseInstruction {
             Self::Privileged(instruction) | Self::Branch(instruction) => instruction,
             Self::Integer { instruction, .. } | Self::Undefined(instruction) => instruction,
             Self::Extension { instruction, .. } | Self::Fixed(instruction) => instruction,
+            Self::Mmx { instruction, .. } => instruction,
         }
     }
 }
@@ -280,6 +281,7 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
             [PreciseInstruction::Privileged(instruction)].to_vec()
         }
         _ if crate::fixed::find_fixed_form(instruction).is_some() => [PreciseInstruction::Fixed(instruction)].to_vec(),
+        _ if crate::mmx::find_mmx_form(instruction).is_some() => crate::mmx::list_mmx_behaviors(instruction),
         _ if crate::extension::find_extension_form(instruction).is_some() => {
             crate::extension::list_extension_behaviors(instruction)
         }

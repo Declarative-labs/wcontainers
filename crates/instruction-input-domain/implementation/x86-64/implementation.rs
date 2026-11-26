@@ -26,6 +26,7 @@ use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::extension::find_extension_form;
 use wcontainers_processor_architecture_x86_64::fixed::find_fixed_form;
+use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -40,6 +41,7 @@ pub mod extension;
 pub mod fixed;
 pub mod float;
 pub mod integer;
+pub mod mmx;
 pub mod vector;
 #[cfg(test)]
 mod tests;
@@ -154,6 +156,11 @@ pub enum OperandType {
     AddressSize,
     /// The sample encoding of a form not yet modeled, at its page's start with every register as the domain fills it.
     SampleEncoding,
+    /// The value of the MMX (or XMM or general) register that has a role in an MMX form, or of the memory its source
+    /// reads.
+    MmxValue(Role, vector::VectorValues),
+    /// The x87 state MMX shares: its stack, tags, control and status words and pointers.
+    X87Environment,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -276,6 +283,7 @@ pub enum OperandValue {
     Mxcsr(u32),
     AddressSize(AddressSize),
     SampleEncoding,
+    X87(mmx::X87Environment),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -301,6 +309,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_fixed_form(instruction) {
             return fixed::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_mmx_form(instruction) {
+            return mmx::list_operand_types(form).into_iter();
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::list_operand_types(form).into_iter();
@@ -492,6 +503,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::Immediate(class) => integer::generate_immediates(class),
             OperandType::AddressSize => [AddressSize::Bits64, AddressSize::Bits32].map(OperandValue::AddressSize).to_vec(),
             OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
+            OperandType::MmxValue(_, values) => mmx::generate_mmx_values(values),
+            OperandType::X87Environment => mmx::X87_ENVIRONMENTS.map(OperandValue::X87).to_vec(),
         };
         values.into_iter()
     }
@@ -525,6 +538,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_fixed_form(instruction) {
             return fixed::build_state(form, &typed);
+        }
+        if let Some(form) = find_mmx_form(instruction) {
+            return mmx::build_state(form, &typed);
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::build_state(form, &typed);
@@ -698,6 +714,7 @@ fn is_modeled(instruction: Instruction) -> bool {
     find_integer_form(instruction).is_some()
         || find_extension_form(instruction).is_some()
         || find_fixed_form(instruction).is_some()
+        || find_mmx_form(instruction).is_some()
         || find_vector_form(instruction).is_some()
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()

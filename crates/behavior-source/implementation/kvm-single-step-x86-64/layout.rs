@@ -109,6 +109,12 @@ pub struct Slot {
 // Where the image keeps each part: the legacy area as FXSAVE64 lays it out, then the header, then the AVX area of the
 // standard form, https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html (volume 1, 13.4).
 pub const FX_CONTROL_WORD: usize = 0;
+pub const FX_STATUS_WORD: usize = 2;
+/// The abridged tag word, one bit a register.
+pub const FX_TAG_WORD: usize = 4;
+pub const FX_OPCODE: usize = 6;
+pub const FX_INSTRUCTION_POINTER: usize = 8;
+pub const FX_DATA_POINTER: usize = 16;
 pub const FX_MXCSR: usize = 24;
 pub const FX_X87_REGISTERS: usize = 32;
 pub const FX_VECTOR_REGISTERS: usize = 160;
@@ -129,8 +135,6 @@ pub const PKRU_COMPONENT: u64 = 1 << 9;
 pub const EXTENDED_CONTROL_0: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
 /// The components the handler loads and saves: those the state holds, and x87's, which it checks is left alone.
 pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT;
-/// The x87 control word after FNINIT, as Linux starts a program.
-pub const X87_CONTROL_DEFAULT: u16 = 0x037F;
 
 const _: () = assert!(size_of::<Slot>() as u64 <= PAGE_BYTES);
 

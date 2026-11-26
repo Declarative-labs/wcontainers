@@ -731,6 +731,20 @@ pub enum Bug {
     NoOperationReadsItsOperand,
     /// CLFLUSH, CLFLUSHOPT and CLWB need their page writable.
     FlushChecksWrite,
+    /// MMX forms run with an x87 exception pending.
+    MmxIgnoresPendingException,
+    /// EMMS marks every x87 register valid.
+    EmptyStateMarksValid,
+    /// MMX forms leave TOP as it was.
+    MmxKeepsTop,
+    /// An MMX write leaves bits 64 to 79 of its x87 register clear.
+    MmxWriteKeepsExponent,
+    /// PUNPCKH of MMX registers interleaves their low halves.
+    MmxUnpackHighFromLowHalves,
+    /// PSHUFB of MMX registers takes four bits of each index.
+    MmxShuffleBytesIndexFourBits,
+    /// An MMX store that faults leaves TOP as it was.
+    MmxStoreFaultKeepsTop,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1062,6 +1076,21 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::InterruptErrorCodeWithoutTableBit, "INT n", Family::Forms(&[Instruction::IntImmb]), Origin::IntegerX87Mmx),
     row(Bug::NoOperationReadsItsOperand, "hint-space no-ops", Family::Forms(HINT_NO_OPERATIONS), Origin::IntegerX87Mmx),
     row(Bug::FlushChecksWrite, "CLFLUSH, CLFLUSHOPT, CLWB", Family::Forms(FLUSHES), Origin::IntegerX87Mmx),
+    row(Bug::MmxIgnoresPendingException, "MMX", Family::Forms(MMX_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::EmptyStateMarksValid, "EMMS", Family::Forms(&[Instruction::Emms]), Origin::IntegerX87Mmx),
+    row(Bug::MmxKeepsTop, "MMX", Family::Forms(MMX_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::MmxWriteKeepsExponent, "MMX", Family::Forms(MMX_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::MmxUnpackHighFromLowHalves, "PUNPCKH of MMX", Family::Forms(&[Instruction::PunpckhbwMmxqMmxd, Instruction::PunpckhdqMmxqMemq]), Origin::IntegerX87Mmx),
+    row(Bug::MmxShuffleBytesIndexFourBits, "PSHUFB of MMX", Family::Forms(&[Instruction::PshufbMmxqMmxq]), Origin::IntegerX87Mmx),
+    row(Bug::MmxStoreFaultKeepsTop, "MMX stores", Family::Forms(&[Instruction::MovqMemqMmxq0f7f, Instruction::MovntqMemqMmxq]), Origin::IntegerX87Mmx),
+];
+
+const MMX_SAMPLE: &[Instruction] = &[
+    Instruction::PaddbMmxqMmxq,
+    Instruction::PsllqMmxqImmb,
+    Instruction::MovdMmxqGpr32,
+    Instruction::MovqMemqMmxq0f7f,
+    Instruction::PextrwGpr32MmxqImmb,
 ];
 
 const PRIVILEGED_OPERAND_FORMS: &[Instruction] = &[
