@@ -43,6 +43,7 @@ use wcontainers_processor_architecture_x86_64::mmx_convert::find_mmx_convert_for
 use wcontainers_processor_architecture_x86_64::descriptor::find_descriptor_form;
 use wcontainers_processor_architecture_x86_64::reciprocal::find_reciprocal_form;
 use wcontainers_processor_architecture_x86_64::segment::find_segment_form;
+use wcontainers_processor_architecture_x86_64::optional::find_optional_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -61,6 +62,7 @@ pub mod integer;
 pub mod mmx;
 pub mod mmx_convert;
 pub mod opmask;
+pub mod optional;
 pub mod reciprocal;
 pub mod segment;
 pub mod sse;
@@ -286,6 +288,19 @@ pub enum OperandType {
     HypercallNumber,
     /// PKRU with EAX, ECX and EDX for RDPKRU and WRPKRU.
     KeyRights,
+    /// The registers a form of the `optional` family names, which of its `codes` encodes it (the operand or
+    /// address size), and how its bytes lie; VEX names only the low 16 vector registers.
+    OptionalEncoding { vex: bool, codes: usize },
+    /// The vector a form of the `optional` family reads, or the memory it reads.
+    OptionalVector(optional::VectorSet),
+    /// MXCSR for a form of the `optional` family; a half-precision form ignores DAZ and FTZ.
+    OptionalMxcsr { half: bool },
+    /// The segment base RDFSBASE or RDGSBASE reads.
+    OptionalBase,
+    /// Where MOVDIR64B's destination, or UMONITOR's address, lies.
+    OptionalPlace { block: bool },
+    /// XBEGIN's fallback and how its code lies.
+    OptionalFallback,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -485,6 +500,7 @@ pub enum OperandValue {
     KeyRights { pkru: u32, accumulator: u64, counter: u64, data: u64 },
     IretFrame(segment::IretFrame),
     CallStack(segment::CallStack),
+    OptionalPlace(optional::Place),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -561,6 +577,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_segment_form(instruction) {
             return segment::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_optional_form(instruction) {
+            return optional::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -808,7 +827,14 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::CallStack => segment::generate_call_stacks(),
             OperandType::FrameLayout { bytes } => segment::generate_frame_layouts(bytes),
             OperandType::HypercallNumber => system::generate_hypercall_numbers(),
-            OperandType::KeyRights => system::generate_key_rights(),        };
+            OperandType::KeyRights => system::generate_key_rights(),
+            OperandType::OptionalEncoding { vex, codes } => optional::generate_encodings(vex, codes),
+            OperandType::OptionalVector(set) => optional::generate_vectors(set),
+            OperandType::OptionalMxcsr { half } => optional::generate_mxcsr_values(half),
+            OperandType::OptionalBase => optional::generate_bases(),
+            OperandType::OptionalPlace { block } => optional::generate_places(block),
+            OperandType::OptionalFallback => optional::generate_fallbacks(),
+        };
         values.into_iter()
     }
 
@@ -900,6 +926,9 @@ impl X86_64InputDomain {
         }
         if let Some(form) = find_segment_form(instruction) {
             return segment::build_state(form, &typed);
+        }
+        if let Some(form) = find_optional_form(instruction) {
+            return optional::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -1082,6 +1111,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_descriptor_form(instruction).is_some()
         || find_reciprocal_form(instruction).is_some()
         || find_segment_form(instruction).is_some()
+        || find_optional_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

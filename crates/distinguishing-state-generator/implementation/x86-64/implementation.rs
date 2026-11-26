@@ -29,6 +29,17 @@
 //! data indices sum to its own index less one modulo the other writemasks' count, so that it meets every value of
 //! every data operand and the data's combinations are not repeated for each writemask.
 //!
+//! Where the data take every combination, an EVEX memory form's opmask takes its turn as a writemask does (the
+//! access lies at a writable page's start, so no element faults and the opmask only merges), and an EVEX form's
+//! register choice at the page's start takes the combinations whose data indices plus the opmask's index sum to its
+//! own index modulo the number of choices, so that each choice of registers meets every value of every data operand
+//! but the data's combinations are not repeated for each; a form with fewer combinations than choices keeps them
+//! all.
+//!
+//! Where the outcome does not depend on the data, an EVEX memory form's opmask takes its values in turn as a
+//! writemask does where the access cannot fault, and its first source's register takes its values in turn, the sum
+//! of the other structure operands' indices choosing: neither decides a fault.
+//!
 //! Two more operands of an EVEX form take their values in turn, the sum of the other structure operands' indices
 //! choosing: the flags where the access is wider than eight bytes, which alignment checking never covers, so that
 //! they only pass through; and the writemask where the outcome does not depend on the data and the access cannot
@@ -69,6 +80,7 @@ use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
 use wcontainers_processor_architecture_x86_64::sse::find_sse_form;
 use wcontainers_processor_architecture_x86_64::avx512_integer::{EvexIntegerPlace, find_evex_integer_form};
 use wcontainers_processor_architecture_x86_64::opmask::{OpmaskPlace, find_opmask_form};
+use wcontainers_processor_architecture_x86_64::optional::find_optional_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{DataAccess, Flags, Instruction, PagePermission, X86_64};
 
@@ -113,6 +125,11 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
         let structure: Vec<usize> = (0..types.len()).filter(|index| !data[*index] && Some(*index) != in_turn).collect();
         let data_operands: Vec<usize> = (0..types.len()).filter(|index| data[*index]).collect();
         let writemask = types.iter().position(|operand_type| matches!(operand_type, OperandType::Writemask { .. }));
+        let evex_mask = types.iter().position(|operand_type| matches!(operand_type, OperandType::EvexMask(_)));
+        let first_source = types.iter().position(|operand_type| *operand_type == OperandType::EvexRegister);
+        let registers = types.iter().position(|operand_type| {
+            matches!(operand_type, OperandType::EvexEncoding | OperandType::EvexRegister | OperandType::EvexIntegerEncoding { .. })
+        });
         let evex = find_evex_form(instruction).is_some() || find_evex_integer_form(instruction).is_some();
         let in_memory = types.iter().any(|operand_type| matches!(operand_type, OperandType::Memory { .. }));
         let position = |index: Option<usize>| index.and_then(|index| structure.iter().position(|&operand| operand == index));
@@ -146,6 +163,14 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                     && (shape.is_some_and(|shape| faults(access, shape, width)) || is_misaligned_under_alignment_check(&operands, width))
             });
             if decided && access.is_some() && !mask_decides && writemask_position.is_some_and(out_of_turn) {
+                continue;
+            }
+            // An EVEX memory form's opmask likewise where the access cannot fault, and its first source's register
+            // wherever the outcome does not depend on the data.
+            if evex && decided && access.is_some() && !mask_decides && position(evex_mask).is_some_and(out_of_turn) {
+                continue;
+            }
+            if evex && decided && position(first_source).is_some_and(out_of_turn) {
                 continue;
             }
             let in_part = operands.iter().flatten().any(|value| stores_in_part(*value, shape, width));
@@ -188,13 +213,29 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                     .collect()
             } else {
                 let all = combine(data_operands.iter().map(|&index| values[index].len()).collect());
-                // The writemask's index among its values; the first is no writemask.
-                let turn = writemask.and_then(|index| {
+                // The writemask's index among its values; the first is no writemask. An EVEX memory form's opmask
+                // takes its turn the same way where the access cannot fault.
+                let mask = writemask.or(if evex { evex_mask } else { None });
+                let turn = mask.and_then(|index| {
                     let position = structure.iter().position(|&operand| operand == index)?;
                     (chosen[position] > 0 && values[index].len() > 2).then(|| (chosen[position] - 1, values[index].len() - 1))
                 });
-                match turn {
+                let mask_index = mask.and_then(|index| structure.iter().position(|&operand| operand == index)).map_or(0, |position| chosen[position]);
+                let all: Vec<Vec<usize>> = match turn {
                     Some((turn, others)) => all.into_iter().filter(|choice| choice.iter().sum::<usize>() % others == turn).collect(),
+                    None => all,
+                };
+                // The register choice at the page's start, among the register choices there.
+                let register_turn = registers.filter(|_| evex).and_then(|index| {
+                    let position = structure.iter().position(|&operand| operand == index)?;
+                    let at_start: Vec<usize> = (0..values[index].len()).filter(|&value| starts_page(values[index][value])).collect();
+                    let turn = at_start.iter().position(|&value| value == chosen[position])?;
+                    (at_start.len() > 1 && all.len() >= at_start.len()).then_some((turn, at_start.len()))
+                });
+                match register_turn {
+                    Some((turn, choices)) => {
+                        all.into_iter().filter(|choice| (choice.iter().sum::<usize>() + mask_index) % choices == turn).collect()
+                    }
                     None => all,
                 }
             };
@@ -211,6 +252,15 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
             }
         }
         states.into_iter()
+    }
+}
+
+/// Whether a value of a register operand puts the code at its page's start, where the data take their combinations.
+fn starts_page(value: OperandValue) -> bool {
+    match value {
+        OperandValue::EvexEncoding(encoding) => encoding.layout == CodeLayout::PageStart,
+        OperandValue::EvexIntegerEncoding(encoding) => encoding.layout == CodeLayout::PageStart,
+        _ => true,
     }
 }
 
@@ -292,7 +342,10 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::FarPointer
         | OperandType::IretFrame
         | OperandType::HypercallNumber
-        | OperandType::KeyRights => true,
+        | OperandType::KeyRights
+        | OperandType::OptionalVector(_)
+        | OperandType::OptionalMxcsr { .. }
+        | OperandType::OptionalBase => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }
@@ -352,9 +405,17 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
         return matches!(form.place, OpmaskPlace::Load | OpmaskPlace::Store)
             .then_some(AccessShape { write: form.place == OpmaskPlace::Store, alignment: None });
     }
+    if let Some(form) = find_evex_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape { write: form.stores(), alignment: None });
+    }
     if let Some(form) = find_evex_integer_form(instruction) {
         return matches!(form.place, EvexIntegerPlace::Memory | EvexIntegerPlace::Store)
             .then_some(AccessShape { write: form.place == EvexIntegerPlace::Store, alignment: form.to_alignment() });
+    }
+    if let Some(form) = find_optional_form(instruction) {
+        // A writemask decides whether a masked form's access faults, so no placement decides that alone.
+        return (form.place != OperandPlace::Register && !form.can_mask())
+            .then_some(AccessShape { write: form.writes_memory(), alignment: None });
     }
     find_vector_form(instruction).filter(|form| form.place != OperandPlace::Register).map(|form| AccessShape {
         write: false,
@@ -380,6 +441,10 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
         return u64::from(form.bits / 8);
     }
     if let Some(form) = find_evex_integer_form(instruction) {
+        let broadcast = operands.iter().flatten().any(|value| *value == OperandValue::LaneBroadcast(true));
+        return form.memory_bytes(broadcast);
+    }
+    if let Some(form) = find_optional_form(instruction) {
         let broadcast = operands.iter().flatten().any(|value| *value == OperandValue::LaneBroadcast(true));
         return form.memory_bytes(broadcast);
     }

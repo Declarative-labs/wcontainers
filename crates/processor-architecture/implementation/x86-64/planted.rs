@@ -16,6 +16,7 @@ use crate::float::Arrangement;
 use crate::avx::{AvxForm, AvxOperation, Wide, find_avx_form};
 use crate::avx512_integer::{EvexIntegerForm, EvexIntegerOperation, EvexIntegerPlace, ComparePredicate, Zmm, find_evex_integer_form, from_lanes, to_lanes};
 use crate::opmask::{OpmaskOperation, find_opmask_form};
+use crate::optional::{OptionalForm, OptionalOperation};
 use crate::{Flags, Instruction};
 
 /// Who planted a bug first.
@@ -55,6 +56,8 @@ pub enum Origin {
     EvexFirstHalf,
     /// The second EVEX pass: AVX512-FP16 and the rest of AVX-512's second half, and the small sets left.
     EvexRest,
+    /// The optional forms the chip runs that had no model, and the generator's holes the check found.
+    OptionalRemaining,
 }
 
 /// The forms a bug shows on.
@@ -89,6 +92,8 @@ pub enum Family {
     EvexInteger(fn(&EvexIntegerForm) -> bool),
     /// The string forms the test accepts.
     String(fn(&crate::string::StringForm) -> bool),
+    /// The forms of [`crate::optional::OPTIONAL_FORMS`] the test accepts.
+    OptionalForms(fn(&OptionalForm) -> bool),
 }
 
 /// One planted bug.
@@ -126,6 +131,7 @@ impl PlantedBug {
             Family::Opmask(test) => find_opmask_form(instruction).is_some_and(|form| test(form.operation)),
             Family::EvexInteger(test) => find_evex_integer_form(instruction).is_some_and(test),
             Family::String(test) => crate::string::find_string_form(instruction).is_some_and(test),
+            Family::OptionalForms(test) => crate::optional::find_optional_form(instruction).is_some_and(test),
         }
     }
 }
@@ -1242,6 +1248,49 @@ pub enum Bug {
     MoveWordKeepsUpperBits,
     /// VRANGE's sign control 0 keeps the selected element's sign rather than the first source's.
     RangeSignFromSelected,
+    // The optional forms left and the generator's holes.
+    /// FISTTP rounds by FCW's rounding control, as FISTP does.
+    TruncatingStoreRoundsByControl,
+    /// SSSE3's MMX forms read 16 bytes of memory, as their XMM forms do.
+    MmxSsseThreeMemoryReadsSixteenBytes,
+    /// EVEX VPEXTR, VEXTRACTPS take the immediate's low four bits as the index, whatever the element's size.
+    ExtractIndexUnmasked,
+    /// EVEX VMOVHPS and VMOVLPS store the other quadword.
+    QuadwordStoreHalvesSwapped,
+    /// The family's EVEX forms ignore the writemask.
+    OptionalMaskIgnored,
+    /// EVEX VMOVSS and VMOVSD of registers keep the destination's bits 128 to 255.
+    ScalarMoveKeepsUpperBits,
+    /// EVEX VCVTPS2PH to memory stores despite an unmasked precision, underflow or overflow.
+    HalfStoreExceptionsIgnored,
+    /// VEX VRCPPS and VRSQRTPS of an XMM register keep the destination's bits 128 to 255.
+    VexReciprocalKeepsUpperHalf,
+    /// A masked memory source faults on elements the writemask leaves out.
+    OptionalMaskedFaultNotSuppressed,
+    /// VRCP14 and VRCPPH take a denormal source as zero whatever DAZ holds.
+    ReciprocalDenormalsAreZeros,
+    /// VRCP14 reads its table by the source's top 15 significand bits.
+    ReciprocalFourteenIndexFifteenBits,
+    /// VRSQRT14 and VRSQRTPH read their table by the wrong exponent parity.
+    RootReciprocalParitySwapped,
+    /// WRFSBASE and WRGSBASE take a non-canonical base.
+    BaseWriteCanonicalUnchecked,
+    /// UMONITOR faults as a read of one byte would.
+    MonitorChecksRead,
+    /// EVEX VCVTPS2PH to memory leaves MXCSR's flags as they were when its store faults.
+    HalfStoreFaultClearsFlags,
+    /// A masked EVEX VCVTPS2PH to memory reports the first byte that faults, as an unmasked store does.
+    HalfStoreFaultAtFirstByte,
+    /// MOVDIR64B takes a destination that does not lie on 64 bytes.
+    BlockStoreAlignmentUnchecked,
+    /// CMPS and SCAS take AF from the carry out of bit 2, bit 3 of the operands and difference joined.
+    StringCompareAuxiliaryFromBitThree,
+    /// SUB, CMP and SBB take AF from bit 3 of the operands and difference joined.
+    SubtractAuxiliaryFromBitThree,
+    /// NEG takes AF from bit 3 of the operand and result joined.
+    NegateAuxiliaryFromBitThree,
+    /// A VEX instruction keeps ZMM's bits 256 to 511 of a destination it also reads.
+    VexReadDestinationKeepsZmmUpperBits,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1817,7 +1866,37 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RangeSignFromSelected, "VRANGE", Family::Evex(|form| is_special(form, SpecialOperation::Range)), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
-    row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),
+    row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),    row(Bug::TruncatingStoreRoundsByControl, "FISTTP", Family::Forms(FISTTP), Origin::OptionalRemaining),
+    row(Bug::MmxSsseThreeMemoryReadsSixteenBytes, "SSSE3 MMX forms in memory", Family::Forms(SSSE3_MMX_MEMORY), Origin::OptionalRemaining),
+    row(Bug::ExtractIndexUnmasked, "EVEX VPEXTRB to VPEXTRQ, VEXTRACTPS", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::ExtractElement { bytes: 2.. }) && form.has_immediate()), Origin::OptionalRemaining),
+    row(Bug::QuadwordStoreHalvesSwapped, "EVEX VMOVHPS to VMOVLPD", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::StoreQuadword { .. })), Origin::OptionalRemaining),
+    row(Bug::OptionalMaskIgnored, "EVEX VMOVSS, VCVTPS2PH to memory, VRCP14, VRSQRTPH", Family::OptionalForms(OptionalForm::can_mask), Origin::OptionalRemaining),
+    row(Bug::ScalarMoveKeepsUpperBits, "EVEX VMOVSS, VMOVSD of registers", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::MoveScalar { .. }) && form.place == OperandPlace::Register), Origin::OptionalRemaining),
+    row(Bug::HalfStoreExceptionsIgnored, "EVEX VCVTPS2PH to memory", Family::OptionalForms(|form| form.operation == OptionalOperation::ConvertToHalves), Origin::OptionalRemaining),
+    row(Bug::VexReciprocalKeepsUpperHalf, "VEX VRCPPS, VRSQRTPS of XMM", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::VexReciprocal { .. }) && form.vector_bytes() == 16), Origin::OptionalRemaining),
+    row(Bug::OptionalMaskedFaultNotSuppressed, "VRCP14 to VRSQRTSH in memory", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::Reciprocal { .. }) && form.place == OperandPlace::Memory), Origin::OptionalRemaining),
+    row(Bug::ReciprocalDenormalsAreZeros, "VRCP14, VRCPPH", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::Reciprocal { root: false, .. })), Origin::OptionalRemaining),
+    row(Bug::ReciprocalFourteenIndexFifteenBits, "VRCP14", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::Reciprocal { root: false, precision: Precision::Single | Precision::Double })), Origin::OptionalRemaining),
+    row(Bug::RootReciprocalParitySwapped, "VRSQRT14, VRSQRTPH", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::Reciprocal { root: true, .. })), Origin::OptionalRemaining),
+    row(Bug::BaseWriteCanonicalUnchecked, "WRFSBASE, WRGSBASE", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::WriteBase { .. })), Origin::OptionalRemaining),
+    row(Bug::MonitorChecksRead, "UMONITOR", Family::OptionalForms(|form| form.operation == OptionalOperation::Monitor), Origin::OptionalRemaining),
+    row(Bug::HalfStoreFaultClearsFlags, "EVEX VCVTPS2PH to memory", Family::OptionalForms(|form| form.operation == OptionalOperation::ConvertToHalves), Origin::OptionalRemaining),
+    row(Bug::HalfStoreFaultAtFirstByte, "EVEX VCVTPS2PH to memory", Family::OptionalForms(|form| form.operation == OptionalOperation::ConvertToHalves), Origin::OptionalRemaining),
+    row(Bug::BlockStoreAlignmentUnchecked, "MOVDIR64B", Family::OptionalForms(|form| form.operation == OptionalOperation::DirectStoreBlock), Origin::OptionalRemaining),
+    row(Bug::StringCompareAuxiliaryFromBitThree, "CMPS, SCAS", Family::String(|form| form.compares()), Origin::OptionalRemaining),
+    row(Bug::SubtractAuxiliaryFromBitThree, "SUB, CMP, SBB", integer(|o| matches!(o, Operation::Subtract | Operation::Compare | Operation::SubtractWithBorrow)), Origin::OptionalRemaining),
+    row(Bug::NegateAuxiliaryFromBitThree, "NEG", integer(|o| o == Operation::Negate), Origin::OptionalRemaining),
+    row(Bug::VexReadDestinationKeepsZmmUpperBits, "VEX writes of a vector register", Family::Avx(writes_vector_register), Origin::OptionalRemaining),
+];
+
+const FISTTP: &[Instruction] =
+    &[Instruction::FisttpMemmem16intSt0, Instruction::FisttpMemmem32intSt0, Instruction::FisttpMemm64intSt0];
+/// SSSE3's MMX forms with their source in memory.
+pub const SSSE3_MMX_MEMORY: &[Instruction] = &[
+    Instruction::PabsbMmxqMemq, Instruction::PabsdMmxqMemq, Instruction::PabswMmxqMemq, Instruction::PalignrMmxqMemqImmb,
+    Instruction::PhadddMmxqMemq, Instruction::PhaddswMmxqMemq, Instruction::PhaddwMmxqMemq, Instruction::PhsubdMmxqMemq,
+    Instruction::PhsubswMmxqMemq, Instruction::PhsubwMmxqMemq, Instruction::PmaddubswMmxqMemq, Instruction::PmulhrswMmxqMemq,
+    Instruction::PshufbMmxqMemq, Instruction::PsignbMmxqMemq, Instruction::PsigndMmxqMemq, Instruction::PsignwMmxqMemq,
 ];
 
 const SEGMENT_LOADS: &[Instruction] = &[
@@ -2421,6 +2500,14 @@ pub(crate) fn mutate_integer(
         (Bug::PopulationCountLowHalfOnly, Operation::PopulationCount) if length == 8 => {
             outcome.result = Some(u64::from((s as u32).count_ones()));
             outcome.flags.set(Flags::ZERO, s as u32 == 0);
+        }
+        (Bug::SubtractAuxiliaryFromBitThree, Operation::Subtract | Operation::Compare | Operation::SubtractWithBorrow) => {
+            let borrow = u64::from(carry && operation == Operation::SubtractWithBorrow);
+            let difference = d.wrapping_sub(s).wrapping_sub(borrow) & mask;
+            outcome.flags.set(Flags::AUXILIARY_CARRY, (d ^ s ^ difference) & 0x08 != 0);
+        }
+        (Bug::NegateAuxiliaryFromBitThree, Operation::Negate) => {
+            outcome.flags.set(Flags::AUXILIARY_CARRY, (d ^ result) & 0x08 != 0);
         }
         _ => {}
     }

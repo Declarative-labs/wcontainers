@@ -44,6 +44,8 @@ pub mod memory;
 pub mod mmx;
 pub mod mmx_convert;
 pub mod opmask;
+pub mod optional;
+mod optional_recording;
 pub mod planted;
 pub mod reciprocal;
 mod reciprocal_recording;
@@ -187,6 +189,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(descriptor::DESCRIPTOR_FORMS.iter().map(|form| form.instruction))
         .chain(reciprocal::RECIPROCAL_FORMS.iter().map(|form| form.instruction))
         .chain(segment::SEGMENT_FORMS.iter().map(|form| form.instruction))
+        .chain(optional::OPTIONAL_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -524,5 +527,10 @@ pub enum PreciseInstruction {
     Segment {
         instruction: Instruction,
         behavior: segment::SegmentBehavior,
+    },
+    /// A form of [`optional::OPTIONAL_FORMS`], and what a store of it writes below a fault part-way.
+    Optional {
+        instruction: Instruction,
+        across_fault: StoreAcrossFault,
     },
 }

@@ -294,6 +294,8 @@ impl X87Form {
             Code::Fild_m64int | Code::Fld_m64fp | Code::Fcom_m64fp | Code::Fcomp_m64fp | Code::Fistp_m64int => 8,
             Code::Fild_m32int | Code::Fld_m32fp | Code::Fcom_m32fp | Code::Fcomp_m32fp | Code::Ficom_m32int
             | Code::Ficomp_m32int | Code::Fist_m32int | Code::Fistp_m32int => 4,
+            Code::Fisttp_m64int => 8,
+            Code::Fisttp_m32int => 4,
             Code::Fadd_m64fp | Code::Fsub_m64fp | Code::Fsubr_m64fp | Code::Fmul_m64fp | Code::Fdiv_m64fp | Code::Fdivr_m64fp
             | Code::Fst_m64fp | Code::Fstp_m64fp => 8,
             Code::Fadd_m32fp | Code::Fsub_m32fp | Code::Fsubr_m32fp | Code::Fmul_m32fp | Code::Fdiv_m32fp | Code::Fdivr_m32fp
@@ -751,6 +753,10 @@ pub static X87_FORMS: &[X87Form] = &[
     x87(Instruction::Fxsave64Memmfpxenv, X87Operation::SaveExtended { wide: true }, Memory, Code::Fxsave64_m512byte),
     x87(Instruction::FxrstorMemmfpxenv, X87Operation::RestoreExtended { wide: false }, Memory, Code::Fxrstor_m512byte),
     x87(Instruction::Fxrstor64Memmfpxenv, X87Operation::RestoreExtended { wide: true }, Memory, Code::Fxrstor64_m512byte),
+    // SSE3's FISTTP: FISTP that rounds toward zero whatever FCW says.
+    x87(Instruction::FisttpMemmem16intSt0, StoreInteger { pop: true }, Memory, Code::Fisttp_m16int),
+    x87(Instruction::FisttpMemmem32intSt0, StoreInteger { pop: true }, Memory, Code::Fisttp_m32int),
+    x87(Instruction::FisttpMemm64intSt0, StoreInteger { pop: true }, Memory, Code::Fisttp_m64int),
 ];
 
 const fn arithmetic(

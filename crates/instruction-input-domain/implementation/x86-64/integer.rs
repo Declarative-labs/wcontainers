@@ -232,6 +232,8 @@ pub enum ImmediateClass {
     /// VPTERNLOG's truth table: each operand alone (0xF0, 0xCC, 0xAA), the exclusive or and the majority of the
     /// three, none, all, and each single combination at the ends.
     TernaryTable,
+    /// VCVTPS2PH's rounding: each mode, MXCSR's (bit 2), and bits above them set, which it ignores.
+    Rounding,
 }
 
 /// What each operand of a form is, from its first code.
@@ -457,6 +459,7 @@ pub fn generate_immediates(class: ImmediateClass) -> Vec<OperandValue> {
         ImmediateClass::Predicate => &[0, 1, 2, 3, 4, 5, 6, 7, 0x0D, 0xFF],
         ImmediateClass::Vector => &[0, 1, 2, 3, 4, 5, 8, 0x0E, 0x20, 0x7F, 0x81, 0xFF],
         ImmediateClass::TernaryTable => &[0xF0, 0xCC, 0xAA, 0x96, 0xE8, 0x00, 0xFF, 0x01, 0x80],
+        ImmediateClass::Rounding => &[0, 1, 2, 3, 4, 0xFB, 0xFC],
     };
     values.iter().map(|&value| OperandValue::Immediate(value)).collect()
 }

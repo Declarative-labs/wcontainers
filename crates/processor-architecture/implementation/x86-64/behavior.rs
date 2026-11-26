@@ -252,6 +252,7 @@ impl PreciseInstruction {
             Self::String { instruction, .. } | Self::System { instruction, .. } => instruction,
             Self::MmxConvert { instruction, .. } | Self::Descriptor(instruction) => instruction,
             Self::Reciprocal { instruction, .. } | Self::Segment { instruction, .. } => instruction,
+            Self::Optional { instruction, .. } => instruction,
         }
     }
 }
@@ -333,6 +334,7 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         _ if crate::mmx_convert::find_mmx_convert_form(instruction).is_some() => {
             crate::mmx_convert::list_mmx_convert_behaviors(instruction)
         }
+        _ if crate::optional::find_optional_form(instruction).is_some() => crate::optional::list_optional_behaviors(instruction),
         _ => list_integer_behaviors(instruction),
     }
 }

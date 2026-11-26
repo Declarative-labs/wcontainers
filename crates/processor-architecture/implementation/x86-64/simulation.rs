@@ -79,6 +79,8 @@ mod reciprocal_simulation;
 mod segment_simulation;
 #[path = "vex_upper.rs"]
 mod vex_upper;
+#[path = "optional_simulation.rs"]
+mod optional_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -142,7 +144,9 @@ fn simulate_processor(
             *processor = changed;
             vex_upper::zero_written_upper_bits(processor, &decoded);
             // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
-            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. } | PreciseInstruction::System { .. } | PreciseInstruction::Segment { .. }) {
+            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. } | PreciseInstruction::System { .. } | PreciseInstruction::Segment { .. })
+                && !matches!(behavior, PreciseInstruction::Optional { instruction: Instruction::XbeginRelbrz, .. })
+            {
                 processor.instruction_pointer = decoded.next_ip();
             }
             processor.exception = None;
@@ -178,6 +182,10 @@ fn simulate_processor(
             // An MMX store that faults leaves the TOP it cleared first.
             if matches!(behavior, PreciseInstruction::Mmx { .. }) {
                 processor.x87.status = changed.x87.status;
+            }
+            // VCVTPS2PH to memory keeps the flags its computation set when its store faults.
+            if matches!(behavior, PreciseInstruction::Optional { .. }) {
+                processor.mxcsr = changed.mxcsr;
             }
             // A form that names an MMX register leaves the x87 state in MMX's use when it then faults.
             if matches!(behavior, PreciseInstruction::MmxConvert { .. }) {
@@ -336,6 +344,9 @@ fn apply(
         }
         PreciseInstruction::MmxConvert { instruction, behavior } => {
             mmx_convert_simulation::execute_mmx_convert(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::Optional { instruction, across_fault } => {
+            optional_simulation::execute_optional(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS

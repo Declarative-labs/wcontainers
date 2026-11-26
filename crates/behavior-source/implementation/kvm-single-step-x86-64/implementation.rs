@@ -1138,6 +1138,8 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
         // IA32_TSC_AUX and the random source decide.
         Mnemonic::Umwait | Mnemonic::Tpause => Some("its result depends on the time, which is not in the state"),
+        // This chip's transactions always abort, and an aborting XBEGIN drops the single step's trap.
+        Mnemonic::Xbegin => Some("it aborts, which drops the trap, so the chip runs the fallback's first instruction too"),
         Mnemonic::Xgetbv => Some("XCR0 under Linux also enables AMX's tiles, and XINUSE is not in the state"),
         Mnemonic::Xsave
         | Mnemonic::Xsave64
