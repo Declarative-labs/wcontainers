@@ -1487,3 +1487,24 @@ fn equality_and_clone_of_processors_permissions_and_instructions_are_identity() 
         }
     }
 }
+
+/// The conversion between the verified code's flags and PSTATE's, which Verus cannot read, on all sixteen values.
+#[test]
+fn every_flag_value_converts_to_its_bit_and_back() {
+    use crate::condition_flags::Nzcv;
+    for bits in 0..1_u32 << 4 {
+        let nzcv = Nzcv {
+            negative: bits & 0b1000 != 0,
+            zero: bits & 0b0100 != 0,
+            carry: bits & 0b0010 != 0,
+            overflow: bits & 0b0001 != 0,
+        };
+        let flags = ConditionFlags::from(nzcv);
+        assert_eq!(
+            flags.bits(),
+            bits << ConditionFlags::OVERFLOW.bits().trailing_zeros()
+        );
+        assert_eq!(Nzcv::from(flags), nzcv);
+        assert_eq!(ConditionFlags::from(Nzcv::from(flags)), flags);
+    }
+}

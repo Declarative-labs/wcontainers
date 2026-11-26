@@ -1,3 +1,5 @@
+use vstd::prelude::*;
+
 bitflags::bitflags! {
     /// PSTATE's [NZCV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/NZCV--Condition-Flags), at its bit positions in that register.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -6,6 +8,42 @@ bitflags::bitflags! {
         const ZERO = 1 << 30;
         const CARRY = 1 << 29;
         const OVERFLOW = 1 << 28;
+    }
+}
+
+verus! {
+
+/// PSTATE's NZCV as one boolean per flag, the form in which verified code reads and sets them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Nzcv {
+    pub negative: bool,
+    pub zero: bool,
+    pub carry: bool,
+    pub overflow: bool,
+}
+
+} // verus!
+
+// VERUS: Verus cannot read a `bitflags` constant, so verified code holds the flags as `Nzcv` and converts here.
+impl From<Nzcv> for ConditionFlags {
+    fn from(nzcv: Nzcv) -> Self {
+        let mut flags = Self::empty();
+        flags.set(Self::NEGATIVE, nzcv.negative);
+        flags.set(Self::ZERO, nzcv.zero);
+        flags.set(Self::CARRY, nzcv.carry);
+        flags.set(Self::OVERFLOW, nzcv.overflow);
+        flags
+    }
+}
+
+impl From<ConditionFlags> for Nzcv {
+    fn from(flags: ConditionFlags) -> Self {
+        Self {
+            negative: flags.contains(ConditionFlags::NEGATIVE),
+            zero: flags.contains(ConditionFlags::ZERO),
+            carry: flags.contains(ConditionFlags::CARRY),
+            overflow: flags.contains(ConditionFlags::OVERFLOW),
+        }
     }
 }
 

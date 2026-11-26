@@ -7,10 +7,12 @@ use core::convert::Infallible;
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 
-use crate::condition_flags::{CONDITIONS, ConditionFlags};
+use crate::condition_flags::{CONDITIONS, ConditionFlags, Nzcv};
 use crate::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Rotation, Signedness,
 };
+#[cfg(verus_keep_ghost)]
+use crate::pseudocode::{arithmetic_or_logical, is_zero, logical_result, sint, written};
 use crate::registers::{read_register, write_register};
 use crate::{Exception, Instruction, Processor};
 
@@ -28,6 +30,8 @@ const BITMASK_FIELD_BITS: u32 = 6;
 const CRC32_POLYNOMIAL: u32 = 0x04C1_1DB7;
 /// [CRC-32C](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32CB--CRC32CH--CRC32CW--CRC32CX--CRC32C-checksum-#:~:text=0x1EDC6F41)'s polynomial, before its bits are reversed.
 const CRC32C_POLYNOMIAL: u32 = 0x1EDC_6F41;
+
+verus! {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FlagSetting {
@@ -118,6 +122,8 @@ pub enum IntegerOperation {
     /// [XAFLAG](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/XAFLAG--Convert-floating-point-condition-flags-from-external-format-to-Arm-format-).
     ConvertFlagsFromExternalFormat,
 }
+
+} // verus!
 
 /// What an instruction reads beyond the operands of its syntax.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -726,63 +732,234 @@ fn replicate(element: u64, bits: u32) -> u64 {
     })
 }
 
-fn sign_extend(value: u64, width: RegisterWidth) -> i64 {
+verus! {
+
+/// The width's mask keeps the low bits of a value: the value modulo 2^bits.
+proof fn lemma_width_mask(x: u64, width: RegisterWidth)
+    ensures
+        0 <= crate::pseudocode::ones(width.bits()) <= u64::MAX,
+        (x & (crate::pseudocode::ones(width.bits()) as u64)) as int == crate::pseudocode::uint(x as int, width.bits()),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::bits::lemma_low_bits_mask_values();
+    match width {
+        RegisterWidth::Bits32 => vstd::bits::lemma_u64_low_bits_mask_is_mod(x, 32),
+        RegisterWidth::Bits64 => {
+            assert(x & u64::MAX == x) by (bit_vector);
+            vstd::arithmetic::div_mod::lemma_small_mod(x as nat, pow2(64));
+        }
+    }
+}
+
+/// SInt of the width's low bits of `value`.
+fn sign_extend(value: u64, width: RegisterWidth) -> (extended: i64)
+    ensures
+        extended as int == sint(value as int, width.bits()),
+{
     let shift = u64::BITS - width.to_bits();
-    ((value << shift) as i64) >> shift
+    let extended = ((value << shift) as i64) >> shift;
+    proof {
+        // The bits are read by bit_vector at each width; then `!` of a negative value gives its magnitude less one.
+        let (mask, top) = match width {
+            RegisterWidth::Bits32 => (0xffff_ffffu64, 0x8000_0000u64),
+            RegisterWidth::Bits64 => (u64::MAX, 0x8000_0000_0000_0000u64),
+        };
+        match width {
+            RegisterWidth::Bits32 => assert(
+                (extended >= 0) == (value & mask < top)
+                && (extended >= 0 ==> extended as u64 == value & mask)
+                && (extended < 0 ==> (!extended) as u64 == (mask - (value & mask)) as u64)
+            ) by (bit_vector)
+                requires
+                    extended == ((value << 32u32) as i64) >> 32u32,
+                    mask == 0xffff_ffffu64,
+                    top == 0x8000_0000u64,
+            ,
+            RegisterWidth::Bits64 => assert(
+                (extended >= 0) == (value & mask < top)
+                && (extended >= 0 ==> extended as u64 == value & mask)
+                && (extended < 0 ==> (!extended) as u64 == (mask - (value & mask)) as u64)
+            ) by (bit_vector)
+                requires
+                    extended == ((value << 0u32) as i64) >> 0u32,
+                    mask == u64::MAX,
+                    top == 0x8000_0000_0000_0000u64,
+            ,
+        }
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        lemma_width_mask(value, width);
+        let unsigned = (value & mask) as int;
+        assert(unsigned == crate::pseudocode::uint(value as int, width.bits()));
+        assert(pow2((width.bits() - 1) as nat) == top && pow2(width.bits()) == mask + 1);
+        if extended >= 0 {
+            assert(extended as int == (extended as u64) as int);
+        } else {
+            assert((!extended) as int == -extended - 1);
+            assert(((!extended) as u64) as int == (!extended) as int);
+            assert(((mask - (value & mask)) as u64) as int == mask - unsigned);
+        }
+    }
+    extended
 }
 
 /// The sum of two values and a carry at the width, with the flags [AddWithCarry](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-integer#impl-shared.AddWithCarry.3) gives it.
-fn add_with_carry(
-    width: RegisterWidth,
-    first: u64,
-    second: u64,
-    carry: bool,
-) -> (u64, ConditionFlags) {
+fn add_with_carry(width: RegisterWidth, first: u64, second: u64, carry: bool) -> (outcome: (u64, Nzcv))
+    ensures
+        ({
+            let sum = crate::pseudocode::add_with_carry(first as int, second as int, carry, width.bits());
+            outcome.0 as int == sum.0 && outcome.1 == Nzcv { negative: sum.1, zero: sum.2, carry: sum.3, overflow: sum.4 }
+        }),
+{
     let mask = width.to_mask();
-    let unsigned = u128::from(first & mask) + u128::from(second & mask) + u128::from(carry);
+    // VERUS: no specification of `From<bool>`, so the carry is cast.
+    let unsigned = u128::from(first & mask) + u128::from(second & mask) + carry as u128;
     let result = unsigned as u64 & mask;
     let signed = i128::from(sign_extend(first, width))
         + i128::from(sign_extend(second, width))
-        + i128::from(carry && !crate::planted::is(415));
+        + (carry && !crate::planted::is(415)) as i128;
     let mut flags = to_result_flags(result, width);
     if crate::planted::is(101) {
-        flags.set(ConditionFlags::CARRY, unsigned >> 64 != 0);
+        flags.carry = unsigned >> 64 != 0;
     } else {
-        flags.set(ConditionFlags::CARRY, u128::from(result) != unsigned);
+        flags.carry = u128::from(result) != unsigned;
     }
     if crate::planted::is(102) {
-        flags.set(
-            ConditionFlags::OVERFLOW,
-            (sign_extend(result, width) < 0) != (sign_extend(first, width) < 0),
-        );
+        flags.overflow = (sign_extend(result, width) < 0) != (sign_extend(first, width) < 0);
     } else {
-        flags.set(
-            ConditionFlags::OVERFLOW,
-            i128::from(sign_extend(result, width)) != signed,
-        );
+        flags.overflow = i128::from(sign_extend(result, width)) != signed;
     }
     if crate::planted::is(90) {
-        flags.set(
-            ConditionFlags::OVERFLOW,
-            sign_extend(first, width) < 0
-                && sign_extend(second, width) < 0
-                && sign_extend(result, width) >= 0,
-        );
+        flags.overflow = sign_extend(first, width) < 0
+            && sign_extend(second, width) < 0
+            && sign_extend(result, width) >= 0;
+    }
+    proof {
+        let n = width.bits();
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::bits::lemma_low_bits_mask_values();
+        lemma_width_mask(first, width);
+        lemma_width_mask(second, width);
+        let wide_mask = mask as u128;
+        assert((unsigned as u64) & mask == (unsigned & wide_mask) as u64 && unsigned & wide_mask <= wide_mask) by (bit_vector)
+            requires
+                wide_mask == mask as u128;
+        vstd::bits::lemma_u128_low_bits_mask_is_mod(unsigned, n);
+        vstd::arithmetic::div_mod::lemma_mod_twice(unsigned as int, pow2(n) as int);
     }
     (result, flags)
 }
 
 /// N and Z of a result, with C and V clear, as the logical instructions set them.
-fn to_result_flags(result: u64, width: RegisterWidth) -> ConditionFlags {
-    let mut flags = ConditionFlags::empty();
-    if crate::planted::is(106) {
-        flags.set(ConditionFlags::NEGATIVE, (result as i64) < 0);
+fn to_result_flags(result: u64, width: RegisterWidth) -> (flags: Nzcv)
+    ensures
+        flags == (Nzcv { negative: sint(result as int, width.bits()) < 0, zero: is_zero(result as int, width.bits()), carry: false, overflow: false }),
+{
+    let negative = if crate::planted::is(106) {
+        (result as i64) < 0
     } else {
-        flags.set(ConditionFlags::NEGATIVE, sign_extend(result, width) < 0);
+        sign_extend(result, width) < 0
+    };
+    proof {
+        lemma_width_mask(result, width);
     }
-    flags.set(ConditionFlags::ZERO, result & width.to_mask() == 0);
-    flags
+    Nzcv { negative, zero: result & width.to_mask() == 0, carry: false, overflow: false }
 }
+
+/// The result written and the flags set by an operation, from its result and flags.
+fn with_flags(result: u64, result_flags: Nzcv, setting: FlagSetting) -> (outcome: (u64, Option<Nzcv>))
+    ensures
+        outcome.0 == result,
+        outcome.1 == written((result as int, result_flags.negative, result_flags.zero, result_flags.carry, result_flags.overflow), setting).1,
+{
+    match setting {
+        FlagSetting::Sets => (result, Some(result_flags)),
+        FlagSetting::Preserves => (result, None),
+    }
+}
+
+/// What ADD, SUB, ADC, SBC, AND and BIC and their flag-setting forms write and set, from their two operands after
+/// decode and the flags before.
+pub(crate) fn compute_arithmetic_or_logical(
+    operation: IntegerOperation,
+    width: RegisterWidth,
+    first: u64,
+    second: u64,
+    flags: Nzcv,
+) -> (outcome: (u64, Option<Nzcv>))
+    requires
+        operation is Add || operation is Subtract || operation is AddWithCarry || operation is SubtractWithCarry
+            || operation is And || operation is AndNot,
+    ensures
+        outcome.0 as int == arithmetic_or_logical(operation, width.bits(), first, second, flags).0,
+        outcome.1 == arithmetic_or_logical(operation, width.bits(), first, second, flags).1,
+{
+    use IntegerOperation as O;
+    let mask = width.to_mask();
+    let carry = flags.carry;
+    let logical = |result: u64, setting: FlagSetting| -> (outcome: (u64, Option<Nzcv>))
+        ensures
+            outcome.0 as int == logical_result(result as int, width.bits()).0,
+            outcome.1 == written(logical_result(result as int, width.bits()), setting).1,
+    {
+        let mut result_flags = to_result_flags(result, width);
+        if crate::planted::is(1) {
+            result_flags.carry = flags.carry;
+            result_flags.overflow = flags.overflow;
+        }
+        if crate::planted::is(2) {
+            result_flags.negative = (result >> 31) & 1 != 0;
+        }
+        proof {
+            lemma_width_mask(result, width);
+        }
+        with_flags(result & mask, result_flags, setting)
+    };
+    match operation {
+        O::Add(setting) => {
+            let (result, mut result_flags) = add_with_carry(width, first, second, false);
+            if crate::planted::is(211) {
+                result_flags.overflow = result_flags.carry;
+            }
+            with_flags(result, result_flags, setting)
+        }
+        O::Subtract(setting) => {
+            let (result, mut result_flags) = add_with_carry(width, first, !second, true);
+            if crate::planted::is(201) {
+                result_flags.carry = !result_flags.carry;
+            }
+            with_flags(result, result_flags, setting)
+        }
+        O::AddWithCarry(setting) => {
+            let (result, result_flags) = add_with_carry(width, first, second, carry && !crate::planted::is(115));
+            with_flags(result, result_flags, setting)
+        }
+        O::SubtractWithCarry(setting) => {
+            let carry = if crate::planted::is(218) {
+                !carry
+            } else {
+                carry
+            };
+            let carry = carry != crate::planted::is(116);
+            let (result, result_flags) = add_with_carry(width, first, !second, carry);
+            let result_flags = if crate::planted::is(219) {
+                add_with_carry(width, first, !second, true).1
+            } else {
+                result_flags
+            };
+            with_flags(result, result_flags, setting)
+        }
+        O::And(setting) => logical(first & second, setting),
+        O::AndNot(setting) => if crate::planted::is(214) {
+            logical(first & second, setting)
+        } else {
+            logical(first & !second, setting)
+        },
+        _ => (0, None),
+    }
+}
+
+} // verus!
 
 /// The flags of an immediate whose bits are N, Z, C and V from the most significant.
 fn to_condition_flags(nzcv: u64) -> ConditionFlags {
@@ -851,7 +1028,6 @@ fn apply(
     use IntegerOperation as O;
     let mask = width.to_mask();
     let bits = width.to_bits();
-    let carry = flags.contains(ConditionFlags::CARRY);
     let written = |result: u64| Outcome {
         result: Some(if crate::planted::is(104) {
             result
@@ -860,63 +1036,23 @@ fn apply(
         }),
         flags: None,
     };
-    let with_flags =
-        |(result, result_flags): (u64, ConditionFlags), setting: FlagSetting| Outcome {
-            result: Some(result),
-            flags: (setting == FlagSetting::Sets).then_some(result_flags),
-        };
-    let logical = |result: u64, setting: FlagSetting| {
-        let mut result_flags = to_result_flags(result, width);
-        if crate::planted::is(1) {
-            result_flags |= flags & (ConditionFlags::CARRY | ConditionFlags::OVERFLOW);
-        }
-        if crate::planted::is(2) {
-            result_flags.set(ConditionFlags::NEGATIVE, (result >> 31) & 1 != 0);
-        }
-        with_flags((result & mask, result_flags), setting)
-    };
     Ok(match (operation, sources) {
-        (O::Add(setting), &[first, second]) => {
-            let (result, mut result_flags) = add_with_carry(width, first, second, false);
-            if crate::planted::is(211) {
-                result_flags.set(
-                    ConditionFlags::OVERFLOW,
-                    result_flags.contains(ConditionFlags::CARRY),
-                );
+        (
+            O::Add(_)
+            | O::Subtract(_)
+            | O::AddWithCarry(_)
+            | O::SubtractWithCarry(_)
+            | O::And(_)
+            | O::AndNot(_),
+            &[first, second],
+        ) => {
+            let (result, result_flags) =
+                compute_arithmetic_or_logical(operation, width, first, second, Nzcv::from(flags));
+            Outcome {
+                result: Some(result),
+                flags: result_flags.map(ConditionFlags::from),
             }
-            with_flags((result, result_flags), setting)
         }
-        (O::Subtract(setting), &[first, second]) => {
-            let (result, mut result_flags) = add_with_carry(width, first, !second, true);
-            if crate::planted::is(201) {
-                result_flags ^= ConditionFlags::CARRY;
-            }
-            with_flags((result, result_flags), setting)
-        }
-        (O::AddWithCarry(setting), &[first, second]) => with_flags(
-            add_with_carry(width, first, second, carry && !crate::planted::is(115)),
-            setting,
-        ),
-        (O::SubtractWithCarry(setting), &[first, second]) => {
-            let carry = if crate::planted::is(218) {
-                !carry
-            } else {
-                carry
-            };
-            let carry = carry != crate::planted::is(116);
-            let (result, result_flags) = add_with_carry(width, first, !second, carry);
-            let result_flags = if crate::planted::is(219) {
-                add_with_carry(width, first, !second, true).1
-            } else {
-                result_flags
-            };
-            with_flags((result, result_flags), setting)
-        }
-        (O::And(setting), &[first, second]) => logical(first & second, setting),
-        (O::AndNot(setting), &[first, second]) if crate::planted::is(214) => {
-            logical(first & second, setting)
-        }
-        (O::AndNot(setting), &[first, second]) => logical(first & !second, setting),
         (O::Or, &[first, second]) => written(first | second),
         (O::OrNot, &[first, second]) if crate::planted::is(216) => written(!(first | second)),
         (O::OrNot, &[first, second]) => written(first | !second),
@@ -1044,17 +1180,25 @@ fn apply(
             };
             let flags = if crate::planted::is(417) && !CONDITIONS[condition as usize].holds(flags) {
                 let sum = match comparison {
-                    Comparison::Sum => add_with_carry(width, first, second, false).1,
-                    Comparison::Difference => add_with_carry(width, first, !second, true).1,
+                    Comparison::Sum => {
+                        ConditionFlags::from(add_with_carry(width, first, second, false).1)
+                    }
+                    Comparison::Difference => {
+                        ConditionFlags::from(add_with_carry(width, first, !second, true).1)
+                    }
                 };
                 to_condition_flags(nzcv) | sum
             } else if CONDITIONS[condition as usize].holds(flags) {
                 match comparison {
-                    Comparison::Sum if crate::planted::is(120) => {
-                        add_with_carry(RegisterWidth::Bits64, first, second, false).1
+                    Comparison::Sum if crate::planted::is(120) => ConditionFlags::from(
+                        add_with_carry(RegisterWidth::Bits64, first, second, false).1,
+                    ),
+                    Comparison::Sum => {
+                        ConditionFlags::from(add_with_carry(width, first, second, false).1)
                     }
-                    Comparison::Sum => add_with_carry(width, first, second, false).1,
-                    Comparison::Difference => add_with_carry(width, first, !second, true).1,
+                    Comparison::Difference => {
+                        ConditionFlags::from(add_with_carry(width, first, !second, true).1)
+                    }
                 }
             } else {
                 to_condition_flags(nzcv)

@@ -39,11 +39,18 @@ pub fn is(bug: u32) -> bool {
     PLANTED.load(core::sync::atomic::Ordering::Relaxed) == bug
 }
 
+vstd::prelude::verus! {
+
 /// Whether the bug is the one planted: never, without the `planted` feature.
 #[cfg(not(feature = "planted"))]
-pub const fn is(_: u32) -> bool {
+pub const fn is(_bug: u32) -> (planted: bool)
+    ensures
+        !planted,
+{
     false
 }
+
+} // verus!
 
 /// Whether one of the bugs is the one planted.
 pub fn any(bugs: &[u32]) -> bool {

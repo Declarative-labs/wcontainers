@@ -101,12 +101,6 @@ pub enum Operand {
     Unmodeled,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Signedness {
-    Unsigned,
-    Signed,
-}
-
 /// Where a load or store's address is, and what it writes back to its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indexing {
@@ -119,6 +113,12 @@ pub enum Indexing {
 }
 
 verus! {
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Signedness {
+    Unsigned,
+    Signed,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RegisterWidth {
