@@ -30,7 +30,8 @@ fi
 asan_env() {
     export RUSTC_BOOTSTRAP=1 STAND_INS_ASAN=1 CC_x86_64_unknown_linux_gnu=$here/harness/stand-ins/zigcc
     export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:halt_on_error=1:allocator_may_return_null=1
-    export RUSTFLAGS="-Zsanitizer=address -C force-frame-pointers=yes -C link-arg=-latomic"
+    # The repository's own flags (.cargo/config.toml), which RUSTFLAGS replaces, and the sanitizer.
+    export RUSTFLAGS="-Zcrate-attr=feature(register_tool) -Zcrate-attr=register_tool(reviewable) -Zsanitizer=address -C force-frame-pointers=yes -C link-arg=-latomic"
 }
 if has asan; then
     asan_env

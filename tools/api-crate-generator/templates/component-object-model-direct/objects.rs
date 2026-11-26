@@ -184,6 +184,14 @@ struct ObjectTable {
     released: Mutex<Vec<(Table, VecDeque<usize>)>>,
 }
 
+/// Our objects alive now, which a test reads.
+static ALIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns how many of our objects are alive now.
+pub fn alive() -> usize {
+    ALIVE.load(Ordering::Relaxed)
+}
+
 static OBJECTS: LazyLock<ObjectTable> = LazyLock::new(|| ObjectTable {
     chunks: core::array::from_fn(|_| OnceLock::new()),
     unused: AtomicUsize::new(0),
@@ -311,6 +319,7 @@ fn release_exact<V: Send + Sync + 'static>(index: usize, generation: Option<u32>
     // Outside every lock; `Served`'s drop catches a panic of the value's.
     drop(taken);
     drop(served);
+    ALIVE.fetch_sub(1, Ordering::Relaxed);
     0
 }
 
@@ -396,6 +405,7 @@ pub fn serve<V: Send + Sync + 'static>(_key: GlueKey, value: V, record: Record, 
         others: Mutex::default(),
     };
     let generation = table.install(index, Arc::new(served)).ok()?;
+    ALIVE.fetch_add(1, Ordering::Relaxed);
     Some(Counted { index, generation, add: add_exact::<V>, release: release_exact::<V> })
 }
 

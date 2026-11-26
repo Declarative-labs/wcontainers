@@ -71,6 +71,7 @@ pub struct Observed {
 #[expect(unsafe_code, reason = "the stand-ins' own C functions")]
 unsafe extern "C" {
     fn fake_live_objects() -> i64;
+    fn fake_live_by_kind(out: *mut i64);
     fn fake_observed(out: *mut Observed);
     fn game_play(create: CreateDevice, report: *mut u8, capacity: usize) -> i32;
     fn game_hostile(served: CreateDevice, foreign: CreateDevice, report: *mut u8, capacity: usize) -> i32;
@@ -108,6 +109,8 @@ unsafe extern "C" {
     fn fuzz_violation_count() -> u32;
     fn fuzz_first_violation() -> *const core::ffi::c_char;
     fn fuzz_count(out: *mut u64);
+    #[link_name = "fuzz_violations_by_line"]
+    fn fuzz_violation_lines(out: *mut u32, lines: u32);
 }
 
 /// What `Entry::time` times: one call or one pair, through raw COM.
@@ -357,6 +360,17 @@ pub fn fuzz_violations() -> (u32, String) {
     (count, first.to_string_lossy().into_owned())
 }
 
+/// Returns the promises broken by the line of fuzz.c that checks each, those with any.
+pub fn fuzz_violations_by_line() -> Vec<(usize, u32)> {
+    let mut counts = vec![0_u32; 2048];
+    #[expect(unsafe_code, reason = "the fuzzing drivers' C function")]
+    // SAFETY: it writes as many counters as asked, ours for the call.
+    unsafe {
+        fuzz_violation_lines(counts.as_mut_ptr(), 2048);
+    }
+    counts.into_iter().enumerate().filter(|(_, count)| *count > 0).collect()
+}
+
 /// Returns how many of the fake's objects are alive.
 pub fn live_fake_objects() -> i64 {
     #[expect(unsafe_code, reason = "the fake's C function")]
@@ -364,6 +378,18 @@ pub fn live_fake_objects() -> i64 {
     unsafe {
         fake_live_objects()
     }
+}
+
+/// Returns the fake's objects alive by kind: device, context, buffer, query, texture, render target, depth stencil,
+/// unordered access view, swap chain.
+pub fn live_fake_by_kind() -> [i64; 9] {
+    let mut counts = [0; 9];
+    #[expect(unsafe_code, reason = "the fake's C function")]
+    // SAFETY: it writes nine counters, ours for the call.
+    unsafe {
+        fake_live_by_kind(counts.as_mut_ptr());
+    }
+    counts
 }
 
 /// Returns what the fake has seen so far.

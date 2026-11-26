@@ -67,6 +67,18 @@ impl Writer<'_, '_> {
         let mut after = String::new();
         let mut outs: Vec<String> = Vec::new();
         for exception in self.g.exceptions() {
+            if let Exception::Checked { method: m, param, rule } = exception
+                && *m == place
+            {
+                let name = crate::names::value_name(param);
+                let optional = glued.parts.iter().any(|(n, part)| *n == name && matches!(part, Part::StructIn { optional: true, .. }));
+                let _ = writeln!(body, "        // The ranges the header states (an exception line of src/api.rs): refused before the system sees them.");
+                if optional {
+                    let _ = writeln!(body, "        if {name}.is_some_and(|value| !crate::lengths::{rule}(value)) {{ {fail} }}");
+                } else {
+                    let _ = writeln!(body, "        if !crate::lengths::{rule}({name}) {{ {fail} }}");
+                }
+            }
             if let Exception::NullHandle { function, param } = exception
                 && *function == place
             {
@@ -666,6 +678,11 @@ impl Drop for PendingLent {
         };
         drop(removed);
     }
+}
+
+/// Returns how many subresources the system has lent through this glue and no Unmap has ended, which a test reads.
+pub fn foreign_lent_outstanding() -> usize {
+    FOREIGN_LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
 }
 
 /// Takes the memory lent for the subresource, which the caller revokes before the system's Unmap.

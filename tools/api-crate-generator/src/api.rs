@@ -109,6 +109,24 @@ pub enum Exception {
     /// `function`'s handle `param` must be null: the calling glue refuses any other value, which the system would load
     /// as a module of code.
     NullHandle { function: &'static str, param: &'static str },
+    /// `getter` (a description) is answered from what the caller passed to the method that made the object (`made_by`:
+    /// the method and its parameter), recorded when the object crossed, never asked of the implementation; the length
+    /// of memory Map lends is computed from the same record. `resolve` names the rule in lengths.rs that fills in what
+    /// the documentation says the description reads back as (a texture's mip levels, 0 for the full chain).
+    Recorded { getter: &'static str, made_by: &'static [(&'static str, &'static str)], resolve: Option<&'static str> },
+    /// `getter` is answered by `rule` (lengths.rs) from the first record of these C types the object holds (a
+    /// resource's kind from its description, a query's data size from its kind), never asked of the implementation;
+    /// an object with no such record asks the implementation.
+    Derived { getter: &'static str, sources: &'static [(&'static str, &'static str)] },
+    /// `method`'s index `index` is below the `field` of the record of C type `record` the object holds (a swap chain's
+    /// buffer count); past it the call fails with E_INVALIDARG, never asking the implementation.
+    IndexRange { method: &'static str, index: &'static str, record: &'static str, field: &'static str },
+    /// The value `value` that `method` returns is one of `list`, or of `default` when the caller passed none (a
+    /// feature level); anything else is refused as E_FAIL and what was made is given back.
+    OneOf { method: &'static str, value: &'static str, list: &'static str, default: &'static [i32] },
+    /// `method`'s description `param` meets `rule` (lengths.rs: the ranges the header states for it); both glues refuse
+    /// it with E_INVALIDARG before either side sees it.
+    Checked { method: &'static str, param: &'static str, rule: &'static str },
     /// `method`'s count `count` is at most `most` (with `start`, `start + count` is), as the header's `_In_range_`
     /// states, or is the header's `keep` value, which keeps what is bound: the arrays it counts then reach the trait as
     /// `None` and are not read, nor are the parameters in `keeps`. Out of range, the glue refuses the call (E_INVALIDARG,
@@ -184,6 +202,9 @@ pub const DIRECTX_GRAPHICS_INFRASTRUCTURE: Api = Api {
         // IDXGISwapChain::GetBuffer: "the interface type used to manipulate the buffer" is the API's that made the
         // swap chain; DXGI's own binding is its surface.
         Exception::BoundObject { method: "IDXGISwapChain::GetBuffer", name: "Buffer", kind: "IDXGISurface" },
+        // https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getbuffer: Buffer is below the
+        // swap chain's BufferCount.
+        Exception::IndexRange { method: "IDXGISwapChain::GetBuffer", index: "Buffer", record: "DXGI_SWAP_CHAIN_DESC", field: "BufferCount" },
     ],
 };
 
@@ -257,6 +278,38 @@ const DIRECT3D_11_EXCEPTIONS: &[Exception] = &[
     // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-iasetvertexbuffers:
     // StartSlot + NumBuffers at most D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT.
     Exception::CountRange { method: "ID3D11DeviceContext::IASetVertexBuffers", count: "NumBuffers", most: 32, start: Some("StartSlot"), keep: None, keeps: &[] },
+    // A resource's and a query's description are what the caller created it with (SPIKE.md, records instead of
+    // answers).
+    Exception::Recorded { getter: "ID3D11Buffer::GetDesc", made_by: &[("ID3D11Device::CreateBuffer", "pDesc")], resolve: None },
+    Exception::Recorded { getter: "ID3D11Texture1D::GetDesc", made_by: &[("ID3D11Device::CreateTexture1D", "pDesc")], resolve: Some("resolved_texture_1d") },
+    Exception::Recorded { getter: "ID3D11Texture2D::GetDesc", made_by: &[("ID3D11Device::CreateTexture2D", "pDesc")], resolve: Some("resolved_texture_2d") },
+    Exception::Recorded { getter: "ID3D11Texture3D::GetDesc", made_by: &[("ID3D11Device::CreateTexture3D", "pDesc")], resolve: Some("resolved_texture_3d") },
+    Exception::Recorded { getter: "ID3D11Query::GetDesc", made_by: &[("ID3D11Device::CreateQuery", "pQueryDesc")], resolve: None },
+    // A swap chain's description is what it was made with.
+    Exception::Recorded { getter: "IDXGISwapChain::GetDesc", made_by: &[("D3D11CreateDeviceAndSwapChain", "pSwapChainDesc")], resolve: None },
+    // https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgisurface-getdesc: a texture's surface describes
+    // the texture it was made as.
+    Exception::Recorded { getter: "IDXGISurface::GetDesc", made_by: &[("ID3D11Device::CreateTexture2D", "pDesc")], resolve: Some("surface_of_texture_2d") },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11resource-gettype: the kind of resource;
+    // https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_query: each query kind's data size.
+    Exception::Derived { getter: "ID3D11Resource::GetType", sources: &[("D3D11_BUFFER_DESC", "type_of_buffer"), ("D3D11_TEXTURE1D_DESC", "type_of_texture_1d"), ("D3D11_TEXTURE2D_DESC", "type_of_texture_2d"), ("D3D11_TEXTURE3D_DESC", "type_of_texture_3d")] },
+    Exception::Derived { getter: "ID3D11Asynchronous::GetDataSize", sources: &[("D3D11_QUERY_DESC", "data_size_of_query")] },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-d3d11createdevice: the feature level made is one of
+    // those asked, or of the default list (11_0 down to 9_1) when none is.
+    Exception::OneOf { method: "D3D11CreateDevice", value: "pFeatureLevel", list: "pFeatureLevels", default: &[0xb000, 0xa100, 0xa000, 0x9300, 0x9200, 0x9100] },
+    Exception::OneOf { method: "D3D11CreateDeviceAndSwapChain", value: "pFeatureLevel", list: "pFeatureLevels", default: &[0xb000, 0xa100, 0xa000, 0x9300, 0x9200, 0x9100] },
+    // The ranges d3d11.h states for a description: a resource of at most the largest resource's bytes, sides and
+    // slices within D3D11_REQ_TEXTURE*_DIMENSION, mips within the full chain, declared usages and flags; a swap
+    // chain's buffers within the same sides (SPIKE.md: the defect the fuzzing found).
+    Exception::Checked { method: "ID3D11Device::CreateBuffer", param: "pDesc", rule: "checked_buffer" },
+    Exception::Checked { method: "ID3D11Device::CreateTexture1D", param: "pDesc", rule: "checked_texture_1d" },
+    Exception::Checked { method: "ID3D11Device::CreateTexture2D", param: "pDesc", rule: "checked_texture_2d" },
+    Exception::Checked { method: "ID3D11Device::CreateTexture3D", param: "pDesc", rule: "checked_texture_3d" },
+    Exception::Checked { method: "D3D11CreateDeviceAndSwapChain", param: "pSwapChainDesc", rule: "checked_swap_chain" },
+    // https://learn.microsoft.com/windows/win32/api/d3dcommon/ne-d3dcommon-d3d_feature_level: a list of feature levels
+    // names each at most once, and d3dcommon.h declares fewer than 16 (the spike's bound, LEVELS).
+    Exception::CountRange { method: "D3D11CreateDevice", count: "FeatureLevels", most: 16, start: None, keep: None, keeps: &[] },
+    Exception::CountRange { method: "D3D11CreateDeviceAndSwapChain", count: "FeatureLevels", most: 16, start: None, keep: None, keeps: &[] },
     // https://learn.microsoft.com/windows/win32/api/d3d11_4/nn-d3d11_4-id3d11multithread: the immediate context is
     // free threaded only under its multithread protection, which the context answers by QueryInterface.
     Exception::ProtectThreads { kind: "ID3D11DeviceContext", interface: "ID3D11Multithread", method: "SetMultithreadProtected" },

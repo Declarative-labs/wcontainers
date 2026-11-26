@@ -94,6 +94,13 @@ static pthread_mutex_t observed_lock = PTHREAD_MUTEX_INITIALIZER;
 
 long fake_live_objects(void) { return atomic_load(&live_objects); }
 
+/* The fake's objects alive by kind (the enum above; the immediate context counts with its device's kind until the
+   device dies), which a test prints when objects are left. */
+static atomic_long live_by_kind[KIND_SWAP_CHAIN + 1];
+void fake_live_by_kind(long *out) {
+    for (int kind = 0; kind <= KIND_SWAP_CHAIN; kind++) out[kind] = atomic_load(&live_by_kind[kind]);
+}
+
 void fake_observed(Observed *out) {
     pthread_mutex_lock(&observed_lock);
     *out = observed;
@@ -176,6 +183,7 @@ static void destroy(Header *header) {
         SwapChain *swap_chain = (SwapChain *)header;
         for (uint32_t at = 0; at < swap_chain->count; at++) Release(swap_chain->buffers[at]);
     }
+    atomic_fetch_sub(&live_by_kind[header->kind], 1);
     free(header);
     atomic_fetch_sub(&live_objects, 1);
 }
@@ -268,6 +276,7 @@ static void new_object(Header *header, Entry *table, int kind, Device *device) {
     header->kind = kind;
     header->device = device;
     atomic_fetch_add(&live_objects, 1);
+    atomic_fetch_add(&live_by_kind[kind], 1);
 }
 
 static void resource_get_type(void *this, int32_t *dimension) {

@@ -24,7 +24,7 @@ pub use foreign::{ForeignObject, Interface};
 pub use key::GlueKey;
 pub use lent::{ForeignLent, Shadow};
 pub use objects::{
-    Address, Counted, Found, Interfaces, Record, Served, Shield, Table, Weak, add_reference, counted, guarded, object,
+    Address, Counted, Found, Interfaces, Record, Served, Shield, Table, Weak, add_reference, alive, counted, guarded, object,
     query, release, serve,
 };
 pub use pointers::{read_bytes, read_only_at, writable_at, write_bytes};
@@ -182,6 +182,10 @@ impl Drop for Reservation<'_> {
         guarded((), move || drop(removed));
     }
 }
+
+/// What the caller passed when an object was made (its description), which the glue answers later instead of asking
+/// the implementation.
+pub struct Recorded<T>(pub T);
 
 /// A new record holding empty relations and lendings.
 pub fn record() -> Record {

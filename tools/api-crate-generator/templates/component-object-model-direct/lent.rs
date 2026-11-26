@@ -164,6 +164,22 @@ impl Shadow {
         self.1
     }
 
+    /// Copies the bytes in from `source`'s `read_to`, with no copy of ours between, as many as both hold.
+    pub fn fill_from(&self, source: &impl VolatileBytes) {
+        let Some(block) = self.0.as_ref() else { return };
+        let Some(view) = block.view.part(0..self.1 as u64) else { return };
+        let mut writer = Filling { view, at: 0 };
+        let _ = source.read_to(&mut writer);
+    }
+
+    /// Copies the bytes the C side left out to `target`'s `write_from`, with no copy of ours between.
+    pub fn empty_into(&self, target: &impl VolatileBytes) {
+        let Some(block) = self.0.as_ref() else { return };
+        let Some(view) = block.view.part(0..self.1 as u64) else { return };
+        let mut reader = Emptying { view, at: 0 };
+        let _ = target.write_from(&mut reader);
+    }
+
     /// Copies the bytes in from `bytes`, as many as both hold, and returns how many.
     pub fn fill(&self, bytes: &[u8]) -> usize {
         self.0.as_ref().map_or(0, |block| block.view.part(0..self.1 as u64).map_or(0, |view| view.write(bytes)))
@@ -198,3 +214,35 @@ impl Drop for Shadow {
 #[cfg(test)]
 #[path = "lent_tests.rs"]
 mod tests;
+
+/// A sink writing a shadow's bytes in order, as many as it holds; past its end it takes nothing.
+struct Filling {
+    view: PointerBytes,
+    at: u64,
+}
+
+impl ByteSink for Filling {
+    type Error = core::convert::Infallible;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, Self::Error> {
+        let written = self.view.part(self.at..self.view.len()).map_or(0, |rest| rest.write(bytes));
+        self.at += written as u64;
+        Ok(written)
+    }
+}
+
+/// A source reading a shadow's bytes in order; past its end it gives nothing.
+struct Emptying {
+    view: PointerBytes,
+    at: u64,
+}
+
+impl ByteSource for Emptying {
+    type Error = core::convert::Infallible;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, Self::Error> {
+        let read = self.view.part(self.at..self.view.len()).map_or(0, |rest| rest.read(into));
+        self.at += read as u64;
+        Ok(read)
+    }
+}

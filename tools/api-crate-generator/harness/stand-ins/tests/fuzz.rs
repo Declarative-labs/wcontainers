@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use wcontainers_direct3d_11_direct_harness::front::Front;
 use wcontainers_direct3d_11_direct_harness::liar::{self, Liar, MISCHIEF, PANIC};
-use wcontainers_direct3d_11_direct_harness::{Driver, Entry, fuzz_achieved, fuzz_calls, fuzz_violations, live_fake_objects};
+use wcontainers_direct3d_11_direct_harness::{Driver, Entry, fuzz_achieved, fuzz_calls, fuzz_violations, fuzz_violations_by_line, live_fake_by_kind, live_fake_objects};
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(default)
@@ -73,6 +73,13 @@ fn fuzz() {
         MISCHIEF.load(std::sync::atomic::Ordering::Relaxed),
         live_fake_objects(),
     );
+    println!(
+        "FUZZ {mode} seed {seed}: fake objects alive by kind {:?}; system mappings outstanding {}; our objects alive {}",
+        live_fake_by_kind(),
+        wcontainers_direct3d_11_direct::foreign_lent_outstanding(),
+        wcontainers_component_object_model_direct::alive()
+    );
+    println!("FUZZ {mode} seed {seed}: promises broken by fuzz.c line {:?}", fuzz_violations_by_line());
     assert!(made >= calls * 9 / 10, "too few calls made");
     if std::env::var("FUZZ_PROMISES").is_ok_and(|value| value == "all") || mode != "liar-correct" {
         assert_eq!(violations, 0, "a promise broken: {first}");

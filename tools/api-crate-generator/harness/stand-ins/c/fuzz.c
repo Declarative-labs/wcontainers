@@ -41,8 +41,15 @@ unsigned long long fuzz_progress(void) { return atomic_load(&fuzz_calls); }
 unsigned fuzz_violation_count(void) { return atomic_load(&fuzz_violations); }
 const char *fuzz_first_violation(void) { return first_violation; }
 
+/* Promises broken, by the line of fuzz.c that checks them, which a test prints. */
+static atomic_uint violations_by_line[2048];
+void fuzz_violations_by_line(unsigned *out, unsigned lines) {
+    for (unsigned line = 0; line < lines && line < 2048; line++) out[line] = atomic_load(&violations_by_line[line]);
+}
+
 static void violated(int line, const char *what) {
     atomic_fetch_add(&fuzz_violations, 1);
+    if (line >= 0 && line < 2048) atomic_fetch_add(&violations_by_line[line], 1);
     if (atomic_exchange(&violation_written, 1) == 0) snprintf(first_violation, sizeof first_violation, "fuzz.c:%d: %s", line, what);
 }
 
