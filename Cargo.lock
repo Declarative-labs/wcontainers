@@ -5025,6 +5025,9 @@ dependencies = [
 [[package]]
 name = "wcontainers-privilege-level"
 version = "0.1.0"
+dependencies = [
+ "vstd",
+]
 
 [[package]]
 name = "wcontainers-privilege-level-arm64-user"

@@ -21,5 +21,9 @@ wcontainers-privilege-level = { path = "../.." }
 [dev-dependencies]
 wcontainers-privilege-level-conformance = { path = "../../conformance" }
 
+# Verus builds this crate too, so that the placeholders of its proof items exist.
+[package.metadata.verus]
+verify = true
+
 [lints]
 workspace = true

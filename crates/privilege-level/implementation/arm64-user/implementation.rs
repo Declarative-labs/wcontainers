@@ -16,6 +16,14 @@ impl PrivilegeLevel for User {
     type PrecisePrivilegedInstruction = Infallible;
     type SpecificInstructions = Empty<Infallible>;
 
+    // VERUS: Verus knows no `Clone` of `()` nor `PartialEq` of `Infallible`, so this impl stays outside `verus!` and its
+    // proof items are placeholders that exist only when Verus builds the crate, which reads none of them.
+    #[cfg(verus_keep_ghost)]
+    fn equality_is_identity() {}
+
+    #[cfg(verus_keep_ghost)]
+    fn clone_is_identity() {}
+
     fn list_specific_instructions() -> Empty<Infallible> {
         iter::empty()
     }
