@@ -1,0 +1,1 @@
+wcontainers_gpu_conformance::tests!(<wcontainers_gpu_recording::Recorder as wcontainers_gpu::StandaloneGpu>::new(wcontainers_gpu_recording::RecorderConfig::default()).expect("a recorder never fails to open"); StandaloneGpu: yes);

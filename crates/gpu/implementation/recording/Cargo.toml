@@ -1,0 +1,31 @@
+[package]
+name = "wcontainers-gpu-recording"
+description = "The recording back end of the wcontainers graphics interface: every object on the CPU, every call checked against the interface's rules."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-gpu = { path = "../.." }
+naga = { workspace = true, features = ["wgsl-in"] }
+blake3 = { version = "1", default-features = false }
+half = { version = "2", default-features = false }
+
+[dev-dependencies]
+wcontainers-gpu-conformance = { path = "../../conformance" }
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+# The fronts' scissor cutting, which the pass tracker's tests use (unit_tests/helpers.rs).
+wcontainers-shaders = { path = "../../../shaders" }
+
+[lints]
+workspace = true

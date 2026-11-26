@@ -4504,7 +4504,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-gpu-test"
+name = "wcontainers-gpu-conformance"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "half",
+ "naga",
+ "wcontainers-gpu",
+]
+
+[[package]]
+name = "wcontainers-gpu-recording"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -4512,6 +4522,7 @@ dependencies = [
  "naga",
  "proptest",
  "wcontainers-gpu",
+ "wcontainers-gpu-conformance",
  "wcontainers-shaders",
 ]
 
@@ -4536,7 +4547,7 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "wcontainers-gpu",
- "wcontainers-gpu-test",
+ "wcontainers-gpu-conformance",
  "wcontainers-gpu-webgpu",
  "wcontainers-graphics-test",
  "wcontainers-test-window",
@@ -4566,7 +4577,7 @@ dependencies = [
  "serde_json",
  "wasm-bindgen",
  "wcontainers-gpu",
- "wcontainers-gpu-test",
+ "wcontainers-gpu-conformance",
  "wcontainers-graphics-test",
  "wcontainers-shaders",
  "wcontainers-test-window",
@@ -4833,7 +4844,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wcontainers-gpu",
- "wcontainers-gpu-test",
+ "wcontainers-gpu-recording",
  "wcontainers-gpu-webgpu",
  "wcontainers-nir",
  "wcontainers-shaders",

@@ -1,0 +1,21 @@
+[package]
+name = "wcontainers-gpu-conformance"
+description = "The tests every implementation of the wcontainers graphics interface runs, written against its traits alone."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-gpu = { path = ".." }
+blake3 = { version = "1", default-features = false }
+half = { version = "2", default-features = false }
+naga = { workspace = true, features = ["wgsl-in"] }
+
+[lints]
+workspace = true

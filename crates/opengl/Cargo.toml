@@ -14,7 +14,7 @@ crate-type = ["rlib", "staticlib"]
 naga = { workspace = true }
 pollster = "1.0.1"
 wcontainers-gpu = { path = "../gpu" }
-wcontainers-gpu-webgpu = { path = "../gpu-webgpu" }
+wcontainers-gpu-webgpu = { path = "../gpu/implementation/webgpu" }
 wcontainers-nir = { path = "../nir", default-features = false }
 wcontainers-shaders = { path = "../shaders" }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "vulkan"] }
@@ -27,7 +27,7 @@ wcontainers-win32 = { path = "../win32" }
 wcontainers-win32-windows = { path = "../win32/implementation/windows" }
 
 [dev-dependencies]
-wcontainers-gpu-test = { path = "../gpu-test" }
+wcontainers-gpu-recording = { path = "../gpu/implementation/recording" }
 
 [build-dependencies]
 bindgen = "0.71.1"

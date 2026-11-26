@@ -19,8 +19,8 @@ webgl = ["dep:wcontainers-gpu-webgl"]
 wcontainers-direct3d-11 = { path = "../direct3d-11" }
 wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure" }
 wcontainers-gpu = { path = "../gpu" }
-wcontainers-gpu-webgpu = { path = "../gpu-webgpu" }
-wcontainers-gpu-webgl = { path = "../gpu-webgl", optional = true }
+wcontainers-gpu-webgpu = { path = "../gpu/implementation/webgpu" }
+wcontainers-gpu-webgl = { path = "../gpu/implementation/webgl", optional = true }
 wcontainers-shaders = { path = "../shaders" }
 blake3 = { version = "1", default-features = false }
 wgpu = { version = "30.0.2", default-features = false }

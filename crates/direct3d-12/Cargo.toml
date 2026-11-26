@@ -18,7 +18,7 @@ zerocopy = { version = "0.8.63", features = ["alloc"] }
 naga = { workspace = true }
 
 [dev-dependencies]
-wcontainers-gpu-webgpu = { path = "../gpu-webgpu" }
+wcontainers-gpu-webgpu = { path = "../gpu/implementation/webgpu" }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir"] }
 pollster = "1.0.1"
 blake3 = { version = "1", default-features = false }

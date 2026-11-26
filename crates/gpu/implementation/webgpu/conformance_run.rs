@@ -1,0 +1,1 @@
+wcontainers_gpu_conformance::tests!(<wcontainers_gpu_webgpu::WebGpu as wcontainers_gpu::StandaloneGpu>::new(wcontainers_gpu_webgpu::WebGpuConfig { backends: wgpu::Backends::PRIMARY, software: true }).expect("a WebGPU adapter"); StandaloneGpu: yes);

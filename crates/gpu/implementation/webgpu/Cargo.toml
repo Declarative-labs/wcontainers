@@ -1,0 +1,79 @@
+[package]
+name = "wcontainers-gpu-webgpu"
+description = "The WebGPU back end of the wcontainers graphics interface, on wgpu: native for tests, the browser's WebGPU when built for WebAssembly."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-gpu = { path = "../.." }
+bcdec_rs = "0.2.1"
+half = { version = "2.7.1", default-features = false }
+naga.workspace = true
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+serde_json = "1.0.154"
+wgpu-naga-bridge = "30.0.2"
+wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir", "wgsl"] }
+
+# Waiting in the browser suspends through JSPI.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.107"
+wasm-bindgen = "=0.2.130"
+
+[dev-dependencies]
+anyhow = "1.0.100"
+bytemuck = "1.25.2"
+fastrand = "2.5.0"
+naga = { workspace = true, features = ["wgsl-in"] }
+pdb = "0.8.0"
+png = "0.18.1"
+wcontainers-gpu-conformance = { path = "../../conformance" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+libtest-mimic = "0.8.1"
+pollster = "1.0.1"
+# The fronts' scissor cutting (tests/fitted.rs).
+wcontainers-shaders = { path = "../../../shaders" }
+
+# The suite's window, and reading what it shows: on macOS made on the main thread (tests/present.rs).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+wcontainers-test-window = { path = "../../../test-window" }
+wcontainers-test-window-appkit = { path = "../../../test-window/implementation/appkit" }
+
+# Real Direct3D 11 on the same GPU and WARP, through the rig's device and comparison (tests/direct3d.rs).
+[target.'cfg(windows)'.dev-dependencies]
+wcontainers-graphics-test = { path = "../../../graphics-test" }
+image = { version = "0.25.10", default-features = false }
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
+# The suite's window, and reading what the compositor shows in it.
+wcontainers-test-window = { path = "../../../test-window" }
+wcontainers-test-window-win32 = { path = "../../../test-window/implementation/win32" }
+
+# proptest, which the shared suite brings, takes getrandom's browser source to build for WebAssembly.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement"] }
+
+
+[[test]]
+name = "present"
+harness = false
+
+# Reports a test the device cannot run as ignored.
+[[test]]
+name = "depth"
+harness = false
+
+# Reports a known failure on one of wgpu's APIs as ignored, with its reason.
+[[test]]
+name = "raster"
+harness = false
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[lints]
+workspace = true

@@ -5,7 +5,7 @@
 # ~/wcontainers-graphics/target/<branch>. Cargo gets 5 jobs, 2 when the laptop's load average is
 # 8 or more (another track has priority there), at nice 10. The command keeps its quoting. Output
 # and exit code come back.
-#   tools/graphics-rig/linux cargo test -p wcontainers-gpu -p wcontainers-gpu-test
+#   tools/graphics-rig/linux cargo test -p wcontainers-gpu -p wcontainers-gpu-recording
 #   tools/graphics-rig/linux sh -c 'cargo clippy -p wcontainers-gpu --all-targets -- -D warnings'
 set -euo pipefail
 [ $# -gt 0 ] || { echo "usage: linux <command>" >&2; exit 2; }
