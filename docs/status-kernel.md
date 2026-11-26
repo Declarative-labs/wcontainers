@@ -317,50 +317,10 @@ pub trait MemorySpace: Sized {
 the kernel's own, so both are on one engine (`prepare_execution` asserts it). `round_trips`,
 `runners` and the kernel's conformance build and run (results below).
 
-(b) TIME SLICE: NO, for the configuration the kernel accepts (READ, his main's interfaces).
-`prepare_execution` hands the kernel an `ExecutionInterrupter` (`Send + Sync`, `interrupt`) for each
-execution, but `Execution::run` holds the runner's host thread until a trap, and `TrapHandler`
-is called only at traps. His system interface's `Clock` only reads (`monotonic_nanoseconds`,
-`realtime_nanoseconds`); its waits (`Readiness`, `FuseServer`, `DomainNameResolver`) are futures on
-handles that someone must poll, and no interface lets the kernel ask for a call at a time. So the
-interrupter can be called only from another host thread, and the only other host threads the
-kernel is given are its other runners (`Kernel::new(config, parallelism)`). Built: a runner that
-finds the lock held by a running turn keeps that turn's time with `Clock::monotonic_nanoseconds`,
-interrupts it once the slice the kernel gave it has passed, and returns `Idle { until }` for when to
-look again (`keep_time`, executing.rs). It does nothing for: one runner (the runtime's `RUNNERS`
-is 1; the harness and LTP run with one, as the guest is told `parallelism` processors); the
-harness's repeatable clock, which moves only when the runner returns, so no slice ever passes
-during a turn; and exact replay (`ReplayDeterminism::Exact`, the only one the kernel accepts),
-which a wall-clock interrupt cannot keep. INFERRED: no measured effect, as no test runs two runners
-on a moving clock.
-
-ONE QUESTION FOR THE OWNER (crates/executor/interface.rs, `trait Executor`):
-
-```rust
-// before
-    /// Returns the execution from the given processor state on the given memory, and its interrupter.
-    fn prepare_execution<'execution>(
-        &'execution mut self,
-        processor: ProcessorStateOf<Self>,
-        memory: &'execution Self::GuestMemory,
-    ) -> (Self::Execution<'execution>, Self::Interrupter);
-
-// after
-    /// Returns the execution from the given processor state on the given memory, and its interrupter.
-    /// With an instruction budget, the execution calls `TrapHandler::handle_interrupt` once it has
-    /// retired that many instructions.
-    fn prepare_execution<'execution>(
-        &'execution mut self,
-        processor: ProcessorStateOf<Self>,
-        memory: &'execution Self::GuestMemory,
-        instruction_budget: Option<u64>,
-    ) -> (Self::Execution<'execution>, Self::Interrupter);
-```
-
-A budget in instructions works with one runner, needs no host thread, and repeats exactly. What
-not having it costs (MEASURED below): the targets whose guest spins while another thread must run
-reach the 2,400 s bound, and no save is reached (a run comes back to the embedder only when every
-thread waits).
+(b) TIME SLICE: superseded by the orchestrator's ruling of 2026-11-26 evening (below): no interface
+change; the executor bounds its own run by a slice of retired instructions set in its own
+configuration and calls `TrapHandler::handle_interrupt`. The question once put here is withdrawn,
+and `keep_time` is gone.
 
 (c) SAVING. Built without a copy of the process (`save_and_bring_back`, driver.rs): at each save
 moment, between two runs, the kernel's `restore` copies every memory into a new space of its
@@ -372,7 +332,7 @@ the outside sockets: backend.rs, outside.rs, the language runtimes), which a cop
 kept; and the copy's only extra was the waiting original. MEASURED: the saving and language tests'
 outputs match the reference, but their saves are never reached (`saves made: 0`, `ended before its
 first save`): the turn a save is drawn at counts runner returns, which only a time slice gives
-(the question above).
+(the stand-in's own slice, below).
 
 (d) LAYER 1. It tests what layers 2 and 3 do not: random sequences of system calls with random and
 edge arguments (proptest), every return value and the arena compared after every call with the
@@ -405,7 +365,7 @@ digests are not wired in since the drive changed). MEASURED (job kernel-port 202
   SCRATCH/kernel-port/ks2/ks-suite, ks2/failed.txt.
 - fails16's 35: 31 fail; the other 4 fail inside bounded targets (file_capabilities,
   special_files in backend; timers in timers; proc_task in threads). So the known list is met.
-- Bounded (no time slice, the question above): backend (`arguments_taken_once`, saves), cpulimit,
+- Bounded (no time slice then): backend (`arguments_taken_once`, saves), cpulimit,
   cputime, deadlines, edges, java, node, processes, repeats, threads, timers, turns. The 8 of the
   last run are all still bounded; backend, java, node and timers join them now that saves no longer
   panic at once.
@@ -424,7 +384,7 @@ digests are not wired in since the drive changed). MEASURED (job kernel-port 202
   (listen01, mprotect01, recvfrom01, rt_sigprocmask01, sendto01, sigaction01), 24 hang (LTP's own
   timeout; every one with a child or LTP's shared result page; the stand-in's shared-page fault is
   the executor track's).
-- KS IS NOT REACHED: the bounded targets wait on the time slice question; the stand-in's
+- KS IS NOT REACHED: the bounded targets waited on a time slice; the stand-in's
   failures and the LTP hangs on the executor track.
 
 ### Linter (MEASURED, the tip with the two fixes, no key): the kernel's own crates 31,350 (31,319
@@ -434,6 +394,55 @@ also defines), and +4 `name_unanswered`, +2 `summary_unanswered`, +7 `summary_no
 comments (the model's key is needed to answer them). Logs: SCRATCH/kernel-port/ks2/lint.
 
 ### Next
-- KS waits on the owner's answer to the one question (the time slice), and on the executor track
+- (Superseded below.) KS waited on a time slice, and on the executor track
   for the shared views, the counter's MRS at EL0, the code written over and LTP's shared page.
 - Mine meanwhile: aio poll, procstatus fdinfo, saving checked once a slice exists.
+
+## 2026-11-26, evening: the orchestrator's two rulings, the time model, KS again
+
+### Rulings applied (no interface change; the question to the owner is withdrawn)
+- TIME SLICE. The executor bounds its own run: the stand-in's `StandInConfig::slice_instructions`
+  (executor track, `30ca724a8`, default 1,000,000) calls `TrapHandler::handle_interrupt`. The kernel's
+  `keep_time`, the per-turn slice it computed (`Next::Run::slice_nanoseconds`) and `cpu_slice` are
+  gone (`dc510b1b0`). A run now ends (`Interrupted`) at three points, so the embedder does the
+  outside's work between them (`ed29033b5`, `2a7df943c`, `56218d2c1`): the end of an executor slice;
+  a tick (1 ms, Linux's `CONFIG_HZ=1000`) passed on the kernel's clock in turns that all end in
+  traps, which an executor slice never reaches as it starts again at each execution; and a thread
+  giving way (`sched_yield`). MEASURED (below): backendrace, which spins between system calls,
+  went from no runner return in 240 s to finished in 18 s.
+- GUEST'S COUNTER. A trapped `mrs` of CNTFRQ_EL0, CNTPCT_EL0, CNTVCT_EL0 or their self-synchronized
+  forms (`SystemAccessTrapped`, or kept whole as an EC 0x18 syndrome) is a new exit, `CounterRead`:
+  the kernel writes the value into the register (none for XZR) and steps past the instruction. The
+  count is the kernel's own monotonic clock (host clock plus the restore offset) at 1 GHz, so it
+  never goes backwards across a restore and a replay reads it from the record like every other time.
+  Any other trapped system access ends as an undefined instruction (SIGILL), where it panicked before.
+  The stand-in makes the read trap (executor track, `c4113f822`). The instruction list already lists
+  the three counter registers `ReadTrapped` ("CNTKCTL_EL1 gives EL0 no timer",
+  processor-architecture/arm64/system_register.rs:163, READ). MEASURED: counterclock 2 of 2 (was
+  0 of 2); unit test `trapped_counter_reads_are_answered_and_other_system_accesses_are_undefined`.
+
+### The harness's time and turns
+- The repeatable clock moves by the stand-in's instructions at each runner return (the seeded
+  `Schedule::turn_nanoseconds`, as before the port) and by 100 ns at each reading, so two readings
+  in one run differ, as on Linux (procstatus `fdinfo`'s timer had read exactly what was set).
+- A run's turns for its injected moments (saves, signals, notices) count each system call as well
+  as each runner return, as when every call was a turn; every moment reached is acted on at the
+  next return (`523babf51`). An injected run gives the stand-in a seeded slice of 5 to 50
+  instructions per turn of its save gap (`2f7809a1c`).
+
+### Mine, fixed
+- aio poll: a fork's child mapped the same shared pages as the parent for a `MADV_DONTFORK` range
+  (the aio ring) and cleared them, so the parent's ring read zeros (`events 5` of zeros). The child
+  now unmaps the shared views first (`a834b3c38`). MEASURED: aio 3 of 3.
+- procstatus fdinfo: the clock above. MEASURED: procstatus 4 of 5, the fifth `limits` on fails16.
+- The runtime's `ceiling`: done by the runtime track, `7d6d0e11e`, `ceiling: Some(memory_bytes)`
+  where `memory_bytes` is the executor's space end (READ); the kernel bounds its spaces by it
+  (container.rs:1012).
+
+### MEASURED in pieces before the full run (ARM64, `-j 12`, 3 or 4 targets at a time)
+- Of the 12 bounded targets: cpulimit, cputime, deadlines, edges, processes, repeats, turns pass;
+  threads 12 of 13 (proc_task, fails16); timers 4 of 5 (timers_match_reference, fails16); go 1 of 1;
+  saving 1 of 1; outside 9 of 9; java 0 of 2 (saves now reached; the result is in the full run);
+  node, backend's `arguments_taken_once_match_reference`: still past 1,500 s (open, below).
+- Also: embedder 36 of 36 (compute-used fixed), rseqabort 2 of 2, streams 18 of 18, sharedviews
+  3 of 3, round_trips 7 of 7, hello, shell.
