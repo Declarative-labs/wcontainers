@@ -564,6 +564,11 @@ pub struct VertexBufferLayout {
     pub buffer_index: u32,
     pub stride: u32,
     pub step_function: VertexStepFunction,
+    /// The instances that read one element, from the base instance, where the buffer advances `PerInstance`; zero
+    /// reads the base instance's element for every instance. Read only for `PerInstance`.
+    ///
+    /// https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor/steprate
+    pub step_rate: u32,
     pub attributes: Vec<VertexAttribute>,
 }
 

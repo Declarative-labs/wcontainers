@@ -193,6 +193,7 @@ fn function<M: Metal>(subject: &mut M, stage: naga::ShaderStage, entry_point: &s
         buffer_index: VERTICES,
         stride: 8,
         step_function: VertexStepFunction::PerVertex,
+        step_rate: 1,
         attributes: vec![VertexAttribute {
             location: u32::MIN,
             offset: u32::MIN,
@@ -904,6 +905,7 @@ fn function_in_background<M: Metal>(
         buffer_index: VERTICES,
         stride: 8,
         step_function: VertexStepFunction::PerVertex,
+        step_rate: 1,
         attributes: vec![VertexAttribute {
             location: u32::MIN,
             offset: u32::MIN,
@@ -2494,6 +2496,7 @@ pub fn refuses_a_vertex_stride_past_the_most<M: Metal>(mut subject: M) {
             buffer_index: VERTICES,
             stride,
             step_function: VertexStepFunction::PerVertex,
+            step_rate: 1,
             attributes: vec![VertexAttribute {
                 location: u32::MIN,
                 offset: u32::MIN,
@@ -3002,6 +3005,138 @@ pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M)
         ),
         Err(EncodeComputeCommandsError::Unbound(_))
     ));
+}
+
+/// The step rate test's functions: a column of the target for each instance, at the column its first buffer gives and
+/// in the red its second gives.
+const COLUMNS: &str = "
+struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) red: f32 }
+@vertex fn columns(@builtin(vertex_index) v: u32, @location(0) column: f32, @location(1) red: f32) -> Out {
+    var corners = array(vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+    let corner = corners[v];
+    return Out(vec4<f32>((column + corner.x) * 0.5 - 1.0, corner.y, 0.5, 1.0), red);
+}
+@fragment fn shade(i: Out) -> @location(0) vec4<f32> {
+    return vec4<f32>(i.red, 0.0, 0.0, 1.0);
+}
+";
+
+/// The base instance of the step rate test's draws, past zero so that a rate that left it out would show.
+const BASE_INSTANCE: u32 = 2;
+
+/// The elements of the step rate test's buffers: as many as the base instance and one for each column.
+const STEPPED_ELEMENTS: u32 = BASE_INSTANCE + TARGET_SIDE;
+
+/// The red of element `k` of the step rate test's second buffer, in bytes: ten steps of 1/255 for each element.
+fn stepped_red(k: u32) -> u8 {
+    u8::try_from((k + 1) * 10).expect("a red that fits")
+}
+
+/// Checks that an instance buffer of a step rate other than one advances once every that many instances from the base
+/// instance, and that a rate of zero reads the base instance's element for every instance.
+pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
+    let module = naga::front::wgsl::parse_str(COLUMNS).expect("the test functions parse");
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .expect("the test functions validate");
+    let float_bytes = size_of::<f32>() as u32;
+    // The first buffer gives instance `BASE_INSTANCE + x` column `x`; the second gives each element its own red.
+    let columns: Vec<u8> = (0..STEPPED_ELEMENTS)
+        .flat_map(|k| (k.saturating_sub(BASE_INSTANCE) as f32).to_le_bytes())
+        .collect();
+    let reds: Vec<u8> = (0..STEPPED_ELEMENTS)
+        .flat_map(|k| (f32::from(stepped_red(k)) / f32::from(u8::MAX)).to_le_bytes())
+        .collect();
+    let columns = filled(&mut subject, &columns);
+    let reds = filled(&mut subject, &reds);
+    let depth_stencil = no_depth(&mut subject);
+    for rate in [1, 2, 3, 0] {
+        let layout = |buffer_index, location, step_rate| VertexBufferLayout {
+            buffer_index,
+            stride: float_bytes,
+            step_function: VertexStepFunction::PerInstance,
+            step_rate,
+            attributes: vec![VertexAttribute {
+                location,
+                offset: u32::MIN,
+                format: VertexFormat::Float,
+            }],
+        };
+        let vertex_buffers = [layout(VERTICES, 0, 1), layout(VERTICES + 1, 1, rate)];
+        let source = |stage, entry_point| FunctionSource {
+            module: &module,
+            info: &info,
+            stage,
+            entry_point,
+            resources: &[],
+            immediates_buffer_index: IMMEDIATES,
+            sizes_buffer_index: SIZES,
+            vertex_buffers: &vertex_buffers,
+            point_size: false,
+        };
+        let vertex = subject
+            .make_function(&source(naga::ShaderStage::Vertex, "columns"))
+            .expect("Metal answers make function");
+        let fragment = subject
+            .make_function(&source(naga::ShaderStage::Fragment, "shade"))
+            .expect("Metal answers make function");
+        let state = subject
+            .make_render_pipeline_state(&pipeline_descriptor::<M>(
+                &vertex,
+                &fragment,
+                Some((PixelFormat::Rgba8Unorm, None)),
+                None,
+                None,
+            ))
+            .expect("Metal answers make render pipeline state");
+        let whole = |buffer: &M::Buffer, index| RenderCommand::SetVertexBuffer {
+            buffer: buffer.clone(),
+            offset: u64::MIN,
+            length: u64::from(STEPPED_ELEMENTS * float_bytes),
+            index,
+        };
+        let commands = vec![
+            RenderCommand::SetRenderPipelineState(state),
+            RenderCommand::SetDepthStencilState(depth_stencil.clone()),
+            whole(&columns, VERTICES),
+            whole(&reds, VERTICES + 1),
+            RenderCommand::SetViewports(vec![Viewport {
+                origin_x: 0.0,
+                origin_y: 0.0,
+                width: f64::from(TARGET_SIDE),
+                height: f64::from(TARGET_SIDE),
+                znear: 0.0,
+                zfar: 1.0,
+            }]),
+            RenderCommand::DrawPrimitives {
+                primitive_type: PrimitiveType::TriangleStrip,
+                vertex_start: u32::MIN,
+                vertex_count: 4,
+                instance_count: TARGET_SIDE,
+                base_instance: BASE_INSTANCE,
+            },
+        ];
+        let texture = target(&mut subject);
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
+        subject
+            .encode_render_commands(&command_buffer, &pass(&texture), &commands)
+            .expect("Metal answers encode render commands");
+        finish(&mut subject, &command_buffer);
+        let element = |x: u32| BASE_INSTANCE + x.checked_div(rate).unwrap_or(u32::MIN);
+        let row: Vec<u8> = (0..TARGET_SIDE)
+            .flat_map(|x| [stepped_red(element(x)), 0, 0, u8::MAX])
+            .collect();
+        assert_eq!(
+            read_texture(&mut subject, &texture),
+            row.repeat(TARGET_SIDE as usize),
+            "a step rate of {rate}"
+        );
+    }
 }
 
 /// Encodes `draws` after the covering draw's bindings into one pass of a new target, and returns its texels.
@@ -3536,6 +3671,7 @@ fn query_function<M: Metal>(
         buffer_index: VERTICES,
         stride: 8,
         step_function: VertexStepFunction::PerVertex,
+        step_rate: 1,
         attributes: vec![VertexAttribute {
             location: u32::MIN,
             offset: u32::MIN,
@@ -3743,6 +3879,11 @@ macro_rules! tests {
         #[test]
         fn has_a_name() {
             $crate::has_a_name($value);
+        }
+
+        #[test]
+        fn steps_instance_buffers_by_their_rate() {
+            $crate::steps_instance_buffers_by_their_rate($value);
         }
 
         #[test]

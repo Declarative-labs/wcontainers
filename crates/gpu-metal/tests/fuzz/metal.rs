@@ -941,6 +941,7 @@ impl World {
                 buffer_index: VERTEX_SLOTS[0],
                 stride: 16,
                 step_function: VertexStepFunction::PerVertex,
+                step_rate: 1,
                 attributes: vec![VertexAttribute {
                     location: 0,
                     offset: 0,
@@ -955,6 +956,7 @@ impl World {
                 buffer_index: VERTEX_SLOTS[1],
                 stride: 24,
                 step_function: VertexStepFunction::PerInstance,
+                step_rate: 1,
                 attributes: vec![
                     VertexAttribute {
                         location: 1,
@@ -1002,6 +1004,9 @@ impl World {
                         VertexStepFunction::PerVertex,
                         VertexStepFunction::PerInstance,
                     ]);
+                }
+                if random.chance(30) {
+                    layout.step_rate = random.u32(&[0, 2, 3, u32::MAX]);
                 }
                 for attribute in &mut layout.attributes {
                     if random.chance(30) {
@@ -2019,6 +2024,11 @@ impl World {
                 let Some(command_buffer) = self.command_buffer(random) else {
                     return;
                 };
+                // Now and then a command buffer committed first, which a present must be refused into: few are
+                // committed when drawn, so the check was otherwise reached on some seeds only.
+                if random.chance(25) {
+                    let _ = self.metal.commit(&command_buffer);
+                }
                 let refused = self
                     .metal
                     .present_drawable(&command_buffer, &drawable)
@@ -5486,6 +5496,7 @@ fn vertex_layouts(entry: &str) -> Vec<VertexBufferLayout> {
             buffer_index: VERTEX_SLOTS[0],
             stride: 16,
             step_function: VertexStepFunction::PerVertex,
+            step_rate: 1,
             attributes: vec![VertexAttribute {
                 location: 0,
                 offset: 0,
@@ -5500,6 +5511,7 @@ fn vertex_layouts(entry: &str) -> Vec<VertexBufferLayout> {
             buffer_index: VERTEX_SLOTS[1],
             stride: 24,
             step_function: VertexStepFunction::PerInstance,
+            step_rate: 1,
             attributes: vec![
                 VertexAttribute {
                     location: 1,

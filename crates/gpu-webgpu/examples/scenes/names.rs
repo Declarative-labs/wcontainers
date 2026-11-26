@@ -62,6 +62,7 @@ macro_rules! suite_but_present {
             clip_distances_clip_where_they_are_negative,
             fractional_viewports_cover_the_centres_within_them,
             prepared_combinations_draw_as_those_built_at_the_draw,
+            instances_step_through_their_streams_at_each_streams_rate,
         );
     };
 }

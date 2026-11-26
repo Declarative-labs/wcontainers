@@ -870,7 +870,7 @@ impl World {
                 step: if random.chance(80) {
                     StepMode::Vertex
                 } else {
-                    StepMode::Instance(random.u32(&[1, 2]))
+                    StepMode::Instance(random.u32(&[1, 2, 0, 3]))
                 },
             });
             attributes[at] = Some(VertexAttribute {

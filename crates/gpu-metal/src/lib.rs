@@ -24,7 +24,7 @@ use wcontainers_gpu::{
     CopyBufferTexture, DepthStencilDesc, DeviceStatus, DispatchCall, DispatchGroups, DrawCall,
     Extent, FORMAT_FACTS, Features, Format, FormatKind, FormatUse, Gpu, GpuError, Helpers, Limits,
     LossReason, Object, PassDesc, Program, QueryKind, RasterDesc, ReadSource, ReadState,
-    SamplerDesc, ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc, TextureDimension,
+    SamplerDesc, ShaderModule, ShaderStage, SlowPaths, TextureDesc, TextureDimension,
     TextureRegion, TextureUsage, TextureViewDesc, VertexLayoutDesc, ViewDimension, WriteMode,
 };
 use wcontainers_metal::{
@@ -210,7 +210,8 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::VERTEX_STORAGE_WRITE
                 | Features::CLIP_DISTANCE
                 | Features::FRACTIONAL_VIEWPORT
-                | Features::BACKGROUND_PREPARE,
+                | Features::BACKGROUND_PREPARE
+                | Features::INSTANCE_STEP_RATE,
             limits: LIMITS,
             formats: convert::format_caps(),
         };
@@ -969,13 +970,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         desc: &VertexLayoutDesc,
     ) -> Result<Self::VertexLayout, GpuError> {
         for (stream, s) in desc.streams.iter().enumerate() {
-            let Some(s) = s else {
-                continue;
-            };
-            if !matches!(s.step, StepMode::Vertex | StepMode::Instance(1)) {
-                return Err(GpuError::Absent(Features::INSTANCE_STEP_RATE));
-            }
-            if stream as u32 >= VERTEX_STREAMS {
+            if s.is_some() && stream as u32 >= VERTEX_STREAMS {
                 return Err(GpuError::Invalid(
                     "a stream past the back end's vertex_streams",
                 ));

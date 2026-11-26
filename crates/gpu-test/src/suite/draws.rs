@@ -2949,3 +2949,140 @@ pub fn prepared_combinations_draw_as_those_built_at_the_draw<H: Host>() {
     }
     ok(&mut b);
 }
+
+/// Per-instance streams of rates other than one advance once every that many instances from the draw's first instance,
+/// and a rate of zero gives every instance the first instance's element: eight instances, each drawn into its own
+/// column, take red, green and blue from streams of rates 0, 2 and 3. Where [`Features::INSTANCE_STEP_RATE`] is
+/// declared; the first instance is 0 where [`Features::BASE_VERTEX_INSTANCE`] is not.
+pub fn instances_step_through_their_streams_at_each_streams_rate<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::INSTANCE_STEP_RATE) {
+        return;
+    }
+    const N: u32 = 8;
+    let first = if b.caps().features.contains(Features::BASE_VERTEX_INSTANCE) {
+        2
+    } else {
+        0
+    };
+    const STEPPED: &str = "
+    struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) c: vec4<f32> }
+    struct Params { first: f32 }
+    @group(0) @binding(0) var<uniform> params: Params;
+    @vertex fn vs(@location(0) p: vec2<f32>, @location(1) never: f32, @location(2) halves: f32,
+                  @location(3) thirds: f32, @builtin(instance_index) i: u32) -> Out {
+        let x = (p.x + 1.0 + 2.0 * (f32(i) - params.first)) / 8.0 - 1.0;
+        return Out(vec4<f32>(x, p.y, 0.5, 1.0), vec4<f32>(never, halves, thirds, 1.0));
+    }
+    @fragment fn fs(i: Out) -> @location(0) vec4<f32> {
+        return i.c;
+    }
+    ";
+    let rates = [0u32, 2, 3];
+    // Element `k` of stream `s` holds `(40 s + 10 (k + 1)) / 255`; each stream holds exactly the elements it reads.
+    let value = |s: usize, k: u32| (40 * s as u32 + 10 * (k + 1)) as f32 / 255.0;
+    let element = |rate: u32, column: u32| first + column.checked_div(rate).unwrap_or(0);
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let streams_of: Vec<_> = rates
+        .iter()
+        .enumerate()
+        .map(|(s, &rate)| {
+            let elements = element(rate, N - 1) + 1;
+            let values: Vec<f32> = (0..elements).map(|k| value(s, k)).collect();
+            vertex_buffer(&mut b, &values)
+        })
+        .collect();
+    let uniforms = buffer(&mut b, 16, BufferUsage::UNIFORM | BufferUsage::COPY_DST);
+    b.write_buffer(
+        &uniforms,
+        0,
+        &floats(&[first as f32, 0.0, 0.0, 0.0]),
+        WriteMode::Discard,
+    );
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &uniforms,
+                offset: 0,
+                size: 16,
+            }),
+        }])
+        .expect("create_binding_set");
+    let p = program(&mut b, STEPPED, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 8,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    for (s, &rate) in rates.iter().enumerate() {
+        desc.streams[s + 1] = Some(VertexStream {
+            stride: 4,
+            step: StepMode::Instance(rate),
+        });
+        desc.attributes[s + 1] = Some(VertexAttribute {
+            location: s as u32 + 1,
+            stream: s as u8 + 1,
+            offset: 0,
+            format: VertexFormat::Float32x1,
+        });
+    }
+    let vl = b.create_vertex_layout(&desc).expect("create_vertex_layout");
+    let vp = viewport(N, N);
+    let mut streams = vec![Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    streams.extend(
+        streams_of
+            .iter()
+            .map(|buffer| Some(VertexBinding { buffer, offset: 0 })),
+    );
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            DrawRange::Vertices {
+                first: 0,
+                count: 4,
+                first_instance: first,
+                instances: N,
+            },
+        )
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let mut expected = Vec::new();
+    for _ in 0..N {
+        for column in 0..N {
+            for (s, &rate) in rates.iter().enumerate() {
+                expected.push((value(s, element(rate, column)) * 255.0).round() as u8);
+            }
+            expected.push(255);
+        }
+    }
+    assert_close(&got, &expected, 1, 4, N as usize);
+    ok(&mut b);
+}

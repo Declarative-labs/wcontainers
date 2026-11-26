@@ -356,6 +356,8 @@ pub enum VertexBufferStepMode {
     #[default]
     ByVertex,
     ByInstance,
+    /// Advances once every `n` instances from the base instance, or never for zero (patch, see PATCHES).
+    ByInstanceRate(u32),
 }
 
 /// A mapping of vertex buffers and their attributes to shader

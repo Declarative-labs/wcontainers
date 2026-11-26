@@ -361,20 +361,22 @@ fn vertex_buffers(
                 format,
             });
         }
-        let (stride, step_function) = match (s.stride, s.step) {
+        let (stride, step_function, step_rate) = match (s.stride, s.step) {
             (0, _) => (
                 end.checked_next_multiple_of(4)
                     .ok_or("an attribute whose end overflows")?
                     .max(4),
                 VertexStepFunction::Constant,
+                1,
             ),
-            (stride, StepMode::Vertex) => (stride, VertexStepFunction::PerVertex),
-            (stride, StepMode::Instance(_)) => (stride, VertexStepFunction::PerInstance),
+            (stride, StepMode::Vertex) => (stride, VertexStepFunction::PerVertex, 1),
+            (stride, StepMode::Instance(rate)) => (stride, VertexStepFunction::PerInstance, rate),
         };
         out.push(VertexBufferLayout {
             buffer_index: stream_slot(stream).ok_or("a stream past the slots")?,
             stride,
             step_function,
+            step_rate,
             attributes,
         });
     }

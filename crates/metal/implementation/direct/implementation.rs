@@ -4770,8 +4770,11 @@ fn translation(
                     VertexStepFunction::PerVertex => {
                         naga::back::msl::VertexBufferStepMode::ByVertex
                     }
-                    VertexStepFunction::PerInstance => {
+                    VertexStepFunction::PerInstance if layout.step_rate == 1 => {
                         naga::back::msl::VertexBufferStepMode::ByInstance
+                    }
+                    VertexStepFunction::PerInstance => {
+                        naga::back::msl::VertexBufferStepMode::ByInstanceRate(layout.step_rate)
                     }
                 },
                 attributes,
