@@ -21,6 +21,17 @@ mod probe;
 mod vertex;
 mod wait;
 
+use crate::draw::{
+    begin_pass_impl, binding_set, close_pass, dispatch_impl, draw_impl, prepare_impl, resolve_impl,
+    split_onto_page,
+};
+use crate::fill::present_by_draw;
+use crate::memory::{
+    arena_slice, clear_buffer_impl, copy_buffer_impl, copy_buffer_texture, copy_texture_impl,
+    finish_read_impl, finish_read_into_impl, give_back_spares, give_back_texture_spares,
+    read_back_impl, read_queries_impl, reclaim_spares, release_slice, resolve_queries_impl,
+    write_buffer_from_impl, write_buffer_impl, write_texture_impl,
+};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -1262,7 +1273,7 @@ impl Gpu for WebGpu {
         }
         let in_arena = desc.usage == BufferUsage::UNIFORM && desc.intent == MapIntent::Often;
         let (usage, raw, base, storage) = if in_arena {
-            let (raw, base, storage) = self.arena_slice(desc.size);
+            let (raw, base, storage) = arena_slice(self, desc.size);
             (memory::arena_usage(), raw, base, storage)
         } else {
             let usage = buffer_usage(desc.usage);
@@ -1623,7 +1634,7 @@ impl Gpu for WebGpu {
         &mut self,
         entries: &[BindingEntry<'_, Self>],
     ) -> Result<BindingSet, GpuError> {
-        self.binding_set(entries)
+        binding_set(self, entries)
     }
 
     fn binding_layout_key(&self, set: &BindingSet) -> BindingLayoutKey {
@@ -1677,10 +1688,10 @@ impl Gpu for WebGpu {
         let (serial, recording) = (self.serial, self.encoder.is_some());
         let pending = |used_in: u64| used_in == serial && recording;
         match object {
-            Object::Buffer(b) if b.0.in_arena => self.release_slice(&b.0),
+            Object::Buffer(b) if b.0.in_arena => release_slice(self, &b.0),
             Object::Buffer(b) => {
                 self.vertices.forget(b.0.id);
-                self.give_back_spares(&b.0);
+                give_back_spares(self, &b.0);
                 let raw = b.0.raw.borrow().clone();
                 if pending(b.0.used_in.get()) || self.lead_pending(&b.0) {
                     self.destroy_after_submit.push(Doomed::Buffer(raw));
@@ -1689,7 +1700,7 @@ impl Gpu for WebGpu {
                 }
             }
             Object::Texture(t) => {
-                self.give_back_texture_spares(&t.0);
+                give_back_texture_spares(self, &t.0);
                 if pending(t.0.used_in.get()) {
                     self.destroy_after_submit.push(Doomed::Texture(t.0.raw()));
                 } else {
@@ -1730,7 +1741,7 @@ impl Gpu for WebGpu {
 
     fn write_buffer(&mut self, buffer: &Buffer, offset: u64, data: &[u8], mode: WriteMode) {
         self.counters.buffer_bytes += data.len() as u64;
-        self.write_buffer_impl(buffer, offset, data, mode);
+        write_buffer_impl(self, buffer, offset, data, mode);
     }
 
     fn write_buffer_from(
@@ -1741,7 +1752,7 @@ impl Gpu for WebGpu {
         mode: WriteMode,
     ) {
         self.counters.buffer_bytes += data.len();
-        self.write_buffer_from_impl(buffer, offset, data, mode);
+        write_buffer_from_impl(self, buffer, offset, data, mode);
     }
 
     fn write_texture(
@@ -1754,26 +1765,26 @@ impl Gpu for WebGpu {
         mode: WriteMode,
     ) {
         self.counters.texture_bytes += data.len() as u64;
-        self.write_texture_impl(region, extent, data, row_pitch, rows_per_layer, mode);
+        write_texture_impl(self, region, extent, data, row_pitch, rows_per_layer, mode);
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
-        self.begin_pass_impl(pass);
+        begin_pass_impl(self, pass);
     }
 
     fn end_pass(&mut self) {
         match self.pass.take() {
-            Some(pass) => self.close_pass(pass),
+            Some(pass) => close_pass(self, pass),
             None => self.fail("end_pass without a pass"),
         }
     }
 
     fn prepare(&mut self, desc: &wcontainers_gpu::PrepareDesc<'_, Self>) {
-        self.prepare_impl(desc);
+        prepare_impl(self, desc);
     }
 
     fn draw(&mut self, call: &wcontainers_gpu::draw::DrawCall<'_, Self>) {
-        self.draw_impl(call);
+        draw_impl(self, call);
     }
 
     fn begin_query(&mut self, index: u32) {
@@ -1787,7 +1798,8 @@ impl Gpu for WebGpu {
                 // A part on another page than the query's own begins it in a spare slot there.
                 let (own_page, own_slot) = QuerySetObj::own_slot(index);
                 if p.page != own_page && set.0.free.borrow()[p.page].is_empty() {
-                    self.split_onto_page(
+                    split_onto_page(
+                        self,
                         wcontainers_gpu::slow::SlowPath::QueriesSegmented,
                         |_| {},
                         true,
@@ -1827,7 +1839,7 @@ impl Gpu for WebGpu {
         dst_offset: u64,
         size: u64,
     ) {
-        self.copy_buffer_impl(src, src_offset, dst, dst_offset, size);
+        copy_buffer_impl(self, src, src_offset, dst, dst_offset, size);
     }
 
     fn copy_texture(
@@ -1836,7 +1848,7 @@ impl Gpu for WebGpu {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.copy_texture_impl(src, dst, extent);
+        copy_texture_impl(self, src, dst, extent);
     }
 
     fn copy_buffer_to_texture(
@@ -1845,7 +1857,7 @@ impl Gpu for WebGpu {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.copy_buffer_texture(src, dst, extent, true);
+        copy_buffer_texture(self, src, dst, extent, true);
     }
 
     fn copy_texture_to_buffer(
@@ -1854,11 +1866,11 @@ impl Gpu for WebGpu {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        self.copy_buffer_texture(dst, src, extent, false);
+        copy_buffer_texture(self, dst, src, extent, false);
     }
 
     fn clear_buffer(&mut self, buffer: &Buffer, offset: u64, size: u64, pattern: &[u8]) {
-        self.clear_buffer_impl(buffer, offset, size, pattern);
+        clear_buffer_impl(self, buffer, offset, size, pattern);
     }
 
     fn resolve(
@@ -1867,7 +1879,7 @@ impl Gpu for WebGpu {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
-        self.resolve_impl(src, dst, format);
+        resolve_impl(self, src, dst, format);
     }
 
     fn submit(&mut self) -> Fence {
@@ -1887,7 +1899,7 @@ impl Gpu for WebGpu {
             r.submitted();
         }
         self.caches.prune();
-        self.reclaim_spares();
+        reclaim_spares(self);
         for rb in self.to_map.drain(..) {
             let state = rb.0.state.clone();
             let Some(buffer) = &rb.0.buffer else {
@@ -1928,14 +1940,15 @@ impl Gpu for WebGpu {
     }
 
     fn wait_fence(&mut self, fence: &Fence) {
-        self.block_until(
+        block_until(
+            self,
             || fence.done.load(Ordering::Acquire),
             Some(fence.index.clone()),
         );
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Readback, GpuError> {
-        self.read_back_impl(src)
+        read_back_impl(self, src)
     }
 
     fn read_queries(
@@ -1944,7 +1957,7 @@ impl Gpu for WebGpu {
         first: u32,
         count: u32,
     ) -> Result<Readback, GpuError> {
-        self.read_queries_impl(set, first, count)
+        read_queries_impl(self, set, first, count)
     }
 
     fn read_state(&mut self, readback: &Readback) -> ReadState {
@@ -1963,15 +1976,19 @@ impl Gpu for WebGpu {
             self.submit();
         }
         let state = readback.0.state.clone();
-        self.block_until(move || state.load(Ordering::Acquire) != MAP_PENDING, None);
+        block_until(
+            self,
+            move || state.load(Ordering::Acquire) != MAP_PENDING,
+            None,
+        );
     }
 
     fn finish_read(&mut self, readback: Readback, dst: &mut [u8]) {
-        self.finish_read_impl(readback, dst);
+        finish_read_impl(self, readback, dst);
     }
 
     fn finish_read_into(&mut self, readback: Readback, dst: &impl VolatileBytes) {
-        self.finish_read_into_impl(readback, dst);
+        finish_read_into_impl(self, readback, dst);
     }
 
     fn create_surface(&mut self, window: u32) -> Result<Surface, GpuError> {
@@ -2152,7 +2169,7 @@ impl Gpu for WebGpu {
             .take()
             .ok_or(GpuError::Invalid("present without current_texture"))?;
         if let (Frame::Shown(t), Some(s)) = (&frame, &*surface.0.stand_in.borrow()) {
-            self.present_by_draw(s, &t.texture);
+            present_by_draw(self, s, &t.texture);
         }
         self.submit();
         if let Frame::Shown(texture) = frame {
@@ -2173,14 +2190,14 @@ impl Gpu for WebGpu {
         dst: &Buffer,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
-        self.resolve_queries_impl(set, first, count, dst, dst_offset)
+        resolve_queries_impl(self, set, first, count, dst, dst_offset)
     }
 
     fn dispatch(
         &mut self,
         call: &wcontainers_gpu::draw::DispatchCall<'_, Self>,
     ) -> Result<(), GpuError> {
-        self.dispatch_impl(call)
+        dispatch_impl(self, call)
     }
 
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
@@ -2243,14 +2260,12 @@ impl Gpu for WebGpu {
     }
 }
 
-impl WebGpu {
-    /// Pauses the device thread until `done` holds or the device is lost (plan section 4.8).
-    fn block_until(&mut self, done: impl Fn() -> bool, index: Option<wgpu::SubmissionIndex>) {
-        let lost = self.lost.clone();
-        wait::until(&self.device, index, || {
-            done() || lost.lock().unwrap().is_some()
-        });
-    }
+/// Pauses the device thread until `done` holds or the device is lost (plan section 4.8).
+fn block_until(gpu: &mut WebGpu, done: impl Fn() -> bool, index: Option<wgpu::SubmissionIndex>) {
+    let lost = gpu.lost.clone();
+    wait::until(&gpu.device, index, || {
+        done() || lost.lock().unwrap().is_some()
+    });
 }
 
 /// Whether a format has stencil (true) or is a depth format.

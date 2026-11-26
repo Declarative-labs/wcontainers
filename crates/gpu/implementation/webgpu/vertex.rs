@@ -2,6 +2,7 @@
 //! read through a shadow stream, every attribute of the stream laid out again in formats WebGPU
 //! has, made by a compute program before the draw and kept until the source buffer is written.
 
+use crate::draw::split_pass;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -326,205 +327,203 @@ impl Vertices {
 /// The shadow bound in place of a stream: its slot, a number no other buffer has, and the buffer.
 pub(crate) type Bound = (usize, u64, wgpu::Buffer);
 
-impl WebGpu {
-    /// The shadows a draw reads in place of its streams, made where missing or stale, which splits
-    /// an open pass. None when the device was marked lost.
-    pub(crate) fn vertex_shadows(&mut self, call: &DrawCall<'_, Self>) -> Option<Vec<Bound>> {
-        let layout = call.vertex_layout.0.id;
-        let Some(plan) = self.vertices.plans.get(&layout).cloned() else {
-            return Some(Vec::new());
+/// The shadows a draw reads in place of its streams, made where missing or stale, which splits
+/// an open pass. None when the device was marked lost.
+pub(crate) fn vertex_shadows(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) -> Option<Vec<Bound>> {
+    let layout = call.vertex_layout.0.id;
+    let Some(plan) = gpu.vertices.plans.get(&layout).cloned() else {
+        return Some(Vec::new());
+    };
+    let mut bound = Vec::new();
+    for (slot, p) in plan.iter().enumerate() {
+        let (Some(p), Some(Some(vb))) = (p, call.vertex_buffers.get(slot)) else {
+            continue;
         };
-        let mut bound = Vec::new();
-        for (slot, p) in plan.iter().enumerate() {
-            let (Some(p), Some(Some(vb))) = (p, call.vertex_buffers.get(slot)) else {
-                continue;
-            };
-            let src = &vb.buffer.0;
-            let key = (src.id, vb.offset, layout, slot);
-            let written = src.written.get();
-            if let Some(s) = self.vertices.shadows.get(&key)
-                && s.written == written
-            {
-                bound.push((slot, s.id, s.buffer.clone()));
-                continue;
+        let src = &vb.buffer.0;
+        let key = (src.id, vb.offset, layout, slot);
+        let written = src.written.get();
+        if let Some(s) = gpu.vertices.shadows.get(&key)
+            && s.written == written
+        {
+            bound.push((slot, s.id, s.buffer.clone()));
+            continue;
+        }
+        let mut made = None;
+        split_pass(gpu, SlowPath::VertexFormatConverted, |w| {
+            made = Some(convert_stream(w, src, vb.offset, p));
+        });
+        let buffer = match made? {
+            Ok(buffer) => buffer,
+            Err(why) => {
+                gpu.fail(why);
+                return None;
             }
-            let mut made = None;
-            self.split_pass(SlowPath::VertexFormatConverted, |w| {
-                made = Some(w.convert_stream(src, vb.offset, p));
-            });
-            let buffer = match made? {
-                Ok(buffer) => buffer,
-                Err(why) => {
-                    self.fail(why);
-                    return None;
-                }
-            };
-            let id = self.id();
-            bound.push((slot, id, buffer.clone()));
-            self.vertices.shadows.insert(
-                key,
-                Shadow {
-                    written,
-                    id,
-                    buffer,
-                },
-            );
-        }
-        Some(bound)
-    }
-
-    /// Makes the shadow of the stream at `offset` of `src`, every whole element from there to the
-    /// buffer's end, in the frame's commands outside a pass.
-    fn convert_stream(
-        &mut self,
-        src: &BufferObj,
-        offset: u64,
-        p: &StreamPlan,
-    ) -> Result<wgpu::Buffer, &'static str> {
-        let (stride, span) = (u64::from(p.src_stride), u64::from(p.span));
-        let size = src.desc.size;
-        let count = match (stride, size >= offset + span) {
-            (_, false) => 0,
-            (0, true) => 1,
-            (_, true) => (size - offset - span) / stride + 1,
         };
-        let shadow = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (count * u64::from(p.size)).max(wgpu::COPY_BUFFER_ALIGNMENT),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        if count == 0 {
-            return Ok(shadow);
-        }
-        let raw = src.raw.borrow().clone();
-        let at = src.base.get() + offset;
-        let limits = self.device.limits();
-        let start = at & !(u64::from(limits.min_storage_buffer_offset_alignment) - 1);
-        let window = (raw.size() - start)
-            .min(limits.max_storage_buffer_binding_size & !(wcontainers_gpu::STORAGE_WORD - 1));
-        let reach = at - start + (count - 1) * stride + span;
-        let groups = count.div_ceil(GROUP);
-        let across = groups.min(u64::from(limits.max_compute_workgroups_per_dimension));
-        let rows = groups.div_ceil(across);
-        if reach > window || rows > u64::from(limits.max_compute_workgroups_per_dimension) {
-            return Err(
-                "a converted vertex stream past the largest storage binding or dispatch is not built yet",
-            );
-        }
-        let mut params = Vec::with_capacity(PARAMS);
-        let head = [
-            (at - start) as u32,
-            p.src_stride,
-            p.size,
-            count as u32,
-            (across * GROUP) as u32,
-            p.ops.len() as u32,
-            0,
-            0,
-        ];
-        params.extend(head.iter().flat_map(|v| v.to_le_bytes()));
-        params.extend(
-            p.ops
-                .iter()
-                .flat_map(|o| o.words())
-                .flat_map(u32::to_le_bytes),
+        let id = gpu.id();
+        bound.push((slot, id, buffer.clone()));
+        gpu.vertices.shadows.insert(
+            key,
+            Shadow {
+                written,
+                id,
+                buffer,
+            },
         );
-        params.resize(PARAMS, 0);
-        let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
+    }
+    Some(bound)
+}
+
+/// Makes the shadow of the stream at `offset` of `src`, every whole element from there to the
+/// buffer's end, in the frame's commands outside a pass.
+fn convert_stream(
+    gpu: &mut WebGpu,
+    src: &BufferObj,
+    offset: u64,
+    p: &StreamPlan,
+) -> Result<wgpu::Buffer, &'static str> {
+    let (stride, span) = (u64::from(p.src_stride), u64::from(p.span));
+    let size = src.desc.size;
+    let count = match (stride, size >= offset + span) {
+        (_, false) => 0,
+        (0, true) => 1,
+        (_, true) => (size - offset - span) / stride + 1,
+    };
+    let shadow = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: (count * u64::from(p.size)).max(wgpu::COPY_BUFFER_ALIGNMENT),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    if count == 0 {
+        return Ok(shadow);
+    }
+    let raw = src.raw.borrow().clone();
+    let at = src.base.get() + offset;
+    let limits = gpu.device.limits();
+    let start = at & !(u64::from(limits.min_storage_buffer_offset_alignment) - 1);
+    let window = (raw.size() - start)
+        .min(limits.max_storage_buffer_binding_size & !(wcontainers_gpu::STORAGE_WORD - 1));
+    let reach = at - start + (count - 1) * stride + span;
+    let groups = count.div_ceil(GROUP);
+    let across = groups.min(u64::from(limits.max_compute_workgroups_per_dimension));
+    let rows = groups.div_ceil(across);
+    if reach > window || rows > u64::from(limits.max_compute_workgroups_per_dimension) {
+        return Err(
+            "a converted vertex stream past the largest storage binding or dispatch is not built yet",
+        );
+    }
+    let mut params = Vec::with_capacity(PARAMS);
+    let head = [
+        (at - start) as u32,
+        p.src_stride,
+        p.size,
+        count as u32,
+        (across * GROUP) as u32,
+        p.ops.len() as u32,
+        0,
+        0,
+    ];
+    params.extend(head.iter().flat_map(|v| v.to_le_bytes()));
+    params.extend(
+        p.ops
+            .iter()
+            .flat_map(|o| o.words())
+            .flat_map(u32::to_le_bytes),
+    );
+    params.resize(PARAMS, 0);
+    let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: PARAMS as u64,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: true,
+    });
+    uniform
+        .slice(..)
+        .get_mapped_range_mut()
+        .expect("a buffer mapped at creation")
+        .copy_from_slice(&params);
+    uniform.unmap();
+    if gpu.vertices.program.is_none() {
+        gpu.vertices.program = Some(convert_program(gpu));
+    }
+    let (pipeline, layout) = gpu.vertices.program.clone().expect("made above");
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &raw,
+                    offset: start,
+                    size: wgpu::BufferSize::new(window),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: shadow.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform.as_entire_binding(),
+            },
+        ],
+    });
+    src.used_in.set(gpu.serial);
+    let mut pass = gpu
+        .stream(Stream::Main)
+        .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(0, &group, &[]);
+    pass.dispatch_workgroups(across as u32, rows as u32, 1);
+    Ok(shadow)
+}
+
+fn convert_program(gpu: &WebGpu) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            size: PARAMS as u64,
-            usage: wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: true,
+            source: wgpu::ShaderSource::Wgsl(program().into()),
         });
-        uniform
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("a buffer mapped at creation")
-            .copy_from_slice(&params);
-        uniform.unmap();
-        if self.vertices.program.is_none() {
-            self.vertices.program = Some(self.convert_program());
-        }
-        let (pipeline, layout) = self.vertices.program.clone().expect("made above");
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            layout: &layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &raw,
-                        offset: start,
-                        size: wgpu::BufferSize::new(window),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: shadow.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform.as_entire_binding(),
-                },
+                entry(0, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(1, wgpu::BufferBindingType::Storage { read_only: false }),
+                entry(2, wgpu::BufferBindingType::Uniform),
             ],
         });
-        src.used_in.set(self.serial);
-        let mut pass = self
-            .stream(Stream::Main)
-            .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &group, &[]);
-        pass.dispatch_workgroups(across as u32, rows as u32, 1);
-        Ok(shadow)
-    }
-
-    fn convert_program(&self) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(program().into()),
-            });
-        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-        let layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[
-                    entry(0, wgpu::BufferBindingType::Storage { read_only: true }),
-                    entry(1, wgpu::BufferBindingType::Storage { read_only: false }),
-                    entry(2, wgpu::BufferBindingType::Uniform),
-                ],
-            });
-        let pipeline_layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: Some(&pipeline_layout),
-                module: &module,
-                entry_point: None,
-                compilation_options: Default::default(),
-                cache: None,
-            });
-        (pipeline, layout)
-    }
+    let pipeline_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+    let pipeline = gpu
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: None,
+            compilation_options: Default::default(),
+            cache: None,
+        });
+    (pipeline, layout)
 }
 
 #[cfg(test)]

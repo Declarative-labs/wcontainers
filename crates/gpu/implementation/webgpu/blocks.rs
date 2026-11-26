@@ -3,6 +3,10 @@
 //! would be, and the back end keeps the blocks on the host, updated by every write and copy, to
 //! answer read backs and copies in blocks.
 
+use crate::memory::{
+    finish_read_impl, host_readback, read_back_impl, write_buffer_impl, write_texels,
+    write_texture_impl,
+};
 use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{
     format::FORMAT_FACTS, format::Format, resource::CopyBufferTexture, resource::Extent,
@@ -230,172 +234,186 @@ fn decode(format: Format, packed: &[u8], cols: u32, rows: u32, width: u32, heigh
     out
 }
 
-impl WebGpu {
-    /// A write into a decoded texture: its blocks kept, the area decoded and written as texels.
-    pub(crate) fn write_blocks(
-        &mut self,
-        region: &TextureRegion<'_, Self>,
-        extent: Extent,
-        data: &[u8],
-        row_pitch: u32,
-        rows_per_layer: u32,
-        mode: WriteMode,
-    ) {
-        let t = &region.texture.0;
-        let Some(blocks) = &t.blocks else {
-            return self.fail("a block write into a texture holding no blocks");
-        };
-        let area = match Area::of(&t.desc, region, extent) {
-            Ok(a) => a,
-            Err(why) => return self.fail(why),
-        };
-        let packed = {
-            let mut blocks = blocks.borrow_mut();
-            if let Err(why) = put(&t.desc, &mut blocks, &area, data, row_pitch, rows_per_layer) {
-                return self.fail(why);
-            }
-            take(&t.desc, &blocks, &area)
-        };
-        self.record_slow_path(SlowPath::BlockDecoded);
-        // The texels the area covers inside the level, which may end inside a block.
-        let size = |n: u32| (n >> region.mip).max(1);
-        let (block_width, block_height, _) = FORMAT_FACTS[t.desc.format as usize].block;
-        let width = (area.cols * block_width).min(size(t.desc.width) - region.origin.x);
-        let height = (area.rows * block_height).min(size(t.desc.height) - region.origin.y);
-        let texels = decode(t.desc.format, &packed, area.cols, area.rows, width, height);
-        let texel = FORMAT_FACTS[t.held as usize].block.2;
-        let extent = Extent {
-            width,
-            height,
-            depth_or_layers: extent.depth_or_layers,
-        };
-        self.write_texels(region, extent, &texels, width * texel, height, mode);
-    }
+/// A write into a decoded texture: its blocks kept, the area decoded and written as texels.
+pub(crate) fn write_blocks(
+    gpu: &mut WebGpu,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+    data: &[u8],
+    row_pitch: u32,
+    rows_per_layer: u32,
+    mode: WriteMode,
+) {
+    let t = &region.texture.0;
+    let Some(blocks) = &t.blocks else {
+        return gpu.fail("a block write into a texture holding no blocks");
+    };
+    let area = match Area::of(&t.desc, region, extent) {
+        Ok(a) => a,
+        Err(why) => return gpu.fail(why),
+    };
+    let packed = {
+        let mut blocks = blocks.borrow_mut();
+        if let Err(why) = put(&t.desc, &mut blocks, &area, data, row_pitch, rows_per_layer) {
+            return gpu.fail(why);
+        }
+        take(&t.desc, &blocks, &area)
+    };
+    gpu.record_slow_path(SlowPath::BlockDecoded);
+    // The texels the area covers inside the level, which may end inside a block.
+    let size = |n: u32| (n >> region.mip).max(1);
+    let (block_width, block_height, _) = FORMAT_FACTS[t.desc.format as usize].block;
+    let width = (area.cols * block_width).min(size(t.desc.width) - region.origin.x);
+    let height = (area.rows * block_height).min(size(t.desc.height) - region.origin.y);
+    let texels = decode(t.desc.format, &packed, area.cols, area.rows, width, height);
+    let texel = FORMAT_FACTS[t.held as usize].block.2;
+    let extent = Extent {
+        width,
+        height,
+        depth_or_layers: extent.depth_or_layers,
+    };
+    write_texels(gpu, region, extent, &texels, width * texel, height, mode);
+}
 
-    /// The blocks of a region of a decoded texture, rows packed.
-    fn blocks_of(&mut self, region: &TextureRegion<'_, Self>, extent: Extent) -> Option<Vec<u8>> {
-        let t = &region.texture.0;
-        let blocks = t.blocks.as_ref()?;
-        match Area::of(&t.desc, region, extent) {
-            Ok(area) => Some(take(&t.desc, &blocks.borrow(), &area)),
-            Err(why) => {
-                self.fail(why);
-                None
-            }
+/// The blocks of a region of a decoded texture, rows packed.
+fn blocks_of(
+    gpu: &mut WebGpu,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+) -> Option<Vec<u8>> {
+    let t = &region.texture.0;
+    let blocks = t.blocks.as_ref()?;
+    match Area::of(&t.desc, region, extent) {
+        Ok(area) => Some(take(&t.desc, &blocks.borrow(), &area)),
+        Err(why) => {
+            gpu.fail(why);
+            None
         }
     }
+}
 
-    /// A read back of a decoded texture, answered from its blocks as they are now.
-    pub(crate) fn read_blocks(
-        &mut self,
-        region: &TextureRegion<'_, Self>,
-        extent: Extent,
-    ) -> Option<Readback> {
-        let bytes = self.blocks_of(region, extent)?;
-        Some(self.host_readback(bytes))
-    }
+/// A read back of a decoded texture, answered from its blocks as they are now.
+pub(crate) fn read_blocks(
+    gpu: &mut WebGpu,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+) -> Option<Readback> {
+    let bytes = blocks_of(gpu, region, extent)?;
+    Some(host_readback(gpu, bytes))
+}
 
-    /// Reads a region back and waits for it: the bytes of a texture the host keeps no copy of.
-    pub(crate) fn read_now(&mut self, src: &ReadSource<'_, Self>, len: usize) -> Option<Vec<u8>> {
-        self.record_slow_path(SlowPath::HostCopyReadBack);
-        let rb = match self.read_back_impl(src) {
-            Ok(rb) => rb,
-            Err(_) => {
-                self.fail("a copy source could not be read back");
-                return None;
-            }
-        };
-        wcontainers_gpu::Gpu::wait_read(self, &rb);
-        let mut out = vec![0; len];
-        self.finish_read_impl(rb, &mut out);
-        Some(out)
-    }
-
-    /// A copy from or into a decoded texture, in blocks: from its kept blocks, or from an
-    /// uncompressed source of the same block size read back first; into its blocks, decoded, or
-    /// into an uncompressed texture as texels. `extent` is in the source's texels.
-    pub(crate) fn copy_blocks(
-        &mut self,
-        src: &TextureRegion<'_, Self>,
-        dst: &TextureRegion<'_, Self>,
-        extent: Extent,
-    ) {
-        let (s, d) = (&src.texture.0, &dst.texture.0);
-        let (sbw, sbh, bytes) = FORMAT_FACTS[s.desc.format as usize].block;
-        let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
-        let packed = if s.blocks.is_some() {
-            self.blocks_of(src, extent)
-        } else {
-            let len = (cols * rows * bytes * extent.depth_or_layers) as usize;
-            let region = TextureRegion {
-                texture: src.texture,
-                mip: src.mip,
-                layer: src.layer,
-                origin: src.origin,
-                stencil: false,
-            };
-            self.read_now(&ReadSource::Texture { region, extent }, len)
-        };
-        let Some(packed) = packed else { return };
-        let (dbw, dbh, _) = FORMAT_FACTS[d.desc.format as usize].block;
-        let into = Extent {
-            width: cols * dbw,
-            height: rows * dbh,
-            depth_or_layers: extent.depth_or_layers,
-        };
-        let (pitch, mode) = (cols * bytes, WriteMode::Ordered);
-        if d.blocks.is_some() {
-            self.write_blocks(dst, into, &packed, pitch, rows, mode);
-        } else {
-            self.write_texture_impl(dst, into, &packed, pitch, rows, mode);
+/// Reads a region back and waits for it: the bytes of a texture the host keeps no copy of.
+pub(crate) fn read_now(
+    gpu: &mut WebGpu,
+    src: &ReadSource<'_, WebGpu>,
+    len: usize,
+) -> Option<Vec<u8>> {
+    gpu.record_slow_path(SlowPath::HostCopyReadBack);
+    let rb = match read_back_impl(gpu, src) {
+        Ok(rb) => rb,
+        Err(_) => {
+            gpu.fail("a copy source could not be read back");
+            return None;
         }
-    }
+    };
+    wcontainers_gpu::Gpu::wait_read(gpu, &rb);
+    let mut out = vec![0; len];
+    finish_read_impl(gpu, rb, &mut out);
+    Some(out)
+}
 
-    /// A copy between a buffer and a decoded texture: into it from the buffer's bytes read back
-    /// first; out of it from its kept blocks, written into the buffer in command order.
-    pub(crate) fn copy_buffer_blocks(
-        &mut self,
-        buffer: &CopyBufferTexture<'_, Self>,
-        region: &TextureRegion<'_, Self>,
-        extent: Extent,
-        to_texture: bool,
-    ) {
-        let t = &region.texture.0;
-        let (bw, bh, bytes) = FORMAT_FACTS[t.desc.format as usize].block;
-        let (row, rows) = (
-            u64::from(extent.width.div_ceil(bw) * bytes),
-            u64::from(extent.height.div_ceil(bh)),
+/// A copy from or into a decoded texture, in blocks: from its kept blocks, or from an
+/// uncompressed source of the same block size read back first; into its blocks, decoded, or
+/// into an uncompressed texture as texels. `extent` is in the source's texels.
+pub(crate) fn copy_blocks(
+    gpu: &mut WebGpu,
+    src: &TextureRegion<'_, WebGpu>,
+    dst: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+) {
+    let (s, d) = (&src.texture.0, &dst.texture.0);
+    let (sbw, sbh, bytes) = FORMAT_FACTS[s.desc.format as usize].block;
+    let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
+    let packed = if s.blocks.is_some() {
+        blocks_of(gpu, src, extent)
+    } else {
+        let len = (cols * rows * bytes * extent.depth_or_layers) as usize;
+        let region = TextureRegion {
+            texture: src.texture,
+            mip: src.mip,
+            layer: src.layer,
+            origin: src.origin,
+            stencil: false,
+        };
+        read_now(gpu, &ReadSource::Texture { region, extent }, len)
+    };
+    let Some(packed) = packed else { return };
+    let (dbw, dbh, _) = FORMAT_FACTS[d.desc.format as usize].block;
+    let into = Extent {
+        width: cols * dbw,
+        height: rows * dbh,
+        depth_or_layers: extent.depth_or_layers,
+    };
+    let (pitch, mode) = (cols * bytes, WriteMode::Ordered);
+    if d.blocks.is_some() {
+        write_blocks(gpu, dst, into, &packed, pitch, rows, mode);
+    } else {
+        write_texture_impl(gpu, dst, into, &packed, pitch, rows, mode);
+    }
+}
+
+/// A copy between a buffer and a decoded texture: into it from the buffer's bytes read back
+/// first; out of it from its kept blocks, written into the buffer in command order.
+pub(crate) fn copy_buffer_blocks(
+    gpu: &mut WebGpu,
+    buffer: &CopyBufferTexture<'_, WebGpu>,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+    to_texture: bool,
+) {
+    let t = &region.texture.0;
+    let (bw, bh, bytes) = FORMAT_FACTS[t.desc.format as usize].block;
+    let (row, rows) = (
+        u64::from(extent.width.div_ceil(bw) * bytes),
+        u64::from(extent.height.div_ceil(bh)),
+    );
+    let (pitch, per_layer) = (
+        u64::from(buffer.row_pitch),
+        u64::from(buffer.rows_per_layer),
+    );
+    let layers = u64::from(extent.depth_or_layers);
+    if rows == 0 || layers == 0 {
+        return;
+    }
+    if to_texture {
+        let len = pitch * (per_layer * (layers - 1) + rows - 1) + row;
+        let source = ReadSource::Buffer {
+            buffer: buffer.buffer,
+            offset: buffer.offset,
+            size: len,
+        };
+        let Some(data) = read_now(gpu, &source, len as usize) else {
+            return;
+        };
+        let (pitch, per_layer) = (buffer.row_pitch, buffer.rows_per_layer);
+        write_blocks(
+            gpu,
+            region,
+            extent,
+            &data,
+            pitch,
+            per_layer,
+            WriteMode::Ordered,
         );
-        let (pitch, per_layer) = (
-            u64::from(buffer.row_pitch),
-            u64::from(buffer.rows_per_layer),
-        );
-        let layers = u64::from(extent.depth_or_layers);
-        if rows == 0 || layers == 0 {
-            return;
-        }
-        if to_texture {
-            let len = pitch * (per_layer * (layers - 1) + rows - 1) + row;
-            let source = ReadSource::Buffer {
-                buffer: buffer.buffer,
-                offset: buffer.offset,
-                size: len,
-            };
-            let Some(data) = self.read_now(&source, len as usize) else {
-                return;
-            };
-            let (pitch, per_layer) = (buffer.row_pitch, buffer.rows_per_layer);
-            self.write_blocks(region, extent, &data, pitch, per_layer, WriteMode::Ordered);
-            return;
-        }
-        let Some(packed) = self.blocks_of(region, extent) else {
-            return;
-        };
-        for (i, chunk) in packed.chunks_exact(row as usize).enumerate() {
-            let (l, r) = (i as u64 / rows, i as u64 % rows);
-            let at = buffer.offset + (l * per_layer + r) * pitch;
-            self.write_buffer_impl(buffer.buffer, at, chunk, WriteMode::Ordered);
-        }
+        return;
+    }
+    let Some(packed) = blocks_of(gpu, region, extent) else {
+        return;
+    };
+    for (i, chunk) in packed.chunks_exact(row as usize).enumerate() {
+        let (l, r) = (i as u64 / rows, i as u64 % rows);
+        let at = buffer.offset + (l * per_layer + r) * pitch;
+        write_buffer_impl(gpu, buffer.buffer, at, chunk, WriteMode::Ordered);
     }
 }
 

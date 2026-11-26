@@ -315,68 +315,420 @@ const UNIFORM: wgpu::BindingType = wgpu::BindingType::Buffer {
     min_binding_size: None,
 };
 
-impl WebGpu {
-    /// A fragment stage writing nothing, for programs without one that draw into colour targets.
-    pub(crate) fn no_fragment(&mut self) -> wgpu::ShaderModule {
-        let device = &self.device;
-        self.fills
-            .no_fragment
-            .get_or_insert_with(|| {
-                device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: None,
-                    source: wgpu::ShaderSource::Wgsl(
-                        format!("@fragment fn {NO_FRAGMENT}() {{}}").into(),
-                    ),
-                })
+/// A fragment stage writing nothing, for programs without one that draw into colour targets.
+pub(crate) fn no_fragment(gpu: &mut WebGpu) -> wgpu::ShaderModule {
+    let device = &gpu.device;
+    gpu.fills
+        .no_fragment
+        .get_or_insert_with(|| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(
+                    format!("@fragment fn {NO_FRAGMENT}() {{}}").into(),
+                ),
             })
-            .clone()
-    }
+        })
+        .clone()
+}
 
-    fn cover(&mut self) -> wgpu::ShaderModule {
-        let device = &self.device;
-        self.fills
-            .cover
-            .get_or_insert_with(|| {
-                device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: None,
-                    source: wgpu::ShaderSource::Wgsl(COVER_WGSL.into()),
-                })
+fn cover(gpu: &mut WebGpu) -> wgpu::ShaderModule {
+    let device = &gpu.device;
+    gpu.fills
+        .cover
+        .get_or_insert_with(|| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(COVER_WGSL.into()),
             })
-            .clone()
-    }
+        })
+        .clone()
+}
 
-    /// A program drawing a whole target of `format` and `samples` from one bound texture, the
-    /// fragment stage of `source`.
-    fn texel_program(
-        &mut self,
-        source: &str,
-        multisampled: bool,
-        format: wgpu::TextureFormat,
-        samples: u32,
-    ) -> DepthProgram {
-        let cover = self.cover();
-        let device = &self.device;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[fragment_entry(
-                0,
-                wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled,
-                },
-            )],
+/// A program drawing a whole target of `format` and `samples` from one bound texture, the
+/// fragment stage of `source`.
+fn texel_program(
+    gpu: &mut WebGpu,
+    source: &str,
+    multisampled: bool,
+    format: wgpu::TextureFormat,
+    samples: u32,
+) -> DepthProgram {
+    let cover = cover(gpu);
+    let device = &gpu.device;
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[fragment_entry(
+            0,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled,
+            },
+        )],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &cover,
+            entry_point: None,
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: samples,
+            ..Default::default()
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: None,
+            compilation_options: Default::default(),
+            targets: &[Some(format.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    DepthProgram { pipeline, layout }
+}
+
+/// Resolves `src` (multisampled, bound for sampling) into `dst`, both views in the format the
+/// resolve names, by a draw averaging every sample (`ResolveByDraw`).
+pub(crate) fn resolve_by_draw(
+    gpu: &mut WebGpu,
+    src: &wgpu::TextureView,
+    dst: &wgpu::TextureView,
+    format: wgpu::TextureFormat,
+) {
+    gpu.record_slow_path(SlowPath::ResolveByDraw);
+    if !gpu.fills.resolves.contains_key(&format) {
+        let program = texel_program(gpu, RESOLVE_WGSL, true, format, 1);
+        gpu.fills.resolves.insert(format, program);
+    }
+    let program = &gpu.fills.resolves[&format];
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &program.layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(src),
+        }],
+    });
+    let pipeline = program.pipeline.clone();
+    let mut rp = gpu
+        .encoder()
+        .begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dst,
+                depth_slice: None,
+                resolve_target: None,
+                ops: keep(),
+            })],
+            ..Default::default()
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    rp.set_pipeline(&pipeline);
+    rp.set_bind_group(0, &group, &[]);
+    rp.draw(COVER_VERTICES, 0..1);
+}
+
+/// Rounds each channel of `target`, held in `rgba8unorm`, to its packed format's bits: copies
+/// the subresource and draws it back from the copy, per sample where multisampled
+/// (`PackedTargetQuantised`). In the frame's encoder, outside a pass.
+pub(crate) fn quantise(gpu: &mut WebGpu, target: &PackedTarget) {
+    gpu.record_slow_path(SlowPath::PackedTargetQuantised);
+    let samples = target.texture.sample_count();
+    let size = target
+        .texture
+        .size()
+        .mip_level_size(target.mip, target.texture.dimension());
+    let (width, height) = (size.width, size.height);
+    let device = &gpu.device;
+    let copy = gpu
+        .fills
+        .quantise_copies
+        .entry((width, height, samples))
+        .or_insert_with(|| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                // WebGPU makes multisampled textures only as attachments.
+                usage: wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+        })
+        .clone();
+    let key = (target.format, samples);
+    if !gpu.fills.quantises.contains_key(&key) {
+        let source = crate::packed::quantise_program(target.format, samples > 1);
+        let program = texel_program(
+            gpu,
+            &source,
+            samples > 1,
+            wgpu::TextureFormat::Rgba8Unorm,
+            samples,
+        );
+        gpu.fills.quantises.insert(key, program);
+    }
+    let program = &gpu.fills.quantises[&key];
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &program.layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&copy.create_view(&Default::default())),
+        }],
+    });
+    let pipeline = program.pipeline.clone();
+    let three_d = target.texture.dimension() == wgpu::TextureDimension::D3;
+    let view = target.texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        base_mip_level: target.mip,
+        mip_level_count: Some(1),
+        base_array_layer: if three_d { 0 } else { target.z },
+        array_layer_count: Some(1),
+        ..Default::default()
+    });
+    let encoder = gpu.encoder();
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target.texture,
+            mip_level: target.mip,
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: target.z,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        copy.as_image_copy(),
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: three_d.then_some(target.z),
+            resolve_target: None,
+            ops: keep(),
+        })],
+        ..Default::default()
+    });
+    rp.set_pipeline(&pipeline);
+    rp.set_bind_group(0, &group, &[]);
+    rp.draw(COVER_VERTICES, 0..1);
+}
+
+/// Draws `frame` into `window`, a texture of its size in the window's own format
+/// (`PresentConverted`), in the frame's encoder.
+pub(crate) fn present_by_draw(gpu: &mut WebGpu, frame: &wgpu::Texture, window: &wgpu::Texture) {
+    gpu.record_slow_path(SlowPath::PresentConverted);
+    let format = window.format();
+    if !gpu.fills.presents.contains_key(&format) {
+        let program = texel_program(gpu, PRESENT_WGSL, false, format, 1);
+        gpu.fills.presents.insert(format, program);
+    }
+    let program = &gpu.fills.presents[&format];
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &program.layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&frame.create_view(&Default::default())),
+        }],
+    });
+    let pipeline = program.pipeline.clone();
+    let target = window.create_view(&Default::default());
+    let mut rp = gpu
+        .stream(Stream::Main)
+        .begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    rp.set_pipeline(&pipeline);
+    rp.set_bind_group(0, &group, &[]);
+    rp.draw(COVER_VERTICES, 0..1);
+}
+
+/// Converts between the held texels of a texture of the converted `format` (level `held.1`,
+/// slices from `held.2`, the region at `held.3` of `extent`) and its raw blocks in `raw` (at
+/// its origin, a layer a slice), in the frame's encoder outside a pass: widening the blocks into
+/// the texture where `into`, else packing the texels into the blocks. One draw a slice.
+pub(crate) fn convert_by_draw(
+    gpu: &mut WebGpu,
+    format: Format,
+    into: bool,
+    held: (&wgpu::Texture, u32, u32, [u32; 2]),
+    raw: &wgpu::Texture,
+    extent: wcontainers_gpu::resource::Extent,
+) {
+    let (texture, mip, first, [x, y]) = held;
+    let three_d = texture.dimension() == wgpu::TextureDimension::D3;
+    let key = (format, into, three_d && !into);
+    // Held texels are moved as their bytes: an sRGB texture through its linear twin.
+    let linear = texture.format().remove_srgb_suffix();
+    if !gpu.fills.converts.contains_key(&key) {
+        let target = if into { linear } else { raw.format() };
+        let program = packing_program(gpu, format, into, key.2, target);
+        gpu.fills.converts.insert(key, program);
+    }
+    let held_view = |slice: Option<u32>| {
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(linear),
+            dimension: Some(match slice {
+                Some(_) => wgpu::TextureViewDimension::D2,
+                None => wgpu::TextureViewDimension::D3,
+            }),
+            base_mip_level: mip,
+            mip_level_count: Some(1),
+            base_array_layer: slice.unwrap_or(0),
+            array_layer_count: Some(1),
+            ..Default::default()
+        })
+    };
+    let whole_3d = three_d.then(|| held_view(None));
+    for l in 0..extent.depth_or_layers {
+        let slice = first + l;
+        let own = level_view(raw, wgpu::TextureAspect::All, 0, l);
+        let held = match &whole_3d {
+            Some(v) => v.clone(),
+            None => held_view(Some(slice)),
+        };
+        let (source, target) = if into { (&own, &held) } else { (&held, &own) };
+        let value = uniform(&gpu.device, [x, y, slice, extent.width]);
+        let program = &gpu.fills.converts[&key];
+        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &program.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: value.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+            ],
+        });
+        let pipeline = program.pipeline.clone();
+        let mut rp = gpu
+            .stream(Stream::Main)
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: (into && three_d).then_some(slice),
+                    resolve_target: None,
+                    ops: keep(),
+                })],
+                ..Default::default()
+            });
+        let (at, size) = if into {
+            ([x, y], [extent.width, extent.height])
+        } else {
+            (
+                [0, 0],
+                [
+                    crate::packed::raw_width(format, extent.width),
+                    extent.height,
+                ],
+            )
+        };
+        let [w, h] = size.map(|n| n as f32);
+        rp.set_viewport(at[0] as f32, at[1] as f32, w, h, 0.0, 1.0);
+        rp.set_scissor_rect(at[0], at[1], size[0], size[1]);
+        rp.set_pipeline(&pipeline);
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(COVER_VERTICES, 0..1);
+    }
+}
+
+fn packing_program(
+    gpu: &mut WebGpu,
+    format: Format,
+    into: bool,
+    three_d: bool,
+    target: wgpu::TextureFormat,
+) -> DepthProgram {
+    let cover = cover(gpu);
+    let source = crate::packed::program(format, into, three_d);
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+    let (sample_type, view_dimension) = match (into, three_d) {
+        (true, _) => (
+            wgpu::TextureSampleType::Uint,
+            wgpu::TextureViewDimension::D2,
+        ),
+        (false, d3) => (
+            crate::packed::held_sample_type(format),
+            if d3 {
+                wgpu::TextureViewDimension::D3
+            } else {
+                wgpu::TextureViewDimension::D2
+            },
+        ),
+    };
+    let layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                fragment_entry(0, UNIFORM),
+                fragment_entry(
+                    1,
+                    wgpu::BindingType::Texture {
+                        sample_type,
+                        view_dimension,
+                        multisampled: false,
+                    },
+                ),
+            ],
+        });
+    let pipeline_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(source.into()),
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    gpu.counters.pipelines += 1;
+    let pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -387,479 +739,297 @@ impl WebGpu {
             },
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                ..Default::default()
-            },
+            multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: None,
                 compilation_options: Default::default(),
-                targets: &[Some(format.into())],
+                targets: &[Some(target.into())],
             }),
             multiview_mask: None,
             cache: None,
         });
-        DepthProgram { pipeline, layout }
-    }
+    DepthProgram { pipeline, layout }
+}
 
-    /// Resolves `src` (multisampled, bound for sampling) into `dst`, both views in the format the
-    /// resolve names, by a draw averaging every sample (`ResolveByDraw`).
-    pub(crate) fn resolve_by_draw(
-        &mut self,
-        src: &wgpu::TextureView,
-        dst: &wgpu::TextureView,
-        format: wgpu::TextureFormat,
-    ) {
-        self.record_slow_path(SlowPath::ResolveByDraw);
-        if !self.fills.resolves.contains_key(&format) {
-            let program = self.texel_program(RESOLVE_WGSL, true, format, 1);
-            self.fills.resolves.insert(format, program);
+/// Clears colour target `index` of the open pass to `bits` (an integer format's value, or a
+/// float format's bits) by a draw covering it. The pass has just begun: its viewport and
+/// scissor cover the targets, and no query runs.
+pub(crate) fn clear_by_draw(
+    gpu: &mut WebGpu,
+    rp: &mut wgpu::RenderPass<'static>,
+    targets: &TargetLayout,
+    index: usize,
+    bits: Words,
+) {
+    let float =
+        targets.colors[index].is_some_and(|f| FORMAT_FACTS[f as usize].kind == FormatKind::Float);
+    gpu.record_slow_path(if float {
+        SlowPath::FloatBitsClearByDraw
+    } else {
+        SlowPath::IntegerClearByDraw
+    });
+    let pipeline = match gpu.fills.clears.get(&(*targets, index)) {
+        Some(p) => p.clone(),
+        None => {
+            let p = clear_pipeline(gpu, targets, index);
+            gpu.fills.clears.insert((*targets, index), p.clone());
+            p
         }
-        let program = &self.fills.resolves[&format];
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    };
+    let value = uniform(&gpu.device, bits);
+    let (layout, _) = gpu
+        .fills
+        .clear_layout
+        .as_ref()
+        .expect("made with the pipeline");
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: value.as_entire_binding(),
+        }],
+    });
+    rp.set_pipeline(&pipeline);
+    rp.set_bind_group(0, &group, &[]);
+    rp.draw(COVER_VERTICES, 0..1);
+}
+
+fn clear_pipeline(gpu: &mut WebGpu, targets: &TargetLayout, index: usize) -> wgpu::RenderPipeline {
+    let cover = cover(gpu);
+    let device = &gpu.device;
+    let (_, pipeline_layout) = gpu.fills.clear_layout.get_or_insert_with(|| {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            layout: &program.layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(src),
-            }],
+            entries: &[fragment_entry(0, UNIFORM)],
         });
-        let pipeline = program.pipeline.clone();
-        let mut rp = self
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: dst,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: keep(),
-                })],
-                ..Default::default()
-            });
-        rp.set_pipeline(&pipeline);
-        rp.set_bind_group(0, &group, &[]);
-        rp.draw(COVER_VERTICES, 0..1);
-    }
-
-    /// Rounds each channel of `target`, held in `rgba8unorm`, to its packed format's bits: copies
-    /// the subresource and draws it back from the copy, per sample where multisampled
-    /// (`PackedTargetQuantised`). In the frame's encoder, outside a pass.
-    pub(crate) fn quantise(&mut self, target: &PackedTarget) {
-        self.record_slow_path(SlowPath::PackedTargetQuantised);
-        let samples = target.texture.sample_count();
-        let size = target
-            .texture
-            .size()
-            .mip_level_size(target.mip, target.texture.dimension());
-        let (width, height) = (size.width, size.height);
-        let device = &self.device;
-        let copy = self
-            .fills
-            .quantise_copies
-            .entry((width, height, samples))
-            .or_insert_with(|| {
-                device.create_texture(&wgpu::TextureDescriptor {
-                    label: None,
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: samples,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    // WebGPU makes multisampled textures only as attachments.
-                    usage: wgpu::TextureUsages::COPY_DST
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                })
-            })
-            .clone();
-        let key = (target.format, samples);
-        if !self.fills.quantises.contains_key(&key) {
-            let source = crate::packed::quantise_program(target.format, samples > 1);
-            let program = self.texel_program(
-                &source,
-                samples > 1,
-                wgpu::TextureFormat::Rgba8Unorm,
-                samples,
-            );
-            self.fills.quantises.insert(key, program);
-        }
-        let program = &self.fills.quantises[&key];
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            layout: &program.layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(
-                    &copy.create_view(&Default::default()),
-                ),
-            }],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
-        let pipeline = program.pipeline.clone();
-        let three_d = target.texture.dimension() == wgpu::TextureDimension::D3;
-        let view = target.texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            base_mip_level: target.mip,
-            mip_level_count: Some(1),
-            base_array_layer: if three_d { 0 } else { target.z },
-            array_layer_count: Some(1),
-            ..Default::default()
-        });
-        let encoder = self.encoder();
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target.texture,
-                mip_level: target.mip,
-                origin: wgpu::Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: target.z,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            copy.as_image_copy(),
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: three_d.then_some(target.z),
-                resolve_target: None,
-                ops: keep(),
-            })],
-            ..Default::default()
-        });
-        rp.set_pipeline(&pipeline);
-        rp.set_bind_group(0, &group, &[]);
-        rp.draw(COVER_VERTICES, 0..1);
-    }
-
-    /// Draws `frame` into `window`, a texture of its size in the window's own format
-    /// (`PresentConverted`), in the frame's encoder.
-    pub(crate) fn present_by_draw(&mut self, frame: &wgpu::Texture, window: &wgpu::Texture) {
-        self.record_slow_path(SlowPath::PresentConverted);
-        let format = window.format();
-        if !self.fills.presents.contains_key(&format) {
-            let program = self.texel_program(PRESENT_WGSL, false, format, 1);
-            self.fills.presents.insert(format, program);
-        }
-        let program = &self.fills.presents[&format];
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &program.layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(
-                    &frame.create_view(&Default::default()),
-                ),
-            }],
-        });
-        let pipeline = program.pipeline.clone();
-        let target = window.create_view(&Default::default());
-        let mut rp = self
-            .stream(Stream::Main)
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-        rp.set_pipeline(&pipeline);
-        rp.set_bind_group(0, &group, &[]);
-        rp.draw(COVER_VERTICES, 0..1);
-    }
-
-    /// Converts between the held texels of a texture of the converted `format` (level `held.1`,
-    /// slices from `held.2`, the region at `held.3` of `extent`) and its raw blocks in `raw` (at
-    /// its origin, a layer a slice), in the frame's encoder outside a pass: widening the blocks into
-    /// the texture where `into`, else packing the texels into the blocks. One draw a slice.
-    pub(crate) fn convert_by_draw(
-        &mut self,
-        format: Format,
-        into: bool,
-        held: (&wgpu::Texture, u32, u32, [u32; 2]),
-        raw: &wgpu::Texture,
-        extent: wcontainers_gpu::resource::Extent,
-    ) {
-        let (texture, mip, first, [x, y]) = held;
-        let three_d = texture.dimension() == wgpu::TextureDimension::D3;
-        let key = (format, into, three_d && !into);
-        // Held texels are moved as their bytes: an sRGB texture through its linear twin.
-        let linear = texture.format().remove_srgb_suffix();
-        if !self.fills.converts.contains_key(&key) {
-            let target = if into { linear } else { raw.format() };
-            let program = self.packing_program(format, into, key.2, target);
-            self.fills.converts.insert(key, program);
-        }
-        let held_view = |slice: Option<u32>| {
-            texture.create_view(&wgpu::TextureViewDescriptor {
-                format: Some(linear),
-                dimension: Some(match slice {
-                    Some(_) => wgpu::TextureViewDimension::D2,
-                    None => wgpu::TextureViewDimension::D3,
-                }),
-                base_mip_level: mip,
-                mip_level_count: Some(1),
-                base_array_layer: slice.unwrap_or(0),
-                array_layer_count: Some(1),
-                ..Default::default()
-            })
-        };
-        let whole_3d = three_d.then(|| held_view(None));
-        for l in 0..extent.depth_or_layers {
-            let slice = first + l;
-            let own = level_view(raw, wgpu::TextureAspect::All, 0, l);
-            let held = match &whole_3d {
-                Some(v) => v.clone(),
-                None => held_view(Some(slice)),
-            };
-            let (source, target) = if into { (&own, &held) } else { (&held, &own) };
-            let value = uniform(&self.device, [x, y, slice, extent.width]);
-            let program = &self.fills.converts[&key];
-            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &program.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: value.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(source),
-                    },
-                ],
-            });
-            let pipeline = program.pipeline.clone();
-            let mut rp = self
-                .stream(Stream::Main)
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        depth_slice: (into && three_d).then_some(slice),
-                        resolve_target: None,
-                        ops: keep(),
-                    })],
-                    ..Default::default()
-                });
-            let (at, size) = if into {
-                ([x, y], [extent.width, extent.height])
-            } else {
-                (
-                    [0, 0],
-                    [
-                        crate::packed::raw_width(format, extent.width),
-                        extent.height,
-                    ],
-                )
-            };
-            let [w, h] = size.map(|n| n as f32);
-            rp.set_viewport(at[0] as f32, at[1] as f32, w, h, 0.0, 1.0);
-            rp.set_scissor_rect(at[0], at[1], size[0], size[1]);
-            rp.set_pipeline(&pipeline);
-            rp.set_bind_group(0, &group, &[]);
-            rp.draw(COVER_VERTICES, 0..1);
-        }
-    }
-
-    fn packing_program(
-        &mut self,
-        format: Format,
-        into: bool,
-        three_d: bool,
-        target: wgpu::TextureFormat,
-    ) -> DepthProgram {
-        let cover = self.cover();
-        let source = crate::packed::program(format, into, three_d);
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            });
-        let (sample_type, view_dimension) = match (into, three_d) {
-            (true, _) => (
-                wgpu::TextureSampleType::Uint,
-                wgpu::TextureViewDimension::D2,
-            ),
-            (false, d3) => (
-                crate::packed::held_sample_type(format),
-                if d3 {
-                    wgpu::TextureViewDimension::D3
+        (layout, pl)
+    });
+    let format = targets.colors[index].expect("the cleared target");
+    let (ty, value) = match FORMAT_FACTS[format as usize].kind {
+        FormatKind::Sint => ("vec4<i32>", "bitcast<vec4<i32>>(value)"),
+        FormatKind::Float => FLOAT_CLEAR_OUTPUT,
+        _ => ("vec4<u32>", "value"),
+    };
+    let source = format!(
+        "@group(0) @binding(0) var<uniform> value: vec4<u32>;\n\
+         @fragment fn clear() -> @location({index}) {ty} {{ return {value}; }}\n"
+    );
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let used = targets
+        .colors
+        .iter()
+        .rposition(Option::is_some)
+        .map_or(0, |i| i + 1);
+    let colors: Vec<Option<wgpu::ColorTargetState>> = targets.colors[..used]
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            f.map(|f| wgpu::ColorTargetState {
+                format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::R8Unorm),
+                blend: None,
+                write_mask: if i == index {
+                    wgpu::ColorWrites::ALL
                 } else {
-                    wgpu::TextureViewDimension::D2
+                    wgpu::ColorWrites::empty()
                 },
-            ),
-        };
-        let layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[
-                    fragment_entry(0, UNIFORM),
-                    fragment_entry(
-                        1,
-                        wgpu::BindingType::Texture {
-                            sample_type,
-                            view_dimension,
-                            multisampled: false,
-                        },
-                    ),
-                ],
-            });
-        let pipeline_layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
-        self.counters.pipelines += 1;
-        let pipeline = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &cover,
-                    entry_point: None,
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: None,
-                    compilation_options: Default::default(),
-                    targets: &[Some(target.into())],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-        DepthProgram { pipeline, layout }
-    }
+            })
+        })
+        .collect();
+    let depth_stencil = targets.depth_stencil.map(|f| wgpu::DepthStencilState {
+        format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::Depth32Float),
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::Always),
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    });
+    gpu.counters.pipelines += 1;
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &cover,
+            entry_point: None,
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil,
+        multisample: wgpu::MultisampleState {
+            count: targets.samples,
+            ..Default::default()
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: None,
+            compilation_options: Default::default(),
+            targets: &colors,
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
 
-    /// Clears colour target `index` of the open pass to `bits` (an integer format's value, or a
-    /// float format's bits) by a draw covering it. The pass has just begun: its viewport and
-    /// scissor cover the targets, and no query runs.
-    pub(crate) fn clear_by_draw(
-        &mut self,
-        rp: &mut wgpu::RenderPass<'static>,
-        targets: &TargetLayout,
-        index: usize,
-        bits: Words,
-    ) {
-        let float = targets.colors[index]
-            .is_some_and(|f| FORMAT_FACTS[f as usize].kind == FormatKind::Float);
-        self.record_slow_path(if float {
-            SlowPath::FloatBitsClearByDraw
-        } else {
-            SlowPath::IntegerClearByDraw
-        });
-        let pipeline = match self.fills.clears.get(&(*targets, index)) {
-            Some(p) => p.clone(),
-            None => {
-                let p = self.clear_pipeline(targets, index);
-                self.fills.clears.insert((*targets, index), p.clone());
-                p
-            }
-        };
-        let value = uniform(&self.device, bits);
-        let (layout, _) = self
-            .fills
-            .clear_layout
-            .as_ref()
-            .expect("made with the pipeline");
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+/// Writes the depth of layers `dst_layer..` of `dst` at `dst_mip`, in the rectangle at
+/// `dst_origin` of `size`, from the texels of `src` at `src_mip`, `src_layer..` and `src_origin`,
+/// one draw per layer in `stream`, outside a pass (`DepthWrittenByDraw`). Both textures are
+/// single-sampled; `src` has binding usage and `dst` render usage.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn depth_by_draw(
+    gpu: &mut WebGpu,
+    stream: Stream,
+    src: (&wgpu::Texture, Format, DepthSource),
+    src_at: (u32, u32, [u32; 2]),
+    dst: (&wgpu::Texture, Format),
+    dst_at: (u32, u32, [u32; 2]),
+    size: [u32; 2],
+    layers: u32,
+) {
+    gpu.record_slow_path(SlowPath::DepthWrittenByDraw);
+    let (src_tex, src_format, how) = src;
+    let (dst_tex, dst_format) = dst;
+    let Some(raw_dst) = convert::texture_format(dst_format) else {
+        gpu.fail("a depth draw into a format this back end does not hold");
+        return;
+    };
+    let Some(raw_src) = convert::texture_format(src_format) else {
+        gpu.fail("a depth draw from a format this back end does not hold");
+        return;
+    };
+    if !gpu.fills.depths.contains_key(&(raw_dst, how)) {
+        let program = depth_program(gpu, raw_dst, how);
+        gpu.fills.depths.insert((raw_dst, how), program);
+    }
+    let src_aspect = convert::aspect(false, src_format);
+    let src_view_format = raw_src
+        .aspect_specific_format(src_aspect)
+        .unwrap_or(raw_src);
+    // The source texel a fragment reads is its own position moved by this shift.
+    let shift = [
+        src_at.2[0].wrapping_sub(dst_at.2[0]),
+        src_at.2[1].wrapping_sub(dst_at.2[1]),
+        0,
+        0,
+    ];
+    let value = uniform(&gpu.device, shift);
+    let view = |t: &wgpu::Texture, format, aspect, mip, layer| {
+        t.create_view(&wgpu::TextureViewDescriptor {
             label: None,
-            layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: value.as_entire_binding(),
-            }],
+            format: Some(format),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            usage: None,
+            aspect,
+            base_mip_level: mip,
+            mip_level_count: Some(1),
+            base_array_layer: layer,
+            array_layer_count: Some(1),
+        })
+    };
+    for l in 0..layers {
+        let from = view(src_tex, src_view_format, src_aspect, src_at.0, src_at.1 + l);
+        let to = view(
+            dst_tex,
+            raw_dst,
+            wgpu::TextureAspect::All,
+            dst_at.0,
+            dst_at.1 + l,
+        );
+        let program = &gpu.fills.depths[&(raw_dst, how)];
+        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &program.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: value.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&from),
+                },
+            ],
         });
+        let pipeline = program.pipeline.clone();
+
+        let mut rp = gpu
+            .stream(stream)
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &to,
+                    depth_ops: Some(keep()),
+                    stencil_ops: crate::has_stencil(dst_format).then(keep),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        let (x, y) = (dst_at.2[0], dst_at.2[1]);
+        rp.set_viewport(x as f32, y as f32, size[0] as f32, size[1] as f32, 0.0, 1.0);
+        rp.set_scissor_rect(x, y, size[0], size[1]);
         rp.set_pipeline(&pipeline);
         rp.set_bind_group(0, &group, &[]);
         rp.draw(COVER_VERTICES, 0..1);
     }
+}
 
-    fn clear_pipeline(&mut self, targets: &TargetLayout, index: usize) -> wgpu::RenderPipeline {
-        let cover = self.cover();
-        let device = &self.device;
-        let (_, pipeline_layout) = self.fills.clear_layout.get_or_insert_with(|| {
-            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[fragment_entry(0, UNIFORM)],
-            });
-            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
-            (layout, pl)
-        });
-        let format = targets.colors[index].expect("the cleared target");
-        let (ty, value) = match FORMAT_FACTS[format as usize].kind {
-            FormatKind::Sint => ("vec4<i32>", "bitcast<vec4<i32>>(value)"),
-            FormatKind::Float => FLOAT_CLEAR_OUTPUT,
-            _ => ("vec4<u32>", "value"),
-        };
-        let source = format!(
-            "@group(0) @binding(0) var<uniform> value: vec4<u32>;\n\
-             @fragment fn clear() -> @location({index}) {ty} {{ return {value}; }}\n"
-        );
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource) -> DepthProgram {
+    let cover = cover(gpu);
+    let (texture, depth) = match how {
+        DepthSource::Float => ("texture_2d<f32>", depth_of_float_bits("bitcast<u32>(v.x)")),
+        DepthSource::FloatBits => ("texture_2d<u32>", depth_of_float_bits("v.x")),
+        DepthSource::FloatBitsSigned => (
+            SIGNED_BITS_TEXTURE,
+            depth_of_float_bits("bitcast<u32>(v.x)"),
+        ),
+        // x / (2^24 - 1) is x 2^-24 (1 + 2^-24 + ...): both products are exact and their sum
+        // rounds once, nearest to the quotient, where WGSL's division may be 2.5 ulp off.
+        DepthSource::Unorm24 => (
+            "texture_2d<u32>",
+            format!(
+                "f32(v.x & {UNORM24_MAX}u) * 0x1p-{UNORM24_BITS}f \
+                 + f32(v.x & {UNORM24_MAX}u) * 0x1p-{}f",
+                2 * UNORM24_BITS
+            ),
+        ),
+        DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
+    };
+    let source = format!(
+        "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
+         @group(0) @binding(1) var src: {texture};\n\
+         @fragment fn depth(@builtin(position) p: vec4f) -> @builtin(frag_depth) f32 {{\n\
+             let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
+             return {depth};\n\
+         }}\n"
+    );
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
-        let used = targets
-            .colors
-            .iter()
-            .rposition(Option::is_some)
-            .map_or(0, |i| i + 1);
-        let colors: Vec<Option<wgpu::ColorTargetState>> = targets.colors[..used]
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                f.map(|f| wgpu::ColorTargetState {
-                    format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::R8Unorm),
-                    blend: None,
-                    write_mask: if i == index {
-                        wgpu::ColorWrites::ALL
-                    } else {
-                        wgpu::ColorWrites::empty()
-                    },
-                })
-            })
-            .collect();
-        let depth_stencil = targets.depth_stencil.map(|f| wgpu::DepthStencilState {
-            format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::Depth32Float),
-            depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::Always),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        });
-        self.counters.pipelines += 1;
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let sample_type = match how {
+        DepthSource::Float => wgpu::TextureSampleType::Float { filterable: false },
+        DepthSource::FloatBitsSigned => wgpu::TextureSampleType::Sint,
+        _ => wgpu::TextureSampleType::Uint,
+    };
+    let (layout, pipeline_layout) = loader_layout(&gpu.device, sample_type);
+    gpu.counters.pipelines += 1;
+    let pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
-            layout: Some(pipeline_layout),
+            layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &cover,
                 entry_point: None,
@@ -867,175 +1037,125 @@ impl WebGpu {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil,
-            multisample: wgpu::MultisampleState {
-                count: targets.samples,
-                ..Default::default()
-            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: None,
                 compilation_options: Default::default(),
-                targets: &colors,
+                targets: &[],
             }),
             multiview_mask: None,
             cache: None,
-        })
+        });
+    DepthProgram { pipeline, layout }
+}
+
+/// Writes the stencil of layers `dst_at.1..` of `dst` at level `dst_at.0`, in the rectangle at
+/// `dst_at.2` of `size`, from the `u32` texels of `src` in `aspect` (an `r8uint` texture or a
+/// stencil) at `src_at`, in `stream`, outside a pass (`StencilWrittenByDraw`): per layer one draw
+/// clears the rectangle's stencil, then one per bit sets that bit where the source has it. `src`
+/// is single-sampled with binding usage, `dst` has render usage.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stencil_by_draw(
+    gpu: &mut WebGpu,
+    stream: Stream,
+    src: (&wgpu::Texture, wgpu::TextureAspect),
+    src_at: (u32, u32, [u32; 2]),
+    dst: &wgpu::Texture,
+    dst_at: (u32, u32, [u32; 2]),
+    size: [u32; 2],
+    layers: u32,
+) {
+    gpu.record_slow_path(SlowPath::StencilWrittenByDraw);
+    let raw = dst.format();
+    if !gpu.fills.stencils.contains_key(&raw) {
+        let program = stencil_program(gpu, raw);
+        gpu.fills.stencils.insert(raw, program);
     }
-
-    /// Writes the depth of layers `dst_layer..` of `dst` at `dst_mip`, in the rectangle at
-    /// `dst_origin` of `size`, from the texels of `src` at `src_mip`, `src_layer..` and `src_origin`,
-    /// one draw per layer in `stream`, outside a pass (`DepthWrittenByDraw`). Both textures are
-    /// single-sampled; `src` has binding usage and `dst` render usage.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn depth_by_draw(
-        &mut self,
-        stream: Stream,
-        src: (&wgpu::Texture, Format, DepthSource),
-        src_at: (u32, u32, [u32; 2]),
-        dst: (&wgpu::Texture, Format),
-        dst_at: (u32, u32, [u32; 2]),
-        size: [u32; 2],
-        layers: u32,
-    ) {
-        self.record_slow_path(SlowPath::DepthWrittenByDraw);
-        let (src_tex, src_format, how) = src;
-        let (dst_tex, dst_format) = dst;
-        let Some(raw_dst) = convert::texture_format(dst_format) else {
-            self.fail("a depth draw into a format this back end does not hold");
-            return;
-        };
-        let Some(raw_src) = convert::texture_format(src_format) else {
-            self.fail("a depth draw from a format this back end does not hold");
-            return;
-        };
-        if !self.fills.depths.contains_key(&(raw_dst, how)) {
-            let program = self.depth_program(raw_dst, how);
-            self.fills.depths.insert((raw_dst, how), program);
-        }
-        let src_aspect = convert::aspect(false, src_format);
-        let src_view_format = raw_src
-            .aspect_specific_format(src_aspect)
-            .unwrap_or(raw_src);
-        // The source texel a fragment reads is its own position moved by this shift.
-        let shift = [
-            src_at.2[0].wrapping_sub(dst_at.2[0]),
-            src_at.2[1].wrapping_sub(dst_at.2[1]),
-            0,
-            0,
-        ];
-        let value = uniform(&self.device, shift);
-        let view = |t: &wgpu::Texture, format, aspect, mip, layer| {
-            t.create_view(&wgpu::TextureViewDescriptor {
+    let shift = [
+        src_at.2[0].wrapping_sub(dst_at.2[0]),
+        src_at.2[1].wrapping_sub(dst_at.2[1]),
+        0,
+        0,
+    ];
+    let value = uniform(&gpu.device, shift);
+    for l in 0..layers {
+        let from = level_view(src.0, src.1, src_at.0, src_at.1 + l);
+        let to = level_view(dst, wgpu::TextureAspect::All, dst_at.0, dst_at.1 + l);
+        let program = &gpu.fills.stencils[&raw];
+        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &program.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: value.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&from),
+                },
+            ],
+        });
+        let (clear, bits) = (program.clear.clone(), program.bits.clone());
+        let mut rp = gpu
+            .stream(stream)
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
-                format: Some(format),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                usage: None,
-                aspect,
-                base_mip_level: mip,
-                mip_level_count: Some(1),
-                base_array_layer: layer,
-                array_layer_count: Some(1),
-            })
-        };
-        for l in 0..layers {
-            let from = view(src_tex, src_view_format, src_aspect, src_at.0, src_at.1 + l);
-            let to = view(
-                dst_tex,
-                raw_dst,
-                wgpu::TextureAspect::All,
-                dst_at.0,
-                dst_at.1 + l,
-            );
-            let program = &self.fills.depths[&(raw_dst, how)];
-            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &program.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: value.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&from),
-                    },
-                ],
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &to,
+                    depth_ops: raw.has_depth_aspect().then(keep),
+                    stencil_ops: Some(keep()),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
             });
-            let pipeline = program.pipeline.clone();
-
-            let mut rp = self
-                .stream(stream)
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &to,
-                        depth_ops: Some(keep()),
-                        stencil_ops: crate::has_stencil(dst_format).then(keep),
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-            let (x, y) = (dst_at.2[0], dst_at.2[1]);
-            rp.set_viewport(x as f32, y as f32, size[0] as f32, size[1] as f32, 0.0, 1.0);
-            rp.set_scissor_rect(x, y, size[0], size[1]);
-            rp.set_pipeline(&pipeline);
-            rp.set_bind_group(0, &group, &[]);
-            rp.draw(COVER_VERTICES, 0..1);
+        let (x, y) = (dst_at.2[0], dst_at.2[1]);
+        rp.set_viewport(x as f32, y as f32, size[0] as f32, size[1] as f32, 0.0, 1.0);
+        rp.set_scissor_rect(x, y, size[0], size[1]);
+        rp.set_bind_group(0, &group, &[]);
+        rp.set_pipeline(&clear);
+        rp.set_stencil_reference(0);
+        rp.draw(COVER_VERTICES, STENCIL_CLEAR..STENCIL_CLEAR + 1);
+        rp.set_stencil_reference(u8::MAX.into());
+        for (bit, pipeline) in (0u32..).zip(&bits) {
+            rp.set_pipeline(pipeline);
+            rp.draw(COVER_VERTICES, bit..bit + 1);
         }
     }
+}
 
-    fn depth_program(&mut self, format: wgpu::TextureFormat, how: DepthSource) -> DepthProgram {
-        let cover = self.cover();
-        let (texture, depth) = match how {
-            DepthSource::Float => ("texture_2d<f32>", depth_of_float_bits("bitcast<u32>(v.x)")),
-            DepthSource::FloatBits => ("texture_2d<u32>", depth_of_float_bits("v.x")),
-            DepthSource::FloatBitsSigned => (
-                SIGNED_BITS_TEXTURE,
-                depth_of_float_bits("bitcast<u32>(v.x)"),
-            ),
-            // x / (2^24 - 1) is x 2^-24 (1 + 2^-24 + ...): both products are exact and their sum
-            // rounds once, nearest to the quotient, where WGSL's division may be 2.5 ulp off.
-            DepthSource::Unorm24 => (
-                "texture_2d<u32>",
-                format!(
-                    "f32(v.x & {UNORM24_MAX}u) * 0x1p-{UNORM24_BITS}f \
-                     + f32(v.x & {UNORM24_MAX}u) * 0x1p-{}f",
-                    2 * UNORM24_BITS
-                ),
-            ),
-            DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
+fn stencil_program(gpu: &mut WebGpu, format: wgpu::TextureFormat) -> StencilProgram {
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(stencil_wgsl().into()),
+        });
+    let (layout, pipeline_layout) = loader_layout(&gpu.device, wgpu::TextureSampleType::Uint);
+    let depth = format.has_depth_aspect();
+    let make = |write_mask: u32| {
+        let face = wgpu::StencilFaceState {
+            compare: wgpu::CompareFunction::Always,
+            fail_op: wgpu::StencilOperation::Keep,
+            depth_fail_op: wgpu::StencilOperation::Keep,
+            pass_op: wgpu::StencilOperation::Replace,
         };
-        let source = format!(
-            "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
-             @group(0) @binding(1) var src: {texture};\n\
-             @fragment fn depth(@builtin(position) p: vec4f) -> @builtin(frag_depth) f32 {{\n\
-                 let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
-                 return {depth};\n\
-             }}\n"
-        );
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            });
-        let sample_type = match how {
-            DepthSource::Float => wgpu::TextureSampleType::Float { filterable: false },
-            DepthSource::FloatBitsSigned => wgpu::TextureSampleType::Sint,
-            _ => wgpu::TextureSampleType::Uint,
-        };
-        let (layout, pipeline_layout) = loader_layout(&self.device, sample_type);
-        self.counters.pipelines += 1;
-        let pipeline = self
-            .device
+        gpu.device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: None,
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &cover,
+                    module: &module,
                     entry_point: None,
                     compilation_options: Default::default(),
                     buffers: &[],
@@ -1043,9 +1163,14 @@ impl WebGpu {
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Always),
-                    stencil: wgpu::StencilState::default(),
+                    depth_write_enabled: depth.then_some(false),
+                    depth_compare: depth.then_some(wgpu::CompareFunction::Always),
+                    stencil: wgpu::StencilState {
+                        front: face,
+                        back: face,
+                        read_mask: u8::MAX.into(),
+                        write_mask,
+                    },
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
@@ -1057,272 +1182,142 @@ impl WebGpu {
                 }),
                 multiview_mask: None,
                 cache: None,
-            });
-        DepthProgram { pipeline, layout }
-    }
+            })
+    };
+    let program = StencilProgram {
+        clear: make(u8::MAX.into()),
+        bits: std::array::from_fn(|bit| make(1 << bit)),
+        layout,
+    };
+    gpu.counters.pipelines += program.bits.len() as u64 + 1;
+    program
+}
 
-    /// Writes the stencil of layers `dst_at.1..` of `dst` at level `dst_at.0`, in the rectangle at
-    /// `dst_at.2` of `size`, from the `u32` texels of `src` in `aspect` (an `r8uint` texture or a
-    /// stencil) at `src_at`, in `stream`, outside a pass (`StencilWrittenByDraw`): per layer one draw
-    /// clears the rectangle's stencil, then one per bit sets that bit where the source has it. `src`
-    /// is single-sampled with binding usage, `dst` has render usage.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn stencil_by_draw(
-        &mut self,
-        stream: Stream,
-        src: (&wgpu::Texture, wgpu::TextureAspect),
-        src_at: (u32, u32, [u32; 2]),
-        dst: &wgpu::Texture,
-        dst_at: (u32, u32, [u32; 2]),
-        size: [u32; 2],
-        layers: u32,
-    ) {
-        self.record_slow_path(SlowPath::StencilWrittenByDraw);
-        let raw = dst.format();
-        if !self.fills.stencils.contains_key(&raw) {
-            let program = self.stencil_program(raw);
-            self.fills.stencils.insert(raw, program);
-        }
-        let shift = [
-            src_at.2[0].wrapping_sub(dst_at.2[0]),
-            src_at.2[1].wrapping_sub(dst_at.2[1]),
-            0,
-            0,
-        ];
-        let value = uniform(&self.device, shift);
-        for l in 0..layers {
-            let from = level_view(src.0, src.1, src_at.0, src_at.1 + l);
-            let to = level_view(dst, wgpu::TextureAspect::All, dst_at.0, dst_at.1 + l);
-            let program = &self.fills.stencils[&raw];
-            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &program.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: value.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&from),
-                    },
-                ],
-            });
-            let (clear, bits) = (program.clear.clone(), program.bits.clone());
-            let mut rp = self
-                .stream(stream)
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &to,
-                        depth_ops: raw.has_depth_aspect().then(keep),
-                        stencil_ops: Some(keep()),
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-            let (x, y) = (dst_at.2[0], dst_at.2[1]);
-            rp.set_viewport(x as f32, y as f32, size[0] as f32, size[1] as f32, 0.0, 1.0);
-            rp.set_scissor_rect(x, y, size[0], size[1]);
-            rp.set_bind_group(0, &group, &[]);
-            rp.set_pipeline(&clear);
-            rp.set_stencil_reference(0);
-            rp.draw(COVER_VERTICES, STENCIL_CLEAR..STENCIL_CLEAR + 1);
-            rp.set_stencil_reference(u8::MAX.into());
-            for (bit, pipeline) in (0u32..).zip(&bits) {
-                rp.set_pipeline(pipeline);
-                rp.draw(COVER_VERTICES, bit..bit + 1);
-            }
-        }
+/// Draws the depth or stencil (`read`) of layers `src_at.1..` of `src` at level `src_at.0`, in
+/// the rectangle at `src_at.2` of `size`, into layers `0..layers` of the colour texture `dst` at
+/// its origin, outside a pass (`DepthReadByDraw`). `src` is single-sampled with binding usage.
+pub(crate) fn aspect_by_draw(
+    gpu: &mut WebGpu,
+    src: (&wgpu::Texture, AspectRead),
+    src_at: (u32, u32, [u32; 2]),
+    dst: &wgpu::Texture,
+    size: [u32; 2],
+    layers: u32,
+) {
+    gpu.record_slow_path(SlowPath::DepthReadByDraw);
+    let (src_tex, read) = src;
+    if !gpu.fills.reads.contains_key(&read) {
+        let program = read_program(gpu, read, dst.format());
+        gpu.fills.reads.insert(read, program);
     }
-
-    fn stencil_program(&mut self, format: wgpu::TextureFormat) -> StencilProgram {
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(stencil_wgsl().into()),
-            });
-        let (layout, pipeline_layout) = loader_layout(&self.device, wgpu::TextureSampleType::Uint);
-        let depth = format.has_depth_aspect();
-        let make = |write_mask: u32| {
-            let face = wgpu::StencilFaceState {
-                compare: wgpu::CompareFunction::Always,
-                fail_op: wgpu::StencilOperation::Keep,
-                depth_fail_op: wgpu::StencilOperation::Keep,
-                pass_op: wgpu::StencilOperation::Replace,
-            };
-            self.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: None,
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &module,
-                        entry_point: None,
-                        compilation_options: Default::default(),
-                        buffers: &[],
-                    },
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format,
-                        depth_write_enabled: depth.then_some(false),
-                        depth_compare: depth.then_some(wgpu::CompareFunction::Always),
-                        stencil: wgpu::StencilState {
-                            front: face,
-                            back: face,
-                            read_mask: u8::MAX.into(),
-                            write_mask,
-                        },
-                        bias: wgpu::DepthBiasState::default(),
-                    }),
-                    multisample: wgpu::MultisampleState::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module: &module,
-                        entry_point: None,
-                        compilation_options: Default::default(),
-                        targets: &[],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-        };
-        let program = StencilProgram {
-            clear: make(u8::MAX.into()),
-            bits: std::array::from_fn(|bit| make(1 << bit)),
-            layout,
-        };
-        self.counters.pipelines += program.bits.len() as u64 + 1;
-        program
-    }
-
-    /// Draws the depth or stencil (`read`) of layers `src_at.1..` of `src` at level `src_at.0`, in
-    /// the rectangle at `src_at.2` of `size`, into layers `0..layers` of the colour texture `dst` at
-    /// its origin, outside a pass (`DepthReadByDraw`). `src` is single-sampled with binding usage.
-    pub(crate) fn aspect_by_draw(
-        &mut self,
-        src: (&wgpu::Texture, AspectRead),
-        src_at: (u32, u32, [u32; 2]),
-        dst: &wgpu::Texture,
-        size: [u32; 2],
-        layers: u32,
-    ) {
-        self.record_slow_path(SlowPath::DepthReadByDraw);
-        let (src_tex, read) = src;
-        if !self.fills.reads.contains_key(&read) {
-            let program = self.read_program(read, dst.format());
-            self.fills.reads.insert(read, program);
-        }
-        let aspect = match read {
-            AspectRead::Stencil => wgpu::TextureAspect::StencilOnly,
-            _ => wgpu::TextureAspect::DepthOnly,
-        };
-        let value = uniform(&self.device, [src_at.2[0], src_at.2[1], 0, 0]);
-        for l in 0..layers {
-            let from = level_view(src_tex, aspect, src_at.0, src_at.1 + l);
-            let to = level_view(dst, wgpu::TextureAspect::All, 0, l);
-            let program = &self.fills.reads[&read];
-            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &program.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: value.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&from),
-                    },
-                ],
-            });
-            let pipeline = program.pipeline.clone();
-            let mut rp = self
-                .stream(Stream::Main)
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &to,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-            rp.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
-            rp.set_scissor_rect(0, 0, size[0], size[1]);
-            rp.set_pipeline(&pipeline);
-            rp.set_bind_group(0, &group, &[]);
-            rp.draw(COVER_VERTICES, 0..1);
-        }
-    }
-
-    fn read_program(&mut self, read: AspectRead, target: wgpu::TextureFormat) -> DepthProgram {
-        let cover = self.cover();
-        // The conversions are exact: a unorm value stored as the nearest float is within half a
-        // step of its integer after one correctly rounded multiply.
-        let (texture, value) = match read {
-            AspectRead::Unorm16 => (
-                "texture_2d<f32>",
-                format!("u32(round(v.x * {}.0))", u16::MAX),
-            ),
-            AspectRead::Unorm24 => (
-                "texture_2d<f32>",
-                format!("u32(round(v.x * {UNORM24_MAX}.0))"),
-            ),
-            AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),
-            AspectRead::Stencil => ("texture_2d<u32>", "v.x".into()),
-        };
-        let source = format!(
-            "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
-             @group(0) @binding(1) var src: {texture};\n\
-             @fragment fn read(@builtin(position) p: vec4f) -> @location(0) vec4<u32> {{\n\
-                 let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
-                 return vec4<u32>({value}, 0u, 0u, 0u);\n\
-             }}\n"
-        );
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            });
-        let sample_type = match read {
-            AspectRead::Stencil => wgpu::TextureSampleType::Uint,
-            _ => wgpu::TextureSampleType::Float { filterable: false },
-        };
-        let (layout, pipeline_layout) = loader_layout(&self.device, sample_type);
-        self.counters.pipelines += 1;
-        let pipeline = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &cover,
-                    entry_point: None,
-                    compilation_options: Default::default(),
-                    buffers: &[],
+    let aspect = match read {
+        AspectRead::Stencil => wgpu::TextureAspect::StencilOnly,
+        _ => wgpu::TextureAspect::DepthOnly,
+    };
+    let value = uniform(&gpu.device, [src_at.2[0], src_at.2[1], 0, 0]);
+    for l in 0..layers {
+        let from = level_view(src_tex, aspect, src_at.0, src_at.1 + l);
+        let to = level_view(dst, wgpu::TextureAspect::All, 0, l);
+        let program = &gpu.fills.reads[&read];
+        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &program.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: value.as_entire_binding(),
                 },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: None,
-                    compilation_options: Default::default(),
-                    targets: &[Some(target.into())],
-                }),
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&from),
+                },
+            ],
+        });
+        let pipeline = program.pipeline.clone();
+        let mut rp = gpu
+            .stream(Stream::Main)
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &to,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
                 multiview_mask: None,
-                cache: None,
             });
-        DepthProgram { pipeline, layout }
+        rp.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
+        rp.set_scissor_rect(0, 0, size[0], size[1]);
+        rp.set_pipeline(&pipeline);
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(COVER_VERTICES, 0..1);
     }
+}
+
+fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat) -> DepthProgram {
+    let cover = cover(gpu);
+    // The conversions are exact: a unorm value stored as the nearest float is within half a
+    // step of its integer after one correctly rounded multiply.
+    let (texture, value) = match read {
+        AspectRead::Unorm16 => (
+            "texture_2d<f32>",
+            format!("u32(round(v.x * {}.0))", u16::MAX),
+        ),
+        AspectRead::Unorm24 => (
+            "texture_2d<f32>",
+            format!("u32(round(v.x * {UNORM24_MAX}.0))"),
+        ),
+        AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),
+        AspectRead::Stencil => ("texture_2d<u32>", "v.x".into()),
+    };
+    let source = format!(
+        "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
+         @group(0) @binding(1) var src: {texture};\n\
+         @fragment fn read(@builtin(position) p: vec4f) -> @location(0) vec4<u32> {{\n\
+             let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
+             return vec4<u32>({value}, 0u, 0u, 0u);\n\
+         }}\n"
+    );
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+    let sample_type = match read {
+        AspectRead::Stencil => wgpu::TextureSampleType::Uint,
+        _ => wgpu::TextureSampleType::Float { filterable: false },
+    };
+    let (layout, pipeline_layout) = loader_layout(&gpu.device, sample_type);
+    gpu.counters.pipelines += 1;
+    let pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cover,
+                entry_point: None,
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                targets: &[Some(target.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+    DepthProgram { pipeline, layout }
 }

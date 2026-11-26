@@ -45,221 +45,215 @@ pub(crate) struct EdgeProgram {
     layout: wgpu::BindGroupLayout,
 }
 
-impl WebGpu {
-    /// Copies `size` bytes from `src` at `src_at` to `dst` at `dst_at`, two different GPU buffers,
-    /// in `stream` outside a pass: natively where both ends and the size are whole words; where the
-    /// two offsets agree in their word, the middle natively and the edge words by the program;
-    /// otherwise every word by the program.
-    pub(crate) fn copy_bytes(
-        &mut self,
-        stream: Stream,
-        src: &wgpu::Buffer,
-        src_at: u64,
-        dst: &wgpu::Buffer,
-        dst_at: u64,
-        size: u64,
-    ) {
-        if size == 0 {
-            return;
-        }
-        if [src_at, dst_at, size]
-            .iter()
-            .all(|v| v.is_multiple_of(ALIGN))
-        {
-            self.stream(stream)
-                .copy_buffer_to_buffer(src, src_at, dst, dst_at, size);
-            return;
-        }
-        self.record_slow_path(SlowPath::UnalignedBufferEdge);
-        if src_at % ALIGN != dst_at % ALIGN {
-            self.merge(stream, src, src_at, dst, dst_at, size);
-            return;
-        }
-        let head = ((ALIGN - dst_at % ALIGN) % ALIGN).min(size);
-        let middle = (size - head) & !(ALIGN - 1);
-        let tail = size - head - middle;
-        self.merge(stream, src, src_at, dst, dst_at, head);
-        if middle > 0 {
-            self.stream(stream).copy_buffer_to_buffer(
-                src,
-                src_at + head,
-                dst,
-                dst_at + head,
-                middle,
-            );
-        }
-        self.merge(
-            stream,
-            src,
-            src_at + head + middle,
-            dst,
-            dst_at + head + middle,
-            tail,
-        );
+/// Copies `size` bytes from `src` at `src_at` to `dst` at `dst_at`, two different GPU buffers,
+/// in `stream` outside a pass: natively where both ends and the size are whole words; where the
+/// two offsets agree in their word, the middle natively and the edge words by the program;
+/// otherwise every word by the program.
+pub(crate) fn copy_bytes(
+    gpu: &mut WebGpu,
+    stream: Stream,
+    src: &wgpu::Buffer,
+    src_at: u64,
+    dst: &wgpu::Buffer,
+    dst_at: u64,
+    size: u64,
+) {
+    if size == 0 {
+        return;
     }
-
-    /// Runs the program over the words of `dst` the range touches, in pieces whose workgroups and
-    /// bound windows stay inside the device's limits.
-    fn merge(
-        &mut self,
-        stream: Stream,
-        src: &wgpu::Buffer,
-        src_at: u64,
-        dst: &wgpu::Buffer,
-        dst_at: u64,
-        size: u64,
-    ) {
-        let limits = self.device.limits();
-        let align = u64::from(limits.min_storage_buffer_offset_alignment);
-        // A piece's window adds up to `align` bytes before it and a word after it, and one more
-        // word may need one more workgroup.
-        let piece =
-            ((u64::from(limits.max_compute_workgroups_per_dimension) - 1) * GROUP * STORAGE_WORD)
-                .min(limits.max_storage_buffer_binding_size - align - STORAGE_WORD)
-                & !(STORAGE_WORD - 1);
-        let mut done = 0;
-        while done < size {
-            let n = (size - done).min(piece);
-            self.merge_piece(stream, src, src_at + done, dst, dst_at + done, n);
-            done += n;
-        }
-    }
-
-    fn merge_piece(
-        &mut self,
-        stream: Stream,
-        src: &wgpu::Buffer,
-        src_at: u64,
-        dst: &wgpu::Buffer,
-        dst_at: u64,
-        size: u64,
-    ) {
-        if self.edge.is_none() {
-            self.edge = Some(self.edge_program());
-        }
-        let align = u64::from(self.caps.limits.min_storage_offset_alignment);
-        // Each buffer is bound from the aligned offset below the range to the word after it.
-        let window = |at: u64| {
-            let start = at & !(STORAGE_WORD - 1) & !(align - 1);
-            (start, (at + size).next_multiple_of(STORAGE_WORD) - start)
-        };
-        let (dst_start, dst_len) = window(dst_at);
-        let (src_start, src_len) = window(src_at);
-        let first_word = (dst_at & !(STORAGE_WORD - 1)) - dst_start;
-        let params: Vec<u8> = [
-            src_at - src_start,
-            dst_at - dst_start,
-            size,
-            first_word / STORAGE_WORD,
-            (dst_len - first_word) / STORAGE_WORD,
-            0,
-            0,
-            0,
-        ]
+    if [src_at, dst_at, size]
         .iter()
-        .flat_map(|v| (*v as u32).to_le_bytes())
-        .collect();
-        let words = (dst_len - first_word) / STORAGE_WORD;
-        let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
+        .all(|v| v.is_multiple_of(ALIGN))
+    {
+        gpu.stream(stream)
+            .copy_buffer_to_buffer(src, src_at, dst, dst_at, size);
+        return;
+    }
+    gpu.record_slow_path(SlowPath::UnalignedBufferEdge);
+    if src_at % ALIGN != dst_at % ALIGN {
+        merge(gpu, stream, src, src_at, dst, dst_at, size);
+        return;
+    }
+    let head = ((ALIGN - dst_at % ALIGN) % ALIGN).min(size);
+    let middle = (size - head) & !(ALIGN - 1);
+    let tail = size - head - middle;
+    merge(gpu, stream, src, src_at, dst, dst_at, head);
+    if middle > 0 {
+        gpu.stream(stream)
+            .copy_buffer_to_buffer(src, src_at + head, dst, dst_at + head, middle);
+    }
+    merge(
+        gpu,
+        stream,
+        src,
+        src_at + head + middle,
+        dst,
+        dst_at + head + middle,
+        tail,
+    );
+}
+
+/// Runs the program over the words of `dst` the range touches, in pieces whose workgroups and
+/// bound windows stay inside the device's limits.
+fn merge(
+    gpu: &mut WebGpu,
+    stream: Stream,
+    src: &wgpu::Buffer,
+    src_at: u64,
+    dst: &wgpu::Buffer,
+    dst_at: u64,
+    size: u64,
+) {
+    let limits = gpu.device.limits();
+    let align = u64::from(limits.min_storage_buffer_offset_alignment);
+    // A piece's window adds up to `align` bytes before it and a word after it, and one more
+    // word may need one more workgroup.
+    let piece =
+        ((u64::from(limits.max_compute_workgroups_per_dimension) - 1) * GROUP * STORAGE_WORD)
+            .min(limits.max_storage_buffer_binding_size - align - STORAGE_WORD)
+            & !(STORAGE_WORD - 1);
+    let mut done = 0;
+    while done < size {
+        let n = (size - done).min(piece);
+        merge_piece(gpu, stream, src, src_at + done, dst, dst_at + done, n);
+        done += n;
+    }
+}
+
+fn merge_piece(
+    gpu: &mut WebGpu,
+    stream: Stream,
+    src: &wgpu::Buffer,
+    src_at: u64,
+    dst: &wgpu::Buffer,
+    dst_at: u64,
+    size: u64,
+) {
+    if gpu.edge.is_none() {
+        gpu.edge = Some(edge_program(gpu));
+    }
+    let align = u64::from(gpu.caps.limits.min_storage_offset_alignment);
+    // Each buffer is bound from the aligned offset below the range to the word after it.
+    let window = |at: u64| {
+        let start = at & !(STORAGE_WORD - 1) & !(align - 1);
+        (start, (at + size).next_multiple_of(STORAGE_WORD) - start)
+    };
+    let (dst_start, dst_len) = window(dst_at);
+    let (src_start, src_len) = window(src_at);
+    let first_word = (dst_at & !(STORAGE_WORD - 1)) - dst_start;
+    let params: Vec<u8> = [
+        src_at - src_start,
+        dst_at - dst_start,
+        size,
+        first_word / STORAGE_WORD,
+        (dst_len - first_word) / STORAGE_WORD,
+        0,
+        0,
+        0,
+    ]
+    .iter()
+    .flat_map(|v| (*v as u32).to_le_bytes())
+    .collect();
+    let words = (dst_len - first_word) / STORAGE_WORD;
+    let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: params.len() as u64,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: true,
+    });
+    uniform
+        .slice(..)
+        .get_mapped_range_mut()
+        .expect("a buffer mapped at creation")
+        .copy_from_slice(&params);
+    uniform.unmap();
+    let edge = gpu.edge.as_ref().expect("made above");
+    let binding = |buffer, offset, len| {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer,
+            offset,
+            size: wgpu::BufferSize::new(len),
+        })
+    };
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &edge.layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: binding(dst, dst_start, dst_len),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: binding(src, src_start, src_len),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform.as_entire_binding(),
+            },
+        ],
+    });
+    let pipeline = edge.pipeline.clone();
+    let mut pass = gpu
+        .stream(stream)
+        .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(0, &group, &[]);
+    pass.dispatch_workgroups(words.div_ceil(GROUP) as u32, 1, 1);
+}
+
+fn edge_program(gpu: &WebGpu) -> EdgeProgram {
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            size: params.len() as u64,
-            usage: wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: true,
+            source: wgpu::ShaderSource::Wgsl(with_group(EDGE_WGSL).into()),
         });
-        uniform
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("a buffer mapped at creation")
-            .copy_from_slice(&params);
-        uniform.unmap();
-        let edge = self.edge.as_ref().expect("made above");
-        let binding = |buffer, offset, len| {
-            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer,
-                offset,
-                size: wgpu::BufferSize::new(len),
-            })
-        };
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            layout: &edge.layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: binding(dst, dst_start, dst_len),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: binding(src, src_start, src_len),
-                },
-                wgpu::BindGroupEntry {
+                storage(0, false),
+                storage(1, true),
+                wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    resource: uniform.as_entire_binding(),
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
             ],
         });
-        let pipeline = edge.pipeline.clone();
-        let mut pass = self
-            .stream(stream)
-            .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &group, &[]);
-        pass.dispatch_workgroups(words.div_ceil(GROUP) as u32, 1, 1);
-    }
-
-    fn edge_program(&self) -> EdgeProgram {
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(with_group(EDGE_WGSL).into()),
-            });
-        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-        let layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[
-                    storage(0, false),
-                    storage(1, true),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let pipeline_layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: Some(&pipeline_layout),
-                module: &module,
-                entry_point: None,
-                compilation_options: Default::default(),
-                cache: None,
-            });
-        EdgeProgram { pipeline, layout }
-    }
+    let pipeline_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+    let pipeline = gpu
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: None,
+            compilation_options: Default::default(),
+            cache: None,
+        });
+    EdgeProgram { pipeline, layout }
 }

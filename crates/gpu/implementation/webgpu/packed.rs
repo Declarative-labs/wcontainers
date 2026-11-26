@@ -11,6 +11,8 @@
 //! narrower value apart; copies between a buffer and such a texture widen and pack the same way on
 //! the GPU, by a draw.
 
+use crate::fill::convert_by_draw;
+use crate::memory::{copy_buffer_texture, copy_texture_impl, write_texels};
 use wcontainers_gpu::{
     Gpu, format::FORMAT_FACTS, format::Format, resource::CopyBufferTexture, resource::Extent,
     resource::Origin, resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
@@ -435,262 +437,270 @@ pub(crate) fn packed_bytes(format: Format, texels: u64) -> u64 {
     texels.div_ceil(u64::from(bw)) * u64::from(bytes)
 }
 
-impl WebGpu {
-    /// A write into a converted texture: its texels widened on the host.
-    pub(crate) fn write_packed(
-        &mut self,
-        region: &TextureRegion<'_, Self>,
-        extent: Extent,
-        data: &[u8],
-        row_pitch: u32,
-        rows_per_layer: u32,
-        mode: WriteMode,
-    ) {
-        let format = region.texture.0.desc.format;
-        if !region
-            .origin
-            .x
-            .is_multiple_of(FORMAT_FACTS[format as usize].block.0)
-        {
-            return self.fail("a region of a two-pixel format starting inside a pair");
-        }
-        let row = packed_bytes(format, u64::from(extent.width)) as usize;
-        let texel = held_bytes(format);
-        let wide = (extent.width * texel) as usize;
-        let mut texels =
-            Vec::with_capacity(wide * extent.height as usize * extent.depth_or_layers as usize);
-        for l in 0..extent.depth_or_layers as usize {
-            for r in 0..extent.height as usize {
-                let from = (l * rows_per_layer as usize + r) * row_pitch as usize;
-                let Some(src) = data.get(from..from + row) else {
-                    return self
-                        .fail("a write into a converted texture with fewer bytes than its extent");
-                };
-                let at = texels.len();
-                widen(format, src, &mut texels);
-                // A pair reaching past an odd level's edge gives one texel.
-                texels.truncate(at + wide);
-            }
-        }
-        self.record_slow_path(SlowPath::FormatConverted);
-        self.write_texels(
-            region,
-            extent,
-            &texels,
-            extent.width * texel,
-            extent.height,
-            mode,
-        );
+/// A write into a converted texture: its texels widened on the host.
+pub(crate) fn write_packed(
+    gpu: &mut WebGpu,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+    data: &[u8],
+    row_pitch: u32,
+    rows_per_layer: u32,
+    mode: WriteMode,
+) {
+    let format = region.texture.0.desc.format;
+    if !region
+        .origin
+        .x
+        .is_multiple_of(FORMAT_FACTS[format as usize].block.0)
+    {
+        return gpu.fail("a region of a two-pixel format starting inside a pair");
     }
-
-    /// The first slice of `region` of a converted texture, after checking that the region lies
-    /// inside its level and starts on a block.
-    fn first_slice(&mut self, region: &TextureRegion<'_, Self>, extent: Extent) -> Option<u32> {
-        let t = &region.texture.0;
-        if !region
-            .origin
-            .x
-            .is_multiple_of(FORMAT_FACTS[t.desc.format as usize].block.0)
-        {
-            self.fail("a region of a two-pixel format starting inside a pair");
-            return None;
-        }
-        let size = |n: u32| (n >> region.mip).max(1);
-        let (first, slices) = if t.desc.dimension == TextureDimension::D3 {
-            (region.origin.z, size(t.desc.depth_or_layers))
-        } else {
-            (region.layer, t.desc.depth_or_layers)
-        };
-        if region.origin.x + extent.width > size(t.desc.width)
-            || region.origin.y + extent.height > size(t.desc.height)
-            || first + extent.depth_or_layers > slices
-        {
-            self.fail("a copy reaching past a converted texture's level");
-            return None;
-        }
-        Some(first)
-    }
-
-    /// A texture for the raw blocks of `extent` texels of `format`, one layer a slice.
-    fn raw_blocks(&mut self, format: Format, extent: Extent) -> Option<Texture> {
-        let Ok(staged) = self.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format: raw(format),
-            width: raw_width(format, extent.width),
-            height: extent.height,
-            depth_or_layers: extent.depth_or_layers,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::COPY_SRC
-                | TextureUsage::COPY_DST
-                | TextureUsage::SAMPLE
-                | TextureUsage::RENDER,
-            cube: false,
-            reinterpret: false,
-        }) else {
-            self.fail("the texture a converted copy goes through could not be made");
-            return None;
-        };
-        self.record_slow_path(SlowPath::FormatConverted);
-        Some(staged)
-    }
-
-    /// Widens the raw blocks in `staged` into `region` of a converted texture (`into`), or packs
-    /// the region's texels into them.
-    fn convert_region(
-        &mut self,
-        region: &TextureRegion<'_, Self>,
-        first: u32,
-        staged: &Texture,
-        extent: Extent,
-        into: bool,
-    ) {
-        let t = &region.texture.0;
-        t.used_in.set(self.serial);
-        let held = (
-            &t.raw(),
-            region.mip,
-            first,
-            [region.origin.x, region.origin.y],
-        );
-        self.convert_by_draw(t.desc.format, into, held, &staged.0.raw(), extent);
-    }
-
-    /// Texels of `format` one copy through a texture of raw blocks spans: whole blocks whose raw
-    /// bytes are a whole number of Direct3D 12 placements, so every run after the first starts
-    /// placed as Direct3D 12 wants; and few enough that the raw texture, widened by the texels of
-    /// one placement (where Direct3D 12 implementations move an unplaced copy back to a placed
-    /// offset), stays within the device's widest 2D texture.
-    fn raw_run(&self, format: Format) -> u32 {
-        let bw = FORMAT_FACTS[format as usize].block.0;
-        let placement = (DX12_PLACEMENT_ALIGNMENT
-            / u64::from(FORMAT_FACTS[raw(format) as usize].block.2)) as u32;
-        let widest = self.device.limits().max_texture_dimension_2d;
-        let blocks = widest.saturating_sub(placement) / raw_width(format, bw);
-        (blocks / placement * placement).max(1) * bw
-    }
-
-    /// A copy between a buffer and a converted texture, on the GPU, in runs of columns as wide as
-    /// [`Self::raw_run`] allows: the buffer's bytes copied into a texture of their own ([`raw`])
-    /// and widened into the texture by a draw, or the texture's texels packed into one by a draw
-    /// and copied out.
-    pub(crate) fn copy_buffer_packed(
-        &mut self,
-        buffer: &CopyBufferTexture<'_, Self>,
-        region: &TextureRegion<'_, Self>,
-        extent: Extent,
-        to_texture: bool,
-    ) {
-        let format = region.texture.0.desc.format;
-        let run = self.raw_run(format);
-        let mut x = 0;
-        while x < extent.width {
-            let width = run.min(extent.width - x);
-            let part = CopyBufferTexture {
-                buffer: buffer.buffer,
-                offset: buffer.offset + packed_bytes(format, u64::from(x)),
-                row_pitch: buffer.row_pitch,
-                rows_per_layer: buffer.rows_per_layer,
+    let row = packed_bytes(format, u64::from(extent.width)) as usize;
+    let texel = held_bytes(format);
+    let wide = (extent.width * texel) as usize;
+    let mut texels =
+        Vec::with_capacity(wide * extent.height as usize * extent.depth_or_layers as usize);
+    for l in 0..extent.depth_or_layers as usize {
+        for r in 0..extent.height as usize {
+            let from = (l * rows_per_layer as usize + r) * row_pitch as usize;
+            let Some(src) = data.get(from..from + row) else {
+                return gpu
+                    .fail("a write into a converted texture with fewer bytes than its extent");
             };
-            let at = moved(region, x);
-            self.copy_buffer_packed_run(&part, &at, Extent { width, ..extent }, to_texture);
-            x += width;
+            let at = texels.len();
+            widen(format, src, &mut texels);
+            // A pair reaching past an odd level's edge gives one texel.
+            texels.truncate(at + wide);
         }
     }
+    gpu.record_slow_path(SlowPath::FormatConverted);
+    write_texels(
+        gpu,
+        region,
+        extent,
+        &texels,
+        extent.width * texel,
+        extent.height,
+        mode,
+    );
+}
 
-    fn copy_buffer_packed_run(
-        &mut self,
-        buffer: &CopyBufferTexture<'_, Self>,
-        region: &TextureRegion<'_, Self>,
-        extent: Extent,
-        to_texture: bool,
-    ) {
-        if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
-            return;
-        }
-        let format = region.texture.0.desc.format;
-        let Some(first) = self.first_slice(region, extent) else {
-            return;
-        };
-        let Some(staged) = self.raw_blocks(format, extent) else {
-            return;
-        };
-        let blocks = Extent {
-            width: raw_width(format, extent.width),
-            ..extent
-        };
-        let at = at_origin(&staged);
-        if to_texture {
-            self.copy_buffer_texture(buffer, &at, blocks, true);
-            self.convert_region(region, first, &staged, extent, true);
-        } else {
-            self.convert_region(region, first, &staged, extent, false);
-            self.copy_buffer_texture(buffer, &at, blocks, false);
-        }
+/// The first slice of `region` of a converted texture, after checking that the region lies
+/// inside its level and starts on a block.
+fn first_slice(
+    gpu: &mut WebGpu,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+) -> Option<u32> {
+    let t = &region.texture.0;
+    if !region
+        .origin
+        .x
+        .is_multiple_of(FORMAT_FACTS[t.desc.format as usize].block.0)
+    {
+        gpu.fail("a region of a two-pixel format starting inside a pair");
+        return None;
     }
-
-    /// A copy between textures of different formats of equal blocks of which one is converted, on
-    /// the GPU: through a texture of the raw blocks, packed into it from a converted source or
-    /// copied from another, and widened from it into a converted destination or copied into
-    /// another.
-    pub(crate) fn copy_packed(
-        &mut self,
-        src: &TextureRegion<'_, Self>,
-        dst: &TextureRegion<'_, Self>,
-        extent: Extent,
-    ) {
-        let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
-        if FORMAT_FACTS[sf as usize].block != FORMAT_FACTS[df as usize].block {
-            return self.fail("a copy between a converted format and one of another texel size");
-        }
-        let run = self.raw_run(sf);
-        let mut x = 0;
-        while x < extent.width {
-            let width = run.min(extent.width - x);
-            self.copy_packed_run(&moved(src, x), &moved(dst, x), Extent { width, ..extent });
-            x += width;
-        }
+    let size = |n: u32| (n >> region.mip).max(1);
+    let (first, slices) = if t.desc.dimension == TextureDimension::D3 {
+        (region.origin.z, size(t.desc.depth_or_layers))
+    } else {
+        (region.layer, t.desc.depth_or_layers)
+    };
+    if region.origin.x + extent.width > size(t.desc.width)
+        || region.origin.y + extent.height > size(t.desc.height)
+        || first + extent.depth_or_layers > slices
+    {
+        gpu.fail("a copy reaching past a converted texture's level");
+        return None;
     }
+    Some(first)
+}
 
-    fn copy_packed_run(
-        &mut self,
-        src: &TextureRegion<'_, Self>,
-        dst: &TextureRegion<'_, Self>,
-        extent: Extent,
-    ) {
-        let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
-        if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
-            return;
-        }
-        let (from, to) = (held(sf).is_some(), held(df).is_some());
-        let Some(src_first) = (if from {
-            self.first_slice(src, extent)
-        } else {
-            Some(0)
-        }) else {
-            return;
+/// A texture for the raw blocks of `extent` texels of `format`, one layer a slice.
+fn raw_blocks(gpu: &mut WebGpu, format: Format, extent: Extent) -> Option<Texture> {
+    let Ok(staged) = gpu.create_texture(&TextureDesc {
+        dimension: TextureDimension::D2,
+        format: raw(format),
+        width: raw_width(format, extent.width),
+        height: extent.height,
+        depth_or_layers: extent.depth_or_layers,
+        mip_levels: 1,
+        samples: 1,
+        usage: TextureUsage::COPY_SRC
+            | TextureUsage::COPY_DST
+            | TextureUsage::SAMPLE
+            | TextureUsage::RENDER,
+        cube: false,
+        reinterpret: false,
+    }) else {
+        gpu.fail("the texture a converted copy goes through could not be made");
+        return None;
+    };
+    gpu.record_slow_path(SlowPath::FormatConverted);
+    Some(staged)
+}
+
+/// Widens the raw blocks in `staged` into `region` of a converted texture (`into`), or packs
+/// the region's texels into them.
+fn convert_region(
+    gpu: &mut WebGpu,
+    region: &TextureRegion<'_, WebGpu>,
+    first: u32,
+    staged: &Texture,
+    extent: Extent,
+    into: bool,
+) {
+    let t = &region.texture.0;
+    t.used_in.set(gpu.serial);
+    let held = (
+        &t.raw(),
+        region.mip,
+        first,
+        [region.origin.x, region.origin.y],
+    );
+    convert_by_draw(gpu, t.desc.format, into, held, &staged.0.raw(), extent);
+}
+
+/// Texels of `format` one copy through a texture of raw blocks spans: whole blocks whose raw
+/// bytes are a whole number of Direct3D 12 placements, so every run after the first starts
+/// placed as Direct3D 12 wants; and few enough that the raw texture, widened by the texels of
+/// one placement (where Direct3D 12 implementations move an unplaced copy back to a placed
+/// offset), stays within the device's widest 2D texture.
+fn raw_run(gpu: &WebGpu, format: Format) -> u32 {
+    let bw = FORMAT_FACTS[format as usize].block.0;
+    let placement =
+        (DX12_PLACEMENT_ALIGNMENT / u64::from(FORMAT_FACTS[raw(format) as usize].block.2)) as u32;
+    let widest = gpu.device.limits().max_texture_dimension_2d;
+    let blocks = widest.saturating_sub(placement) / raw_width(format, bw);
+    (blocks / placement * placement).max(1) * bw
+}
+
+/// A copy between a buffer and a converted texture, on the GPU, in runs of columns as wide as
+/// [`raw_run`] allows: the buffer's bytes copied into a texture of their own ([`raw`])
+/// and widened into the texture by a draw, or the texture's texels packed into one by a draw
+/// and copied out.
+pub(crate) fn copy_buffer_packed(
+    gpu: &mut WebGpu,
+    buffer: &CopyBufferTexture<'_, WebGpu>,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+    to_texture: bool,
+) {
+    let format = region.texture.0.desc.format;
+    let run = raw_run(gpu, format);
+    let mut x = 0;
+    while x < extent.width {
+        let width = run.min(extent.width - x);
+        let part = CopyBufferTexture {
+            buffer: buffer.buffer,
+            offset: buffer.offset + packed_bytes(format, u64::from(x)),
+            row_pitch: buffer.row_pitch,
+            rows_per_layer: buffer.rows_per_layer,
         };
-        let Some(dst_first) = (if to {
-            self.first_slice(dst, extent)
-        } else {
-            Some(0)
-        }) else {
-            return;
-        };
-        let Some(staged) = self.raw_blocks(sf, extent) else {
-            return;
-        };
-        let at = at_origin(&staged);
-        if from {
-            self.convert_region(src, src_first, &staged, extent, false);
-        } else {
-            self.copy_texture_impl(src, &at, extent);
-        }
-        if to {
-            self.convert_region(dst, dst_first, &staged, extent, true);
-        } else {
-            self.copy_texture_impl(&at, dst, extent);
-        }
+        let at = moved(region, x);
+        copy_buffer_packed_run(gpu, &part, &at, Extent { width, ..extent }, to_texture);
+        x += width;
+    }
+}
+
+fn copy_buffer_packed_run(
+    gpu: &mut WebGpu,
+    buffer: &CopyBufferTexture<'_, WebGpu>,
+    region: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+    to_texture: bool,
+) {
+    if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
+        return;
+    }
+    let format = region.texture.0.desc.format;
+    let Some(first) = first_slice(gpu, region, extent) else {
+        return;
+    };
+    let Some(staged) = raw_blocks(gpu, format, extent) else {
+        return;
+    };
+    let blocks = Extent {
+        width: raw_width(format, extent.width),
+        ..extent
+    };
+    let at = at_origin(&staged);
+    if to_texture {
+        copy_buffer_texture(gpu, buffer, &at, blocks, true);
+        convert_region(gpu, region, first, &staged, extent, true);
+    } else {
+        convert_region(gpu, region, first, &staged, extent, false);
+        copy_buffer_texture(gpu, buffer, &at, blocks, false);
+    }
+}
+
+/// A copy between textures of different formats of equal blocks of which one is converted, on
+/// the GPU: through a texture of the raw blocks, packed into it from a converted source or
+/// copied from another, and widened from it into a converted destination or copied into
+/// another.
+pub(crate) fn copy_packed(
+    gpu: &mut WebGpu,
+    src: &TextureRegion<'_, WebGpu>,
+    dst: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+) {
+    let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
+    if FORMAT_FACTS[sf as usize].block != FORMAT_FACTS[df as usize].block {
+        return gpu.fail("a copy between a converted format and one of another texel size");
+    }
+    let run = raw_run(gpu, sf);
+    let mut x = 0;
+    while x < extent.width {
+        let width = run.min(extent.width - x);
+        copy_packed_run(
+            gpu,
+            &moved(src, x),
+            &moved(dst, x),
+            Extent { width, ..extent },
+        );
+        x += width;
+    }
+}
+
+fn copy_packed_run(
+    gpu: &mut WebGpu,
+    src: &TextureRegion<'_, WebGpu>,
+    dst: &TextureRegion<'_, WebGpu>,
+    extent: Extent,
+) {
+    let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
+    if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
+        return;
+    }
+    let (from, to) = (held(sf).is_some(), held(df).is_some());
+    let Some(src_first) = (if from {
+        first_slice(gpu, src, extent)
+    } else {
+        Some(0)
+    }) else {
+        return;
+    };
+    let Some(dst_first) = (if to {
+        first_slice(gpu, dst, extent)
+    } else {
+        Some(0)
+    }) else {
+        return;
+    };
+    let Some(staged) = raw_blocks(gpu, sf, extent) else {
+        return;
+    };
+    let at = at_origin(&staged);
+    if from {
+        convert_region(gpu, src, src_first, &staged, extent, false);
+    } else {
+        copy_texture_impl(gpu, src, &at, extent);
+    }
+    if to {
+        convert_region(gpu, dst, dst_first, &staged, extent, true);
+    } else {
+        copy_texture_impl(gpu, &at, dst, extent);
     }
 }
 
