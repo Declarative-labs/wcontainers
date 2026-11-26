@@ -1593,6 +1593,9 @@ const VALID_DECIMAL: u64 = 80;
 /// In a hundred: x87 memory operands given a value of their format's edges.
 const X87_EDGE_VALUES: u64 = 70;
 
+/// In a hundred cases of a form `lock` may come before with its memory destination: those with the prefix.
+const LOCKED: u64 = 50;
+
 /// One case of `code` from the draw `seed`, or none when the draw gives no encodable instruction.
 fn case(code: Code, seed: u64) -> Option<Case> {
     let mut draw = Draw::of_case(code, seed);
@@ -1795,7 +1798,15 @@ fn case(code: Code, seed: u64) -> Option<Case> {
             };
             ops.push(op);
         }
-        build(code, &ops)?
+        let mut built = build(code, &ops)?;
+        // A form the `lock` prefix may come before, with its memory destination, is locked in some cases.
+        if info.can_use_lock_prefix()
+            && matches!(ops.first(), Some(Operand::M(_)))
+            && draw.chance(LOCKED)
+        {
+            built.set_has_lock_prefix(true);
+        }
+        built
     };
     let mut encoder = Encoder::new(64);
     encoder.encode(&instruction, CODE).ok()?;

@@ -12,6 +12,7 @@ pub mod layer2;
 pub mod layer3;
 pub mod layout;
 pub mod mixed;
+pub mod ordered;
 pub mod programs;
 pub mod progress;
 pub mod reference;

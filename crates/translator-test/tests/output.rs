@@ -14,9 +14,12 @@
 use std::fmt::Write;
 use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::DESCRIPTION_SECTION;
-use wcontainers_translator::{BOUND, LookAhead, Optimise, Translation, translate};
+use wcontainers_translator::{
+    AccessOrdering, BOUND, LookAhead, Optimise, OrderedAccess, Translation, translate,
+};
 use wcontainers_translator_test::binaries::{Binary, sources};
 use wcontainers_translator_test::guest::GuestTest;
+use wcontainers_translator_test::ordered::{Scan, scan, validity};
 use wcontainers_translator_test::programs::{Library, Position, build_with};
 use wcontainers_translator_test::runner::{access_ordering, probe};
 use wcontainers_x86::X86_64;
@@ -107,18 +110,23 @@ fn leb128(bytes: &[u8]) -> (usize, usize) {
     (value, taken)
 }
 
-fn lines(out: &mut String, name: &str, translation: &Translation) {
+/// The thread module's name in the lists.
+const THREAD: &str = "thread";
+
+/// What is done with each module made: its name and its bytes.
+type Each<'a> = &'a mut dyn FnMut(&str, &[u8]);
+
+fn lines(each: Each<'_>, name: &str, translation: &Translation) {
     for (i, module) in translation.modules.iter().enumerate() {
-        line(out, &format!("{name}-{i}"), &module.wasm);
+        each(&format!("{name}-{i}"), &module.wasm);
     }
 }
 
 /// The benchmark set: the whole program (as `measure_benchmarks` sizes it) and each workload alone, from
-/// address 0, and the thread module.
-fn bench<G: GuestTest>(out: &mut String) {
-    line(
-        out,
-        "thread",
+/// address 0, and the thread module, in the form `ordering`.
+fn bench<G: GuestTest>(each: Each<'_>, ordering: AccessOrdering) {
+    each(
+        THREAD,
         &wcontainers_translator::thread_module::<G>(wcontainers_translator::ProgressCount::Absent),
     );
     let mut blobs = vec![build_with::<G>(
@@ -150,13 +158,13 @@ fn bench<G: GuestTest>(out: &mut String) {
                         look_ahead,
                         optimise,
                         wcontainers_translator::ProgressCount::Absent,
-                        access_ordering::<G>(),
+                        ordering,
                         host,
                         G::Offer::default(),
                     )
                     .unwrap();
                     lines(
-                        out,
+                        each,
                         &format!("{}-{host_label}-{label}-{optimise:?}", blob.name),
                         &translation,
                     );
@@ -166,8 +174,8 @@ fn bench<G: GuestTest>(out: &mut String) {
     }
 }
 
-/// A real binary from every start its file offers.
-fn binary<G: GuestTest>(out: &mut String, name: &str) {
+/// A real binary from every start its file offers, in the form `ordering`.
+fn binary<G: GuestTest>(each: Each<'_>, name: &str, ordering: AccessOrdering) {
     let source = sources::<G>()
         .into_iter()
         .find(|s| s.name == name)
@@ -194,13 +202,13 @@ fn binary<G: GuestTest>(out: &mut String, name: &str) {
                         look_ahead,
                         optimise,
                         wcontainers_translator::ProgressCount::Absent,
-                        access_ordering::<G>(),
+                        ordering,
                         host,
                         G::Offer::default(),
                     )
                     .unwrap();
                     lines(
-                        out,
+                        each,
                         &format!("{name}-{host_label}-{label}{means}-{optimise:?}"),
                         &translation,
                     );
@@ -228,11 +236,79 @@ fn write_output<G: GuestTest>() {
     std::fs::create_dir_all(&directory).unwrap();
     for set in sets.split(',') {
         let mut out = String::new();
-        match set {
-            "bench" => bench::<G>(&mut out),
-            name => binary::<G>(&mut out, name),
-        }
+        let mut each = |name: &str, wasm: &[u8]| line(&mut out, name, wasm);
+        walk::<G>(set, &mut each, access_ordering::<G>());
         std::fs::write(format!("{directory}/{set}.txt"), out).unwrap();
         eprintln!("wrote {directory}/{set}.txt");
     }
 }
+
+/// Every module of one set (`bench` or a binary's name) in the form `ordering`.
+fn walk<G: GuestTest>(set: &str, each: Each<'_>, ordering: AccessOrdering) {
+    match set {
+        "bench" => bench::<G>(each, ordering),
+        name => binary::<G>(each, name, ordering),
+    }
+}
+
+/// The benchmark set and every real binary, in each ordered form: every code module validates, and every function
+/// of it makes only the accesses to the guest's memory its form allows (no plain load, no plain store unless
+/// the form keeps stores plain, every bulk operation between two fences). The sets, look-aheads and probe
+/// answers are those of the output lists (`WC_OUTPUT_SETS`, default all, and `WC_OUTPUT_LOOK_AHEADS`).
+#[test]
+#[ignore]
+fn ordered_modules_make_only_ordered_accesses_x86_64() {
+    let kind = OrderedAccess::SequentiallyConsistent;
+    let every = std::iter::once("bench")
+        .chain(sources::<X86_64>().map(|source| source.name))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sets = std::env::var("WC_OUTPUT_SETS").unwrap_or(every);
+    let mut wrong = Vec::new();
+    for ordering in [
+        AccessOrdering::Ordered(kind),
+        AccessOrdering::LoadsOrdered(kind),
+    ] {
+        for set in sets.split(',') {
+            let (mut modules, mut found) = (0, Scan::default());
+            let mut each = |name: &str, wasm: &[u8]| {
+                // The thread module's one memory is the thread's state, and it has no form.
+                if name == THREAD {
+                    return;
+                }
+                modules += 1;
+                if let Err(error) = validity(wasm) {
+                    found.wrong.push(format!("{name}: not valid: {error}"));
+                }
+                let mut scanned = scan(wasm, ordering);
+                for line in &mut scanned.wrong {
+                    *line = format!("{name}: {line}");
+                }
+                found.add(scanned);
+            };
+            walk::<X86_64>(set, &mut each, ordering);
+            eprintln!(
+                "{set} {ordering:?}: {modules} modules, {} functions, {} atomic accesses, {} plain stores kept, \
+                 {} bulk operations, {} wrong",
+                found.functions,
+                found.atomic,
+                found.plain_stores_kept,
+                found.bulk,
+                found.wrong.len()
+            );
+            wrong.extend(
+                found
+                    .wrong
+                    .into_iter()
+                    .map(|line| format!("{ordering:?} {line}")),
+            );
+        }
+    }
+    for line in wrong.iter().take(SHOWN) {
+        eprintln!("{line}");
+    }
+    assert!(wrong.is_empty(), "{} wrong", wrong.len());
+}
+
+/// How many wrong lines the scan prints.
+const SHOWN: usize = 50;

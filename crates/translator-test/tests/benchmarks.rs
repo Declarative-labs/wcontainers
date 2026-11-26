@@ -6,7 +6,8 @@
 //! variants, numbered from 1, default all), `WC_BENCH_CHROME` (0 leaves Chrome out), `WC_BENCH_REPEAT` (how
 //! many times Chrome runs the program in the same instances, each run timed by itself, default 1),
 //! `WC_CHROME_JS_FLAGS` (V8 flags for Chrome) and `WC_OPTIMISE` (`size` translates for size, default speed);
-//! the runners' access ordering setting chooses the form.
+//! the runners' access ordering setting chooses the form, and `measure_ordered_forms_x86_64` times the forms
+//! against each other.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -383,6 +384,93 @@ fn measure_benchmarks_natively_x86_64() {
                 );
             }
         }
+    }
+}
+
+/// Not a check: what each ordered form costs against the default form, the benchmark set built for x86-64 (as
+/// [`measure_benchmarks_x86_64`] builds it) at full look-ahead in wasmtime on this machine, with no native run,
+/// so that a host of any CPU times it. Each round runs every form once, one after another, and each form's
+/// result must equal the default form's; `WC_BENCH_RUNS` rounds (default 5). Printed per workload: each form's
+/// best and median time, and the median of its ratio to the default form within a round; then the geometric
+/// mean of those medians over the workloads, with the load. `WC_BENCH_WORKLOADS` as above.
+#[test]
+#[ignore]
+fn measure_ordered_forms_x86_64() {
+    use wcontainers_translator::{AccessOrdering, OrderedAccess};
+    use wcontainers_translator_test::programs::{ran, ready_with};
+    let runs: usize = std::env::var("WC_BENCH_RUNS").map_or(5, |v| v.parse().unwrap());
+    let chosen: Vec<usize> = std::env::var("WC_BENCH_WORKLOADS").map_or((1..=8).collect(), |v| {
+        v.split(',').map(|n| n.parse().unwrap()).collect()
+    });
+    let kind = OrderedAccess::SequentiallyConsistent;
+    let forms = [
+        AccessOrdering::Unordered,
+        AccessOrdering::Ordered(kind),
+        AccessOrdering::LoadsOrdered(kind),
+    ];
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let mean = |r: &[f64]| (r.iter().map(|r| r.ln()).sum::<f64>() / r.len() as f64).exp();
+    // By form, each workload's median ratio to the default form.
+    let mut ratios = vec![Vec::new(); forms.len()];
+    eprintln!("load at the start {}", load());
+    for k in chosen {
+        let name = WORKLOADS[k - 1];
+        let workload = format!("WORKLOAD={k}");
+        let blob = build_with::<X86_64>(
+            "bench",
+            "-O2",
+            Library::None,
+            &["SCALE=1", &workload],
+            Position::Fixed,
+        );
+        let mut times = vec![Vec::new(); forms.len()];
+        let mut expected = None;
+        for _ in 0..runs {
+            for (form, times) in forms.iter().zip(&mut times) {
+                let host = wcontainers_translator_test::runner::probe::<X86_64>();
+                let mut machine = ready_with::<X86_64>(&blob, host, |machine| {
+                    machine.order_accesses(*form);
+                    machine.load_omitting(
+                        &blob.bytes,
+                        0..blob.code_bytes,
+                        (blob.load, blob.link_address),
+                        &[0],
+                        LookAhead::Full,
+                        Omit::default(),
+                    );
+                });
+                let started = Instant::now();
+                let (stopped, registers) = machine.run();
+                times.push(started.elapsed().as_secs_f64());
+                let result = ran::<X86_64>(&blob, &machine, stopped, &registers);
+                match &expected {
+                    Some(expected) => assert_eq!(&result, expected, "{name} in {form:?}"),
+                    None => expected = Some(result),
+                }
+            }
+        }
+        for (i, form) in forms.iter().enumerate() {
+            let within: Vec<f64> = times[i].iter().zip(&times[0]).map(|(t, d)| t / d).collect();
+            let ratio = median(within);
+            ratios[i].push(ratio);
+            let best = times[i].iter().copied().fold(f64::INFINITY, f64::min);
+            eprintln!(
+                "{name}: {form:?}: best {best:.3} s, median {:.3} s, {ratio:.3} times the default form (median of {runs} rounds; load {})",
+                median(times[i].clone()),
+                load()
+            );
+        }
+    }
+    for (form, ratios) in forms.iter().zip(&ratios) {
+        eprintln!(
+            "{form:?}: geometric mean {:.3} times the default form, the most {:.3} (load {})",
+            mean(ratios),
+            ratios.iter().copied().fold(0.0, f64::max),
+            load()
+        );
     }
 }
 

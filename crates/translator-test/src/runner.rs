@@ -205,6 +205,8 @@ pub struct Host<G: GuestTest> {
     run_time: Box<dyn FnMut() -> LookAhead>,
     /// What translations are made for, unless a load says.
     optimise: Optimise,
+    /// How translations order the guest's loads and stores between threads.
+    ordering: AccessOrdering,
     /// The code translated ahead of time, in the order it was loaded, made again in a fresh thread instance.
     loads: Vec<Load>,
     /// After every load, the piece each of these addresses gets: the one of this load.
@@ -338,24 +340,27 @@ fn block<G: GuestTest>(thread: &[u8]) -> G::Block {
 /// translator emits for another host runs and is checked here too.
 pub const PROBE_ANSWER_SETTING: &str = "WC_PROBE_ANSWER";
 
-/// Set to [`ORDERED`], every translation the runners make has ordered guest accesses, so that the ordered form
-/// runs every test of one thread too.
+/// Set to [`ORDERED`] or [`LOADS_ORDERED`], every translation the runners make has that form, so that it runs
+/// every test of one thread too.
 pub const ACCESS_ORDERING_SETTING: &str = "WC_ACCESS_ORDERING";
 /// The value of [`ACCESS_ORDERING_SETTING`] that asks for ordered guest accesses.
 pub const ORDERED: &str = "ordered";
+/// The value of [`ACCESS_ORDERING_SETTING`] that asks for ordered guest loads and plain stores.
+pub const LOADS_ORDERED: &str = "loads";
 
-/// The access ordering [`ACCESS_ORDERING_SETTING`] asks for: unordered unless it says [`ORDERED`].
+/// The access ordering [`ACCESS_ORDERING_SETTING`] asks for: unordered unless it names another form.
 pub fn access_ordering<G: GuestTest>() -> AccessOrdering {
-    match std::env::var(ACCESS_ORDERING_SETTING).as_deref() {
-        Ok(ORDERED) => {
-            assert!(
-                G::ORDERED_ACCESSES,
-                "{ACCESS_ORDERING_SETTING} asks for ordered accesses this guest does not make"
-            );
-            AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent)
-        }
-        _ => AccessOrdering::Unordered,
-    }
+    let kind = OrderedAccess::SequentiallyConsistent;
+    let ordering = match std::env::var(ACCESS_ORDERING_SETTING).as_deref() {
+        Ok(ORDERED) => AccessOrdering::Ordered(kind),
+        Ok(LOADS_ORDERED) => AccessOrdering::LoadsOrdered(kind),
+        _ => return AccessOrdering::Unordered,
+    };
+    assert!(
+        G::ORDERED_ACCESSES,
+        "{ACCESS_ORDERING_SETTING} asks for ordered accesses this guest does not make"
+    );
+    ordering
 }
 
 /// The probe of this engine, run once per process, or the answer `PROBE_ANSWER_SETTING` names.
@@ -442,6 +447,7 @@ impl<G: GuestTest> Machine<G> {
                 exact_pieces: HashMap::new(),
                 run_time: Box::new(|| LookAhead::AT_RUN_TIME),
                 optimise: Optimise::Speed,
+                ordering: access_ordering::<G>(),
                 loads: Vec::new(),
                 picks: Vec::new(),
                 placed: Vec::new(),
@@ -656,7 +662,7 @@ impl<G: GuestTest> Machine<G> {
             LookAhead::Full,
             host.optimise,
             host.progress,
-            access_ordering::<G>(),
+            host.ordering,
             host.facts,
             host.offer,
             module_bytes,
@@ -705,6 +711,12 @@ impl<G: GuestTest> Machine<G> {
     /// From now on translations are made for `optimise`, those made at run time included.
     pub fn optimise_for(&mut self, optimise: Optimise) {
         self.store.data_mut().optimise = optimise;
+    }
+
+    /// From now on translations order the guest's accesses as `ordering` says (by default as the runners'
+    /// setting asks): call before any load.
+    pub fn order_accesses(&mut self, ordering: AccessOrdering) {
+        self.store.data_mut().ordering = ordering;
     }
 
     /// From now on code reached with no piece is translated at the look-ahead `choose` gives each time.
@@ -1655,7 +1667,7 @@ fn translate_load<G: GuestTest>(
         look_ahead,
         optimise,
         host.progress,
-        access_ordering::<G>(),
+        host.ordering,
         host.facts,
         host.offer,
         omit,

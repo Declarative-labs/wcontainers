@@ -3,12 +3,13 @@
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
-use wasmparser::{Operator, Parser, Payload, Validator, WasmFeatures};
+use wasmparser::{Operator, Parser, Payload};
 use wcontainers_arm64::{Arm64, Host};
 use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::{
     AccessOrdering, Error, LookAhead, Optimise, OrderedAccess, thread_module, translate,
 };
+use wcontainers_translator_test::ordered::scan;
 use wcontainers_translator_test::programs::LOAD;
 use wcontainers_x86::{Offer, X86_64};
 
@@ -40,115 +41,22 @@ fn validate(wasm: &[u8]) {
 }
 
 fn check(wasm: &[u8]) -> Result<(), String> {
-    let features = WasmFeatures::default()
-        | WasmFeatures::TAIL_CALL
-        | WasmFeatures::FUNCTION_REFERENCES
-        | WasmFeatures::EXCEPTIONS
-        | WasmFeatures::THREADS
-        | WasmFeatures::MEMORY64
-        | WasmFeatures::MULTI_MEMORY
-        | WasmFeatures::EXTENDED_CONST
-        | WasmFeatures::RELAXED_SIMD;
-    Validator::new_with_features(features)
-        .validate_all(wasm)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    wcontainers_translator_test::ordered::validity(wasm)
 }
 
 /// The ordered form, as the runners' setting asks for it.
 const ORDERED: AccessOrdering = AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent);
+/// The form of ordered loads and plain stores, for x86 hosts.
+const LOADS_ORDERED: AccessOrdering =
+    AccessOrdering::LoadsOrdered(OrderedAccess::SequentiallyConsistent);
+/// Every form.
+const FORMS: [AccessOrdering; 3] = [AccessOrdering::Unordered, ORDERED, LOADS_ORDERED];
 
 /// The guest's memory in a code module (`wcontainers_x86::GUEST_MEMORY`).
 const GUEST_MEMORY: u32 = wcontainers_x86::GUEST_MEMORY;
 
-/// The plain (not atomic) access to the guest's memory an operator makes, if any.
-fn plain_guest_access(operator: &Operator<'_>) -> bool {
-    use Operator::*;
-    let memarg = match operator {
-        I32Load { memarg }
-        | I64Load { memarg }
-        | F32Load { memarg }
-        | F64Load { memarg }
-        | I32Load8S { memarg }
-        | I32Load8U { memarg }
-        | I32Load16S { memarg }
-        | I32Load16U { memarg }
-        | I64Load8S { memarg }
-        | I64Load8U { memarg }
-        | I64Load16S { memarg }
-        | I64Load16U { memarg }
-        | I64Load32S { memarg }
-        | I64Load32U { memarg }
-        | I32Store { memarg }
-        | I64Store { memarg }
-        | F32Store { memarg }
-        | F64Store { memarg }
-        | I32Store8 { memarg }
-        | I32Store16 { memarg }
-        | I64Store8 { memarg }
-        | I64Store16 { memarg }
-        | I64Store32 { memarg }
-        | V128Load { memarg }
-        | V128Load8x8S { memarg }
-        | V128Load8x8U { memarg }
-        | V128Load16x4S { memarg }
-        | V128Load16x4U { memarg }
-        | V128Load32x2S { memarg }
-        | V128Load32x2U { memarg }
-        | V128Load8Splat { memarg }
-        | V128Load16Splat { memarg }
-        | V128Load32Splat { memarg }
-        | V128Load64Splat { memarg }
-        | V128Load32Zero { memarg }
-        | V128Load64Zero { memarg }
-        | V128Store { memarg }
-        | V128Load8Lane { memarg, .. }
-        | V128Load16Lane { memarg, .. }
-        | V128Load32Lane { memarg, .. }
-        | V128Load64Lane { memarg, .. }
-        | V128Store8Lane { memarg, .. }
-        | V128Store16Lane { memarg, .. }
-        | V128Store32Lane { memarg, .. }
-        | V128Store64Lane { memarg, .. } => memarg,
-        _ => return false,
-    };
-    memarg.target == wasmparser::MemArgTarget::Memory(GUEST_MEMORY)
-}
-
-/// What in a module's functions is not an ordered access to the guest's memory: each plain access, and each
-/// function whose bulk operations on it are not between fences, one line each.
-fn unordered_guest_accesses(wasm: &[u8]) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut function = 0;
-    for payload in Parser::new(0).parse_all(wasm) {
-        let Payload::CodeSectionEntry(body) = payload.expect("a module") else {
-            continue;
-        };
-        let (mut bulk, mut fences) = (0, 0);
-        for operator in body.get_operators_reader().expect("a body") {
-            let operator = operator.expect("an operator");
-            match operator {
-                Operator::MemoryCopy { dst_mem, .. } if dst_mem == GUEST_MEMORY => bulk += 1,
-                Operator::MemoryFill { mem } if mem == GUEST_MEMORY => bulk += 1,
-                Operator::AtomicFence { .. } => fences += 1,
-                ref operator if plain_guest_access(operator) => {
-                    found.push(format!("function {function}: {operator:?}"));
-                }
-                _ => {}
-            }
-        }
-        if fences < 2 * bulk {
-            found.push(format!(
-                "function {function}: {bulk} bulk operations and {fences} fences"
-            ));
-        }
-        function += 1;
-    }
-    found
-}
-
 /// Locked instructions with a memory destination, each read, changed and written by one compare and exchange.
-const LOCKED: [&[u8]; 9] = [
+const LOCKED: [&[u8]; 10] = [
     // lock add [rax], rbx
     &[0xf0, 0x48, 0x01, 0x18],
     // lock add dword [rax], 1
@@ -167,6 +75,8 @@ const LOCKED: [&[u8]; 9] = [
     &[0xf0, 0x80, 0x30, 0x01],
     // lock neg word [rax]
     &[0xf0, 0x66, 0xf7, 0x18],
+    // lock cmpxchg8b [rax]
+    &[0xf0, 0x0f, 0xc7, 0x08],
 ];
 
 /// How many compare and exchange operations on the guest's memory a module holds.
@@ -199,7 +109,7 @@ fn locked_instructions_compare_and_exchange_when_ordered_x86_64() {
         let mut code = one.to_vec();
         code.push(RETURN);
         for look_ahead in [LookAhead::None, LookAhead::Full] {
-            for ordering in [AccessOrdering::Unordered, ORDERED] {
+            for ordering in FORMS {
                 let translation = translate::<X86_64>(
                     &code,
                     0..code.len() as u64,
@@ -222,7 +132,7 @@ fn locked_instructions_compare_and_exchange_when_ordered_x86_64() {
                     })
                     .sum();
                 let at = format!("{one:02x?} at {look_ahead:?} {ordering:?}");
-                if ordering == ORDERED {
+                if ordering != AccessOrdering::Unordered {
                     assert!(found > 0, "{at}: no compare and exchange");
                 } else {
                     assert_eq!(found, 0, "{at}");
@@ -661,7 +571,7 @@ fn every_form_is_valid_x86_64() {
             let code = one.repeat(REPEATS);
             cases += 1;
             for look_ahead in [LookAhead::None, LookAhead::Bounded(16), LookAhead::Full] {
-                for ordering in [AccessOrdering::Unordered, ORDERED] {
+                for ordering in FORMS {
                     let translation = translate::<X86_64>(
                         &code,
                         0..code.len() as u64,
@@ -680,8 +590,8 @@ fn every_form_is_valid_x86_64() {
                         if let Err(error) = check(&module.wasm) {
                             failures.push(format!("{at}: {error}"));
                         }
-                        if ordering == ORDERED {
-                            for left in unordered_guest_accesses(&module.wasm) {
+                        if ordering != AccessOrdering::Unordered {
+                            for left in scan(&module.wasm, ordering).wrong {
                                 failures.push(format!("{at}: {left}"));
                             }
                         }
