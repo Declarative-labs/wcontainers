@@ -57,6 +57,7 @@ pub mod sse;
 pub mod stack;
 pub mod vector;
 mod vex_upper;
+mod vnni;
 pub mod x87;
 #[cfg(test)]
 mod tests;

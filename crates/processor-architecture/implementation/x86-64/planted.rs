@@ -1028,6 +1028,12 @@ pub enum Bug {
     ZeroUpperKeepsZmmUpperBits,
     /// VZEROUPPER and VZEROALL zero ZMM16 to ZMM31 too.
     ZeroAllClearsHighRegisters,
+    /// VPDPBUSDS and VPDPWSSDS wrap rather than saturate.
+    DotSaturationWraps,
+    /// VPDPBUSD and VPDPBUSDS take the first source's bytes as signed.
+    DotUnsignedBytesSigned,
+    /// VPDPBUSDS and VPDPWSSDS wrap the products' sum to 32 bits before adding the destination.
+    DotProductsWrappedFirst,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1502,6 +1508,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
         Family::Avx(|form| matches!(form.operation, AvxOperation::ZeroUpper | AvxOperation::ZeroAll)),
         Origin::VexSecondPass,
     ),
+    row(Bug::DotSaturationWraps, "VPDPBUSDS, VPDPWSSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { saturate: true, .. })), Origin::VexSecondPass),
+    row(Bug::DotUnsignedBytesSigned, "VPDPBUSD, VPDPBUSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { words: false, .. })), Origin::VexSecondPass),
+    row(Bug::DotProductsWrappedFirst, "VPDPBUSDS, VPDPWSSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { saturate: true, .. })), Origin::VexSecondPass),
 ];
 
 /// Whether the AVX form writes a vector register: its first operand is one and it writes no flags, or it zeroes them.

@@ -47,6 +47,7 @@ mod simulation;
 pub mod sse;
 pub mod stack;
 pub mod vector;
+mod vnni;
 pub mod x87;
 #[cfg(test)]
 mod tests;
