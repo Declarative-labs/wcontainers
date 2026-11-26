@@ -37,7 +37,8 @@ fn list_stand_in_behaviors() -> MeasuredInstructionSet<Arm64<User>> {
                         .skip(share)
                         .step_by(AGREEMENT_EXECUTORS)
                         .filter_map(|(index, instruction)| {
-                            let shown = find_shown_behavior(&mut stand_in, &generator, *instruction)?;
+                            let shown =
+                                find_shown_behavior(&mut stand_in, &generator, *instruction)?;
                             Some((index, (*instruction, shown)))
                         })
                         .collect::<Vec<_>>()
@@ -64,7 +65,7 @@ fn find_shown_behavior(
     instruction: <Arm64<User> as ProcessorArchitecture>::Instruction,
 ) -> Option<<Arm64<User> as ProcessorArchitecture>::PreciseInstruction> {
     let known: Vec<_> = Arm64::<User>::list_known_behaviors(instruction).collect();
-    let first = known.first()?.clone();
+    let first = *known.first()?;
     let executed: Vec<_> = generator
         .generate_states(instruction)
         .filter_map(|before| {

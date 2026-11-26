@@ -548,7 +548,13 @@ fn execute_in_place(
             }
             | Exit::AlignmentFault { address },
         ) if address != pc && address & UNTAGGED != address => {
-            return (Err(Unsupported::TaggedBranch { pc, target: address }), instructions);
+            return (
+                Err(Unsupported::TaggedBranch {
+                    pc,
+                    target: address,
+                }),
+                instructions,
+            );
         }
         // Unicorn stops a counted turn as it fetches the next instruction, so a fetch fault anywhere but at the
         // instruction run belongs to the next one: the instruction completed.
@@ -995,7 +1001,7 @@ const THREE_SAME_HALF_MASK: u32 = 0x9F60_C400;
 const THREE_SAME_HALF_VALUE: u32 = 0x0E40_0400;
 /// The values of U, a and opcode (`U:a:opcode`) the class leaves unallocated, on which QEMU's decoder asserts.
 const THREE_SAME_HALF_UNALLOCATED: [u32; 8] = [
-    0b0_0_101, 0b0_1_011, 0b0_1_100, 0b0_1_101, 0b1_0_001, 0b1_1_001, 0b1_1_011, 0b1_1_111,
+    0b00101, 0b01011, 0b01100, 0b01101, 0b10001, 0b11001, 0b11011, 0b11111,
 ];
 
 /// Returns whether the emulator ends the host process on the word: an unallocated Advanced SIMD three same (FP16)
@@ -1101,7 +1107,9 @@ impl Cpu for StandIn {
         address: u64,
         length: u64,
     ) -> Result<(), CpuError> {
-        self.with_machine(move |machine| machine.shared_map(shared, offset, memory, address, length))
+        self.with_machine(move |machine| {
+            machine.shared_map(shared, offset, memory, address, length)
+        })
     }
 
     fn shared_unmap(

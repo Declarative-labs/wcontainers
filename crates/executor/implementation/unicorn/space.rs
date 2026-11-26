@@ -270,8 +270,8 @@ fn map_from(
         .map_err(|_| MapMemoryError::OutOfMemory)?;
     let mut memory = memory.borrow_mut();
     for (range, pages, offset) in parts {
-        let moved =
-            addresses.start + (range.start - other_start)..addresses.start + (range.end - other_start);
+        let moved = addresses.start + (range.start - other_start)
+            ..addresses.start + (range.end - other_start);
         memory.show_unmapped(moved, pages, offset, true);
     }
     memory.remap(addresses);

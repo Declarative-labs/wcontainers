@@ -40,12 +40,7 @@ const EXCEPTION_BREAKPOINT: u32 = 7;
 const USER_PSTATE: u64 = 0;
 /// [SCTLR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-)
 /// as op0, op1, CRn, CRm and op2.
-const SYSTEM_CONTROL: RegisterARM64CP = RegisterARM64CP::new()
-    .op0(3)
-    .op1(0)
-    .crn(1)
-    .crm(0)
-    .op2(0);
+const SYSTEM_CONTROL: RegisterARM64CP = RegisterARM64CP::new().op0(3).op1(0).crn(1).crm(0).op2(0);
 /// The SCTLR_EL1 bits Linux sets for its programs that QEMU leaves clear: UCI (bit 26, cache maintenance at EL0), UCT
 /// (bit 15, CTR_EL0 at EL0) and DZE (bit 14, DC ZVA at EL0).
 const USER_CONTROLS_SET: u64 = 1 << 26 | 1 << 15 | 1 << 14;
@@ -56,22 +51,14 @@ const USER_CONTROLS_CLEAR: u64 = 1 << 16;
 const USER_FEATURE_ACCESS: u64 = 0b11 << 20 | 0b11 << 16;
 /// [CPTR_EL3](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CPTR-EL3--Architectural-Feature-Trap-Register--EL3-)
 /// as op0, op1, CRn, CRm and op2: unicorn's model has EL3, which traps SVE until EZ is set.
-const MONITOR_FEATURE_TRAPS: RegisterARM64CP = RegisterARM64CP::new()
-    .op0(3)
-    .op1(6)
-    .crn(1)
-    .crm(1)
-    .op2(2);
+const MONITOR_FEATURE_TRAPS: RegisterARM64CP =
+    RegisterARM64CP::new().op0(3).op1(6).crn(1).crm(1).op2(2);
 /// CPTR_EL3 with EZ (bit 8) set and every trap bit clear.
 const MONITOR_TRAPS_NONE: u64 = 1 << 8;
 /// [TCR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCR-EL1--Translation-Control-Register--EL1-)
 /// as op0, op1, CRn, CRm and op2.
-const TRANSLATION_CONTROL: RegisterARM64CP = RegisterARM64CP::new()
-    .op0(3)
-    .op1(0)
-    .crn(2)
-    .crm(0)
-    .op2(2);
+const TRANSLATION_CONTROL: RegisterARM64CP =
+    RegisterARM64CP::new().op0(3).op1(0).crn(2).crm(0).op2(2);
 /// TCR_EL1 with T0SZ (bits 5:0) at 16, the 48-bit addresses Linux gives a program, which sets where a pointer
 /// authentication code lies.
 const USER_TRANSLATION_CONTROL: u64 = 64 - 48;
@@ -1285,16 +1272,23 @@ impl Predicates {
     fn to_bytes(self) -> [u8; PREDICATE_BYTES] {
         let mut bytes = [u8::MIN; PREDICATE_BYTES];
         let values = self.registers.into_iter().chain([self.first_fault]);
-        for (slot, value) in bytes.chunks_exact_mut(PREDICATE_REGISTER_BYTES).zip(values) {
-            slot.copy_from_slice(&value.to_le_bytes());
+        for (slot, value) in bytes
+            .as_chunks_mut::<PREDICATE_REGISTER_BYTES>()
+            .0
+            .iter_mut()
+            .zip(values)
+        {
+            *slot = value.to_le_bytes();
         }
         bytes
     }
 
     fn from_bytes(bytes: &[u8; PREDICATE_BYTES]) -> Self {
         let mut values = bytes
-            .chunks_exact(PREDICATE_REGISTER_BYTES)
-            .map(|slot| u16::from_le_bytes([slot[0], slot[1]]));
+            .as_chunks::<PREDICATE_REGISTER_BYTES>()
+            .0
+            .iter()
+            .map(|slot| u16::from_le_bytes(*slot));
         let registers = std::array::from_fn(|_| values.next().expect("a predicate register"));
         Self {
             registers,
