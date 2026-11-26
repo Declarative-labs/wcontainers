@@ -75,7 +75,7 @@ impl Writer<'_, '_> {
                 Part::StructIn { .. } | Part::ValuesIn { .. } | Part::InitialData { .. } | Part::Riid => "*const u8".to_string(),
                 Part::ObjectIn { .. } | Part::UnknownIn { .. } => "Raw".to_string(),
                 Part::ObjectsIn { .. } => "*const Raw".to_string(),
-                Part::ObjectOut { .. } | Part::BoundOut { .. } => "*mut Raw".to_string(),
+                Part::ObjectOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "*mut Raw".to_string(),
                 Part::ValueOut { .. } | Part::StructOut { .. } | Part::BytesOut { .. } | Part::LentOut { .. } => "*mut u8".to_string(),
             };
             parameters.push((name.clone(), c));
@@ -156,7 +156,7 @@ impl Writer<'_, '_> {
         let mut inner = String::new();
         // Required out-parameters must be writable before anything is made.
         for ((name, part), param) in glued.parts.iter().zip(&method.params) {
-            if matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::BoundOut { .. }) && !param.is_optional && status {
+            if matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. }) && !param.is_optional && status {
                 let _ = writeln!(inner, "            if {name}.is_null() {{ return Err(E_POINTER); }}");
             }
         }
@@ -166,7 +166,7 @@ impl Writer<'_, '_> {
         };
         // An object handed out again (a child's device) that the record holds as its maker: read under the word's lock,
         // with no reference to `this` taken first.
-        let out_parts: Vec<&(String, Part)> = glued.parts.iter().filter(|(_, part)| matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. })).collect();
+        let out_parts: Vec<&(String, Part)> = glued.parts.iter().filter(|(_, part)| matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. })).collect();
         if let ([(name, Part::ObjectOut { kinds, made: false })], false, None, Some(_)) = (out_parts.as_slice(), status, &glued.returned, bound) {
             let role = &self.g.kinds[kinds[0]].name;
             let _ = writeln!(inner, "            if !{name}.is_null() && let Some(recorded) = made_by_of::<V>(KEY, this.addr(), \"{role}\") {{");
@@ -358,7 +358,7 @@ impl Writer<'_, '_> {
                     let _ = writeln!(inner, "            if !{name}_read {{ return {}; }}", if status { "Err(E_INVALIDARG)" } else { "None" });
                     let _ = writeln!(inner, "            let {name} = decode_guid(&{name}_bytes);");
                 }
-                Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } => {
+                Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => {
                     outs.push((name.clone(), part, metadata.clone()));
                 }
             }
@@ -560,6 +560,24 @@ impl Writer<'_, '_> {
                         let _ = writeln!(inner, "            let {name}_answer = {};", fail(&format!("query::<{bound_type}>(KEY, {name}_served.address(), &{riid})"), "E_NOINTERFACE"));
                         written.push(format!("{name}_answer"));
                     }
+                    Part::InterfaceOut { riid } => {
+                        // The object as the kind it is, served, and asked for the interface the caller named; a foreign object is not
+                        // passed on (E_NOINTERFACE).
+                        let riid_name = &glued.parts[*riid].0;
+                        let refused = if status { "return Err(E_NOINTERFACE);" } else { "return None;" };
+                        let api_of = self.current.get();
+                        let mut arms: Vec<String> = Vec::new();
+                        for kind in (0..self.g.kinds.len()).filter(|&k| self.g.kinds[k].api == api_of) {
+                            let kind_type = self.kind_type(kind, api_type);
+                            let interfaces = self.interfaces_fn(kind, api_of);
+                            let served = fail(&format!("serve(KEY, object, record(), {interfaces}::<{kind_type}>)"), "E_OUTOFMEMORY");
+                            let answer = fail(&format!("query::<{kind_type}>(KEY, served.address(), &{riid_name})"), "E_NOINTERFACE");
+                            arms.push(format!("{}::UnknownObject::{}(object) => {{ let served = {served}; {answer} }}", alias(self.g.apis[api_of]), self.g.kinds[kind].name));
+                        }
+                        arms.push(format!("{}::UnknownObject::Unknown(_) => {{ {refused} }}", alias(self.g.apis[api_of])));
+                        let _ = writeln!(inner, "            let {name}_answer = match {name}_value {{ {} }};", arms.join(", "));
+                        written.push(format!("{name}_answer"));
+                    }
                     Part::ObjectOut { kinds, made, .. } => {
                         let kind_type = self.kind_type(kinds[0], api_type);
                         let interfaces = self.interfaces_fn(kinds[0], self.current.get());
@@ -643,7 +661,7 @@ impl Writer<'_, '_> {
                 // A reference is handed to the C side only through a pointer it gave: for a null one (Direct3D's
                 // validation-only call) the object made is given back here, so that no reference is lost.
                 match part {
-                    Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } => finals.push(format!("(if {name}.is_null() {{ 0 }} else {{ {value}.into_address().get() }}).to_ne_bytes()")),
+                    Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => finals.push(format!("(if {name}.is_null() {{ 0 }} else {{ {value}.into_address().get() }}).to_ne_bytes()")),
                     Part::ObjectOut { made: false, .. } => finals.push(format!("(if {name}.is_null() {{ 0 }} else {{ {value}.map_or(0, |served| served.into_address().get()) }}).to_ne_bytes()")),
                     _ => finals.push(value.clone()),
                 }
@@ -664,7 +682,7 @@ impl Writer<'_, '_> {
         let offset = usize::from(glued.returned.is_some());
         for (position, (name, part, metadata)) in outs.iter().enumerate() {
             let size = match part {
-                Part::ObjectOut { .. } | Part::BoundOut { .. } => "size_of::<usize>()".to_string(),
+                Part::ObjectOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "size_of::<usize>()".to_string(),
                 Part::LentOut { coded, .. } => coded.size.to_string(),
                 Part::ValueOut { size, .. } => size.to_string(),
                 Part::StructOut { coded } => coded.size.to_string(),
@@ -673,7 +691,7 @@ impl Writer<'_, '_> {
             let index = position + offset;
             let _ = writeln!(text, "        let {name}_written = answer.as_ref().{}.map_or([0_u8; {size}], |written| written.{index});", if status { "ok()" } else { "as_ref()" }.replace(".as_ref().as_ref()", ".as_ref()"));
             let promise = match part {
-                Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } => "`Out` and `ComOutPtr`: one interface pointer to write",
+                Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "`Out` and `ComOutPtr`: one interface pointer to write",
                 Part::ObjectOut { .. } => "`Out`: one interface pointer to write",
                 _ => "`Out`: one value of this size to write",
             };
@@ -859,6 +877,15 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         let _ = writeln!(exports_fn, "        if !modules.iter().any(|held| held.is::<M>()) {{ modules.push(Arc::new(module)); }}\n    }}");
         let fields: Vec<String> = export_fields.iter().map(|(name, _, entry, _)| format!("{name}: {entry}::<M>")).collect();
         let _ = writeln!(exports_fn, "    Library {{ {} }}\n}}\n", fields.join(", "));
+        // Any implementation reached as if it were the system's library: the calling glue over our own exports of it.
+        if let Some(top_name) = spec.top_trait {
+            let served = signature.replacen("pub fn exports<", "pub fn served<", 1).replacen("-> Library", &format!("-> crate::System{top_name}"), 1);
+            let _ = writeln!(exports_fn, "/// The calling glue over the serving glue's own exports of `module`: `module` reached through both glues, as if\n/// it were the system's library.");
+            let _ = writeln!(exports_fn, "{served} {{\n    let library = exports(module);");
+            let _ = writeln!(exports_fn, "    #[expect(unsafe_code, reason = \"our own serving glue's exports, which take what the metadata gives\")]");
+            let _ = writeln!(exports_fn, "    // SAFETY: each entry of `library` is this crate's serving export of that name, written from the same metadata.");
+            let _ = writeln!(exports_fn, "    unsafe {{ crate::System{top_name}::new(library) }}\n}}\n");
+        }
     }
     // Held lookups of base-interface pointers (`ResourceRef` and the like) for the serving glue.
     let mut found_enums = String::new();

@@ -95,6 +95,8 @@ enum Part {
     Riid,
     /// A bound object out (an exception line), of the top trait's associated type `name`.
     BoundOut { name: String },
+    /// `void**` out of the interface the GUID at index `riid` names: the API's `UnknownObject`, one reference.
+    InterfaceOut { riid: usize },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -440,6 +442,11 @@ impl<'g, 'a> Writer<'g, 'a> {
                 Part::Count
             } else if let Some(part) = self.exception_part(place, method, param).map_err(|why| format!("{}: {why}", param.name))? {
                 part
+            } else if matches!(pointee(&param.ty), Some((Type::Void, 2, _))) && attribute_named(&param.attributes, "ComOutPtr").is_some() {
+                // `REFIID riid, void** ppv`: the object is of the interface the nearest GUID before it names.
+                let is_guid = |p: &Param| pointee(&p.ty).is_some_and(|(inner, depth, _)| depth == 1 && named(inner).is_some_and(|k| k == key(GUID.0, GUID.1)));
+                let riid = method.params[..position].iter().rposition(is_guid).ok_or_else(|| format!("{}: an interface out with no interface id before it", param.name))?;
+                Part::InterfaceOut { riid }
             } else {
                 self.part(param).map_err(|why| format!("{}: {why}", param.name))?
             };
@@ -678,5 +685,8 @@ pub fn encode_guid(value: &wcontainers_component_object_model::structures::Guid,
 mod call;
 #[path = "glue_write.rs"]
 mod write;
+#[path = "glue_record.rs"]
+mod record;
 
+pub(super) use record::write_recorder;
 pub(super) use write::write_direct;

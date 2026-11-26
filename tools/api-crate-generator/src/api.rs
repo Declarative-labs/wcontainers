@@ -35,44 +35,122 @@ pub struct Api {
     /// The mapping rule's exception lines: each a C form the metadata alone does not describe, with the fact the
     /// header's documentation gives.
     pub exceptions: &'static [Exception],
-    /// Every method of the whole API that src/undo.rs's search finds able to undo a fact a mark relies on, and how
-    /// the calling glue holds the fact against it.
+    /// The rows for exact methods (src/kinds.rs): a method whose effect could undo a fact a mark relies on, or one
+    /// with a parameter of a kind the system trusts and acts on, and how the calling glue treats it.
     pub pins: &'static [Pin],
+    /// How every value of each of the API's enumerations is judged; an enumeration no line judges fails the generator.
+    pub judged: &'static [Judged],
+    /// Values of the API's enumerations that the calling glue clears or refuses wherever a parameter passes them.
+    pub specials: &'static [SpecialValue],
+    /// The effects of every method of each of the API's interfaces and exports, judged an interface at a time: what
+    /// none of its methods (but the pins) can do to a fact the marks rely on. An interface or export of the set no line
+    /// judges fails the generator.
+    pub effects: &'static [Effects],
 }
 
-/// One method that could undo facts the marks rely on, and how the calling glue holds them.
+/// One row for an exact method, and how the calling glue treats it.
 #[derive(Clone, Copy, Debug)]
 pub struct Pin {
     /// `Interface::Method`, or an export's name.
     pub method: &'static str,
+    /// The facts the marks rely on that the row holds (none for a row about a parameter's kind alone).
     pub relies: &'static [Reliance],
     pub hold: Hold,
-    /// The harness's hostile test that tries the method through the calling glue; empty for a harmless method.
+    /// The hostile test that tries the method through the calling glue.
     pub test: &'static str,
 }
 
-/// How the calling glue holds a fact against a method that could undo it.
+/// How the calling glue treats the method of a row.
 #[derive(Clone, Copy, Debug)]
 pub enum Hold {
     /// The glue answers `value` (a Rust expression of the method's result) and never calls the system.
     Answers { value: &'static str, why: &'static str },
-    /// The glue clears the bits `mask` of the flags `param` (a newtype or an integer) before the call.
+    /// The glue clears the bits `mask` of the number `param` (one the metadata links to no enumeration) before the call.
     Clears { param: &'static str, mask: u32, why: &'static str },
     /// The glue refuses the call (E_INVALIDARG) when `when` holds, `{}` standing for the parameter `param`.
     Refuses { param: &'static str, when: &'static str, why: &'static str },
     /// The calling glue never calls the method: E_NOTIMPL, or nothing; a later milestone may hold it otherwise.
     NotCalled { why: &'static str },
-    /// The search finds the method, but it cannot undo the fact.
-    Harmless { why: &'static str },
-}
-
-const fn harmless(method: &'static str, relies: &'static [Reliance], why: &'static str) -> Pin {
-    Pin { method, relies, hold: Hold::Harmless { why }, test: "" }
+    /// `param`, of a kind the system trusts and acts on, passes only as null (0); the glue refuses any other value.
+    NullOnly { param: &'static str, why: &'static str },
 }
 
 const fn not_called(method: &'static str, relies: &'static [Reliance], why: &'static str, test: &'static str) -> Pin {
     Pin { method, relies, hold: Hold::NotCalled { why }, test }
 }
+
+/// Which values of an enumeration pass as plain numbers (src/kinds.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Values {
+    /// Every value of the integer, declared or not, is plain: the system only compares it or checks it against the
+    /// values it knows.
+    Any,
+    /// Only the declared values pass (for a flag set, only the declared bits); the calling glue refuses any other.
+    Declared,
+}
+
+/// One judgment of every value of some enumerations, with its reason.
+#[derive(Clone, Copy, Debug)]
+pub struct Judged {
+    pub enumerations: &'static [&'static str],
+    pub values: Values,
+    pub why: &'static str,
+}
+
+/// What the calling glue does with one value of an enumeration a parameter passes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Special {
+    /// The value's bits are cleared before the call.
+    Clear,
+    /// The call is refused (E_INVALIDARG) when the value is passed (for a flag set, when any of its bits is set).
+    Refuse,
+}
+
+/// One value of an enumeration the calling glue clears or refuses, with its reason and hostile test.
+#[derive(Clone, Copy, Debug)]
+pub struct SpecialValue {
+    pub enumeration: &'static str,
+    pub value: &'static str,
+    pub rule: Special,
+    pub why: &'static str,
+    pub test: &'static str,
+}
+
+/// The effects of every method of some interfaces (or exports) judged together: none of them, except a method a pin
+/// names, changes a fact a mark relies on.
+#[derive(Clone, Copy, Debug)]
+pub struct Effects {
+    pub interfaces: &'static [&'static str],
+    pub why: &'static str,
+}
+
+/// What a handle typedef of the metadata is (src/kinds.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleKind {
+    /// A handle the system's kernel looks up in this process's tables and checks before acting on it.
+    Kernel,
+    /// A handle or address the system trusts and acts on as it is (a module, a pointer).
+    Trusted,
+    /// A plain number with a typedef of its own (a color, a status of another kind).
+    Number,
+}
+
+/// Every typedef of one value the metadata declares that the set's methods or records name, and what it is; one no line
+/// names fails the generator.
+pub const HANDLES: &[(&str, HandleKind, &str)] = &[
+    ("HANDLE", HandleKind::Kernel, "an object handle the kernel looks up in this process's handle table, checking the object's type and the access granted"),
+    ("HWND", HandleKind::Kernel, "a window handle win32k looks up and checks; the system only sends the window messages any program may send it"),
+    ("HDC", HandleKind::Kernel, "a device context handle the kernel's GDI table looks up and checks"),
+    ("HMONITOR", HandleKind::Kernel, "a monitor handle win32k looks up and checks"),
+    ("HMODULE", HandleKind::Trusted, "the address of a loaded module, whose code the system would find and run"),
+    ("HINSTANCE", HandleKind::Trusted, "the address of a loaded module, whose code the system would find and run"),
+    ("LPARAM", HandleKind::Trusted, "a message's word, which a window procedure may read as an address"),
+    ("WPARAM", HandleKind::Trusted, "a message's word, which a window procedure may read as an address"),
+    ("PSID", HandleKind::Trusted, "the address of a security identifier, which the system reads"),
+    ("PSECURITY_DESCRIPTOR", HandleKind::Trusted, "the address of a security descriptor, which the system reads"),
+    ("NTSTATUS", HandleKind::Number, "a status code"),
+    ("COLORREF", HandleKind::Number, "a color as a number"),
+];
 
 /// How many bytes a resource's subresource holds, from the resource's description: hand-written beside the glue
 /// (templates/direct3d-11-direct/lengths.rs), one rule per resource shape, each named by its suffix.
@@ -150,9 +228,6 @@ pub enum Exception {
     BoundObject { method: &'static str, name: &'static str, kind: &'static str },
     /// `api`'s top trait's associated type `name` is bound by this API to its own kind `kind`.
     Binds { api: &'static str, name: &'static str, kind: &'static str },
-    /// `function`'s handle `param` must be null: the calling glue refuses any other value, which the system would load
-    /// as a module of code.
-    NullHandle { function: &'static str, param: &'static str },
     /// `getter` (a description) is answered from what the caller passed to the method that made the object (`made_by`:
     /// the method and its parameter), recorded when the object crossed, never asked of the implementation; the length
     /// of memory Map lends is computed from the same record. `resolve` names the rule in lengths.rs that fills in what
@@ -205,6 +280,9 @@ pub const COMPONENT_OBJECT_MODEL: Api = Api {
     only: &[],
     exceptions: &[],
     pins: &[],
+    judged: &[],
+    specials: &[],
+    effects: &[],
 };
 
 pub const DIRECT3D_COMMON: Api = Api {
@@ -226,6 +304,9 @@ pub const DIRECT3D_COMMON: Api = Api {
     only: &[],
     exceptions: &[],
     pins: DIRECT3D_COMMON_PINS,
+    judged: DIRECT3D_COMMON_JUDGED,
+    specials: &[],
+    effects: DIRECT3D_COMMON_EFFECTS,
 };
 
 pub const DIRECTX_GRAPHICS_INFRASTRUCTURE: Api = Api {
@@ -253,6 +334,9 @@ pub const DIRECTX_GRAPHICS_INFRASTRUCTURE: Api = Api {
         Exception::IndexRange { method: "IDXGISwapChain::GetBuffer", index: "Buffer", record: "DXGI_SWAP_CHAIN_DESC", field: "BufferCount" },
     ],
     pins: DIRECTX_GRAPHICS_INFRASTRUCTURE_PINS,
+    judged: DIRECTX_GRAPHICS_INFRASTRUCTURE_JUDGED,
+    specials: DIRECTX_GRAPHICS_INFRASTRUCTURE_SPECIALS,
+    effects: DIRECTX_GRAPHICS_INFRASTRUCTURE_EFFECTS,
 };
 
 pub const DIRECT3D_11: Api = Api {
@@ -297,6 +381,9 @@ pub const DIRECT3D_11: Api = Api {
     only: &[],
     exceptions: DIRECT3D_11_EXCEPTIONS,
     pins: DIRECT3D_11_PINS,
+    judged: DIRECT3D_11_JUDGED,
+    specials: DIRECT3D_11_SPECIALS,
+    effects: DIRECT3D_11_EFFECTS,
 };
 
 /// Direct3D 11's exception lines, each with the page of Microsoft's documentation that states the fact.
@@ -314,10 +401,6 @@ const DIRECT3D_11_EXCEPTIONS: &[Exception] = &[
     // https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getbuffer: a Direct3D 11 swap
     // chain's buffers are its textures.
     Exception::Binds { api: "directx-graphics-infrastructure", name: "Buffer", kind: "ID3D11Texture2D" },
-    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-d3d11createdevice: Software is the module of a
-    // software rasterizer, which the system would load and run.
-    Exception::NullHandle { function: "D3D11CreateDevice", param: "Software" },
-    Exception::NullHandle { function: "D3D11CreateDeviceAndSwapChain", param: "Software" },
     // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-omsetrendertargetsandunorderedaccessviews:
     // NumRTVs at most D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT or D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL (which
     // keeps the depth stencil view too); UAVStartSlot + NumUAVs at most D3D11_1_UAV_SLOT_COUNT, or NumUAVs
@@ -364,64 +447,41 @@ const DIRECT3D_11_EXCEPTIONS: &[Exception] = &[
     Exception::ProtectThreads { kind: "ID3D11DeviceContext", interface: "ID3D11Multithread", method: "SetMultithreadProtected" },
 ];
 
-use Reliance::{FreeThreaded, LentUntilEnd, LiveObject, NoCallback, ReturnsNormally};
+use Reliance::{FreeThreaded, LentUntilEnd, LiveObject, ReturnsNormally};
 
-const PRIVATE_DATA: &str = "the glue keeps nothing in private data: the bytes cross copied, and an interface stored is held by the system's own reference";
-const EVICTION: &str = "residency on the GPU: an object or memory lent to the CPU stays live and mapped";
 const BREAK: &str = "a break raises a breakpoint exception inside the call, through our frames";
-const BREAK_READ: &str = "reads a setting, which the glue never turns on";
-const DISCARDED_COUNT: &str = "a count of discarded messages, no object or memory";
-const MESSAGE_ID: &str = "the search's flag test finds D3D11_MESSAGE_ID, whose values name messages about single-threaded use; an identifier, no flag";
-const DEBUG_LAYER: &str = "a debug layer counts references as COM does and only lengthens lifetimes: what the glue holds stays live";
 
-/// d3dcommon's pins.
-const DIRECT3D_COMMON_PINS: &[Pin] = &[
-    not_called("ID3DDestructionNotifier::RegisterDestructionCallback", &[NoCallback], "a function pointer the system would call: no row maps one, so the glue writes no way to hand one over", "destruction_callbacks_are_never_registered"),
-    harmless("ID3DDestructionNotifier::UnregisterDestructionCallback", &[NoCallback], "removes a callback, of which the glue registers none"),
-];
+/// d3dcommon's rows: none. Its one callback (RegisterDestructionCallback's function pointer) is a kind the system
+/// trusts, refused by default.
+const DIRECT3D_COMMON_PINS: &[Pin] = &[];
 
-/// DXGI's pins.
+/// DXGI's rows.
 const DIRECTX_GRAPHICS_INFRASTRUCTURE_PINS: &[Pin] = &[
-    harmless("IDXGIObject::SetPrivateData", &[LiveObject], PRIVATE_DATA),
-    harmless("IDXGIObject::SetPrivateDataInterface", &[LiveObject], PRIVATE_DATA),
-    harmless("IDXGIObject::GetPrivateData", &[LiveObject], PRIVATE_DATA),
     not_called("IDXGIDevice2::OfferResources", &[LiveObject, LentUntilEnd], "an offered resource's memory may be discarded, under memory a view may hold", "offered_resources_are_never_offered"),
     not_called("IDXGIDevice2::ReclaimResources", &[LentUntilEnd], "pairs with OfferResources, which is never called", "offered_resources_are_never_offered"),
     not_called("IDXGIDevice4::OfferResources1", &[LiveObject, LentUntilEnd], "as OfferResources", "offered_resources_are_never_offered"),
     not_called("IDXGIDevice4::ReclaimResources1", &[LentUntilEnd], "as ReclaimResources", "offered_resources_are_never_offered"),
-    harmless("IDXGIDevice3::Trim", &[LiveObject, LentUntilEnd], "frees the driver's own allocations, never an object referenced or memory mapped"),
-    harmless("IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit", &[LiveObject, LentUntilEnd], DISCARDED_COUNT),
     Pin { method: "IDXGIInfoQueue::SetBreakOnCategory", relies: &[ReturnsNormally], hold: Hold::Refuses { param: "bEnable", when: "{}", why: BREAK }, test: "breaks_are_never_turned_on" },
     Pin { method: "IDXGIInfoQueue::SetBreakOnSeverity", relies: &[ReturnsNormally], hold: Hold::Refuses { param: "bEnable", when: "{}", why: BREAK }, test: "breaks_are_never_turned_on" },
     Pin { method: "IDXGIInfoQueue::SetBreakOnID", relies: &[ReturnsNormally], hold: Hold::Refuses { param: "bEnable", when: "{}", why: BREAK }, test: "breaks_are_never_turned_on" },
-    harmless("IDXGIInfoQueue::GetBreakOnCategory", &[ReturnsNormally], BREAK_READ),
-    harmless("IDXGIInfoQueue::GetBreakOnSeverity", &[ReturnsNormally], BREAK_READ),
-    harmless("IDXGIInfoQueue::GetBreakOnID", &[ReturnsNormally], BREAK_READ),
-    harmless("IDXGIKeyedMutex::ReleaseSync", &[LiveObject], "releases a keyed mutex shared between devices, no reference"),
-    harmless("IDXGIOutput::ReleaseOwnership", &[LiveObject], "gives up an output's exclusive ownership, no reference"),
     not_called("IDXGIOutputDuplication::MapDesktopSurface", &[LentUntilEnd], "lends the desktop's memory, for which no exception line says until when", "desktop_surfaces_are_never_mapped"),
     not_called("IDXGIOutputDuplication::UnMapDesktopSurface", &[LentUntilEnd], "pairs with MapDesktopSurface, which is never called", "desktop_surfaces_are_never_mapped"),
-    harmless("IDXGIOutputDuplication::ReleaseFrame", &[LiveObject], "ends a frame's use of the desktop image; the image object stays live while referenced, and is never mapped"),
-    harmless("IDXGIDebug::ReportLiveObjects", &[LiveObject], "reports live objects to the debugger; it changes no count"),
-    harmless("IDXGIResource::SetEvictionPriority", &[LiveObject, LentUntilEnd], EVICTION),
-    harmless("IDXGIResource::GetEvictionPriority", &[LiveObject, LentUntilEnd], EVICTION),
     not_called("IDXGISurface::Map", &[LentUntilEnd], "would map a texture's memory beside the context's Map, and its Unmap end memory a view holds", "surfaces_are_never_mapped_through_dxgi"),
     not_called("IDXGISurface::Unmap", &[LentUntilEnd], "could unmap a subresource the context lent, behind its view", "surfaces_are_never_mapped_through_dxgi"),
     not_called("IDXGISurface1::GetDC", &[LentUntilEnd], "locks a surface for GDI, beside memory a view may hold", "surfaces_are_never_mapped_through_dxgi"),
     not_called("IDXGISurface1::ReleaseDC", &[LiveObject, LentUntilEnd], "pairs with GetDC, which is never called", "surfaces_are_never_mapped_through_dxgi"),
-    harmless("IDXGISwapChain::ResizeBuffers", &[LentUntilEnd], "fails while any reference to a buffer is held, and lent memory holds its resource"),
-    harmless("IDXGISwapChain::ResizeTarget", &[LentUntilEnd], "resizes the window, no buffer"),
-    harmless("IDXGISwapChain3::ResizeBuffers1", &[LentUntilEnd], "as ResizeBuffers"),
-    harmless("CreateDXGIFactory2", &[LiveObject], DEBUG_LAYER),
 ];
 
-/// Direct3D 11's pins.
+/// Direct3D 11's rows.
 const DIRECT3D_11_PINS: &[Pin] = &[
+    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-d3d11createdevice: Software is the module of a
+    // software rasterizer, which the system would load and run.
+    Pin { method: "D3D11CreateDevice", relies: &[], hold: Hold::NullOnly { param: "Software", why: "a module of a software rasterizer, which the system would load and run; null asks for none" }, test: "a_module_is_never_handed_to_the_system" },
+    Pin { method: "D3D11CreateDeviceAndSwapChain", relies: &[], hold: Hold::NullOnly { param: "Software", why: "as D3D11CreateDevice" }, test: "a_module_is_never_handed_to_the_system" },
     // https://learn.microsoft.com/windows/win32/api/d3d11_4/nn-d3d11_4-id3d11multithread: the immediate context is
     // free threaded only while protected.
     Pin { method: "ID3D11Multithread::SetMultithreadProtected", relies: &[FreeThreaded], hold: Hold::Answers { value: "true", why: "the glue turned protection on when the context crossed and keeps it on: it was on before the call, which is what the method returns" }, test: "protection_stays_on_through_the_context_and_the_multithread_object" },
-    harmless("ID3D11Multithread::GetMultithreadProtected", &[FreeThreaded], "reads the protection, which the glue keeps on"),
-    not_called("ID3D11Multithread::Enter", &[FreeThreaded], "a Leave without its Enter on the same thread breaks the system's lock; glued with a per-thread count when the whole API is (AC3)", "the_device_lock_is_never_taken_or_left"),
+    not_called("ID3D11Multithread::Enter", &[FreeThreaded], "a Leave without its Enter on the same thread breaks the system's lock; glued with a per-thread count later", "the_device_lock_is_never_taken_or_left"),
     not_called("ID3D11Multithread::Leave", &[FreeThreaded], "as Enter", "the_device_lock_is_never_taken_or_left"),
     not_called("ID3D11Device::CreateDeferredContext", &[FreeThreaded], "a deferred context is not free threaded, and its kind's type is Sync", "deferred_contexts_are_never_made"),
     not_called("ID3D11Device1::CreateDeferredContext1", &[FreeThreaded], "as CreateDeferredContext", "deferred_contexts_are_never_made"),
@@ -429,51 +489,185 @@ const DIRECT3D_11_PINS: &[Pin] = &[
     not_called("ID3D11Device3::CreateDeferredContext3", &[FreeThreaded], "as CreateDeferredContext", "deferred_contexts_are_never_made"),
     // https://learn.microsoft.com/windows/win32/api/d3d11_1/ne-d3d11_1-d3d11_1_create_device_context_state_flag.
     Pin { method: "ID3D11Device1::CreateDeviceContextState", relies: &[FreeThreaded], hold: Hold::Clears { param: "Flags", mask: 0x1, why: "D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED would make the context it is swapped into single threaded" }, test: "a_context_state_is_asked_free_threaded" },
-    harmless("ID3D11DeviceContext1::SwapDeviceContextState", &[FreeThreaded], "a state made through the glue is never single threaded (CreateDeviceContextState's flag is cleared)"),
-    // https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_create_device_flag.
-    Pin { method: "D3D11CreateDevice", relies: &[FreeThreaded], hold: Hold::Clears { param: "Flags", mask: 0x1, why: "D3D11_CREATE_DEVICE_SINGLETHREADED makes the device and its context single threaded; a free-threaded device serves a single-threaded caller the same" }, test: "a_single_threaded_device_is_asked_free_threaded" },
-    Pin { method: "D3D11CreateDeviceAndSwapChain", relies: &[FreeThreaded], hold: Hold::Clears { param: "Flags", mask: 0x1, why: "as D3D11CreateDevice" }, test: "a_single_threaded_device_is_asked_free_threaded" },
-    harmless("D3D11CreateDevice", &[LiveObject], DEBUG_LAYER),
-    harmless("D3D11CreateDeviceAndSwapChain", &[LiveObject], DEBUG_LAYER),
+    // https://learn.microsoft.com/windows/win32/api/d3d11_1/ne-d3d11_1-d3d11_copy_flags.
+    Pin { method: "ID3D11DeviceContext1::CopySubresourceRegion1", relies: &[LentUntilEnd], hold: Hold::Refuses { param: "CopyFlags", when: "{} & 0x2 != 0", why: "D3D11_COPY_DISCARD lets the system drop the destination's memory, under memory a view may hold, as DiscardResource (never called)" }, test: "a_discarding_copy_is_refused" },
     // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11device-setexceptionmode.
     Pin { method: "ID3D11Device::SetExceptionMode", relies: &[ReturnsNormally], hold: Hold::Refuses { param: "RaiseFlags", when: "{} != 0", why: "D3D11_RAISE_FLAG_DRIVER_INTERNAL_ERROR raises an exception inside a call, through our frames" }, test: "exceptions_are_never_turned_on" },
-    harmless("ID3D11Device::GetExceptionMode", &[ReturnsNormally], BREAK_READ),
     Pin { method: "ID3D11InfoQueue::SetBreakOnCategory", relies: &[ReturnsNormally], hold: Hold::Refuses { param: "bEnable", when: "{}", why: BREAK }, test: "breaks_are_never_turned_on" },
     Pin { method: "ID3D11InfoQueue::SetBreakOnSeverity", relies: &[ReturnsNormally], hold: Hold::Refuses { param: "bEnable", when: "{}", why: BREAK }, test: "breaks_are_never_turned_on" },
     Pin { method: "ID3D11InfoQueue::SetBreakOnID", relies: &[ReturnsNormally], hold: Hold::Refuses { param: "bEnable", when: "{}", why: BREAK }, test: "breaks_are_never_turned_on" },
-    harmless("ID3D11InfoQueue::SetBreakOnID", &[FreeThreaded], MESSAGE_ID),
-    harmless("ID3D11InfoQueue::GetBreakOnID", &[FreeThreaded], MESSAGE_ID),
-    harmless("ID3D11InfoQueue::AddMessage", &[FreeThreaded], MESSAGE_ID),
-    harmless("ID3D11InfoQueue::GetBreakOnCategory", &[ReturnsNormally], BREAK_READ),
-    harmless("ID3D11InfoQueue::GetBreakOnSeverity", &[ReturnsNormally], BREAK_READ),
-    harmless("ID3D11InfoQueue::GetBreakOnID", &[ReturnsNormally], BREAK_READ),
-    harmless("ID3D11InfoQueue::GetNumMessagesDiscardedByMessageCountLimit", &[LiveObject, LentUntilEnd], DISCARDED_COUNT),
-    harmless("ID3D11DeviceContext::Map", &[LentUntilEnd], "the exception line's own method: a subresource mapped through the glue is not mapped again before its Unmap"),
-    harmless("ID3D11DeviceContext::Unmap", &[LentUntilEnd], "the exception line's end: the glue revokes every view of the memory before calling it"),
-    not_called("ID3D11DeviceContext1::DiscardResource", &[LiveObject, LentUntilEnd], "discards a resource's contents, under memory a view may hold; glued refused while lent when the whole API is (AC3)", "resources_are_never_discarded"),
+    not_called("ID3D11DeviceContext1::DiscardResource", &[LiveObject, LentUntilEnd], "discards a resource's contents, under memory a view may hold; glued refused while lent later", "resources_are_never_discarded"),
     not_called("ID3D11DeviceContext1::DiscardView", &[LiveObject, LentUntilEnd], "as DiscardResource", "resources_are_never_discarded"),
     not_called("ID3D11DeviceContext1::DiscardView1", &[LiveObject, LentUntilEnd], "as DiscardResource", "resources_are_never_discarded"),
-    harmless("ID3D11DeviceContext2::UpdateTileMappings", &[LentUntilEnd], "tile mappings bind GPU memory to tiled resources, which are never mapped for the CPU"),
-    harmless("ID3D11DeviceContext2::CopyTileMappings", &[LentUntilEnd], "as UpdateTileMappings"),
-    harmless("ID3D11DeviceContext2::ResizeTilePool", &[LentUntilEnd], "a tile pool is never mapped for the CPU"),
     not_called("ID3D11SwitchToRef::SetUseRef", &[LentUntilEnd], "swaps the device's rasterizer under every object and mapping", "the_reference_rasterizer_is_never_switched_to"),
-    harmless("ID3D11SwitchToRef::GetUseRef", &[LentUntilEnd], BREAK_READ),
     not_called("ID3D11VideoContext::GetDecoderBuffer", &[LentUntilEnd], "lends memory until ReleaseDecoderBuffer, for which no exception line is written yet", "decoder_buffers_are_never_lent"),
     not_called("ID3D11VideoContext::ReleaseDecoderBuffer", &[LiveObject, LentUntilEnd], "pairs with GetDecoderBuffer, which is never called", "decoder_buffers_are_never_lent"),
-    harmless("ID3D11VideoContext::SubmitDecoderBuffers", &[LentUntilEnd], "submits buffers already given back; the glue lends none"),
-    harmless("ID3D11VideoContext1::SubmitDecoderBuffers1", &[LentUntilEnd], "as SubmitDecoderBuffers"),
-    harmless("ID3D11VideoContext3::SubmitDecoderBuffers2", &[LentUntilEnd], "as SubmitDecoderBuffers"),
-    harmless("ID3D11Resource::SetEvictionPriority", &[LiveObject, LentUntilEnd], EVICTION),
-    harmless("ID3D11Resource::GetEvictionPriority", &[LiveObject, LentUntilEnd], EVICTION),
-    harmless("ID3D11Device::GetPrivateData", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11Device::SetPrivateData", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11Device::SetPrivateDataInterface", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11DeviceChild::GetPrivateData", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11DeviceChild::SetPrivateData", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11DeviceChild::SetPrivateDataInterface", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11VideoDevice::SetPrivateData", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11VideoDevice::SetPrivateDataInterface", &[LiveObject], PRIVATE_DATA),
-    harmless("ID3D11VideoDevice1::GetCryptoSessionPrivateDataSize", &[LiveObject], "a size, no data"),
+];
+
+/// A selector or flag set the system compares with the values it knows, refusing any other with an error.
+const CHECKED_BY_SYSTEM: &str = "a selector or flag set the system compares with the values it knows and refuses any other with an error; no value names memory, code, a thread or an exception";
+/// An identifier of a message or a category, only compared and stored.
+const MESSAGE_KEYS: &str = "an identifier of a debug message, its category or severity: the system only compares and stores it (a break on one is a row of its own)";
+
+/// The judgments of d3dcommon's enumerations.
+const DIRECT3D_COMMON_JUDGED: &[Judged] = &[
+    Judged { enumerations: &["D3D_DRIVER_TYPE", "D3D_FEATURE_LEVEL", "D3D_PRIMITIVE_TOPOLOGY", "D3D_SRV_DIMENSION"], values: Values::Any, why: CHECKED_BY_SYSTEM },
+];
+
+/// The judgments of DXGI's enumerations, and of its numbers named as flags that the metadata links to none.
+const DIRECTX_GRAPHICS_INFRASTRUCTURE_JUDGED: &[Judged] = &[
+    Judged {
+        enumerations: &[
+            "DXGI_ADAPTER_FLAG", "DXGI_ADAPTER_FLAG3", "DXGI_ALPHA_MODE", "DXGI_COLOR_SPACE_TYPE", "DXGI_COMPUTE_PREEMPTION_GRANULARITY", "DXGI_DEBUG_RLO_FLAGS",
+            "DXGI_ENUM_MODES", "DXGI_FEATURE", "DXGI_FORMAT", "DXGI_FRAME_PRESENTATION_MODE", "DXGI_GPU_PREFERENCE", "DXGI_GRAPHICS_PREEMPTION_GRANULARITY",
+            "DXGI_HDR_METADATA_TYPE", "DXGI_MEMORY_SEGMENT_GROUP", "DXGI_MODE_ROTATION", "DXGI_MODE_SCALING", "DXGI_MODE_SCANLINE_ORDER",
+            "DXGI_MULTIPLANE_OVERLAY_YCbCr_FLAGS", "DXGI_OFFER_RESOURCE_FLAGS", "DXGI_OFFER_RESOURCE_PRIORITY", "DXGI_RECLAIM_RESOURCE_RESULTS", "DXGI_RESIDENCY",
+            "DXGI_RESOURCE_PRIORITY", "DXGI_SCALING", "DXGI_SWAP_EFFECT", "DXGI_USAGE",
+        ],
+        values: Values::Any,
+        why: CHECKED_BY_SYSTEM,
+    },
+    // https://learn.microsoft.com/windows/win32/direct3ddxgi/dxgi-present: test, sequencing, waiting, stereo and tearing.
+    Judged { enumerations: &["DXGI_PRESENT"], values: Values::Any, why: "how a frame is shown: testing, sequencing, waiting, stereo and tearing; the system refuses a combination it does not know" },
+    // https://learn.microsoft.com/windows/win32/api/dxgi/ne-dxgi-dxgi_swap_chain_flag: GDI_COMPATIBLE allows GetDC, which is
+    // never called; FRAME_LATENCY_WAITABLE_OBJECT hands out an event handle the kernel checks.
+    Judged { enumerations: &["DXGI_SWAP_CHAIN_FLAG"], values: Values::Any, why: "a swap chain's options; GDI_COMPATIBLE allows only GetDC, which the glue never calls, and the waitable object is an event handle the kernel checks" },
+    // https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgifactory-makewindowassociation.
+    Judged { enumerations: &["DXGI_MWA_FLAGS"], values: Values::Any, why: "which window messages DXGI watches (Alt+Enter, print screen, window changes): its own handling, no memory or code of ours" },
+    Judged { enumerations: &["DXGI_MAP_FLAGS"], values: Values::Any, why: "how a surface is mapped through DXGI, which the glue never calls (a row)" },
+    Judged { enumerations: &["DXGI_INFO_QUEUE_MESSAGE_CATEGORY", "DXGI_INFO_QUEUE_MESSAGE_SEVERITY"], values: Values::Any, why: MESSAGE_KEYS },
+    // https://learn.microsoft.com/windows/win32/api/dxgi1_3/nf-dxgi1_3-createdxgifactory2: DXGI_CREATE_FACTORY_DEBUG loads the
+    // debug layer, a special value refused.
+    Judged { enumerations: &["DXGI_CREATE_FACTORY_FLAGS"], values: Values::Declared, why: "the one declared value loads the debug layer (refused below); an undeclared bit is no option the glue can judge" },
+    Judged { enumerations: &["IDXGIOutput5::DuplicateOutput1(Flags)"], values: Values::Any, why: "reserved, zero (dxgi1_5.h); the system refuses any other value" },
+    Judged { enumerations: &["DXGIGetDebugInterface1(Flags)"], values: Values::Any, why: "reserved, zero (dxgi1_3.h); the system refuses any other value" },
+];
+
+/// The judgments of Direct3D 11's enumerations, and of its numbers named as flags that the metadata links to none.
+const DIRECT3D_11_JUDGED: &[Judged] = &[
+    Judged {
+        enumerations: &[
+            "D3D11_AUTHENTICATED_CHANNEL_TYPE", "D3D11_BLEND", "D3D11_BLEND_OP", "D3D11_COMPARISON_FUNC", "D3D11_CONSERVATIVE_RASTERIZATION_MODE",
+            "D3D11_CONTEXT_TYPE", "D3D11_COUNTER", "D3D11_COUNTER_TYPE", "D3D11_CRYPTO_SESSION_STATUS", "D3D11_CULL_MODE", "D3D11_DEPTH_WRITE_MASK",
+            "D3D11_DEVICE_CONTEXT_TYPE", "D3D11_DSV_DIMENSION", "D3D11_FEATURE", "D3D11_FEATURE_VIDEO", "D3D11_FILL_MODE", "D3D11_FILTER",
+            "D3D11_INPUT_CLASSIFICATION", "D3D11_LOGIC_OP", "D3D11_QUERY", "D3D11_RESOURCE_DIMENSION", "D3D11_RTV_DIMENSION", "D3D11_SHADER_TYPE",
+            "D3D11_STENCIL_OP", "D3D11_TEXTURE_ADDRESS_MODE", "D3D11_TEXTURE_LAYOUT", "D3D11_TRACE_GS_INPUT_PRIMITIVE", "D3D11_TRACE_REGISTER_TYPE",
+            "D3D11_UAV_DIMENSION", "D3D11_USAGE", "D3D11_VDOV_DIMENSION", "D3D11_VIDEO_DECODER_BUFFER_TYPE", "D3D11_VIDEO_FRAME_FORMAT",
+            "D3D11_VIDEO_PROCESSOR_ALPHA_FILL_MODE", "D3D11_VIDEO_PROCESSOR_FILTER", "D3D11_VIDEO_PROCESSOR_OUTPUT_RATE", "D3D11_VIDEO_PROCESSOR_ROTATION",
+            "D3D11_VIDEO_PROCESSOR_STEREO_FLIP_MODE", "D3D11_VIDEO_PROCESSOR_STEREO_FORMAT", "D3D11_VIDEO_USAGE", "D3D11_VPIV_DIMENSION", "D3D11_VPOV_DIMENSION",
+            "D3D11_CPU_ACCESS_FLAG", "D3D11_CRYPTO_SESSION_KEY_EXCHANGE_FLAGS", "D3D11_RLDO_FLAGS",
+        ],
+        values: Values::Any,
+        why: CHECKED_BY_SYSTEM,
+    },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_bind_flag.
+    Judged { enumerations: &["D3D11_BIND_FLAG"], values: Values::Any, why: "the pipeline stages a resource may be bound to; the system checks them against the description and the format" },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_resource_misc_flag: sharing makes handles the kernel
+    // checks; GDI_COMPATIBLE allows only GetDC, which the glue never calls.
+    Judged { enumerations: &["D3D11_RESOURCE_MISC_FLAG"], values: Values::Any, why: "a resource's options: sharing makes handles the kernel checks, GDI_COMPATIBLE allows only GetDC (never called), tiling binds GPU memory only" },
+    Judged { enumerations: &["D3D11_FENCE_FLAG"], values: Values::Any, why: "a fence's sharing (handles the kernel checks) and monitoring; no memory of ours" },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_map: the exception line's lending depends on the value.
+    Judged { enumerations: &["D3D11_MAP"], values: Values::Declared, why: "Map's exception line lends for reading only, writing, or a cleared shadow by the value: only the five declared values pass" },
+    Judged { enumerations: &["D3D11_MESSAGE_CATEGORY", "D3D11_MESSAGE_ID", "D3D11_MESSAGE_SEVERITY"], values: Values::Any, why: MESSAGE_KEYS },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_create_device_flag.
+    Judged { enumerations: &["D3D11_CREATE_DEVICE_FLAG"], values: Values::Declared, why: "the device's options, two of them special (below); an undeclared bit is no option the glue can judge" },
+    // The numbers named as flags, masks or options that the metadata links to no enumeration (d3d11.h names each's enumeration).
+    Judged { enumerations: &["ID3D11Debug::SetFeatureMask(Mask)"], values: Values::Any, why: "D3D11_DEBUG_FEATURE: flushing, finishing or presenting after each operation, and how offered resources are discarded (none is ever offered: a row)" },
+    Judged {
+        enumerations: &[
+            "ID3D11Device::CreateDeferredContext(ContextFlags)", "ID3D11Device1::CreateDeferredContext1(ContextFlags)", "ID3D11Device2::CreateDeferredContext2(ContextFlags)",
+            "ID3D11Device3::CreateDeferredContext3(ContextFlags)",
+        ],
+        values: Values::Any,
+        why: "reserved, zero; the method is never called (a row)",
+    },
+    Judged { enumerations: &["ID3D11Device::SetExceptionMode(RaiseFlags)"], values: Values::Any, why: "D3D11_RAISE_FLAG: every nonzero value is refused by its row" },
+    Judged { enumerations: &["ID3D11Device1::CreateDeviceContextState(Flags)"], values: Values::Any, why: "D3D11_1_CREATE_DEVICE_CONTEXT_STATE_FLAG: SINGLETHREADED is cleared by its row; the system refuses an undeclared bit" },
+    Judged { enumerations: &["ID3D11Device2::CheckMultisampleQualityLevels1(Flags)"], values: Values::Any, why: "D3D11_CHECK_MULTISAMPLE_QUALITY_LEVELS_FLAG: whether to ask for tiled resources; a question only" },
+    Judged { enumerations: &["ID3D11DeviceContext::Map(MapFlags)"], values: Values::Any, why: "D3D11_MAP_FLAG_DO_NOT_WAIT: whether Map waits for the GPU; the lending is the same" },
+    Judged { enumerations: &["ID3D11DeviceContext::GetData(GetDataFlags)"], values: Values::Any, why: "D3D11_ASYNC_GETDATA_DONOTFLUSH: whether GetData flushes; the bytes are the glue's own buffer either way" },
+    Judged { enumerations: &["ID3D11DeviceContext::OMSetBlendState(SampleMask)"], values: Values::Any, why: "a mask of the samples written, a number" },
+    Judged { enumerations: &["ID3D11DeviceContext::ClearDepthStencilView(ClearFlags)"], values: Values::Any, why: "D3D11_CLEAR_FLAG: depth, stencil or both" },
+    Judged { enumerations: &["ID3D11DeviceContext1::CopySubresourceRegion1(CopyFlags)", "ID3D11DeviceContext1::UpdateSubresource1(CopyFlags)"], values: Values::Any, why: "D3D11_COPY_FLAGS: DISCARD is refused by its row (it may drop memory a view holds); NO_OVERWRITE only promises the GPU" },
+    Judged {
+        enumerations: &[
+            "ID3D11DeviceContext2::UpdateTileMappings(Flags)", "ID3D11DeviceContext2::CopyTileMappings(Flags)", "ID3D11DeviceContext2::CopyTiles(Flags)",
+            "ID3D11DeviceContext2::UpdateTiles(Flags)",
+        ],
+        values: Values::Any,
+        why: "D3D11_TILE_MAPPING_FLAG and D3D11_TILE_COPY_FLAG: the GPU's tile pool, never mapped for the CPU",
+    },
+    Judged {
+        enumerations: &[
+            "ID3D11RefDefaultTrackingOptions::SetTrackingOptions(ResourceTypeFlags)", "ID3D11RefDefaultTrackingOptions::SetTrackingOptions(Options)",
+            "ID3D11RefTrackingOptions::SetTrackingOptions(uOptions)", "ID3D11TracingDevice::SetShaderTrackingOptionsByType(ResourceTypeFlags)",
+            "ID3D11TracingDevice::SetShaderTrackingOptionsByType(Options)", "ID3D11TracingDevice::SetShaderTrackingOptions(Options)",
+        ],
+        values: Values::Any,
+        why: "D3D11_SHADER_TRACKING_OPTIONS and resource types: what the reference rasterizer's tracing records, its own bookkeeping",
+    },
+];
+
+/// Values the calling glue clears or refuses.
+const DIRECTX_GRAPHICS_INFRASTRUCTURE_SPECIALS: &[SpecialValue] = &[
+    SpecialValue { enumeration: "DXGI_CREATE_FACTORY_FLAGS", value: "DXGI_CREATE_FACTORY_DEBUG", rule: Special::Refuse, why: "the debug layer breaks (a breakpoint exception through our frames) when the DirectX control panel's settings in the registry tell it to: a setting outside the program", test: "the_debug_layer_is_refused" },
+];
+
+/// Values the calling glue clears or refuses.
+const DIRECT3D_11_SPECIALS: &[SpecialValue] = &[
+    // https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_create_device_flag.
+    SpecialValue { enumeration: "D3D11_CREATE_DEVICE_FLAG", value: "D3D11_CREATE_DEVICE_SINGLETHREADED", rule: Special::Clear, why: "makes the device and its context single threaded; a free-threaded device serves a single-threaded caller the same", test: "a_single_threaded_device_is_asked_free_threaded" },
+    SpecialValue { enumeration: "D3D11_CREATE_DEVICE_FLAG", value: "D3D11_CREATE_DEVICE_DEBUG", rule: Special::Refuse, why: "the debug layer breaks (a breakpoint exception through our frames) when the DirectX control panel's settings in the registry tell it to: a setting outside the program", test: "the_debug_layer_is_refused" },
+];
+
+/// What objects of these interfaces do: describe, name and hold themselves.
+const OBJECTS_ONLY: &str = "each method describes, names, compares or holds its own object, or stores private data the system copies (an interface stored is held by the system's own reference): none ends memory lent, changes how threads may call, raises an exception or runs code of ours";
+
+/// d3dcommon's effects.
+const DIRECT3D_COMMON_EFFECTS: &[Effects] = &[
+    Effects { interfaces: &["ID3DBlob"], why: "a block of bytes: its address (a kind lent until Release, refused) and its size" },
+    Effects { interfaces: &["ID3DDestructionNotifier"], why: "registers callbacks, whose function pointer is a kind the system trusts (refused by default), and unregisters them by a number" },
+];
+
+/// DXGI's effects.
+const DIRECTX_GRAPHICS_INFRASTRUCTURE_EFFECTS: &[Effects] = &[
+    Effects { interfaces: &["IDXGIObject", "IDXGIDeviceSubObject", "IDXGIResource", "IDXGIResource1", "IDXGIKeyedMutex"], why: OBJECTS_ONLY },
+    Effects { interfaces: &["IDXGISurface", "IDXGISurface1", "IDXGISurface2"], why: "a texture's surface: its description and its resource; Map, Unmap, GetDC and ReleaseDC are never called (rows)" },
+    Effects { interfaces: &["IDXGIAdapter", "IDXGIAdapter1", "IDXGIAdapter2", "IDXGIAdapter3", "IDXGIAdapter4"], why: "an adapter's description, outputs, memory budget and events (handles the kernel checks)" },
+    Effects { interfaces: &["IDXGIOutput", "IDXGIOutput1", "IDXGIOutput2", "IDXGIOutput3", "IDXGIOutput4", "IDXGIOutput5", "IDXGIOutput6"], why: "a monitor's modes, gamma, ownership for full screen and duplication: state of the display, no memory or code of ours" },
+    Effects { interfaces: &["IDXGIOutputDuplication"], why: "the desktop's frames, as objects; mapping the desktop's memory is never called (rows)" },
+    Effects { interfaces: &["IDXGIDevice", "IDXGIDevice1", "IDXGIDevice2", "IDXGIDevice3", "IDXGIDevice4"], why: "a device's adapter, priorities, frame latency and residency; offering and reclaiming are never called (rows); Trim frees only the driver's own allocations" },
+    Effects { interfaces: &["IDXGIFactory", "IDXGIFactory1", "IDXGIFactory2", "IDXGIFactory3", "IDXGIFactory4", "IDXGIFactory5", "IDXGIFactory6", "IDXGIFactory7", "IDXGIFactoryMedia"], why: "makes adapters and swap chains and watches windows and events (handles the kernel checks); a software adapter's module is a kind the system trusts (refused by default)" },
+    Effects { interfaces: &["IDXGISwapChain", "IDXGISwapChain1", "IDXGISwapChain2", "IDXGISwapChain3", "IDXGISwapChain4", "IDXGISwapChainMedia", "IDXGIDecodeSwapChain"], why: "presents and resizes: ResizeBuffers fails while any reference to a buffer is held, and lent memory holds its resource; the waitable object is an event handle the kernel checks" },
+    Effects { interfaces: &["IDXGIDisplayControl", "IDXGraphicsAnalysis"], why: "whether stereo is on, and a tool's capture: state outside our memory" },
+    Effects { interfaces: &["IDXGIDebug", "IDXGIDebug1"], why: "reports live objects and tracks leaks: it changes no count and runs nothing of ours" },
+    Effects { interfaces: &["IDXGIInfoQueue"], why: "stores, filters and reports messages; turning a break on is refused (rows)" },
+    Effects { interfaces: &["CreateDXGIFactory", "CreateDXGIFactory1", "CreateDXGIFactory2", "DXGIDeclareAdapterRemovalSupport", "DXGIDisableVBlankVirtualization", "DXGIGetDebugInterface1"], why: "make a factory or a debug interface, or set a process-wide option of display behavior; the debug layer is refused (a special value)" },
+];
+
+/// Direct3D 11's effects.
+const DIRECT3D_11_EFFECTS: &[Effects] = &[
+    Effects {
+        interfaces: &[
+            "ID3D11DeviceChild", "ID3D11Asynchronous", "ID3D11Query", "ID3D11Query1", "ID3D11Counter", "ID3D11BlendState", "ID3D11BlendState1",
+            "ID3D11DepthStencilState", "ID3D11RasterizerState", "ID3D11RasterizerState1", "ID3D11RasterizerState2", "ID3D11SamplerState", "ID3D11Resource",
+            "ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture2D1", "ID3D11Texture3D", "ID3D11Texture3D1", "ID3D11View",
+            "ID3D11DepthStencilView", "ID3D11RenderTargetView", "ID3D11RenderTargetView1", "ID3D11ShaderResourceView", "ID3D11ShaderResourceView1",
+            "ID3D11UnorderedAccessView", "ID3D11UnorderedAccessView1", "ID3D11ClassInstance", "ID3D11ClassLinkage", "ID3D11CommandList",
+            "ID3D11VideoDecoder", "ID3D11VideoDecoderOutputView", "ID3D11VideoProcessor", "ID3D11VideoProcessorEnumerator", "ID3D11VideoProcessorEnumerator1",
+            "ID3D11VideoProcessorInputView", "ID3D11VideoProcessorOutputView", "ID3D11AuthenticatedChannel", "ID3D11CryptoSession", "ID3DUserDefinedAnnotation",
+        ],
+        why: OBJECTS_ONLY,
+    },
+    Effects { interfaces: &["ID3D11Fence"], why: "a fence's value, its shared handle and an event it signals (a handle the kernel checks)" },
+    Effects { interfaces: &["ID3D11Device", "ID3D11Device1", "ID3D11Device2", "ID3D11Device3", "ID3D11Device4", "ID3D11Device5"], why: "makes objects, answers questions of support, opens shared objects by handles the kernel checks; deferred contexts are never made and exceptions never turned on (rows), a context state is asked free threaded (a row), and CPU access to a mapped default resource takes raw pointers (refused by default)" },
+    Effects { interfaces: &["ID3D11DeviceContext", "ID3D11DeviceContext1", "ID3D11DeviceContext2", "ID3D11DeviceContext3", "ID3D11DeviceContext4"], why: "binds, draws, copies and signals; Map and Unmap are the exception line's, Discard is never called and a discarding copy refused (rows); a context state made through the glue is never single threaded; command lists come only from deferred contexts, which are never made" },
+    Effects { interfaces: &["ID3D11Multithread"], why: "the device's lock: protection is answered on, Enter and Leave are never called (rows)" },
+    Effects { interfaces: &["ID3D11Debug", "ID3D11RefDefaultTrackingOptions", "ID3D11RefTrackingOptions", "ID3D11TracingDevice", "ID3D11ShaderTrace", "ID3D11ShaderTraceFactory"], why: "the debug and tracing layers' reports and options: flushing after each operation and tracing records change no object, memory or thread we rely on" },
+    Effects { interfaces: &["ID3D11InfoQueue"], why: "stores, filters and reports messages; turning a break on is refused (rows)" },
+    Effects { interfaces: &["ID3D11SwitchToRef"], why: "switching to the reference rasterizer is never called (a row); reading the switch is a question" },
+    Effects { interfaces: &["ID3D11VideoContext", "ID3D11VideoContext1", "ID3D11VideoContext2", "ID3D11VideoContext3", "ID3D11VideoDevice", "ID3D11VideoDevice1", "ID3D11VideoDevice2"], why: "decodes and processes video on objects of the API; the decoder's buffers are never lent (rows) and its extensions take raw pointers (refused by default)" },
+    Effects { interfaces: &["D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain"], why: "make a device (and a swap chain); a module is refused (rows), single threading cleared and the debug layer refused (special values)" },
 ];
 
 /// The spike's slice of DXGI (SPIKE.md): a surface's description, and a swap chain's Present and GetBuffer.
@@ -527,11 +721,6 @@ pub const SETS: &[(&str, &[&Api])] = &[
         &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE_SLICE, &DIRECT3D_11_SLICE],
     ),
 ];
-
-/// The whole API of a folder, of which a slice is a part.
-pub fn whole(folder: &str) -> Option<&'static Api> {
-    by_name("direct3d-11")?.iter().copied().find(|api| api.folder == folder)
-}
 
 /// Whether a set's direct crates are written: a slice's, and the whole APIs' glue set.
 pub fn writes_glue(name: &str) -> bool {

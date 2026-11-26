@@ -70,3 +70,29 @@ fn a_single_threaded_device_is_asked_free_threaded() {
     assert!(seen.protected_contexts >= before.protected_contexts + 2, "both contexts were protected");
     drop(made);
 }
+
+#[test]
+fn a_module_is_never_handed_to_the_system() {
+    let system = Entry::fake().system();
+    let before = observed();
+    let mode = ModeDesc { width: 8, height: 2, refresh_rate: Rational { numerator: 60, denominator: 1 }, format: Format(28), scanline_ordering: ModeScanlineOrder(0), scaling: ModeScaling(0) };
+    let desc = SwapChainDesc { buffer_desc: mode, sample_desc: SampleDesc { count: 1, quality: 0 }, buffer_usage: dxgi::enumerations::Usage(0x20), buffer_count: 1, output_window: Hwnd(0), windowed: true, swap_effect: SwapEffect(0), flags: 0 };
+    for module in [Hmodule(1), Hmodule(0x1000), Hmodule(usize::MAX)] {
+        assert!(system.create_device(None, DriverType(1), module, CreateDeviceFlag(0), &LEVELS, SDK_VERSION).is_err(), "a module handle is refused");
+        assert!(system.create_device_and_swap_chain(None, DriverType(1), module, CreateDeviceFlag(0), &LEVELS, SDK_VERSION, Some(&desc)).is_err(), "through both exports");
+    }
+    assert_eq!(observed().create_calls, before.create_calls, "no call carrying a module reached the system");
+}
+
+#[test]
+fn the_debug_layer_is_refused() {
+    let system = Entry::fake().system();
+    let before = observed();
+    /// D3D11_CREATE_DEVICE_DEBUG, and a bit d3d11.h declares for no flag.
+    const DEBUG: CreateDeviceFlag = CreateDeviceFlag(2);
+    const UNDECLARED: CreateDeviceFlag = CreateDeviceFlag(0x4000_0000);
+    for flags in [DEBUG, UNDECLARED, CreateDeviceFlag(DEBUG.0 | SINGLE_THREADED.0)] {
+        assert!(system.create_device(None, DriverType(1), Hmodule(0), flags, &LEVELS, SDK_VERSION).is_err(), "refused: {flags:?}");
+    }
+    assert_eq!(observed().create_calls, before.create_calls, "neither reached the system");
+}

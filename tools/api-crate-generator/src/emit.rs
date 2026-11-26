@@ -15,6 +15,8 @@ use crate::names;
 
 #[path = "glue.rs"]
 mod glue;
+#[path = "kinds.rs"]
+mod kinds;
 
 /// The spike's harness, ported to the generated glue: hand-written beside the generator, copied beside the slice's
 /// Direct3D 11 glue as a test-only package.
@@ -38,6 +40,10 @@ const HARNESS: &[(&str, &str)] = &[
     ("c/check2.c", include_str!("../harness/stand-ins/c/check2.c")),
     ("c/fuzz.c", include_str!("../harness/stand-ins/c/fuzz.c")),
 ];
+
+/// The hostile tests of the whole APIs' rows and the safe-Rust probes, hand-written beside the generator, copied beside
+/// Direct3D 11's recorder (they reach it through both glues).
+const RECORDER_TESTS: &[(&str, &str)] = &[("hostile.rs", include_str!("../harness/whole/hostile.rs"))];
 
 pub const HEADER: &str = "Written by tools/api-crate-generator from the Win32 metadata, version 63.0.31, and never by hand.";
 const UNKNOWN: (&str, &str) = ("Windows.Win32.System.Com", "IUnknown");
@@ -118,6 +124,8 @@ struct Generator<'a> {
     lengths: RefCell<BTreeMap<usize, BTreeMap<String, (i128, String, Option<String>)>>>,
     /// Every interface's own methods as the metadata has them, before a slice: the C tables keep every entry.
     all_methods: BTreeMap<Key, Vec<Method>>,
+    /// Each method's kinds and treatment (src/kinds.rs), once classified.
+    classified: RefCell<Option<kinds::Classified>>,
 }
 
 fn alias(api: &Api) -> String {
@@ -313,6 +321,7 @@ impl<'a> Generator<'a> {
             apiless: RefCell::new(BTreeSet::new()),
             lengths: RefCell::new(BTreeMap::new()),
             all_methods,
+            classified: RefCell::new(None),
         };
         generator.find_kinds();
         generator
@@ -453,6 +462,16 @@ impl<'a> Generator<'a> {
     /// The holds of every pin of `method` in the set's APIs (src/api.rs).
     fn holds_of(&self, method: &str) -> Vec<&'static crate::api::Hold> {
         self.apis.iter().flat_map(|api| api.pins.iter()).filter(|pin| pin.method == method).map(|pin| &pin.hold).collect()
+    }
+
+    /// The calling glue's treatment of a method (src/kinds.rs), once classified.
+    fn treatment(&self, method: &str) -> Option<kinds::Treatment> {
+        self.classified.borrow().as_ref().and_then(|classified| classified.treatments.get(method).cloned())
+    }
+
+    /// The checks of enumeration values on a method's parameters passed by value (src/kinds.rs).
+    fn value_rules(&self, method: &str) -> Vec<kinds::ValueRule> {
+        self.classified.borrow().as_ref().and_then(|classified| classified.rules.get(method).cloned()).unwrap_or_default()
     }
 
     /// The initial-data exception line of a method's parameter, if any.
@@ -1662,6 +1681,10 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
         let kinds = generator.kinds.iter().filter(|kind| kind.api == api).count();
         let _ = writeln!(report, "CRATE {}: interfaces {interfaces} methods {methods} object kinds {kinds}", spec.folder);
     }
+    // Default deny: every method's parameters and returns classified by kind, before any glue is written.
+    let classified = kinds::classify(&generator)?;
+    let kinds_report = classified.report.clone();
+    *generator.classified.borrow_mut() = Some(classified);
     // The glue: each API's direct crate, for a slice and for the whole APIs (AC3).
     let sliced = apis.iter().any(|api| !api.only.is_empty());
     if writes_glue {
@@ -1669,6 +1692,22 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
         for (api, spec) in apis.iter().enumerate().skip(1) {
             let folder = out.join("crates").join(spec.folder);
             report.push_str(&glue::write_direct(&writer, api, &folder)?);
+        }
+        // The whole APIs' recorders, which stand for the system in the hostile tests on any machine.
+        if !sliced {
+            for (api, spec) in apis.iter().enumerate().skip(1) {
+                if spec.top_trait.is_some() {
+                    let folder = out.join("crates").join(spec.folder);
+                    report.push_str(&glue::write_recorder(&writer, api, &folder)?);
+                }
+            }
+            if let Some(position) = apis.iter().position(|api| api.folder == "direct3d-11") {
+                let tests = out.join("crates").join(apis[position].folder).join("implementation").join("recorder").join("tests");
+                std::fs::create_dir_all(&tests).map_err(|error| error.to_string())?;
+                for (name, text) in RECORDER_TESTS {
+                    std::fs::write(tests.join(name), text).map_err(|error| format!("{name}: {error}"))?;
+                }
+            }
         }
         // The pass-through test and the spike's harness, hand-written for the slice, go with its Direct3D 11 glue.
         if sliced && let Some(position) = apis.iter().position(|api| api.folder == "direct3d-11") {
@@ -1714,8 +1753,16 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
     }
     std::fs::write(out.join("MAPPING.md"), mapping).map_err(|error| error.to_string())?;
     format_written(out)?;
-    // Every mark's reliance, and every method that could undo it pinned: a failure here fails the generator.
-    report.push_str(&crate::undo::check(index, apis, out)?);
+    report.push_str(&kinds_report);
+    // Every mark's reason matched to what it relies on, and every hostile test the rows owe written.
+    report.push_str(&crate::undo::check(out)?);
+    if let Some(classified) = generator.classified.borrow().as_ref() {
+        match kinds::check_tests(classified, out, writes_glue) {
+            Ok(tests) => report.push_str(&tests),
+            // The whole report goes with the failure, so that a reader sees what was written.
+            Err(failure) => return Err(format!("{report}{failure}")),
+        }
+    }
     Ok(report)
 }
 
