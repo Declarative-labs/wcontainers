@@ -313,6 +313,21 @@ impl<C: Executor + 'static> GuestMachine<C> {
             .map_err(not_mapped)
     }
 
+    /// Takes the views of shared pages out of a range of a memory, which then holds zeros: the
+    /// pages stay with every other memory that maps them.
+    pub(crate) fn unmap_views(
+        &mut self,
+        memory: MemoryId,
+        address: u64,
+        length: u64,
+    ) -> Result<(), CpuError> {
+        let range = span(address, length)?;
+        self.space_mut(memory)?
+            .pages
+            .unmap_from(range)
+            .map_err(invalid)
+    }
+
     /// The space zeroes what it unmaps, so the bytes are copied out and written back in pieces.
     pub(crate) fn unmap_shared(
         &mut self,
