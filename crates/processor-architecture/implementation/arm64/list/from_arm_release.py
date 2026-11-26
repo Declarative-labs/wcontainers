@@ -391,7 +391,9 @@ def main(arm_path, llvm_path, list_path, differences_path):
                 extra = variant_cube[0] & ~cube[0]
                 for mask, value in reserved_of(variant):
                     reserved.append((mask | extra, value | (variant_cube[1] & extra)))
-            for piece in subtract_all(cube, covered):
+            # The words of another Arm encoding inside this one are that encoding's, not unallocated ones of this.
+            held_inside = [other for other in others if contains(cube, other)]
+            for piece in subtract_all(cube, covered + held_inside):
                 reserved.append((piece[0] & ~cube[0], piece[1] & ~cube[0]))
             row["reserved"] = render_reserved(reserved)
             row["llvm_records"] = " ".join(variant["llvm_records"] for variant in inside)

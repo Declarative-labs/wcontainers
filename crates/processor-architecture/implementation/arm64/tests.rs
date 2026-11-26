@@ -32,6 +32,7 @@ const NO_CHOICES: LoadStoreChoices = LoadStoreChoices {
     store_exclusive_overlap: None,
     misaligned_exclusive: None,
     fault_address_tag: None,
+    reservation_granule_bytes: None,
 };
 
 const fn to_load_store(
@@ -820,6 +821,10 @@ fn every_modeled_instruction_has_its_operands_in_fields_beside_its_fixed_bits() 
         if crate::scalable::list_scalable_operands(instruction).is_some() {
             continue;
         }
+        // So are those of `sve_remaining`, by the fields its domain lists.
+        if crate::sve_remaining::to_remaining_operation(instruction).is_some() {
+            continue;
+        }
         let mut covered = record.fixed_bits.mask | record.should_be.mask;
         for operand in record.operands {
             let fields: Vec<Field> = match *operand {
@@ -1319,6 +1324,7 @@ fn an_exclusive_load_marks_its_granule_and_a_store_exclusive_there_stores() {
     let choices = LoadStoreChoices {
         failed_store_exclusive: Some(FailedStoreExclusive::ChecksAccess),
         store_exclusive_overlap: Some(StoreExclusiveOverlap::Runs),
+        reservation_granule_bytes: Some(64),
         ..NO_CHOICES
     };
     let store = encode(Instruction::Stxr64, &[(RM, 2), (RT, 3), (RN, 1)]);

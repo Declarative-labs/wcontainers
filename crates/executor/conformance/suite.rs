@@ -121,22 +121,35 @@ struct InstructionOutcome {
 ///
 /// A state the executor gives an error for is its refusal: counted and listed on the standard error, and not compared.
 /// The instructions are shared out among [`AGREEMENT_EXECUTORS`] executors `make_executor` makes.
+///
+/// An instruction `set_aside` names, with the measurement that shows the executor is wrong there, is run and listed on
+/// the standard error but does not fail the test; one that agrees fails it, so the list holds only real faults.
 pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     make_executor: impl Fn() -> Chip + Sync,
     set: Set,
     generator: Generator,
+    set_aside: &[(
+        <Chip::Architecture as ProcessorArchitecture>::Instruction,
+        &str,
+    )],
 ) where
     Chip: Executor,
     <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
         Simulator<Chip::Architecture, Error = Infallible>,
     <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,
     <Chip::Architecture as ProcessorArchitecture>::ProcessorStateExpectation: Debug,
-    <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug + Send + Sync,
+    <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug + PartialEq + Send + Sync,
     <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
     Set: PreciseInstructionSet<Chip::Architecture> + Sync,
     Generator: DistinguishingStateGenerator<Chip::Architecture> + Sync,
 {
     let instructions: Vec<_> = Chip::Architecture::list_instructions().collect();
+    for (instruction, _) in set_aside {
+        assert!(
+            instructions.contains(instruction),
+            "{instruction:?} is set aside but not listed"
+        );
+    }
     let mut outcomes: Vec<(usize, InstructionOutcome)> = thread::scope(|scope| {
         let runs: Vec<_> = (0..AGREEMENT_EXECUTORS)
             .map(|share| {
@@ -165,10 +178,12 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     outcomes.sort_by_key(|(index, _)| *index);
     let mut report = String::new();
     let mut refusals = String::new();
+    let mut set_aside_report = String::new();
     let mut executed_states = usize::MIN;
     let mut refused_states = usize::MIN;
     let mut refusing_instructions = usize::MIN;
-    for (_, outcome) in outcomes {
+    let mut disagreeing_instructions = usize::MIN;
+    for (index, outcome) in outcomes {
         executed_states += outcome.executed;
         if outcome.refused > usize::MIN {
             refused_states += outcome.refused;
@@ -177,13 +192,36 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
         if let Some(line) = outcome.refusal {
             let _ = writeln!(refusals, "{line}");
         }
-        if let Some(line) = outcome.disagreement {
-            let _ = writeln!(report, "{line}");
+        let measurement = set_aside
+            .iter()
+            .find(|(instruction, _)| *instruction == instructions[index])
+            .map(|(_, measurement)| measurement);
+        match (outcome.disagreement, measurement) {
+            (Some(line), Some(measurement)) => {
+                let _ = writeln!(set_aside_report, "{line}\nset aside: {measurement}");
+            }
+            (Some(line), None) => {
+                disagreeing_instructions += 1;
+                let _ = writeln!(report, "{line}");
+            }
+            (None, Some(_)) => {
+                let _ = writeln!(
+                    report,
+                    "{:?} is set aside but agrees on every state it executed",
+                    instructions[index]
+                );
+            }
+            (None, None) => {}
         }
     }
     eprintln!(
         "{executed_states} states executed; {refused_states} refused, of {refusing_instructions} instructions:\n{refusals}"
     );
+    eprintln!(
+        "{} instructions set aside, where the executor is wrong:\n{set_aside_report}",
+        set_aside.len()
+    );
+    eprintln!("{disagreeing_instructions} instructions disagree");
     assert!(
         executed_states > usize::MIN,
         "the executor executed no state"
@@ -251,6 +289,42 @@ where
         format!("{instruction:?}: {disagreeing} of {states} states disagree; the first:\n{first}")
     });
     outcome
+}
+
+/// Checks that an executor, its guest memory, its page table and its interrupter may move to another thread, as the
+/// kernel's runners move them: the bounds fail the build of an executor that may not, and a guest then runs there.
+pub fn executor_and_its_memory_move_between_threads<Chip>(executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip> + Send,
+    Chip::GuestMemory: Send,
+    PageTableOf<Chip>: Send,
+    Chip::Interrupter: Send,
+{
+    let (memory, mut table) = create_memory(&executor);
+    let store = arm64::build_store(CODE, DATA, STORED);
+    let (stopped, finished) = thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let mut executor = executor;
+                place(&memory, &mut table, &store);
+                assert_eq!(table.set_permissions(page(DATA), DATA_PERMISSIONS), Ok(()));
+                let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+                let stopped = execute(&mut executor, store.start.clone(), &memory, &mut handler);
+                handler.assert_no_trap();
+                assert_eq!(
+                    read_bytes(&memory, DATA..DATA + WORD),
+                    STORED.to_le_bytes(),
+                    "the bytes the store on another thread left"
+                );
+                (stopped, store.finished)
+            })
+            .join()
+            .expect("the executor ran on another thread")
+    });
+    assert_eq!(
+        stopped, finished,
+        "the state the store on another thread returned"
+    );
 }
 
 /// Checks that a system call answered with a value goes on after the call with the value in the result register.
@@ -712,6 +786,55 @@ where
         STORED.to_le_bytes(),
         "the bytes the guest's store left"
     );
+}
+
+/// Checks that where a space maps one page of another twice, a guest's store through either view is what a load
+/// through the other finds, right after it and after a system call between them.
+pub fn two_views_of_one_page_show_each_store<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let views = [(DATA, MAPPED), (MAPPED, DATA)];
+    let calls = [None, Some((REQUEST.number, RETURNED))];
+    for ((stored_at, loaded_from), call) in views
+        .into_iter()
+        .flat_map(|view| calls.map(|call| (view, call)))
+    {
+        let (block, block_table) = create_memory(&executor);
+        let (viewing, mut viewing_table) = create_memory(&executor);
+        write_bytes(&block, DATA, &pattern(FIRST_PATTERN, length(&page(DATA))));
+        for view in [DATA, MAPPED] {
+            assert_eq!(
+                viewing_table.map_from(page(view), &block_table, DATA),
+                Ok(())
+            );
+            assert_eq!(
+                viewing_table.set_permissions(page(view), DATA_PERMISSIONS),
+                Ok(())
+            );
+        }
+        let guest = arm64::build_store_then_load(CODE, stored_at, loaded_from, STORED, call);
+        place(&viewing, &mut viewing_table, &guest);
+        let returned = call.map(|(_, returned)| returned);
+        let mut handler = Recorder::new(returned, None::<(&mut PageTableOf<Chip>, _)>);
+        let stopped = execute(&mut executor, guest.start.clone(), &viewing, &mut handler);
+        assert!(
+            handler.memory_faults.is_empty(),
+            "the handler was given memory faults: {:?}",
+            handler.memory_faults
+        );
+        assert_eq!(
+            stopped,
+            guest.finished,
+            "the state after a store at {stored_at:#x} and a load at {loaded_from:#x}, a system call between: {}",
+            call.is_some()
+        );
+        assert_eq!(
+            read_bytes(&block, DATA..DATA + WORD),
+            STORED.to_le_bytes(),
+            "the bytes the guest's store left in the mapped page"
+        );
+    }
 }
 
 /// Checks that an unmapped page reads as zeros, not shared any more, while the other space keeps its bytes.
@@ -1264,13 +1387,22 @@ fn length(addresses: &Range<u64>) -> usize {
 /// Runs each suite function above as its own test on its values, made anew for every test, and the behavior source's.
 ///
 /// The values are an executor, the precise instruction set it should agree with, the generator of the states and the
-/// states the executor cannot execute, none for an executor whose error is `Infallible`.
+/// states the executor cannot execute, none for an executor whose error is `Infallible`; and, where the executor is
+/// wrong, the instructions its agreement sets aside, none when left out.
 #[macro_export]
 macro_rules! tests {
     ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr) => {
+        $crate::tests!($executor, $set, $generator, $unexecutable, &[]);
+    };
+    ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr, $set_aside:expr) => {
         #[test]
         fn agrees_with_precise_instruction_set() {
-            $crate::agrees_with_precise_instruction_set(|| $executor, $set, $generator);
+            $crate::agrees_with_precise_instruction_set(|| $executor, $set, $generator, $set_aside);
+        }
+
+        #[test]
+        fn executor_and_its_memory_move_between_threads() {
+            $crate::executor_and_its_memory_move_between_threads($executor);
         }
 
         #[test]
@@ -1346,6 +1478,11 @@ macro_rules! tests {
         #[test]
         fn map_from_shares_the_bytes_both_ways() {
             $crate::map_from_shares_the_bytes_both_ways($executor);
+        }
+
+        #[test]
+        fn two_views_of_one_page_show_each_store() {
+            $crate::two_views_of_one_page_show_each_store($executor);
         }
 
         #[test]

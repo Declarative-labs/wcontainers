@@ -122,7 +122,8 @@ pub(crate) fn apply(
     match delta {
         MemoryDelta::ValueAssignment { start, bytes } => {
             let before = space.shared.write_counted(start, &bytes);
-            if copy.changes == Some(before) {
+            // The copy holds each page apart, so a write to a frame another page of the space shows needs a new copy.
+            if copy.changes == Some(before) && !space.shared.shows_elsewhere(start, bytes.len()) {
                 copy.write_at(start, &bytes);
                 copy.changes = Some(before.wrapping_add(1));
             } else {
@@ -167,6 +168,29 @@ impl SpacePages {
             }
         }
         copy
+    }
+
+    /// Returns whether another page of the space shows the frame of a page the bytes from the address lie in.
+    fn shows_elsewhere(&self, start: u64, length: usize) -> bool {
+        let pages = self.lock_pages();
+        split_at_pages(start, length)
+            .into_iter()
+            .any(|(page, _, _)| {
+                pages
+                    .get(&page)
+                    .and_then(|written| written.frame.as_ref())
+                    .is_some_and(|frame| {
+                        // A frame no other page holds needs no search.
+                        Arc::strong_count(frame) > 1
+                            && pages.iter().any(|(other, shown)| {
+                                *other != page
+                                    && shown
+                                        .frame
+                                        .as_ref()
+                                        .is_some_and(|other_frame| Arc::ptr_eq(frame, other_frame))
+                            })
+                    })
+            })
     }
 
     fn lock_pages(&self) -> MutexGuard<'_, BTreeMap<u64, Page>> {

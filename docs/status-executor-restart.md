@@ -336,3 +336,82 @@ stand-in's files 0 to 0), wasmtime 62 to 62, simulation 0, conformance 0. No mar
 mark, no lint lowered, every crate keeps `[lints] workspace = true`. Dependencies: unicorn adds dev-dependency
 `wcontainers-distinguishing-state-generator` (workspace); no outside crate added. The hostile-guest suite was
 not run (none exists; the thread-test design review is owed to the owner first).
+
+## X3 continued: the four waiting items, the tag cause, the set-aside list (2026-11-26, afternoon)
+
+His main `ac696ea19` was already merged (MEASURED, `git merge-base --is-ancestor`). `2b552c0b4` merges
+`origin/arm64-instructions` `26a3d7ce0`; all 77 files at the top of his interface folders are byte-identical to his
+main after it (MEASURED, `git diff --quiet` each).
+
+Which commit carries which (all pushed to `origin/executor-restart`):
+
+| Item | Commit |
+|---|---|
+| (1) failing test first: `two_views_of_one_page_show_each_store` in the executor suite | `fca4d2f8f` |
+| (1) the repair: stand-in `memory.rs` and the simulation's `memory.rs` | `79ddc9200` |
+| (2) `executor_and_its_memory_move_between_threads`: bounds `Chip: Send`, `GuestMemory: Send`, `PageTable: Send`, `Interrupter: Send` fail the build, then a guest runs on another thread | `490b89187` |
+| (3) `PerThreadWatch` on the stand-in (refuses; the kernel watches one thread itself) | `218b82d95`, pushed before this run |
+| (4) `refused_in_a_copy` removed | `dd61eb7cb` |
+
+(1) MEASURED before the repair (`x3-shared/run1-before-fix.txt`): the new test failed on the stand-in AND on the
+simulation (x3 read the pattern, not the stored value, with no trap between). Causes: the stand-in copies shared pages
+into each unicorn instance per turn, so a second view in the same space was stale within a turn, and after a turn it
+was marked current anyway; the simulation's copy of a space followed a write at one address only. Repairs: a unicorn
+store hook, present only while a space has two views of the same shared bytes, copies each store to the other views
+(unicorn's write also drops code translated from them); a view whose bytes another view wrote is copied in again
+before the next turn; the simulation takes a new copy after a write to a frame another page of the space shows.
+After: stand-in unit 7 of 7, fast suite 22 of 22; simulation 9 of 9 and 22 of 22 (`run2-after-fix.txt`).
+
+(2) READ: unicorn-engine 2.1.5's `Unicorn` holds `Rc<UnsafeCell<..>>` (lib.rs:163), so neither `Arc` nor a lock
+can make it `Send` without unsafe. The stand-in already is `Send` the safe way (since `218b82d95`): every unicorn
+instance lives on one engine thread and the stand-in, its spaces and tables are handles. The kernel-port branch still
+has the earlier `Rc` stand-in (`ccd4db9da`, MEASURED `git merge-base`); merging this branch brings the `Send` one.
+
+### The tagged data address fault: the cause (MEASURED, a probe in the stand-in's memory tests, not kept)
+
+TCR_EL1 read back 0x2000000010 (TBI0 set), yet `LDR x1, [x0]` with x0 = 0x0100_0000_0001_1000 faulted at the tagged
+address. Turning the MMU on with an identity map gave prefetch aborts on every fetch until SCR_EL3.RW was set:
+unicorn starts with SCR_EL3 = 0, so QEMU takes EL1&0 as an AArch32 regime and its MMU-off path skips TBI. With RW set
+(MMU still off) the tagged loads at tags 0x01 and 0xFF returned the stored value. The stand-in now sets SCR_EL3.RW
+(`8f95ed70b`). Two effects of QEMU's own translation are handled there too: an address past its 44 physical bits
+raises an abort with no address, and a fault's address loses its tag; so a turn that faults runs its instruction once
+more with unicorn's virtual TLB (`add_tlb_hook`), which gives a refusing page a page of its own that nothing maps, and
+the fault hook names the guest's address. Single instructions rerun from their saved state; a long turn reruns in
+place. The `TaggedAccess` and `TaggedBranch` refusals are gone.
+
+The 27 first-fault gathers of elements wider than a byte end the whole process in unicorn (SIGSEGV; MEASURED, each
+instruction alone, `x3-shared/firstfault-crash.txt`); the stand-in refuses their words as `EmulatorAborts` before
+unicorn runs them (single instructions only; a whole execution reaching one still crashes).
+
+### The agreement test over today's list (MEASURED, Graviton4, release, `x3-shared/run11-suite.txt`)
+
+| Run | Result |
+|---|---|
+| probe, every listed instruction (`probe7-out.txt`, 1,893 s) | 4,430 listed, 4,430 with a behavior (the 4 mandatory ones have theirs now), 33,324,598 states, 798,029 refused in 39 instructions (EmulatorAborts 456,465, TrapOrUndefined 341,564), 0 tag refusals (1,277,365 before), 353 instructions no single known behavior explains (813 before the tag-address work, 509 at the last run) |
+| chip, the same 353 (`chip1.txt` to `chip3.txt`, the measured set's `default_behaviors` on KVM) | every modeled one: 0 states disagree with the model; SM3 and SM4: undefined on the chip |
+| stand-in suite without the behavior source module (`--release`) | unit 7 of 7; suite 24 of 24 |
+| agreement test | 32,526,569 states executed; 798,029 refused, of 39 instructions; 353 set aside; 0 instructions disagree |
+| simulation suite without the behavior source module (`--release`) | unit 9 of 9; suite 24 of 24 |
+| clippy `-D warnings` (stand-in lib and suite; simulation and suite all targets), rustfmt | clean |
+
+The set-aside list is in `unicorn/conformance_run.rs`: 353 instructions by name in 13 families, each with its
+measurement; `SET_ASIDE_COUNT` is 353 and the list's type holds that length; the suite fails on a set-aside
+instruction that agrees. Families: vector loads across a fault 79, first-fault loads 16, SVE stores across a fault
+66, pointer strip 3, SYS 1, MSR/MRS 2, misaligned atomics 124, exclusive stores 10, exclusive loads 8, ordered
+accesses 24, signed byte atomics 8, floating point 3, SM3/SM4 9. The suite takes the list as an optional fifth value of
+`tests!`; the simulation passes none.
+
+Not run: the behavior source module on the stand-in (each test measures the whole list on one thread, hours).
+
+For the ARM64 instruction track (MEASURED, debug build): `sve_remaining_elements.rs:21` panics with "attempt to negate
+with overflow" (`-(1_i64 << 63)` for a 64-bit element); the release runs above do not check overflow.
+
+X3 IS NOT REACHED: the agreement holds by the list above, but the bar also needs the kernel track's harness to give
+LTP 4,169 of 4,226 on this stand-in, and that harness lives on `kernel-port` (it does not build on this branch). Next:
+X3's LTP part, waiting on the kernel track merging this branch into `kernel-port` and running its harness.
+
+SECURITY: lines with `unsafe` (`git grep -n unsafe`, raw word) before (`9aaaf77a3`) and after (`b6256aaf4`): unicorn
+29 to 29 (all in the harness's files: driver.rs 8, generate.rs 8, ltp.rs 8, backend 5; the stand-in's files 0 to 0),
+wasmtime 62 to 62 (untouched, X2 is another agent's), simulation 0, conformance 0. No marked exception added, no
+UNSOUND mark, no lint lowered, every crate keeps `[lints] workspace = true`. No dependency added. The hostile-guest
+suite was not run (none exists; the thread-test design review is owed to the owner first).

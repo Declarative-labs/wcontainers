@@ -170,6 +170,13 @@ impl PreciseInstruction<Infallible> {
                 instruction,
                 choices,
             },
+            Self::ElementAccess {
+                instruction,
+                choices,
+            } => PreciseInstruction::ElementAccess {
+                instruction,
+                choices,
+            },
             Self::TagAccess {
                 instruction,
                 choices,
@@ -177,6 +184,7 @@ impl PreciseInstruction<Infallible> {
                 instruction,
                 choices,
             },
+            Self::SystemInstruction(behavior) => PreciseInstruction::SystemInstruction(behavior),
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
@@ -200,9 +208,11 @@ impl PreciseInstruction<Infallible> {
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
             Self::Scalable { instruction, .. }
             | Self::ScalableAccess { instruction, .. }
+            | Self::ElementAccess { instruction, .. }
             | Self::Unimplemented(instruction) => instruction,
             Self::Structure { instruction, .. } => instruction.instruction(),
             Self::TagAccess { instruction, .. } => instruction.instruction(),
+            Self::SystemInstruction(behavior) => behavior.to_instruction(),
         }
     }
 }
@@ -301,6 +311,13 @@ fn list_modeled_behaviors(
     if let Some(access) = to_scalable_access(instruction) {
         return list_scalable_access_behaviors(instruction, access);
     }
+    if let Some(access) = crate::load_store::scalable_element_access::to_element_access(instruction)
+    {
+        return crate::load_store::scalable_element_access::list_element_access_behaviors(
+            instruction,
+            access,
+        );
+    }
     if let Some(access) = crate::memory_tagging::TagAccessInstruction::new(instruction) {
         return crate::memory_tagging::list_tag_access_behaviors(access);
     }
@@ -334,6 +351,12 @@ fn list_modeled_behaviors(
                 .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
                 .to_vec()
         }
+        Instruction::Hint | Instruction::MsrImmediate | Instruction::Sys | Instruction::Sysl => {
+            crate::system_instruction::list_system_instruction_behaviors(instruction)
+                .iter()
+                .map(|behavior| PreciseInstruction::SystemInstruction(*behavior))
+                .collect()
+        }
         Instruction::MrsCtrEl0 => CACHE_TYPES
             .map(|cache_type| PreciseInstruction::MrsCtrEl0 { cache_type })
             .to_vec(),
@@ -358,11 +381,10 @@ fn list_scalable_access_behaviors(
         .to_vec();
     }
     // One vector's length holds a store of one register, so that writing its whole vectors below a fault writes
-    // nothing; two and four registers fault at a vector's end in every generated state, where the whole vectors below
-    // are the bytes below, so only three tell those two apart.
+    // nothing; a store of two to four registers can fault inside a vector, where the two differ.
     let across: &[Option<ScalableStoreAcrossFault>] = if access.kind == AccessKind::Store {
         match access.registers {
-            3 => &[
+            2..=4 => &[
                 Some(ScalableStoreAcrossFault::WritesNothing),
                 Some(ScalableStoreAcrossFault::WritesBytesBelowFault),
                 Some(ScalableStoreAcrossFault::WritesWholeVectorsBelowFault),
@@ -398,6 +420,10 @@ fn list_scalable_access_behaviors(
     }
     behaviors
 }
+
+/// The reservation granule of a Neoverse V2: CTR_EL0.ERG is 4, and a store exclusive anywhere in the 64 bytes stores
+/// (MEASURED: `hidden-state-loading/arm64/RESULT.md`, question 5, and the one-sided test in the chip source).
+const NEOVERSE_V2_RESERVATION_GRANULE_BYTES: u64 = 64;
 
 /// [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register) as an Arm Neoverse V2 under KVM reads it, measured on an AWS Graviton4.
 const NEOVERSE_V2_CACHE_TYPE: u64 = 0xB444_C004;
@@ -472,6 +498,7 @@ fn list_load_store_behaviors(
         store_exclusive_overlap: None,
         misaligned_exclusive: None,
         fault_address_tag: None,
+        reservation_granule_bytes: None,
     };
     let combinations = widen(
         [none].to_vec(),
@@ -550,6 +577,13 @@ fn list_load_store_behaviors(
             MisalignedExclusive::WithinSixteenBytes,
         ],
         |choices, choice| choices.misaligned_exclusive = Some(choice),
+    );
+    // No state single-stepping reaches holds the monitor, so the one granule a chip was measured to have is listed.
+    let combinations = widen(
+        combinations,
+        open.reservation_granule,
+        &[NEOVERSE_V2_RESERVATION_GRANULE_BYTES],
+        |choices, choice| choices.reservation_granule_bytes = Some(choice),
     );
     widen(
         combinations,
