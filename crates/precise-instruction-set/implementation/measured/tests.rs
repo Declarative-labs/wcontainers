@@ -10,7 +10,7 @@ use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
 use wcontainers_behavior_source_recording::{NotRecorded, Recording};
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
+    ExecutionState, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, FailedStoreExclusive, FaultAddressTag, Instruction, LoadIntoBaseWithWriteback,
@@ -297,6 +297,7 @@ fn to_states_past_the_last_addressable_byte() -> Vec<(
     wcontainers_processor_architecture::ExecutionState<'static, Arm64<User>>,
 )> {
     use alloc::borrow::Cow;
+    use wcontainers_processor_architecture::MemoryDelta;
     use alloc::vec;
     use wcontainers_processor_architecture::ExecutionState;
     use wcontainers_processor_architecture_arm64::encoding::{Field, IMM7, IMM9, RN, RT, RT2};

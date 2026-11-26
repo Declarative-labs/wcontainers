@@ -113,7 +113,7 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                         (u128::from(*start), end.min(ADDRESSES_END)),
                         (0, end.saturating_sub(ADDRESSES_END)),
                     ];
-                    // VERUS: no `filter` with a closure, so each of the two ranges is kept if it is not empty.
+                    // VERUS: no `Vec::extend` and no array `into_iter` (measured), so each of the two ranges is kept if it is not empty.
                     if ranges_around_wrap[0].0 < ranges_around_wrap[0].1 {
                         written.push(ranges_around_wrap[0]);
                     }
@@ -399,7 +399,8 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
         proof {
             broadcast use vstd::laws_cmp::group_laws_cmp;
         }
-        // VERUS: no sort by a key a specification can read, so the ranges are (start, end) pairs, which sort by start first.
+        // VERUS: NOT FORCED, PENDING: Verus reads his `sort_unstable_by_key` with a closure that states its key (measured in a
+        // probe), but the proof is still written over (start, end) pairs, so the ranges are pairs, which sort by start first.
         written.as_mut_slice().sort_unstable();
         proof {
             lemma_sorted_ranges(unsorted, written@);
@@ -458,7 +459,8 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
         }
         let ghost mut changes: Seq<Assignment<Architecture::PagePermission>> = Seq::empty();
         let (mut old_bytes, mut new_bytes) = (Vec::new(), Vec::new());
-        // VERUS: no `for` over ranges a proof can count, so the ranges are walked by index.
+        // VERUS: NOT FORCED, PENDING: Verus reads a `for` over a list (measured); the ranges are walked by index until they are
+        // his `Range` again.
         let written = written.as_slice();
         let mut range_index: usize = 0;
         while range_index < written.len()
