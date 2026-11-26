@@ -759,6 +759,12 @@ pub enum Bug {
     ExtendedAlignmentUnchecked,
     /// FSTP m80 stores its ten bytes at once.
     ExtendedStoreWhole,
+    /// FLD m32 and m64 push despite an unmasked IE.
+    LoadFloatPushesDespiteUnmasked,
+    /// FCOM takes a QNaN without IE.
+    OrderedComparisonQuietNaNValid,
+    /// FIST rounds a half away from zero, not to even.
+    RoundHalfAwayFromZero,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1101,6 +1107,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::LoadControlKeepsEveryBit, "FLDCW", Family::Forms(&[Instruction::FldcwMemmem16]), Origin::IntegerX87Mmx),
     row(Bug::X87InstructionPointerKept, "x87", Family::Forms(X87_SAMPLE), Origin::IntegerX87Mmx),
     row(Bug::X87OverflowBeforeUnderflow, "FLD ST(i)", Family::Forms(&[Instruction::FldSt0X87]), Origin::IntegerX87Mmx),
+    row(Bug::LoadFloatPushesDespiteUnmasked, "FLD m32, m64", Family::Forms(&[Instruction::FldSt0Memmem32real, Instruction::FldSt0Memm64real]), Origin::IntegerX87Mmx),
+    row(Bug::OrderedComparisonQuietNaNValid, "FCOM", Family::Forms(&[Instruction::FcomSt0X87, Instruction::FcomSt0Memm64real, Instruction::Ftst]), Origin::IntegerX87Mmx),
+    row(Bug::RoundHalfAwayFromZero, "FIST", Family::Forms(&[Instruction::FistMemmem16intSt0, Instruction::FistpMemm64intSt0]), Origin::IntegerX87Mmx),
     row(Bug::ExtendedStoreWhole, "FSTP m80", Family::Forms(&[Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
     row(Bug::ExtendedAlignmentUnchecked, "FLD m80, FSTP m80", Family::Forms(&[Instruction::FldSt0Memmem80real, Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
     row(Bug::X87PushIgnoresOverflow, "x87 pushes", Family::Forms(&[Instruction::FldSt0X87, Instruction::Fld1, Instruction::FildSt0Memmem16int]), Origin::IntegerX87Mmx),

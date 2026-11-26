@@ -14,6 +14,7 @@ use iced_x86::Code;
 use crate::behavior::StoreAcrossFault;
 use crate::forms::Instruction;
 use crate::integer::{Condition, OperandPlace};
+use crate::planted::{Bug, is_active};
 use crate::{PreciseInstruction, X87};
 
 /// What an x87 form does.
@@ -63,6 +64,32 @@ pub enum X87Operation {
     StoreExtended,
     /// FILD.
     LoadInteger,
+    /// FLD m32 and m64: the value widened exactly; an SNaN quieted with IE, a denormal with DE.
+    LoadFloat,
+    /// FCOM, FUCOM, FCOMI, FUCOMI, FTST and FICOM, with their pops: C3, C2 and C0 (or ZF, PF and CF) from ST(0)
+    /// compared with the source.
+    Compare { ordering: Ordering, source: Source, pops: u8, to_flags: bool },
+    /// FIST and FISTP: ST(0) rounded to an integer by FCW's rounding control.
+    StoreInteger { pop: bool },
+}
+
+/// Which NaNs make a comparison invalid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ordering {
+    /// Any NaN, as FCOM's.
+    Ordered,
+    /// An SNaN alone, as FUCOM's.
+    Unordered,
+}
+
+/// What ST(0) is compared with.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    Register,
+    Single,
+    Double,
+    Integer,
+    Zero,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -161,7 +188,9 @@ impl X87Form {
             | X87Operation::Wait
             | X87Operation::LegacyNoOperation
             | X87Operation::Initialize
-            | X87Operation::Examine => 0,
+            | X87Operation::Examine
+            | X87Operation::Compare { .. } => 0,
+            X87Operation::StoreInteger { .. } => C0 | C2 | C3,
             X87Operation::ClearExceptions
             | X87Operation::StoreStatus
             | X87Operation::StoreControl
@@ -179,18 +208,171 @@ impl X87Form {
     /// Whether the form writes its memory operand.
     pub fn writes_memory(&self) -> bool {
         self.has_memory_operand()
-            && matches!(self.operation, X87Operation::StoreStatus | X87Operation::StoreControl | X87Operation::StoreExtended)
+            && matches!(
+                self.operation,
+                X87Operation::StoreStatus
+                    | X87Operation::StoreControl
+                    | X87Operation::StoreExtended
+                    | X87Operation::StoreInteger { .. }
+            )
     }
 
     /// The bytes of the memory operand.
     pub fn memory_bytes(&self) -> u64 {
         match self.code {
             Code::Fld_m80fp | Code::Fstp_m80fp => 10,
-            Code::Fild_m64int => 8,
-            Code::Fild_m32int => 4,
+            Code::Fild_m64int | Code::Fld_m64fp | Code::Fcom_m64fp | Code::Fcomp_m64fp | Code::Fistp_m64int => 8,
+            Code::Fild_m32int | Code::Fld_m32fp | Code::Fcom_m32fp | Code::Fcomp_m32fp | Code::Ficom_m32int
+            | Code::Ficomp_m32int | Code::Fist_m32int | Code::Fistp_m32int => 4,
             _ => 2,
         }
     }
+}
+
+impl X87Form {
+    /// The index of the register a form that names none compares with: ST(1) for FCOMPP and FUCOMPP.
+    pub const fn to_implied_index(&self) -> usize {
+        match self.code {
+            Code::Fcompp | Code::Fucompp => 1,
+            _ => 0,
+        }
+    }
+}
+
+/// The class of an extended value, as the arithmetic sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Class {
+    Zero,
+    /// A denormal or a pseudo-denormal.
+    Denormal,
+    Normal,
+    Infinity,
+    QuietNaN,
+    SignalingNaN,
+    /// An unnormal, a pseudo-infinity or a pseudo-NaN, which no operation takes.
+    Unsupported,
+}
+
+const QUIET: u64 = 1 << 62;
+
+pub fn classify(value: u128) -> Class {
+    let exponent = (value & EXPONENT_MASK) >> 64;
+    let significand = value as u64;
+    let integer = significand & INTEGER_BIT != 0;
+    match exponent {
+        0 if significand == 0 => Class::Zero,
+        0 => Class::Denormal,
+        0x7FFF if !integer => Class::Unsupported,
+        0x7FFF if significand == INTEGER_BIT => Class::Infinity,
+        0x7FFF if significand & QUIET != 0 => Class::QuietNaN,
+        0x7FFF => Class::SignalingNaN,
+        _ if !integer => Class::Unsupported,
+        _ => Class::Normal,
+    }
+}
+
+/// The magnitude's order key: the exponent, a denormal's taken as 1, then the significand.
+fn to_key(value: u128) -> (u128, u64) {
+    (((value & EXPONENT_MASK) >> 64).max(1), value as u64)
+}
+
+/// The order of two values neither a NaN nor unsupported; the two zeros are equal.
+pub fn compare_values(first: u128, second: u128) -> core::cmp::Ordering {
+    use core::cmp::Ordering as Order;
+    let zero = |value: u128| classify(value) == Class::Zero;
+    if zero(first) && zero(second) {
+        return Order::Equal;
+    }
+    let negative = |value: u128| value & SIGN != 0;
+    match (negative(first), negative(second)) {
+        (false, true) => Order::Greater,
+        (true, false) => Order::Less,
+        (false, false) => to_key(first).cmp(&to_key(second)),
+        (true, true) => to_key(second).cmp(&to_key(first)),
+    }
+}
+
+/// A single or double value widened to extended exactly, and the exception it raises: IE for an SNaN, quieted; DE
+/// for a denormal.
+pub fn widen(bits: u64, fraction_bits: u32, exponent_bits: u32) -> (u128, u16) {
+    let sign = u128::from(bits >> (fraction_bits + exponent_bits) & 1) << 79;
+    let exponent_mask = (1 << exponent_bits) - 1;
+    let exponent = bits >> fraction_bits & exponent_mask;
+    let fraction = bits & ((1 << fraction_bits) - 1);
+    let bias = (1 << (exponent_bits - 1)) - 1;
+    let shift = 63 - fraction_bits;
+    if exponent == exponent_mask {
+        let quiet = fraction >> (fraction_bits - 1) & 1 != 0;
+        let significand = INTEGER_BIT | fraction << shift | if fraction != 0 { QUIET } else { 0 };
+        let raised = if fraction != 0 && !quiet { INVALID } else { 0 };
+        return (sign | EXPONENT_MASK | u128::from(significand), raised);
+    }
+    if exponent == 0 && fraction == 0 {
+        return (sign, 0);
+    }
+    if exponent == 0 {
+        let leading = fraction.leading_zeros() - (64 - fraction_bits);
+        let significand = fraction << (shift + leading + 1);
+        let biased = u128::from(16383 - bias + 1) - u128::from(leading + 1);
+        return (sign | biased << 64 | u128::from(significand), DENORMAL);
+    }
+    let biased = u128::from(exponent + 16383 - bias);
+    (sign | biased << 64 | u128::from(INTEGER_BIT | fraction << shift), 0)
+}
+
+/// FCW's rounding control.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Rounding {
+    Nearest,
+    Down,
+    Up,
+    TowardZero,
+}
+
+impl Rounding {
+    pub const fn from_control(control: u16) -> Self {
+        match control >> 10 & 3 {
+            0 => Self::Nearest,
+            1 => Self::Down,
+            2 => Self::Up,
+            _ => Self::TowardZero,
+        }
+    }
+}
+
+/// A finite value rounded to an integer of `bits` bits: the integer, whether it is inexact, and whether its
+/// magnitude was rounded up; `None` where it does not fit.
+pub fn round_to_integer(value: u128, rounding: Rounding, bits: u32) -> Option<(i64, bool, bool)> {
+    let negative = value & SIGN != 0;
+    let exponent = i64::try_from(((value & EXPONENT_MASK) >> 64).max(1)).unwrap_or(0) - 16383 - 63;
+    let significand = value as u64;
+    let (whole, remainder, half): (u128, u128, u128) = if exponent >= 0 {
+        if exponent > 64 {
+            return (significand == 0).then_some((0, false, false));
+        }
+        (u128::from(significand) << exponent, 0, 1)
+    } else if exponent <= -128 {
+        (0, u128::from(significand), u128::MAX)
+    } else {
+        let shift = (-exponent) as u32;
+        let all = u128::from(significand);
+        (all >> shift, all & ((1 << shift) - 1), 1 << (shift - 1))
+    };
+    let inexact = remainder != 0;
+    let up = match rounding {
+        Rounding::Nearest if is_active(Bug::RoundHalfAwayFromZero) => remainder >= half && half != u128::MAX && inexact,
+        Rounding::Nearest => remainder > half || remainder == half && half != u128::MAX && whole & 1 != 0 && inexact,
+        Rounding::Down => negative && inexact,
+        Rounding::Up => !negative && inexact,
+        Rounding::TowardZero => false,
+    };
+    let magnitude = whole + u128::from(up);
+    let limit = 1u128 << (bits - 1);
+    if magnitude > limit || magnitude == limit && !negative {
+        return None;
+    }
+    let signed = if negative { -(magnitude as i128) } else { magnitude as i128 };
+    Some((signed as i64, inexact, up))
 }
 
 /// The row of an x87 form, or `None` for any other form.
@@ -326,9 +508,11 @@ pub fn initialize(x87: &mut X87) {
 }
 
 use OperandPlace::{Memory, Register};
+use Ordering::{Ordered, Unordered};
 use X87Operation::{
     Absolute, ChangeSign, ClearExceptions, DecrementTop, Examine, Exchange, Free, IncrementTop, Initialize,
-    LegacyNoOperation, LoadConstant, LoadControl, LoadExtended, LoadInteger, LoadRegister, MoveIf, NoOperation,
+    Compare, LegacyNoOperation, LoadConstant, LoadControl, LoadExtended, LoadFloat, LoadInteger, LoadRegister, MoveIf,
+    NoOperation, StoreInteger,
     StoreControl, StoreExtended, StoreRegister, StoreRegisterUnchecked, StoreStatus, Wait,
 };
 
@@ -383,4 +567,37 @@ pub static X87_FORMS: &[X87Form] = &[
     x87(Instruction::FildSt0Memmem16int, LoadInteger, Memory, Code::Fild_m16int),
     x87(Instruction::FildSt0Memmem32int, LoadInteger, Memory, Code::Fild_m32int),
     x87(Instruction::FildSt0Memm64int, LoadInteger, Memory, Code::Fild_m64int),
+    x87(Instruction::FldSt0Memmem32real, LoadFloat, Memory, Code::Fld_m32fp),
+    x87(Instruction::FldSt0Memm64real, LoadFloat, Memory, Code::Fld_m64fp),
+    x87(Instruction::FcomSt0X87, compare(Ordered, Source::Register, 0, false), Register, Code::Fcom_st0_sti),
+    x87(Instruction::FcomSt0X87Dcd0, compare(Ordered, Source::Register, 0, false), Register, Code::Fcom_st0_sti_DCD0),
+    x87(Instruction::FcompSt0X87, compare(Ordered, Source::Register, 1, false), Register, Code::Fcomp_st0_sti),
+    x87(Instruction::FcompSt0X87Dcd1, compare(Ordered, Source::Register, 1, false), Register, Code::Fcomp_st0_sti_DCD8),
+    x87(Instruction::FcompSt0X87Ded0, compare(Ordered, Source::Register, 1, false), Register, Code::Fcomp_st0_sti_DED0),
+    x87(Instruction::Fcompp, compare(Ordered, Source::Register, 2, false), Register, Code::Fcompp),
+    x87(Instruction::FucomSt0X87, compare(Unordered, Source::Register, 0, false), Register, Code::Fucom_st0_sti),
+    x87(Instruction::FucompSt0X87, compare(Unordered, Source::Register, 1, false), Register, Code::Fucomp_st0_sti),
+    x87(Instruction::Fucompp, compare(Unordered, Source::Register, 2, false), Register, Code::Fucompp),
+    x87(Instruction::FcomiSt0X87, compare(Ordered, Source::Register, 0, true), Register, Code::Fcomi_st0_sti),
+    x87(Instruction::FcomipSt0X87, compare(Ordered, Source::Register, 1, true), Register, Code::Fcomip_st0_sti),
+    x87(Instruction::FucomiSt0X87, compare(Unordered, Source::Register, 0, true), Register, Code::Fucomi_st0_sti),
+    x87(Instruction::FucomipSt0X87, compare(Unordered, Source::Register, 1, true), Register, Code::Fucomip_st0_sti),
+    x87(Instruction::Ftst, compare(Ordered, Source::Zero, 0, false), Register, Code::Ftst),
+    x87(Instruction::FcomSt0Memmem32real, compare(Ordered, Source::Single, 0, false), Memory, Code::Fcom_m32fp),
+    x87(Instruction::FcomSt0Memm64real, compare(Ordered, Source::Double, 0, false), Memory, Code::Fcom_m64fp),
+    x87(Instruction::FcompSt0Memmem32real, compare(Ordered, Source::Single, 1, false), Memory, Code::Fcomp_m32fp),
+    x87(Instruction::FcompSt0Memm64real, compare(Ordered, Source::Double, 1, false), Memory, Code::Fcomp_m64fp),
+    x87(Instruction::FicomSt0Memmem16int, compare(Ordered, Source::Integer, 0, false), Memory, Code::Ficom_m16int),
+    x87(Instruction::FicomSt0Memmem32int, compare(Ordered, Source::Integer, 0, false), Memory, Code::Ficom_m32int),
+    x87(Instruction::FicompSt0Memmem16int, compare(Ordered, Source::Integer, 1, false), Memory, Code::Ficomp_m16int),
+    x87(Instruction::FicompSt0Memmem32int, compare(Ordered, Source::Integer, 1, false), Memory, Code::Ficomp_m32int),
+    x87(Instruction::FistMemmem16intSt0, StoreInteger { pop: false }, Memory, Code::Fist_m16int),
+    x87(Instruction::FistMemmem32intSt0, StoreInteger { pop: false }, Memory, Code::Fist_m32int),
+    x87(Instruction::FistpMemmem16intSt0, StoreInteger { pop: true }, Memory, Code::Fistp_m16int),
+    x87(Instruction::FistpMemmem32intSt0, StoreInteger { pop: true }, Memory, Code::Fistp_m32int),
+    x87(Instruction::FistpMemm64intSt0, StoreInteger { pop: true }, Memory, Code::Fistp_m64int),
 ];
+
+const fn compare(ordering: Ordering, source: Source, pops: u8, to_flags: bool) -> X87Operation {
+    Compare { ordering, source, pops, to_flags }
+}

@@ -234,6 +234,11 @@ pub enum ValueSet {
     Mask,
     /// FLDCW's source: FNINIT's, none, all, every defined bit, and some of each field.
     ControlWord,
+    /// A single-precision number of each class: each zero, one, a negative, the denormal ends, the smallest and
+    /// largest normal, each infinity, a QNaN and an SNaN, and two.
+    SingleFloat,
+    /// The same in double precision.
+    DoubleFloat,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -407,6 +412,25 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                         bits(&values)
                     }
                     ValueSet::ControlWord => bits(&[0x037F, 0x0000, 0xFFFF, 0x1F7F, 0x0C7E, 0x027F, 0x0040]),
+                    ValueSet::SingleFloat => bits(&[
+                        0, 0x8000_0000, 0x3F80_0000, 0xBFC0_0000, 1, 0x007F_FFFF, 0x0080_0000, 0x7F7F_FFFF, 0x7F80_0000,
+                        0xFF80_0000, 0x7FC0_0001, 0x7FA0_0001, 0x4000_0000,
+                    ]),
+                    ValueSet::DoubleFloat => bits(&[
+                        0,
+                        1 << 63,
+                        0x3FF0_0000_0000_0000,
+                        0xBFF8_0000_0000_0000,
+                        1,
+                        0x000F_FFFF_FFFF_FFFF,
+                        0x0010_0000_0000_0000,
+                        0x7FEF_FFFF_FFFF_FFFF,
+                        0x7FF0_0000_0000_0000,
+                        0xFFF0_0000_0000_0000,
+                        0x7FF8_0000_0000_0001,
+                        0x7FF4_0000_0000_0001,
+                        0x4000_0000_0000_0000,
+                    ]),
                     ValueSet::Mask => bits(&[
                         0,
                         1,

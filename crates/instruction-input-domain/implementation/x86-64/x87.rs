@@ -14,7 +14,7 @@ use iced_x86::{Code, Instruction as Encoded, MemoryOperand, OpCodeOperandKind, R
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::integer::OperandPlace;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
-use wcontainers_processor_architecture_x86_64::x87::{X87Form, X87Operation};
+use wcontainers_processor_architecture_x86_64::x87::{Source, X87Form, X87Operation};
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, InstructionFetch, PagePermission, Processor, X87, X87_INITIAL, X86_64, ZERO_PROCESSOR,
 };
@@ -51,6 +51,33 @@ const REGISTER_VALUES: [u128; 16] = [
     0x7FFF_0000_0000_0000_0001,
 ];
 
+/// ST(0)'s values for FIST: each side of a half between integers, either sign, each end of the integer ranges,
+/// tiny ones, and the classes it cannot round.
+const ROUNDING_VALUES: [u128; 22] = [
+    EMPTY,
+    0,
+    0x3FFE_8000_0000_0000_0000,
+    0x3FFF_C000_0000_0000_0000,
+    0x4000_A000_0000_0000_0000,
+    0xC000_A000_0000_0000_0000,
+    0x3FFF_A000_0000_0000_0000,
+    0xBFFE_C000_0000_0000_0000,
+    0x400D_FFFF_0000_0000_0000,
+    0xC00E_8000_8000_0000_0000,
+    0x400E_8000_0000_0000_0000,
+    0x401D_FFFF_FFFF_0000_0000,
+    0xC01E_8000_0000_0000_0000,
+    0x403E_8000_0000_0000_0000,
+    0xC03E_8000_0000_0000_0000,
+    0x403D_FFFF_FFFF_FFFF_F800,
+    0x3F9B_8000_0000_0000_0000,
+    0x7FFF_8000_0000_0000_0000,
+    0x7FFF_C000_0000_0000_1234,
+    0x0000_0000_0000_0000_0001,
+    0x4000_4000_0000_0000_0000,
+    0xFFFF_8000_0000_0000_0000,
+];
+
 /// Where an x87 value lies.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum X87ValueSet {
@@ -58,6 +85,8 @@ pub enum X87ValueSet {
     Register,
     /// Memory, which holds no empty.
     Memory,
+    /// ST(0) of FIST: the values about the integers.
+    Rounding,
 }
 
 /// The x87 state around a form's operands.
@@ -71,12 +100,27 @@ pub enum X87Stack {
     Pending,
     /// Every exception unmasked and none pending, TOP 6 with ST(7) in use, so a push overflows unmasked.
     Unmasked,
-    /// The condition codes and a masked precision flag set, other precision and rounding, half the registers in use,
-    /// and the last instruction's pointers.
+    /// The condition codes and a masked precision flag set, other precision and rounding toward zero, half the
+    /// registers in use, and the last instruction's pointers.
     CodesSet,
+    /// Every exception unmasked and none pending, every register empty, so a push meets the source's own exceptions.
+    UnmaskedEmpty,
+    /// Rounding down.
+    RoundDown,
+    /// Rounding up.
+    RoundUp,
 }
 
-pub const X87_STACKS: [X87Stack; 5] = [X87Stack::Initial, X87Stack::Full, X87Stack::Pending, X87Stack::Unmasked, X87Stack::CodesSet];
+pub const X87_STACKS: [X87Stack; 8] = [
+    X87Stack::Initial,
+    X87Stack::Full,
+    X87Stack::Pending,
+    X87Stack::Unmasked,
+    X87Stack::UnmaskedEmpty,
+    X87Stack::CodesSet,
+    X87Stack::RoundDown,
+    X87Stack::RoundUp,
+];
 
 impl X87Stack {
     pub fn to_x87(self) -> X87 {
@@ -96,14 +140,21 @@ impl X87Stack {
                 data_pointer: 0x0000_2468_ACE0_1357,
                 ..initial
             },
+            Self::UnmaskedEmpty => X87 { control: 0x0340, ..initial },
+            Self::RoundDown => X87 { control: 0x077F, ..initial },
+            Self::RoundUp => X87 { control: 0x0B7F, ..initial },
         }
     }
 }
 
 /// The critical values of an x87 value.
 pub fn generate_x87_values(set: X87ValueSet) -> Vec<OperandValue> {
-    let skip = usize::from(set == X87ValueSet::Memory);
-    REGISTER_VALUES[skip..].iter().map(|&value| OperandValue::Vector(value)).collect()
+    let values: &[u128] = match set {
+        X87ValueSet::Register => &REGISTER_VALUES,
+        X87ValueSet::Memory => &REGISTER_VALUES[1..],
+        X87ValueSet::Rounding => &ROUNDING_VALUES,
+    };
+    values.iter().map(|&value| OperandValue::Vector(value)).collect()
 }
 
 /// What each operand of a form is, from its code.
@@ -140,11 +191,18 @@ const fn reads_top(operation: X87Operation) -> bool {
             | X87Operation::MoveIf(_)
             | X87Operation::Examine
             | X87Operation::StoreExtended
+            | X87Operation::Compare { .. }
     )
 }
 
 const fn reads_indexed(operation: X87Operation) -> bool {
-    matches!(operation, X87Operation::Exchange | X87Operation::LoadRegister | X87Operation::MoveIf(_))
+    matches!(
+        operation,
+        X87Operation::Exchange
+            | X87Operation::LoadRegister
+            | X87Operation::MoveIf(_)
+            | X87Operation::Compare { source: Source::Register, .. }
+    )
 }
 
 /// The operand types of an x87 form, in the order the build reads them.
@@ -162,6 +220,9 @@ pub fn list_operand_types(form: &X87Form) -> Vec<OperandType> {
     if reads_top(form.operation) {
         types.push(OperandType::X87Value(Role::Destination, X87ValueSet::Register));
     }
+    if matches!(form.operation, X87Operation::StoreInteger { .. }) {
+        types.push(OperandType::X87Value(Role::Destination, X87ValueSet::Rounding));
+    }
     if reads_indexed(form.operation) {
         types.push(OperandType::X87Value(Role::Source, X87ValueSet::Register));
     }
@@ -169,6 +230,11 @@ pub fn list_operand_types(form: &X87Form) -> Vec<OperandType> {
         X87Operation::LoadExtended => types.push(OperandType::X87Value(Role::Source, X87ValueSet::Memory)),
         X87Operation::LoadInteger => types.push(OperandType::MemoryValue(ValueSet::Arithmetic)),
         X87Operation::LoadControl => types.push(OperandType::MemoryValue(ValueSet::ControlWord)),
+        X87Operation::LoadFloat | X87Operation::Compare { source: Source::Single | Source::Double, .. } => {
+            let set = if form.memory_bytes() == 4 { ValueSet::SingleFloat } else { ValueSet::DoubleFloat };
+            types.push(OperandType::MemoryValue(set));
+        }
+        X87Operation::Compare { source: Source::Integer, .. } => types.push(OperandType::MemoryValue(ValueSet::Arithmetic)),
         _ => {}
     }
     types.push(OperandType::Flags(match form.operation {
@@ -187,7 +253,7 @@ pub fn build_state(form: &X87Form, operands: &[(OperandType, OperandValue)]) -> 
         upper_vector_halves: crate::fill_upper_vector_halves(),
         ..ZERO_PROCESSOR
     };
-    let (mut access, mut layout, mut index) = (None, CodeLayout::PageStart, 0);
+    let (mut access, mut layout, mut index) = (None, CodeLayout::PageStart, form.to_implied_index());
     let (mut stack, mut top, mut indexed, mut memory_value) = (X87Stack::Initial, None, None, None);
     for (operand_type, operand) in operands {
         match (operand_type, *operand) {
