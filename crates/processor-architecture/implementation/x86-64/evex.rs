@@ -23,6 +23,9 @@ pub(crate) mod fused;
 // The conversions.
 #[path = "evex_convert.rs"]
 pub(crate) mod convert;
+// The compares into opmask registers.
+#[path = "evex_compare.rs"]
+pub(crate) mod compare;
 
 pub use convert::{Conversion, Number};
 
@@ -42,6 +45,10 @@ pub enum EvexOperation {
     },
     /// A form without floating-point exceptions, its destination's elements of `element_bytes` bytes.
     Integer { operation: IntegerOperation, element_bytes: usize },
+    /// VCMPPS to VCMPSD: each selected element's predicate (the immediate's low five bits) into an opmask register.
+    Compare { precision: Precision, arrangement: Arrangement },
+    /// VCOMISS, VCOMISD (`signaling`) and VUCOMISS, VUCOMISD: ZF, PF and CF from the lowest elements' order.
+    OrderedCompare { precision: Precision, signaling: bool },
     /// VCVTDQ2PS to VCVTSD2SS: each element of the source converted; a scalar form's upper elements are the first
     /// source's.
     Convert(Conversion),
@@ -248,6 +255,14 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vpshufbitqmb, Any, integer(I::ShuffleBitsToMask, 1)),
         (Mnemonic::Vpbroadcastmb2q, Any, integer(I::BroadcastMask, 8)),
         (Mnemonic::Vpbroadcastmw2d, Any, integer(I::BroadcastMask, 4)),
+        (Mnemonic::Vcmpps, Any, EvexOperation::Compare { precision: Single, arrangement: Packed }),
+        (Mnemonic::Vcmppd, Any, EvexOperation::Compare { precision: Double, arrangement: Packed }),
+        (Mnemonic::Vcmpss, Any, EvexOperation::Compare { precision: Single, arrangement: Scalar }),
+        (Mnemonic::Vcmpsd, Any, EvexOperation::Compare { precision: Double, arrangement: Scalar }),
+        (Mnemonic::Vcomiss, Any, EvexOperation::OrderedCompare { precision: Single, signaling: true }),
+        (Mnemonic::Vucomiss, Any, EvexOperation::OrderedCompare { precision: Single, signaling: false }),
+        (Mnemonic::Vcomisd, Any, EvexOperation::OrderedCompare { precision: Double, signaling: true }),
+        (Mnemonic::Vucomisd, Any, EvexOperation::OrderedCompare { precision: Double, signaling: false }),
         (Mnemonic::Vcvtdq2ps, Any, convert(N::Signed(4), N::Float(Single), false)),
         (Mnemonic::Vcvtps2dq, Any, convert(N::Float(Single), N::Signed(4), false)),
         (Mnemonic::Vcvttps2dq, Any, convert(N::Float(Single), N::Signed(4), true)),
@@ -366,9 +381,10 @@ impl EvexForm {
     /// The bytes of one element of the destination, which the opmask selects.
     pub const fn element_bytes(&self) -> usize {
         match self.operation {
-            EvexOperation::Float { precision, .. } | EvexOperation::Fused { precision, .. } => {
-                (precision.to_bits() / u8::BITS) as usize
-            }
+            EvexOperation::Float { precision, .. }
+            | EvexOperation::Fused { precision, .. }
+            | EvexOperation::Compare { precision, .. }
+            | EvexOperation::OrderedCompare { precision, .. } => (precision.to_bits() / u8::BITS) as usize,
             EvexOperation::Integer { element_bytes, .. } => element_bytes,
             EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
             EvexOperation::ToBfloat16 { .. } => 2,
@@ -388,7 +404,9 @@ impl EvexForm {
     pub fn elements(&self) -> usize {
         match self.operation {
             EvexOperation::Float { arrangement: Arrangement::Scalar, .. }
-            | EvexOperation::Fused { arrangement: Arrangement::Scalar, .. } => 1,
+            | EvexOperation::Fused { arrangement: Arrangement::Scalar, .. }
+            | EvexOperation::Compare { arrangement: Arrangement::Scalar, .. }
+            | EvexOperation::OrderedCompare { .. } => 1,
             EvexOperation::Convert(Conversion { scalar: true, .. }) => 1,
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes() / 2,
             _ => self.vector_bytes() / self.element_bytes().max(self.source_element_bytes()),
@@ -428,7 +446,11 @@ impl EvexForm {
     /// Whether the form reads its destination's value besides merging into it.
     pub const fn reads_destination(&self) -> bool {
         match self.operation {
-            EvexOperation::Float { .. } | EvexOperation::Convert(_) | EvexOperation::ToBfloat16 { .. } => false,
+            EvexOperation::Float { .. }
+            | EvexOperation::Convert(_)
+            | EvexOperation::ToBfloat16 { .. }
+            | EvexOperation::Compare { .. }
+            | EvexOperation::OrderedCompare { .. } => false,
             EvexOperation::Fused { .. } => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
         }
@@ -438,7 +460,11 @@ impl EvexForm {
     /// memory elements are the destination's elements.
     pub const fn suppresses_faults(&self) -> bool {
         match self.operation {
-            EvexOperation::Float { .. } | EvexOperation::Fused { .. } | EvexOperation::Convert(_) => true,
+            EvexOperation::Float { .. }
+            | EvexOperation::Fused { .. }
+            | EvexOperation::Convert(_)
+            | EvexOperation::Compare { .. }
+            | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
         }

@@ -29,7 +29,7 @@ use wcontainers_processor_architecture_x86_64::evex::{
 };
 use wcontainers_processor_architecture_x86_64::float::Conversion as LegacyConversion;
 use wcontainers_processor_architecture_x86_64::float::{
-    Arrangement, DENORMALS_ARE_ZEROS, FLUSH_TO_ZERO, FloatOperation, Precision, ROUNDING_SHIFT,
+    Arrangement, DENORMALS_ARE_ZEROS, FLUSH_TO_ZERO, FloatOperation, INEXACT, Precision, ROUNDING_SHIFT,
 };
 use wcontainers_processor_architecture_x86_64::integer::OperandPlace;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
@@ -109,6 +109,22 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             scalar: arrangement == Arrangement::Scalar,
             register,
             rounding: op_code.can_use_rounding_control(),
+        }),
+        EvexOperation::Compare { precision, arrangement } => OperandType::EvexCompareData(EvexCompareData {
+            precision,
+            elements: form.elements(),
+            scalar: arrangement == Arrangement::Scalar,
+            predicates: true,
+            register,
+            suppression: op_code.can_suppress_all_exceptions(),
+        }),
+        EvexOperation::OrderedCompare { precision, .. } => OperandType::EvexCompareData(EvexCompareData {
+            precision,
+            elements: 1,
+            scalar: true,
+            predicates: false,
+            register,
+            suppression: op_code.can_suppress_all_exceptions(),
         }),
         EvexOperation::Convert(_) | EvexOperation::ToBfloat16 { .. } => OperandType::EvexConvertData(EvexConvertData {
             operation: form.operation,
@@ -388,6 +404,86 @@ pub fn generate_fused_data(data: EvexFusedData) -> Vec<OperandValue> {
     ] {
         for mxcsr in [MXCSR_DEFAULT, unmasked] {
             all.extend(some.iter().map(|&triple| datum(triple, mask, EmbeddedControl::None, mxcsr)));
+        }
+    }
+    all
+}
+
+/// What the data of a compare is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexCompareData {
+    pub precision: Precision,
+    pub elements: usize,
+    pub scalar: bool,
+    /// VCMPPS and its kin, whose immediate is a predicate; else VCOMISS and its kin, which have none.
+    pub predicates: bool,
+    pub register: bool,
+    pub suppression: bool,
+}
+
+/// The data of a compare: every pair of critical values meeting in some element, under every predicate, with MXCSR
+/// at its default; then the second source's rotations against the first's first under a signaling and a quiet
+/// predicate with MXCSR's compare values (every exception masked and unmasked, DAZ, every flag set), with exception
+/// suppression, and with every other element selected. A memory form takes the rotations with three predicates and
+/// MXCSR at its default and unmasked.
+pub fn generate_compare_data(data: EvexCompareData) -> Vec<OperandValue> {
+    let EvexCompareData { precision, elements, scalar, predicates, register, suppression } = data;
+    let values: Vec<u64> = rotate_floats(precision, true).into_iter().map(|vector| vector as u64).collect();
+    let bytes = (precision.to_bits() / u8::BITS) as usize;
+    let lanes = if scalar { 16 / bytes } else { elements };
+    let rotate = |rotation: usize| {
+        let mut vector = [0; 4];
+        for index in 0..lanes {
+            write_element(&mut vector, index, bytes, values[(index + rotation) % values.len()]);
+        }
+        vector
+    };
+    let step = if scalar { 1 } else { lanes };
+    let every: Vec<([u128; 4], [u128; 4])> = (0..values.len())
+        .step_by(step)
+        .flat_map(|first| (0..values.len()).map(move |second| (first, second)))
+        .map(|(first, second)| (rotate(first), rotate(second)))
+        .collect();
+    let some: Vec<([u128; 4], [u128; 4])> = (0..values.len()).map(|second| (rotate(0), rotate(second))).collect();
+    let datum = |(first, second): ([u128; 4], [u128; 4]), immediate: u8, mask, control, mxcsr| {
+        OperandValue::EvexCompareData { first, second, immediate, mask, control, mxcsr }
+    };
+    let all_predicates: Vec<u8> = if predicates { (0..32).collect() } else { vec![0] };
+    let (signaling, quiet) = if predicates { (1, 0x11) } else { (0, 0) };
+    let compare_values = [MXCSR_DEFAULT, 0, MXCSR_DEFAULT | DENORMALS_ARE_ZEROS, MXCSR_DEFAULT | ((INEXACT << 1) - 1)];
+    if !register {
+        return some
+            .iter()
+            .flat_map(|&pair| {
+                [0, signaling, quiet].into_iter().flat_map(move |immediate| {
+                    [MXCSR_DEFAULT, 0].map(|mxcsr| datum(pair, immediate, NO_MASK, EmbeddedControl::None, mxcsr))
+                })
+            })
+            .collect();
+    }
+    let mut all: Vec<OperandValue> = every
+        .iter()
+        .flat_map(|&pair| all_predicates.iter().map(move |&immediate| datum(pair, immediate, NO_MASK, EmbeddedControl::None, MXCSR_DEFAULT)))
+        .collect();
+    for immediate in [signaling, quiet] {
+        for mxcsr in &compare_values[1..] {
+            all.extend(some.iter().map(|&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::None, *mxcsr)));
+        }
+        if suppression {
+            for mxcsr in [0, MXCSR_DEFAULT | DENORMALS_ARE_ZEROS] {
+                all.extend(some.iter().map(|&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::Suppression, mxcsr)));
+            }
+        }
+    }
+    if predicates {
+        let all_elements = to_all(elements);
+        for mask in [
+            EvexMask { register: 1, value: EVERY_OTHER & all_elements, zeroing: false },
+            EvexMask { register: 7, value: !EVERY_OTHER & all_elements, zeroing: false },
+        ] {
+            for mxcsr in [MXCSR_DEFAULT, 0] {
+                all.extend(some.iter().map(|&pair| datum(pair, signaling, mask, EmbeddedControl::None, mxcsr)));
+            }
         }
     }
     all
@@ -806,6 +902,16 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                     mask = data_mask;
                 }
             }
+            (
+                OperandType::EvexCompareData(_),
+                OperandValue::EvexCompareData { first: one, second: other, immediate: chosen, mask: data_mask, control: embedded, mxcsr },
+            ) => {
+                (first, second, immediate, control) = (one, other, Some(chosen), embedded);
+                processor.mxcsr = mxcsr;
+                if data_mask.register != 0 {
+                    mask = data_mask;
+                }
+            }
             (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
             (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
         }
@@ -818,6 +924,10 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     }
     if form.reads_first_source() {
         write_vector(&mut processor, registers[1], first, form.vector_bytes());
+    }
+    // VCOMISS and its kin compare ModRM.reg's register, which they do not write.
+    if matches!(form.operation, EvexOperation::OrderedCompare { .. }) {
+        write_vector(&mut processor, registers[0], first, 16);
     }
     let mut memory_mutations = Vec::new();
     let memory_bytes = if broadcast { form.memory_element_bytes } else { form.memory_bytes() };

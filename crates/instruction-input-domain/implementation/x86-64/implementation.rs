@@ -171,6 +171,9 @@ pub enum OperandType {
     /// The source of a conversion, the first source of a scalar one, and MXCSR; for a register form also the opmask
     /// and the embedded rounding or exception suppression.
     EvexConvertData(evex::EvexConvertData),
+    /// The two operands of a compare, its predicate and MXCSR; for a register form also the opmask and exception
+    /// suppression.
+    EvexCompareData(evex::EvexCompareData),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -304,6 +307,15 @@ pub enum OperandValue {
         second: [u128; 4],
         immediate: u8,
         mask: evex::EvexMask,
+    },
+    /// Two ZMM values, a predicate, an opmask, an embedded control and MXCSR.
+    EvexCompareData {
+        first: [u128; 4],
+        second: [u128; 4],
+        immediate: u8,
+        mask: evex::EvexMask,
+        control: evex::EmbeddedControl,
+        mxcsr: u32,
     },
     /// Three ZMM values, an opmask, an embedded control and MXCSR.
     EvexFusedData {
@@ -517,6 +529,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::EvexIntegerData(data) => evex::generate_integer_data(data),
             OperandType::EvexFusedData(data) => evex::generate_fused_data(data),
             OperandType::EvexConvertData(data) => evex::generate_convert_data(data),
+            OperandType::EvexCompareData(data) => evex::generate_compare_data(data),
         };
         values.into_iter()
     }

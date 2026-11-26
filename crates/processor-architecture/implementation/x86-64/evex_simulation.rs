@@ -12,8 +12,9 @@ use iced_x86::{Instruction as Decoded, OpKind, RoundingControl};
 use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate};
 use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element};
 use crate::evex::fused::multiply_add;
+use crate::evex::compare::compare;
 use crate::evex::convert::to_bfloat16;
-use crate::float::{FLAGS, LaneOutcome, MASK_SHIFT, ROUNDING_SHIFT};
+use crate::float::{FLAGS, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, ROUNDING_SHIFT};
 
 /// The order a fused form takes NaNs in: the first multiplicand's, the second's, the addend's.
 const NAN_ORDER: [usize; 3] = [0, 1, 2];
@@ -56,6 +57,26 @@ pub(super) fn execute_evex(
             compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
                 operation.compute(read_element(&first, index, bytes), read_element(&second, index, bytes), precision, mxcsr, 0)
             })?
+        }
+        EvexOperation::Compare { precision, .. } => {
+            let predicate = decoded.immediate8();
+            let lanes = compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
+                let first = read_element(&first, index, bytes);
+                compare(first, read_element(&second, index, bytes), precision, mxcsr, predicate)
+            })?;
+            let bits = (0..elements).fold(0u64, |mask, index| mask | ((read_element(&lanes, index, bytes) & 1) << index));
+            [u128::from(bits), 0, 0, 0]
+        }
+        EvexOperation::OrderedCompare { precision, signaling } => {
+            let operation = FloatOperation::OrderedCompare { signaling };
+            // The first operand is ModRM.reg's register, which the form compares rather than writes.
+            let first = processor.read_zmm(destination);
+            let flags = compute_float(processor, decoded, bytes, 1, 1, |_, mxcsr, bytes| {
+                operation.compute(read_element(&first, 0, bytes), read_element(&second, 0, bytes), precision, mxcsr, 0)
+            })?;
+            let order = Flags::from_bits_truncate(flags[0] as u64 & ORDER_FLAGS);
+            processor.flags = processor.flags.difference(Flags::STATUS) | order;
+            return Ok(());
         }
         EvexOperation::Convert(conversion) => {
             let from = form.source_element_bytes();

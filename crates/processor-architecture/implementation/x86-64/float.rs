@@ -689,7 +689,7 @@ fn square_root(value: u128) -> u128 {
 }
 
 /// Whether `first` is less than `second`, both numbers or infinities.
-fn compare_less(first: Operand, second: Operand) -> bool {
+pub(crate) fn compare_less(first: Operand, second: Operand) -> bool {
     let key = |operand: Operand| -> (i8, i32, u128) {
         match operand.class {
             Class::Zero => (0, i32::MIN, 0),
@@ -709,7 +709,7 @@ fn compare_less(first: Operand, second: Operand) -> bool {
     }
 }
 
-fn is_equal(first: Operand, second: Operand) -> bool {
+pub(crate) fn is_equal(first: Operand, second: Operand) -> bool {
     !compare_less(first, second) && !compare_less(second, first)
 }
 

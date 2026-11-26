@@ -598,6 +598,8 @@ pub enum Bug {
     EvexBfloatKeepsDenormals,
     /// The prefetch hints and CLDEMOTE read their memory operand and fault where it does.
     HintsReadMemory,
+    /// The EVEX compares ignore bit 4 of the predicate, which swaps whether a quiet NaN signals.
+    EvexCompareSignalingBitIgnored,
     /// SEAMCALL, TDCALL, ENCLV, VMFUNC and the rest complete as no operation.
     RingThreeUndefinedFormsComplete,
     // Fifth check.
@@ -1067,7 +1069,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexZeroingMerges, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
     row(Bug::EvexSuppressedExceptionsFlagged, "EVEX floating-point register forms", Family::Evex(is_float_register_form), EvexSecondHalf),
     row(Bug::EvexScalarKeepsUpperBits, "EVEX scalar forms", Family::Evex(|form| form.elements() == 1), EvexSecondHalf),
-    row(Bug::EvexHighRegistersAliasLow, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
+    row(Bug::EvexHighRegistersAliasLow, "EVEX forms that write a vector", Family::Evex(|form| !form.writes_opmask() && !matches!(form.operation, EvexOperation::OrderedCompare { .. })), EvexSecondHalf),
     row(Bug::EvexMaskIgnored, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
     row(Bug::EvexEmbeddedRoundingIgnored, "EVEX forms with embedded rounding", Family::Evex(|form| form.code.op_code().can_use_rounding_control()), EvexSecondHalf),
     row(Bug::EvexBroadcastReadsVector, "EVEX forms that broadcast", Family::Evex(|form| form.place != OperandPlace::Register && form.code.op_code().can_broadcast()), EvexSecondHalf),
@@ -1083,7 +1085,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexConflictIncludesSelf, "VPCONFLICTD, VPCONFLICTQ", Family::Evex(|form| is_integer(form, IntegerOperation::Conflict)), EvexSecondHalf),
     row(Bug::EvexAesSkipsMixColumns, "VAESENC, VAESDEC", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::Aes { last: false, .. }, .. })), EvexSecondHalf),
     row(Bug::EvexCarryLessIgnoresBitFour, "VPCLMULQDQ", Family::Evex(|form| is_integer(form, IntegerOperation::CarryLessMultiply)), EvexSecondHalf),
-    row(Bug::EvexMaskDestinationMerges, "VPSHUFBITQMB", Family::Evex(EvexForm::writes_opmask), EvexSecondHalf),
+    row(Bug::EvexMaskDestinationMerges, "EVEX forms that write an opmask register", Family::Evex(EvexForm::writes_opmask), EvexSecondHalf),
     row(Bug::EvexFusedStickyIgnored, "EVEX fused multiply-add", Family::Evex(|form| matches!(form.operation, EvexOperation::Fused { .. })), EvexSecondHalf),
     row(Bug::EvexUnsignedNegativeWraps, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), EvexSecondHalf),
     row(Bug::EvexBfloatKeepsDenormals, "VCVTNEPS2BF16, VCVTNE2PS2BF16", Family::Evex(|form| matches!(form.operation, EvexOperation::ToBfloat16 { .. })), EvexSecondHalf),
@@ -1094,6 +1096,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
         Instruction::Prefetchit1Memu8, Instruction::CldemoteMemu8,
     ]), EvexSecondHalf),
     row(Bug::RingThreeUndefinedFormsComplete, "SEAMCALL to VMFUNC", Family::Forms(&crate::RING_3_UNDEFINED_FORMS), EvexSecondHalf),
+    row(Bug::EvexCompareSignalingBitIgnored, "VCMPPS to VCMPSD", Family::Evex(|form| matches!(form.operation, EvexOperation::Compare { .. })), EvexSecondHalf),
     row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
 ];
 
@@ -1104,7 +1107,14 @@ fn is_integer(form: &EvexForm, operation: IntegerOperation) -> bool {
 
 /// Whether the EVEX form computes floating-point elements from registers alone.
 fn is_float_register_form(form: &EvexForm) -> bool {
-    matches!(form.operation, EvexOperation::Float { .. } | EvexOperation::Fused { .. } | EvexOperation::Convert(_))
+    matches!(
+        form.operation,
+        EvexOperation::Float { .. }
+            | EvexOperation::Fused { .. }
+            | EvexOperation::Convert(_)
+            | EvexOperation::Compare { .. }
+            | EvexOperation::OrderedCompare { .. }
+    )
         && form.place == OperandPlace::Register
         && form.code.op_code().can_suppress_all_exceptions()
 }

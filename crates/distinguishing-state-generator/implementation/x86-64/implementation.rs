@@ -197,7 +197,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::EvexFloatData(_)
         | OperandType::EvexIntegerData(_)
         | OperandType::EvexFusedData(_)
-        | OperandType::EvexConvertData(_) => true,
+        | OperandType::EvexConvertData(_)
+        | OperandType::EvexCompareData(_) => true,
         _ => false,
     }
 }
