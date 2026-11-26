@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
 use crossbeam_utils::atomic::AtomicCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use zerocopy::IntoBytes;
 
@@ -263,9 +264,9 @@ fn queue_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
 
 /// Reads an absolute timeout on the real time clock (`prepare_timeout`) and makes it a deadline on
 /// the monotonic clock.
-fn deadline<S: crate::System>(
+fn deadline<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
 ) -> Result<Option<u64>, Errno> {
@@ -291,9 +292,9 @@ fn with_queue<R>(node: &Node, act: impl FnOnce(&mut MessageQueue) -> R) -> R {
     act(queue)
 }
 
-pub(super) fn mq_open<S: crate::System>(
+pub(super) fn mq_open<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [name, flags, mode, attributes, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -371,9 +372,9 @@ pub(super) fn mq_open<S: crate::System>(
     Ok(fd as u64)
 }
 
-pub(super) fn mq_unlink<S: crate::System>(
+pub(super) fn mq_unlink<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [name, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -391,9 +392,9 @@ pub(super) fn mq_unlink<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn mq_timedsend<S: crate::System>(
+pub(super) fn mq_timedsend<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, buffer, length, priority, timeout, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -469,9 +470,9 @@ pub(super) fn mq_timedsend<S: crate::System>(
 
 /// Sends the signal a request asked for, if it did and its process has not run another program,
 /// or a SIGEV_THREAD request's cookie marked woken.
-fn tell<S: crate::System>(
+fn tell<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     notify: Notify,
     pid: Pid,
     uid: u32,
@@ -522,9 +523,9 @@ fn park(kernel: &mut Kernel, tid: Tid, node: &Node, deadline: Option<u64>) -> Re
 
 /// A waiting send or receive run again (`wq_sleep`): what it was handed, or a signal (restarted),
 /// its time up, or it waits on.
-fn waited<S: crate::System>(
+fn waited<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     receive: Option<(u64, u64)>,
 ) -> Result<u64, Errno> {
@@ -572,9 +573,9 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
 }
 
 /// The message's priority and text, stored for the receiver; EFAULT loses the message.
-fn store<S: crate::System>(
+fn store<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     buffer: u64,
     priority_at: u64,
@@ -591,9 +592,9 @@ fn store<S: crate::System>(
     Ok(text.len() as u64)
 }
 
-pub(super) fn mq_timedreceive<S: crate::System>(
+pub(super) fn mq_timedreceive<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, buffer, length, priority_at, timeout, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -647,9 +648,9 @@ pub(super) fn mq_timedreceive<S: crate::System>(
     store(kernel, cx, tid, buffer, priority_at, priority, &text)
 }
 
-pub(super) fn mq_notify<S: crate::System>(
+pub(super) fn mq_notify<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, request, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -724,9 +725,9 @@ pub(super) fn mq_notify<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn mq_getsetattr<S: crate::System>(
+pub(super) fn mq_getsetattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, new, old, ..]: Args,
 ) -> Result<u64, Errno> {

@@ -1,10 +1,12 @@
 //! Taking tasks and process contexts off a kernel, and putting them on a kernel again.
 
+use crate::guest_machine::GuestMachine;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
+use wcontainers_executor::Executor;
 
-use wcontainers_abi::{Cpu, MemoryId, RegisterBlock, Resume};
+use wcontainers_abi::{MemoryId, RegisterBlock, Resume};
 
 use crate::counters::reason;
 use crate::linux::general::{SIGCHLD, SIGRTMIN};
@@ -96,9 +98,9 @@ const SIGNAL_INFORMATION_SIZE: usize = size_of::<crate::siginfo::Bytes>();
 impl Kernel {
     /// Takes the tasks named, as of one moment; a task not on this kernel is absent from the
     /// answer.
-    pub fn suspend_tasks(
+    pub fn suspend_tasks<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         tasks: &[TaskId],
     ) -> alloc::vec::IntoIter<(TaskId, SuspendedTask)> {
         assert!(
@@ -110,9 +112,9 @@ impl Kernel {
 
     /// Takes a process's context and every task of it on this kernel, which then has none of
     /// it; none for a process not here.
-    pub fn suspend_process(
+    pub fn suspend_process<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         process: TaskId,
     ) -> Option<(
         ProcessContext,
@@ -193,9 +195,9 @@ impl Kernel {
 
     /// Puts tasks back on this kernel, each going on as it was taken; hands back those whose
     /// process context is not here.
-    pub fn resume_tasks(
+    pub fn resume_tasks<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         tasks: impl IntoIterator<Item = SuspendedTask>,
     ) -> alloc::vec::IntoIter<SuspendedTask> {
         assert!(self.running.is_none(), "tasks resumed while a thread runs");
@@ -226,9 +228,9 @@ impl Kernel {
 
     /// Takes the tasks of `tasks` that are on this kernel (of process `only`, if given); one the
     /// kernel cannot take now is counted.
-    pub(crate) fn take_tasks(
+    pub(crate) fn take_tasks<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         only: Option<Pid>,
         tasks: &[TaskId],
     ) -> Vec<(TaskId, SuspendedTask)> {
@@ -262,9 +264,9 @@ impl Kernel {
     /// Takes a process's context and its tasks; none for a process not here or being ended. With
     /// a task the kernel cannot take now, the process stays and the answer holds a copy of its
     /// context and the tasks taken.
-    pub(crate) fn take_process(
+    pub(crate) fn take_process<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         pid: Pid,
     ) -> Option<(ProcessContext, Vec<(TaskId, SuspendedTask)>)> {
         self.processes
@@ -392,7 +394,7 @@ impl Kernel {
     /// in it: the call's next run answers as interrupted by a signal with no handler, and a waiter
     /// in a line a wake chooses from (a futex's, a semaphore set's, a message queue's) leaves it
     /// now. A thread taken before its call began makes the call again.
-    fn take_task(&mut self, cpu: &mut dyn Cpu, tid: Tid) -> SuspendedTask {
+    fn take_task<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, tid: Tid) -> SuspendedTask {
         let mut registers = RegisterBlock::ZERO;
         cpu.registers(self.threads[&tid].cpu, &mut registers);
         let wait = self.threads[&tid].call.wait;
@@ -449,9 +451,9 @@ impl Kernel {
 
     /// Puts one task on the kernel, going on as it was taken; gives it back if its process
     /// context is not here, its number is taken, or the executor cannot make its thread.
-    fn place_task(
+    fn place_task<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         mut task: SuspendedTask,
     ) -> Result<(), SuspendedTask> {
         let tid = task.id;
@@ -522,7 +524,7 @@ impl Kernel {
     }
 }
 
-impl Process<'_> {
+impl<C: Executor> Process<'_, C> {
     /// As [`Kernel::suspend_tasks`] for this process's tasks.
     pub fn suspend_tasks(
         &mut self,

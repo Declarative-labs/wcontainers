@@ -1,9 +1,11 @@
 //! Copying to and from guest memory with the checks Linux makes.
 
+use crate::guest_machine::GuestMachine;
 use alloc::vec;
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
-use wcontainers_abi::{Cpu, MemoryId, PAGE_SIZE, Permissions};
+use wcontainers_abi::{MemoryId, PAGE_SIZE, Permissions};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::memory::{AddressMap, Backing, page_down, page_up};
@@ -27,8 +29,8 @@ pub(crate) fn access_ok(address: u64, length: u64) -> bool {
 }
 
 /// One process's memory as a system call sees it.
-pub(crate) struct Guest<'a> {
-    pub cpu: &'a mut dyn Cpu,
+pub(crate) struct Guest<'a, C: Executor> {
+    pub cpu: &'a mut GuestMachine<C>,
     pub memory: MemoryId,
     pub map: &'a atomic_refcell::AtomicRefCell<AddressMap>,
     pub limits: &'a [Limit; LIMITS],
@@ -41,7 +43,7 @@ pub(crate) struct Guest<'a> {
     pub written: &'a atomic_refcell::AtomicRefCell<Vec<crate::system::KernelWrite>>,
 }
 
-impl Guest<'_> {
+impl<C: Executor> Guest<'_, C> {
     /// How many bytes from `address` on can be accessed as `wanted`, growing the stack as a fault there
     /// would. Pages of backend files in the range that are not read yet are asked for, and while
     /// they are awaited nothing is accessible: the call sees a fault, and runs again once they came

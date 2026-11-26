@@ -578,7 +578,7 @@ pub struct KernelProcess<'a, C: Executor, State, S> {
 }
 
 impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> KernelProcess<'_, C, State, S> {
-    fn handle(&mut self) -> crate::Process<'_> {
+    fn handle(&mut self) -> crate::Process<'_, C> {
         let inner = &mut *self.inner;
         crate::Process {
             kernel: &mut inner.kernel,

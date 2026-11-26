@@ -9,6 +9,7 @@ use wcontainers_abi::{
     Next, RegisterBlock, Resume, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER,
     SystemCallNumber, SystemCallRequest,
 };
+use wcontainers_executor::Executor;
 
 use crate::counters::reason;
 use crate::linux::general::*;
@@ -77,7 +78,11 @@ impl Kernel {
     }
 
     /// Charges the thread that ran for the time since it was handed out.
-    pub(crate) fn account<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) {
+    pub(crate) fn account<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+    ) {
         let now = cx.monotonic();
         self.entry_now = now;
         self.charge(tid, now.saturating_sub(self.last_now));
@@ -137,9 +142,9 @@ impl Kernel {
     }
 
     /// Deals with why a thread came back.
-    pub(crate) fn came_back<S: crate::System>(
+    pub(crate) fn came_back<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         exit: wcontainers_abi::Exit,
     ) {
@@ -170,16 +175,20 @@ impl Kernel {
         }
     }
 
-    fn thread_pc<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) -> u64 {
+    fn thread_pc<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+    ) -> u64 {
         let mut registers = RegisterBlock::ZERO;
         cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
         registers.pc
     }
 
     /// Runs a system call, the first time or again after its thread was woken.
-    fn system_call<S: crate::System>(
+    fn system_call<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         mut call: SystemCallRequest,
         again: bool,
@@ -389,9 +398,9 @@ impl Kernel {
 
     /// Asks the embedder for its answer to a call that replaced its thread's registers (a new
     /// program, a handler's return): the result is the thread's x0, and the answer goes there.
-    pub(crate) fn answer_in_registers<S: crate::System>(
+    pub(crate) fn answer_in_registers<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         call: &SystemCallRequest,
     ) {
@@ -499,7 +508,11 @@ impl Kernel {
     }
 
     /// Clears a finished call's slot; a named pipe's open still waiting gives up its end.
-    pub(crate) fn finish_call<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) {
+    pub(crate) fn finish_call<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+    ) {
         let thread = self.thread_mut(tid);
         let holds = core::mem::take(&mut thread.call).holds;
         let taken = thread.taken.get_mut().clear();
@@ -533,9 +546,9 @@ impl Kernel {
 
     /// On the thread's way back to the guest: acts on its signals, then it continues, or waits for
     /// its turn if it is not the current thread.
-    pub(crate) fn return_to_user<S: crate::System>(
+    pub(crate) fn return_to_user<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         resume: Resume,
     ) {
@@ -555,7 +568,7 @@ impl Kernel {
 
     /// Runs again the calls of woken threads and acts on signals sent to threads waiting for their
     /// turn, until nothing is left; then notes the time and reports what was counted.
-    pub(crate) fn settle<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
+    pub(crate) fn settle<S: crate::System, C: Executor>(&mut self, cx: &mut Context<'_, S, C>) {
         if !self.dnotified.is_empty() {
             syscall::dnotify::send(self, cx);
         }
@@ -921,7 +934,11 @@ impl Kernel {
     }
 
     /// Ends one thread of a process that has others.
-    pub(crate) fn end_thread<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) {
+    pub(crate) fn end_thread<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+    ) {
         syscall::futex::thread_end(self, cx, tid, true);
         syscall::timer::thread_end(self, tid);
         if let Some(client) = &self.files.backend {
@@ -963,9 +980,9 @@ impl Kernel {
 
     /// `de_thread`: ends every other thread of the caller's process, and the caller takes the
     /// process's number if it did not have it. Returns the caller's number now.
-    pub(crate) fn only_thread<S: crate::System>(
+    pub(crate) fn only_thread<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         tid: Tid,
     ) -> Tid {
@@ -1015,9 +1032,9 @@ impl Kernel {
     /// last stores into the memory (`others_use_memory` of each in turn), the semaphore
     /// adjustments and waits they leave, the `vfork` parent they kept waiting; their numbers are
     /// let go of, and putting one back hands it back.
-    fn end_tasks_away<S: crate::System>(
+    fn end_tasks_away<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         others_use_memory: impl Fn(usize) -> bool,
     ) {
@@ -1040,9 +1057,9 @@ impl Kernel {
     /// Ends a whole process with a wait status, as `exit_group` and fatal signals do: its threads
     /// and memory go, its children go to a reaper, and its parent is told. It stays as a zombie
     /// until its parent reaps it, unless the parent does not want it.
-    pub(crate) fn end_process<S: crate::System>(
+    pub(crate) fn end_process<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         wait_status: i32,
     ) {
@@ -1245,7 +1262,12 @@ impl Kernel {
 
     /// An ended thread's children go to `heir`, a live thread of its process, each sent its
     /// parent death signal (`forget_original_parent` finding a live thread of the group).
-    fn hand_children_to<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid, heir: Tid) {
+    fn hand_children_to<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+        heir: Tid,
+    ) {
         let children: alloc::vec::Vec<Pid> = self
             .processes
             .values()
@@ -1259,7 +1281,11 @@ impl Kernel {
     }
 
     /// Sends each thread of `child` that asked for one its parent death signal.
-    fn send_parent_death_signals<S: crate::System>(&mut self, cx: &mut Context<'_, S>, child: Pid) {
+    fn send_parent_death_signals<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        child: Pid,
+    ) {
         for tid in self.processes[&child].threads.clone() {
             let signal = self.threads[&tid].parent_death_signal;
             if signal > 0 {
@@ -1272,7 +1298,11 @@ impl Kernel {
     /// Hands a dying process's children to the nearest subreaper above it or the first process
     /// (`forget_original_parent`), sends each its parent death signal, and treats process groups
     /// this leaves orphaned with stopped members as Linux does.
-    fn orphan_children<S: crate::System>(&mut self, cx: &mut Context<'_, S>, pid: Pid) {
+    fn orphan_children<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        pid: Pid,
+    ) {
         let children: alloc::vec::Vec<Pid> = self
             .processes
             .values()
@@ -1327,9 +1357,9 @@ impl Kernel {
     /// When a process's going leaves `member`'s group orphaned with stopped members, the group is
     /// sent SIGHUP then SIGCONT (`kill_orphaned_pgrp`): `outside` is the member's link outside the
     /// group, the dying process for its child or the parent of the dying process itself.
-    fn kill_orphaned_group<S: crate::System>(
+    fn kill_orphaned_group<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         outside: Pid,
         member: Pid,
     ) {
@@ -1375,7 +1405,11 @@ impl Kernel {
 
     /// Tells a dead process's parent (`do_notify_parent`): its exit signal, and wakes its waits. A
     /// parent that ignores SIGCHLD or asked not to wait gets no zombie.
-    fn notify_parent<S: crate::System>(&mut self, cx: &mut Context<'_, S>, pid: Pid) {
+    fn notify_parent<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        pid: Pid,
+    ) {
         let process = &self.processes[&pid];
         let parent = process.parent;
         let exit_signal = process.exit_signal;
@@ -1414,7 +1448,11 @@ impl Kernel {
 
     /// A zombie handed to a new parent: reaped at once if that parent does not want it, else the
     /// parent is told as `reparent_leader` does.
-    fn notify_parent_of_zombie<S: crate::System>(&mut self, cx: &mut Context<'_, S>, pid: Pid) {
+    fn notify_parent_of_zombie<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        pid: Pid,
+    ) {
         self.notify_parent(cx, pid);
     }
 
@@ -1456,9 +1494,9 @@ impl Kernel {
     }
 
     /// The report a stopped child leaves for its parent, and the parent told.
-    pub(crate) fn report_to_parent<S: crate::System>(
+    pub(crate) fn report_to_parent<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         report: Report,
     ) {
@@ -1468,9 +1506,9 @@ impl Kernel {
 
     /// Sends a stopped or continued child's parent SIGCHLD, unless it asked not to be told, and
     /// wakes its waits (`do_notify_parent_cldstop`).
-    pub(crate) fn tell_parent<S: crate::System>(
+    pub(crate) fn tell_parent<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         report: Report,
     ) {
@@ -1493,7 +1531,10 @@ impl Kernel {
 
     /// Descriptors were closed: pipes and terminals may have lost an end, so every wait on a file
     /// looks again, and waits for locks do if locks were let go.
-    pub(crate) fn files_released<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
+    pub(crate) fn files_released<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+    ) {
         // What a release lets go of (a socket's queue, a collected cycle) is released in turn.
         // Cycles are looked for when a local socket is released (`unix_release_sock`).
         loop {
@@ -1506,7 +1547,7 @@ impl Kernel {
     }
 
     /// One round of [`Self::files_released`]; returns whether a local socket was released.
-    fn release_round<S: crate::System>(&mut self, cx: &mut Context<'_, S>) -> bool {
+    fn release_round<S: crate::System, C: Executor>(&mut self, cx: &mut Context<'_, S, C>) -> bool {
         let mut files = core::mem::take(&mut self.released);
         let mut notices = core::mem::take(&mut self.notices);
         let mut let_go = false;

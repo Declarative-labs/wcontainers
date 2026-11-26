@@ -7,6 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::{offset_of, size_of};
+use wcontainers_executor::Executor;
 
 use wcontainers_abi::{PAGE_SIZE, SystemCallRequest};
 
@@ -60,7 +61,10 @@ pub(crate) fn read_descriptor(call: SystemCallRequest) -> Option<u64> {
 }
 
 /// The memory a read of descriptor `fd` copies, met before the caller's own.
-fn file_memory<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, fd: u64) -> bool {
+fn file_memory<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
+    fd: u64,
+) -> bool {
     match memory.file_memory(fd) {
         Some((pid, start, length)) => {
             length == 0 || memory.touch_process(pid, start, length, AccessKind::Read)
@@ -70,8 +74,8 @@ fn file_memory<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, fd: u64
 }
 
 /// Meets a range; a null address or nothing touches nothing.
-fn meet<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn meet<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
     length: u64,
     access: AccessKind,
@@ -79,8 +83,8 @@ fn meet<S: crate::System>(
     address == 0 || length == 0 || memory.touch(address, length, access)
 }
 
-fn sized<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn sized<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
     size: usize,
     access: AccessKind,
@@ -90,8 +94,8 @@ fn sized<S: crate::System>(
 
 /// Meets a range whose bytes the walk then reads; none if the call must wait, empty if it will
 /// fault on them itself.
-fn fetch<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn fetch<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
     size: usize,
     access: AccessKind,
@@ -119,8 +123,8 @@ fn half(bytes: &[u8], at: usize) -> u32 {
 }
 
 /// A string the call reads up to its zero byte, at most `limit` bytes, a page at a time.
-fn string<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn string<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
     limit: u64,
 ) -> bool {
@@ -139,16 +143,25 @@ fn string<S: crate::System>(
     true
 }
 
-fn path<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, address: u64) -> bool {
+fn path<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
+    address: u64,
+) -> bool {
     string(memory, address, PATH_MAX.into())
 }
 
-fn name<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, address: u64) -> bool {
+fn name<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
+    address: u64,
+) -> bool {
     string(memory, address, u64::from(XATTR_NAME_MAX) + 1)
 }
 
 /// A null-ended array of string pointers, as `execve`'s arguments and environment.
-fn strings<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, mut array: u64) -> bool {
+fn strings<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
+    mut array: u64,
+) -> bool {
     while array != 0 {
         let Some(bytes) = fetch(memory, array, size_of::<u64>(), AccessKind::Read) else {
             return false;
@@ -165,8 +178,8 @@ fn strings<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, mut array: 
 }
 
 /// A `struct iovec` array, read, then each segment touched as `access`.
-fn vectors<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn vectors<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     array: u64,
     count: u64,
     access: AccessKind,
@@ -175,8 +188,8 @@ fn vectors<S: crate::System>(
 }
 
 /// As [`vectors`], each segment's address first passed through `address`.
-fn segments<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn segments<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     array: u64,
     count: u64,
     access: AccessKind,
@@ -199,8 +212,8 @@ fn segments<S: crate::System>(
 
 /// A `struct msghdr`, read, then its name, control data and segments touched as `access`; a
 /// received message's lengths and flags go back into it.
-fn message<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn message<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     header: u64,
     access: AccessKind,
 ) -> bool {
@@ -238,8 +251,8 @@ fn message<S: crate::System>(
 }
 
 /// A `struct mmsghdr` array: each message as `access`, and the length the call stores in it.
-fn messages<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn messages<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     array: u64,
     count: u64,
     access: AccessKind,
@@ -258,8 +271,8 @@ fn messages<S: crate::System>(
 }
 
 /// A socket address the call writes, after the length beside it, which it reads and writes.
-fn address_out<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn address_out<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
     length: u64,
 ) -> bool {
@@ -273,7 +286,10 @@ fn address_out<S: crate::System>(
 }
 
 /// `pselect6`'s last argument: a pointer to the signal mask and its size, then the mask.
-fn mask_and_size<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, address: u64) -> bool {
+fn mask_and_size<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
+    address: u64,
+) -> bool {
     let size = size_of::<[u64; 2]>();
     let Some(bytes) = fetch(memory, address, size, AccessKind::Read) else {
         return false;
@@ -288,8 +304,8 @@ fn mask_and_size<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, addre
 }
 
 /// The futex word at `address` of a size given by `flags` (`futex2`'s size bits).
-fn futex2_word<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn futex2_word<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
     flags: u64,
     access: AccessKind,
@@ -303,8 +319,8 @@ fn futex2_word<S: crate::System>(
 }
 
 /// A `struct futex_waitv` array and the words it names.
-fn futex_waiters<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn futex_waiters<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     array: u64,
     count: u64,
 ) -> bool {
@@ -324,8 +340,8 @@ fn futex_waiters<S: crate::System>(
 }
 
 /// `futex`'s operations: the words and timeouts each reads or changes.
-fn futex<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn futex<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     [word, op, _, timeout, second, _]: super::Args,
 ) -> bool {
     let (read, write) = (AccessKind::Read, AccessKind::Write);
@@ -350,8 +366,8 @@ fn futex<S: crate::System>(
 
 /// `ioctl`'s argument: as the request's number encodes it, or as the terminal requests that
 /// predate the encoding define it.
-fn ioctl<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn ioctl<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     request: u64,
     argument: u64,
 ) -> bool {
@@ -404,8 +420,8 @@ fn ioctl<S: crate::System>(
 }
 
 /// `fcntl`'s commands that take a structure.
-fn fcntl<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn fcntl<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     command: u64,
     argument: u64,
 ) -> bool {
@@ -424,8 +440,8 @@ fn fcntl<S: crate::System>(
 }
 
 /// `prctl`'s options that take memory.
-fn prctl<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn prctl<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     [option, second, third, ..]: super::Args,
 ) -> bool {
     let write = AccessKind::Write;
@@ -449,7 +465,10 @@ fn prctl<S: crate::System>(
 }
 
 /// A seccomp filter: its `struct sock_fprog`, then its instructions.
-fn filter<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, program: u64) -> bool {
+fn filter<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
+    program: u64,
+) -> bool {
     let Some(bytes) = fetch(memory, program, size_of::<sock_fprog>(), AccessKind::Read) else {
         return false;
     };
@@ -467,8 +486,8 @@ fn filter<S: crate::System>(memory: &mut CallMemory<'_, '_, '_, S>, program: u64
 
 /// `sched_setattr`'s structure as `sched_copy_attr` reads it: its size, then that many bytes; a
 /// size it refuses (E2BIG) is answered by writing the size it knows.
-fn sched_attributes<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn sched_attributes<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
 ) -> bool {
     let size_word = size_of::<u32>();
@@ -498,8 +517,8 @@ fn sched_attributes<S: crate::System>(
 
 /// The capability calls' header: an unknown version is answered by writing the one Linux
 /// prefers (`cap_validate_magic`).
-fn capability_header<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn capability_header<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     address: u64,
 ) -> bool {
     let size = size_of::<__user_cap_header_struct>();
@@ -519,8 +538,8 @@ fn capability_header<S: crate::System>(
 
 /// The IPC control calls' buffer: written by the commands that show an object, read by
 /// `IPC_SET`.
-fn ipc_control<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn ipc_control<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     command: u64,
     buffer: u64,
     shows: &[i32],
@@ -538,8 +557,8 @@ fn ipc_control<S: crate::System>(
 
 /// What each thread's end touches: the lock list's head, entries and the words of the locks it
 /// holds, then the word cleared for its joiners.
-pub(crate) fn thread_ends<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+pub(crate) fn thread_ends<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     ends: &[ThreadEnd],
 ) -> bool {
     ends.iter().all(|end| {
@@ -552,8 +571,8 @@ pub(crate) fn thread_ends<S: crate::System>(
 
 /// `exit_robust_list`'s walk: every entry is read, and a lock word written where the thread
 /// holds it.
-fn robust_list<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+fn robust_list<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     tid: i32,
     head: u64,
 ) -> bool {
@@ -570,7 +589,7 @@ fn robust_list<S: crate::System>(
     }
     let offset = word(&bytes, offset_of!(robust_list_head, futex_offset));
     let pending = word(&bytes, offset_of!(robust_list_head, list_op_pending)) & !1;
-    let lock = |memory: &mut CallMemory<'_, '_, '_, S>, entry: u64| {
+    let lock = |memory: &mut CallMemory<'_, '_, '_, S, C>, entry: u64| {
         let address = entry.wrapping_add(offset);
         let Some(value) = fetch(memory, address, size_of::<u32>(), AccessKind::Read) else {
             return false;
@@ -600,8 +619,8 @@ fn robust_list<S: crate::System>(
 
 /// Meets the watches on what `call` will touch, as far as its arguments say; false if it must
 /// wait.
-pub(crate) fn touch<S: crate::System>(
-    memory: &mut CallMemory<'_, '_, '_, S>,
+pub(crate) fn touch<S: crate::System, C: Executor>(
+    memory: &mut CallMemory<'_, '_, '_, S, C>,
     call: SystemCallRequest,
 ) -> bool {
     let arguments = call.arguments;

@@ -8,6 +8,7 @@ use crate::linux_extra::{SFD_CLOEXEC, SFD_NONBLOCK};
 use crate::process::{Channel, Tid};
 use crate::signal::bit;
 use crate::{Context, Errno, Kernel};
+use wcontainers_executor::Executor;
 
 /// What `/proc/<pid>/fd` shows.
 const LINK: &[u8] = b"anon_inode:[signalfd]";
@@ -23,9 +24,9 @@ pub(super) fn mask_of(file: &OpenFile) -> Option<u64> {
     }
 }
 
-pub(super) fn signalfd4<S: crate::System>(
+pub(super) fn signalfd4<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, mask_address, size, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -81,9 +82,9 @@ pub(super) fn poll(kernel: &Kernel, tid: Tid, mask: u64) -> u16 {
 
 /// `signalfd_read_iter`: as many whole records as fit, the first waited for unless nonblocking, the
 /// rest only if already pending. A record that cannot be stored is lost, as on Linux.
-pub(super) fn read<S: crate::System>(
+pub(super) fn read<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -122,9 +123,9 @@ pub(super) fn read<S: crate::System>(
 }
 
 /// Stores bytes at `offset` into a reader's buffers, across them as `copy_to_iter` does.
-pub(super) fn store<S: crate::System>(
+pub(super) fn store<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     parts: &[(u64, u64)],
     offset: u64,

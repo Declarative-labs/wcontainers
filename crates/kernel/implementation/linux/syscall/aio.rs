@@ -5,6 +5,7 @@
 
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use super::{Args, guest};
 use crate::linux::general::*;
@@ -73,9 +74,9 @@ pub(crate) fn in_use(kernel: &mut Kernel) -> u64 {
 }
 
 /// `lookup_ioctx`: the caller's context whose ring is at `address` and still shows its slot.
-fn lookup<S: crate::System>(
+fn lookup<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
 ) -> Option<usize> {
@@ -88,9 +89,9 @@ fn lookup<S: crate::System>(
         .position(|ring| ring.pid == pid && ring.address == address && ring.id == shown)
 }
 
-fn put_u32<S: crate::System>(
+fn put_u32<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
     value: u32,
@@ -98,9 +99,9 @@ fn put_u32<S: crate::System>(
     let _ = guest(kernel, cx, tid).write(address, &value.to_le_bytes());
 }
 
-pub(super) fn io_setup<S: crate::System>(
+pub(super) fn io_setup<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [nr_events, context, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -188,15 +189,20 @@ pub(super) fn io_setup<S: crate::System>(
 }
 
 /// `kill_ioctx`: the ring is unmapped and the context goes.
-fn destroy<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, tid: Tid, index: usize) {
+fn destroy<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    tid: Tid,
+    index: usize,
+) {
     let ring = kernel.aio.remove(index);
     let _ = super::memory::munmap(kernel, cx, tid, [ring.address, ring.length, 0, 0, 0, 0]);
     kernel.wake(ring.channel());
 }
 
-pub(super) fn io_destroy<S: crate::System>(
+pub(super) fn io_destroy<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [context, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -206,9 +212,9 @@ pub(super) fn io_destroy<S: crate::System>(
 }
 
 /// The ring's head as the program left it, and the events between it and the tail.
-fn waiting<S: crate::System>(
+fn waiting<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     index: usize,
 ) -> (u32, u32) {
@@ -224,9 +230,9 @@ fn waiting<S: crate::System>(
 }
 
 /// `aio_complete`: an event at the ring's tail, and the request's event descriptor counts one.
-fn complete<S: crate::System>(
+fn complete<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     index: usize,
     event: [u64; 4],
@@ -249,9 +255,9 @@ fn complete<S: crate::System>(
     kernel.wake(channel);
 }
 
-pub(super) fn io_submit<S: crate::System>(
+pub(super) fn io_submit<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [context, count, requests, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -291,9 +297,9 @@ pub(super) fn io_submit<S: crate::System>(
 }
 
 /// `io_submit_one`: the checks that refuse a request, then the request run and its event posted.
-fn submit_one<S: crate::System>(
+fn submit_one<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     index: usize,
     request: u64,
@@ -441,7 +447,10 @@ pub(crate) fn notify(kernel: &mut Kernel, queue: super::epoll::Queue, key: u32) 
 
 /// Poll requests that took wakes post their events: those the wake named, or else what their
 /// file's poll gives now, if any of theirs (`aio_poll_complete_work`); the others wait on.
-pub(crate) fn polled<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
+pub(crate) fn polled<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) {
     prune(kernel);
     for index in 0..kernel.aio.len() {
         let Some(&tid) = kernel.processes[&kernel.aio[index].pid].threads.first() else {
@@ -472,9 +481,9 @@ pub(crate) fn polled<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_,
 /// A read or write request run as the matching call: at its offset, or where a file without
 /// positions (a pipe, a socket) is, as `read_iter` ignores the position there.
 #[allow(clippy::too_many_arguments, reason = "the fields of one request")]
-fn run_rw<S: crate::System>(
+fn run_rw<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     fd: u64,
     buffer: u64,
@@ -485,31 +494,31 @@ fn run_rw<S: crate::System>(
     vectored: bool,
 ) -> Result<Result<u64, Errno>, Errno> {
     // A request's flags (`kiocb_set_rw_flags`) are taken as preadv2 and pwritev2 take them.
-    let positioned = |kernel: &mut Kernel, cx: &mut Context<'_, S>, at: u64| match (write, vectored)
-    {
-        (_, false) if rw_flags != 0 => super::io::vectored2(
-            kernel,
-            cx,
-            tid,
-            [fd, at, u64::from(rw_flags)],
-            super::io::Bytes::Buffer(buffer, length),
-            write,
-        ),
-        (false, false) => super::io::pread64(kernel, cx, tid, [fd, buffer, length, at, 0, 0]),
-        (true, false) => super::io::pwrite64(kernel, cx, tid, [fd, buffer, length, at, 0, 0]),
-        (false, true) => super::io::preadv2(
-            kernel,
-            cx,
-            tid,
-            [fd, buffer, length, at, 0, u64::from(rw_flags)],
-        ),
-        (true, true) => super::io::pwritev2(
-            kernel,
-            cx,
-            tid,
-            [fd, buffer, length, at, 0, u64::from(rw_flags)],
-        ),
-    };
+    let positioned =
+        |kernel: &mut Kernel, cx: &mut Context<'_, S, C>, at: u64| match (write, vectored) {
+            (_, false) if rw_flags != 0 => super::io::vectored2(
+                kernel,
+                cx,
+                tid,
+                [fd, at, u64::from(rw_flags)],
+                super::io::Bytes::Buffer(buffer, length),
+                write,
+            ),
+            (false, false) => super::io::pread64(kernel, cx, tid, [fd, buffer, length, at, 0, 0]),
+            (true, false) => super::io::pwrite64(kernel, cx, tid, [fd, buffer, length, at, 0, 0]),
+            (false, true) => super::io::preadv2(
+                kernel,
+                cx,
+                tid,
+                [fd, buffer, length, at, 0, u64::from(rw_flags)],
+            ),
+            (true, true) => super::io::pwritev2(
+                kernel,
+                cx,
+                tid,
+                [fd, buffer, length, at, 0, u64::from(rw_flags)],
+            ),
+        };
     let result = match positioned(kernel, cx, offset) {
         Err(Errno::ESPIPE) if vectored || rw_flags != 0 => positioned(kernel, cx, u64::MAX),
         Err(Errno::ESPIPE) if write => {
@@ -526,9 +535,9 @@ fn run_rw<S: crate::System>(
 
 /// io_getevents and io_pgetevents after their first run's checks: events are taken as they come
 /// until `min_nr` are, the time is up or a signal comes.
-fn get_events<S: crate::System>(
+fn get_events<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [context, min_nr, nr, events, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -570,9 +579,9 @@ fn get_events<S: crate::System>(
 
 /// The timeout of a first run, as `timespec64_to_ktime` takes it unchecked: none, or the time
 /// to wait (nothing for zero or less nanoseconds).
-fn timeout<S: crate::System>(
+fn timeout<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     at: u64,
 ) -> Result<Option<u64>, Errno> {
@@ -589,9 +598,9 @@ fn timeout<S: crate::System>(
     Ok(Some(nanoseconds.clamp(0, i128::from(i64::MAX)) as u64))
 }
 
-pub(super) fn io_getevents<S: crate::System>(
+pub(super) fn io_getevents<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
@@ -602,9 +611,9 @@ pub(super) fn io_getevents<S: crate::System>(
     get_events(kernel, cx, tid, args)
 }
 
-pub(super) fn io_pgetevents<S: crate::System>(
+pub(super) fn io_pgetevents<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
@@ -636,9 +645,9 @@ pub(super) fn io_pgetevents<S: crate::System>(
     }
 }
 
-pub(super) fn io_cancel<S: crate::System>(
+pub(super) fn io_cancel<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [context, request, ..]: Args,
 ) -> Result<u64, Errno> {

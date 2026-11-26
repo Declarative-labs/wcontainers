@@ -1,5 +1,5 @@
 //! The guests' memories and registers, which the kernel keeps itself on the executor's memory
-//! spaces, as the abi's CPU side the rest of the kernel calls.
+//! spaces, and the calls the rest of the kernel makes on them.
 
 use alloc::collections::BTreeMap;
 use alloc::vec;
@@ -21,6 +21,8 @@ const UNSHARED_PIECE_BYTES: u64 = 16 * PAGE_SIZE;
 /// An executor with the memory spaces and registers of the guest threads it runs.
 pub struct GuestMachine<C: Executor> {
     executor: C,
+    /// The addresses each of the executor's spaces holds.
+    address_space: AddressSpace,
     memories: BTreeMap<MemoryId, Space<C>>,
     /// Each block of shared pages is a space of its own, its pages from address 0.
     blocks: BTreeMap<SharedId, Space<C>>,
@@ -42,11 +44,16 @@ struct GuestThread {
     registers: RegisterBlock,
 }
 
-impl<C: Executor> GuestMachine<C> {
+impl<C: Executor + Cpu> GuestMachine<C> {
     /// The executor, with no memory or thread yet.
+    ///
+    /// The size of its spaces is the one thing the kernel still asks of the abi's `Cpu`: no
+    /// interface tells it.
     pub(crate) fn new(executor: C) -> Self {
+        let address_space = executor.address_space();
         Self {
             executor,
+            address_space,
             memories: BTreeMap::new(),
             blocks: BTreeMap::new(),
             threads: BTreeMap::new(),
@@ -55,7 +62,9 @@ impl<C: Executor> GuestMachine<C> {
             last_thread: 0,
         }
     }
+}
 
+impl<C: Executor> GuestMachine<C> {
     /// Returns the executor, and the registers and memory space of the thread, for a driver that
     /// runs the thread itself.
     ///
@@ -100,12 +109,10 @@ impl<C: Executor> GuestMachine<C> {
             .map_err(|_| CpuError::OutOfMemory)?;
         Ok(Space { memory, pages })
     }
-}
 
-impl<C: Executor + Cpu> GuestMachine<C> {
     /// The addresses of a whole space.
     fn whole_space(&self) -> core::ops::Range<u64> {
-        0..self.executor.address_space().end
+        0..self.address_space.end
     }
 }
 
@@ -161,12 +168,13 @@ fn not_copied(error: CopyMemoryError) -> CpuError {
     }
 }
 
-impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
-    fn address_space(&self) -> AddressSpace {
-        self.executor.address_space()
+impl<C: Executor> GuestMachine<C> {
+    /// Returns the addresses each space holds.
+    pub(crate) fn address_space(&self) -> AddressSpace {
+        self.address_space
     }
 
-    fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
+    pub(crate) fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
         let space = self.create()?;
         self.last_memory += 1;
         let id = MemoryId(self.last_memory);
@@ -175,7 +183,7 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
     }
 
     /// The copy is made by the space, which may share pages until they are written.
-    fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+    pub(crate) fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
         let mut copy = self.create()?;
         let whole = self.whole_space();
         let start = whole.start;
@@ -188,25 +196,40 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         Ok(id)
     }
 
-    fn memory_drop(&mut self, memory: MemoryId) {
+    pub(crate) fn memory_drop(&mut self, memory: MemoryId) {
         self.memories.remove(&memory);
     }
 
-    fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
+    pub(crate) fn read(
+        &mut self,
+        memory: MemoryId,
+        address: u64,
+        into: &mut [u8],
+    ) -> Result<(), CpuError> {
         read_space(self.memory(memory)?, address, into)
     }
 
-    fn write(&mut self, memory: MemoryId, address: u64, from: &[u8]) -> Result<(), CpuError> {
+    pub(crate) fn write(
+        &mut self,
+        memory: MemoryId,
+        address: u64,
+        from: &[u8],
+    ) -> Result<(), CpuError> {
         write_space(self.memory(memory)?, address, from)
     }
 
-    fn zero(&mut self, memory: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
+    pub(crate) fn zero(
+        &mut self,
+        memory: MemoryId,
+        address: u64,
+        length: u64,
+    ) -> Result<(), CpuError> {
         self.memory(memory)?
             .zero(span(address, length)?)
             .map_err(invalid)
     }
 
-    fn set_permissions(
+    pub(crate) fn set_permissions(
         &mut self,
         memory: MemoryId,
         address: u64,
@@ -221,9 +244,16 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
 
     /// Nothing to do: a memory space's executor sees every write made through the space, the
     /// kernel's too.
-    fn code_changed(&mut self, _memory: MemoryId, _address: u64, _length: u64, _starts: &[u64]) {}
+    pub(crate) fn code_changed(
+        &mut self,
+        _memory: MemoryId,
+        _address: u64,
+        _length: u64,
+        _starts: &[u64],
+    ) {
+    }
 
-    fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
+    pub(crate) fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
         if length > self.whole_space().end {
             return Err(CpuError::OutOfMemory);
         }
@@ -234,7 +264,7 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         Ok(id)
     }
 
-    fn shared_map(
+    pub(crate) fn shared_map(
         &mut self,
         shared: SharedId,
         offset: u64,
@@ -251,7 +281,7 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
     }
 
     /// The space zeroes what it unmaps, so the bytes are copied out and written back in pieces.
-    fn shared_unmap(
+    pub(crate) fn shared_unmap(
         &mut self,
         memory: MemoryId,
         address: u64,
@@ -272,7 +302,7 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         Ok(())
     }
 
-    fn shared_read(
+    pub(crate) fn shared_read(
         &mut self,
         shared: SharedId,
         offset: u64,
@@ -281,15 +311,20 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         read_space(&self.block(shared)?.memory, offset, into)
     }
 
-    fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
+    pub(crate) fn shared_write(
+        &mut self,
+        shared: SharedId,
+        offset: u64,
+        from: &[u8],
+    ) -> Result<(), CpuError> {
         write_space(&self.block(shared)?.memory, offset, from)
     }
 
-    fn shared_drop(&mut self, shared: SharedId) {
+    pub(crate) fn shared_drop(&mut self, shared: SharedId) {
         self.blocks.remove(&shared);
     }
 
-    fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
+    pub(crate) fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
         self.memory(memory)?;
         self.last_thread += 1;
         let id = ThreadId(self.last_thread);
@@ -303,15 +338,15 @@ impl<C: Executor + Cpu> Cpu for GuestMachine<C> {
         Ok(id)
     }
 
-    fn thread_drop(&mut self, thread: ThreadId) {
+    pub(crate) fn thread_drop(&mut self, thread: ThreadId) {
         self.threads.remove(&thread);
     }
 
-    fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
+    pub(crate) fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
         *into = self.threads[&thread].registers;
     }
 
-    fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
+    pub(crate) fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
         if let Some(state) = self.threads.get_mut(&thread) {
             state.registers = *from;
         }

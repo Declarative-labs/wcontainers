@@ -9,15 +9,17 @@ pub(crate) mod dev;
 pub(crate) mod mounts;
 pub(crate) mod proc;
 
+use crate::guest_machine::GuestMachine;
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use alloc::vec;
 use crossbeam_utils::atomic::AtomicCell;
-use wcontainers_abi::{Cpu, PAGE_SIZE, SharedId};
+use wcontainers_abi::{PAGE_SIZE, SharedId};
 
 use crate::Errno;
 use crate::credentials::Credentials;
@@ -608,7 +610,12 @@ impl Regular {
     }
 
     /// Up to `count` bytes from `offset`, stopping at the end of the file.
-    pub(crate) fn read(&self, cpu: &mut dyn Cpu, offset: u64, count: u64) -> Vec<u8> {
+    pub(crate) fn read<C: Executor>(
+        &self,
+        cpu: &mut GuestMachine<C>,
+        offset: u64,
+        count: u64,
+    ) -> Vec<u8> {
         let start = offset.min(self.size());
         let end = start.saturating_add(count).min(self.size());
         let mut bytes = vec![0; (end - start) as usize];
@@ -628,11 +635,16 @@ impl Regular {
     }
 
     /// Every byte of the file.
-    pub(crate) fn bytes(&self, cpu: &mut dyn Cpu) -> Vec<u8> {
+    pub(crate) fn bytes<C: Executor>(&self, cpu: &mut GuestMachine<C>) -> Vec<u8> {
         self.read(cpu, 0, self.size())
     }
 
-    pub(crate) fn write(&mut self, cpu: &mut dyn Cpu, offset: u64, bytes: &[u8]) {
+    pub(crate) fn write<C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        offset: u64,
+        bytes: &[u8],
+    ) {
         let end = offset + bytes.len() as u64;
         if (self.data.len() as u64) < end {
             self.data.resize(end as usize, 0);
@@ -674,7 +686,7 @@ impl Regular {
     }
 
     /// Punches a hole in `[offset, end)`: its bytes read as zero and its whole pages are given back.
-    pub(crate) fn punch(&mut self, cpu: &mut dyn Cpu, offset: u64, end: u64) {
+    pub(crate) fn punch<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, offset: u64, end: u64) {
         let (from, to) = (offset.min(self.size()), end.min(self.size()));
         let held = self.data.len() as u64;
         self.data[from.min(held) as usize..to.min(held) as usize].fill(0);
@@ -684,7 +696,7 @@ impl Regular {
         self.drop_pages(|page| page < first || page >= last);
     }
 
-    fn zero_block(&mut self, cpu: &mut dyn Cpu, from: u64, to: u64) {
+    fn zero_block<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, from: u64, to: u64) {
         if let Some(block) = self.block
             && from < block.length
         {
@@ -696,7 +708,7 @@ impl Regular {
 
     /// Sets the size. Pages dropped from the end are gone from shared mappings too, so they read as
     /// zero if the file grows again.
-    pub(crate) fn truncate(&mut self, cpu: &mut dyn Cpu, length: u64) {
+    pub(crate) fn truncate<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, length: u64) {
         if let Some(block) = self.block
             && length < self.size()
         {
@@ -709,7 +721,7 @@ impl Regular {
     }
 
     /// Moves the bytes the block holds back into the file's own memory, ending the block.
-    pub(crate) fn take_block(&mut self, cpu: &mut dyn Cpu) -> Option<Block> {
+    pub(crate) fn take_block<C: Executor>(&mut self, cpu: &mut GuestMachine<C>) -> Option<Block> {
         let block = self.block.take()?;
         let end = block.length.min(self.size());
         if (self.data.len() as u64) < end {

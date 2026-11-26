@@ -7,6 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use wcontainers_executor::Executor;
 
 use wcontainers_abi::HostError;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
@@ -161,9 +162,9 @@ impl Ends {
 
     /// Sends bytes out of an end: how many the system took. If it took fewer, the end waits until
     /// the system can take more; if its side has let go, the end goes when next served.
-    pub(crate) fn send<S: crate::System>(
+    pub(crate) fn send<S: crate::System, C: Executor>(
         &mut self,
-        cx: &Context<'_, S>,
+        cx: &Context<'_, S, C>,
         end: EndNumber,
         bytes: &mut [u8],
     ) -> usize {
@@ -256,9 +257,9 @@ impl Kernel {
 
     /// Gives a named end the kernel's side of it; if the end has gone already, the file is let go
     /// of at once, as a close.
-    pub(crate) fn attach_end<S: crate::System>(
+    pub(crate) fn attach_end<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         end: EndNumber,
         file: FileRef,
     ) {
@@ -277,7 +278,11 @@ impl Kernel {
 
     /// Lets go of an end: its wait is dropped, the system hears that the kernel let go, and its
     /// file is closed.
-    fn let_go_of_end<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: EndNumber) {
+    fn let_go_of_end<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        end: EndNumber,
+    ) {
         let Some(held) = self.ends.held.remove(&end) else {
             return;
         };
@@ -304,9 +309,9 @@ impl Kernel {
 
     /// The system's wait on an end's endpoint ended: what it is ready for lets the end send or
     /// receive again, or says its side let go.
-    pub(crate) fn end_ready<S: crate::System>(
+    pub(crate) fn end_ready<S: crate::System, C: Executor>(
         &mut self,
-        _cx: &mut Context<'_, S>,
+        _cx: &mut Context<'_, S, C>,
         end: EndNumber,
         ready: Result<ReadinessReport, HostError>,
     ) {
@@ -328,9 +333,9 @@ impl Kernel {
     }
 
     /// `Event::TerminalResized`: the terminal end's new size; with no terminal end it is counted.
-    pub(crate) fn terminal_resized<S: crate::System>(
+    pub(crate) fn terminal_resized<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         columns: u16,
         rows: u16,
     ) {
@@ -349,9 +354,9 @@ impl Kernel {
     }
 
     /// Sends what an end's pipe or terminal holds, as far as the system takes it. Whether any went.
-    fn send_held<S: crate::System>(
+    fn send_held<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         end: EndNumber,
         file: &FileRef,
         side: Side,
@@ -389,9 +394,9 @@ impl Kernel {
 
     /// Takes what the system gives an end into its pipe or terminal, as far as there is space.
     /// Whether any came.
-    fn receive_held<S: crate::System>(
+    fn receive_held<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         end: EndNumber,
         file: &FileRef,
         side: Side,
@@ -453,7 +458,12 @@ impl Kernel {
     /// Keeps the wait on an end's endpoint asking for what the end needs now: for the system's
     /// side letting go always, to send once it took less than it was given, and to receive once
     /// it had nothing. A new wait's first poll comes when the kernel next settles.
-    fn watch_end<S: crate::System>(&mut self, cx: &mut Context<'_, S>, end: EndNumber, side: Side) {
+    fn watch_end<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        end: EndNumber,
+        side: Side,
+    ) {
         let held = self.ends.held.get_mut(&end).expect("held");
         let wanted = (!held.hung_up).then(|| {
             let mut wanted = ReadyFor::empty();
@@ -490,7 +500,10 @@ impl Kernel {
     /// Moves what can move between the ends and the system, once something may have moved:
     /// output as far as the system takes it, input as far as there is space, and the ends that
     /// are finished let go of. Returns whether anything moved.
-    pub(crate) fn serve_ends<S: crate::System>(&mut self, cx: &mut Context<'_, S>) -> bool {
+    pub(crate) fn serve_ends<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+    ) -> bool {
         if !core::mem::take(&mut self.ends.moved) {
             return false;
         }
@@ -520,9 +533,9 @@ impl Kernel {
     }
 
     /// The ends named at a start that failed: the kernel lets go of them.
-    pub(crate) fn close_unmade<S: crate::System>(
+    pub(crate) fn close_unmade<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         standard: &Standard<EndNumber>,
     ) {
         for end in standard.ends() {

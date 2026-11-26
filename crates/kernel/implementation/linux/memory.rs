@@ -1,12 +1,14 @@
 //! A process's address space as the kernel keeps it: the ranges it has mapped and what each allows.
 
+use crate::guest_machine::GuestMachine;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use crossbeam_utils::atomic::AtomicCell;
+use wcontainers_executor::Executor;
 
 use rangemap::RangeSet;
-use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
+use wcontainers_abi::{LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
 
 use crate::fs::Node;
 use crate::linux::general::{RLIMIT_AS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_STACK};
@@ -730,9 +732,9 @@ impl AddressMap {
     /// Sets the embedder's watch on the mapped pages of `[start, end)` (page aligned) and tells
     /// the CPU side; whether any page's watch changed, and how many pages' were raised (set, or
     /// widened to `All`).
-    pub(crate) fn set_watch(
+    pub(crate) fn set_watch<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         range: core::ops::Range<u64>,
         watch: WatchesFor,
@@ -753,9 +755,9 @@ impl AddressMap {
     ///
     /// The CPU side is told if that thread's watches are the ones it holds. The answer says what
     /// changed, as [`Self::set_watch`]'s does.
-    pub(crate) fn set_thread_watch(
+    pub(crate) fn set_thread_watch<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         tid: Tid,
         range: core::ops::Range<u64>,
@@ -792,7 +794,12 @@ impl AddressMap {
     /// Readies the memory for a turn of thread `tid`: the CPU side holds its own watches.
     ///
     /// Those of the thread readied before it are let go of.
-    pub(crate) fn ready_for(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, tid: Tid) {
+    pub(crate) fn ready_for<C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        memory: MemoryId,
+        tid: Tid,
+    ) {
         if self.watches.applied == Some(tid) {
             return;
         }
@@ -801,7 +808,12 @@ impl AddressMap {
     }
 
     /// Ends thread `tid`'s own watches, as the thread has ended.
-    pub(crate) fn end_thread_watches(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, tid: Tid) {
+    pub(crate) fn end_thread_watches<C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        memory: MemoryId,
+        tid: Tid,
+    ) {
         let Some(pages) = self.watches.threads.remove(&tid) else {
             return;
         };
@@ -813,9 +825,9 @@ impl AddressMap {
     }
 
     /// Tells the CPU side again what the pages watched for any of `threads` alone allow.
-    fn reapply_own(
+    fn reapply_own<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         threads: impl Iterator<Item = Tid>,
     ) {
@@ -841,9 +853,9 @@ impl AddressMap {
 
     /// The pages written since the embedder last asked, as ranges, and a fresh record from now
     /// (the first time: every page mapped writable).
-    pub(crate) fn take_dirty(
+    pub(crate) fn take_dirty<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
     ) -> Vec<core::ops::Range<u64>> {
         let written = match self.watches.written.replace(RangeSet::new()) {
@@ -866,7 +878,7 @@ impl AddressMap {
     /// Makes a fork's child's copy: no written record, no parent thread's watch, no running call.
     ///
     /// The child's thread is a new one, so the watches of its parent's threads are not its own.
-    pub(crate) fn start_child(&mut self, cpu: &mut dyn Cpu, memory: MemoryId) {
+    pub(crate) fn start_child<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, memory: MemoryId) {
         self.note_sharers_changed();
         self.watches.touched = None;
         self.watches.described = None;
@@ -886,7 +898,13 @@ impl AddressMap {
     }
 
     /// Tells the CPU side again what every mapping's pages over `[start, end)` allow.
-    pub(crate) fn reapply(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, start: u64, end: u64) {
+    pub(crate) fn reapply<C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        memory: MemoryId,
+        start: u64,
+        end: u64,
+    ) {
         let (start, end) = (page_down(start), page_up(end));
         let overlapping: Vec<Mapping> = self
             .mappings
@@ -911,9 +929,9 @@ impl AddressMap {
 
     /// Notes that the process's bytes in `[start, end)` changed, and lets the CPU side write the
     /// pages it now may.
-    pub(crate) fn note_written(
+    pub(crate) fn note_written<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -933,9 +951,9 @@ impl AddressMap {
 
     /// Pages moved to `[start, end)`: the watches taken along with them are set here, and the
     /// pages are noted as written.
-    pub(crate) fn moved_here(
+    pub(crate) fn moved_here<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -949,9 +967,9 @@ impl AddressMap {
     }
 
     /// Ends the watches of `[start, end)`, whose pages a fork's child gets fresh.
-    pub(crate) fn forget_watches(
+    pub(crate) fn forget_watches<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -965,9 +983,9 @@ impl AddressMap {
 
     /// A write fault on a page the record of written pages held back: noted, and the page may be
     /// written from now on. Whether that was the fault's reason.
-    pub(crate) fn written_fault(
+    pub(crate) fn written_fault<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         address: u64,
     ) -> bool {
@@ -1092,9 +1110,9 @@ impl AddressMap {
     }
 
     /// Makes `pages` guard pages, which the CPU side then allows nothing.
-    pub(crate) fn add_guards(
+    pub(crate) fn add_guards<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         pages: impl IntoIterator<Item = u64>,
     ) -> Result<(), Errno> {
@@ -1108,9 +1126,9 @@ impl AddressMap {
 
     /// Takes the guard pages of `[start, end)` away and tells the CPU side what their mappings
     /// allow again.
-    pub(crate) fn remove_guards(
+    pub(crate) fn remove_guards<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -1448,9 +1466,9 @@ impl AddressMap {
 
     /// Puts a mapping in the table, replacing whatever it covers, and tells the CPU side. New anonymous
     /// memory is zero: a range that has been used before is cleared first.
-    pub(crate) fn insert(
+    pub(crate) fn insert<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         mapping: Mapping,
     ) -> Result<(), Errno> {
@@ -1475,9 +1493,9 @@ impl AddressMap {
     }
 
     /// Unmaps a range, as `munmap` does.
-    pub(crate) fn unmap(
+    pub(crate) fn unmap<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -1499,9 +1517,9 @@ impl AddressMap {
     }
 
     /// Changes what a fully mapped range allows, as `mprotect` does.
-    pub(crate) fn protect(
+    pub(crate) fn protect<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -1524,9 +1542,9 @@ impl AddressMap {
     /// Moves where the mappings of a file stop being reachable to the file's new end, `file_pages`
     /// bytes from its start. Private copies wholly past it go, as Linux's truncation unmaps even
     /// copied pages (`unmap_mapping_range` with `even_cows`), so they show the file's block again.
-    pub(crate) fn set_file_end(
+    pub(crate) fn set_file_end<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         node: &Node,
         file_pages: u64,
@@ -1564,9 +1582,9 @@ impl AddressMap {
     /// Makes the pages of private file mappings in `[start, end)` that still show the file, up to
     /// each file's end, the mappings' own copies, and lets them be written as the mappings allow: a
     /// write fault's copy on write, done ahead for the kernel's own writes and for populating.
-    pub(crate) fn copy_on_write(
+    pub(crate) fn copy_on_write<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -1629,9 +1647,9 @@ impl AddressMap {
 
     /// Drops the private file pages copied in `[start, end)`, so they show the file again, as
     /// `MADV_DONTNEED` zaps a private mapping's copies.
-    pub(crate) fn drop_copies(
+    pub(crate) fn drop_copies<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -1716,9 +1734,9 @@ impl AddressMap {
     }
 
     /// Tells the CPU side what a mapping's pages allow, and that its code may run.
-    fn apply(
+    fn apply<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         mapping: &Mapping,
     ) -> Result<(), Errno> {
@@ -1731,9 +1749,9 @@ impl AddressMap {
 
     /// Tells the CPU side again what the pages of `[start, end)` in the mapping holding `start`
     /// allow, once pages of its file came that it showed with no access.
-    pub(crate) fn refresh(
+    pub(crate) fn refresh<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -1748,9 +1766,9 @@ impl AddressMap {
     }
 
     /// Tells the CPU side what a mapping's pages allow.
-    fn apply_permissions(
+    fn apply_permissions<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         mapping: &Mapping,
     ) -> Result<(), Errno> {
@@ -1766,9 +1784,9 @@ impl AddressMap {
     }
 
     /// Zeroes the parts of a range that held something before, and marks it all as used.
-    fn clear_used(
+    fn clear_used<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         start: u64,
         end: u64,
@@ -1871,9 +1889,9 @@ impl AddressMap {
 
     /// Grows the mapping above `address` down to cover it if that mapping grows down, as Linux does on
     /// a fault below it (`expand_downwards`). Returns whether it grew.
-    pub(crate) fn grow_stack(
+    pub(crate) fn grow_stack<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         memory: MemoryId,
         address: u64,
         limits: &[Limit; LIMITS],
@@ -1922,8 +1940,8 @@ impl AddressMap {
 
 /// Drops a private file mapping's copies of the pages in `[start, end)`: they show the file's block
 /// again.
-fn drop_copies(
-    cpu: &mut dyn Cpu,
+fn drop_copies<C: Executor>(
+    cpu: &mut GuestMachine<C>,
     memory: MemoryId,
     mapping: &mut Mapping,
     start: u64,
@@ -1987,8 +2005,8 @@ pub(crate) fn cpu_permissions(asked: Permissions) -> Permissions {
 /// end, nothing where a backend file's page is not read yet, so the first touch comes back to read
 /// it, no writing where a private file page is not copied yet, so the first write comes back
 /// to copy it, and nothing on a guard page; the embedder's watches narrow each page further.
-fn apply_permissions_in(
-    cpu: &mut dyn Cpu,
+fn apply_permissions_in<C: Executor>(
+    cpu: &mut GuestMachine<C>,
     memory: MemoryId,
     mapping: &Mapping,
     guards: &BTreeSet<u64>,

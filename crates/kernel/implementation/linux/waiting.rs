@@ -11,6 +11,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, Waker};
+use wcontainers_executor::Executor;
 
 use smallbox::SmallBox;
 
@@ -99,9 +100,9 @@ impl Cell {
 
 impl crate::Kernel {
     /// A call the kernel waited on has its answer.
-    pub(crate) fn waiting_answered<S: crate::System>(
+    pub(crate) fn waiting_answered<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut crate::Context<'_, S>,
+        cx: &mut crate::Context<'_, S, C>,
         about: WaitFor,
         answer: Answer,
     ) {

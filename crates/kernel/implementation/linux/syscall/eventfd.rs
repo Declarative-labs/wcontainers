@@ -3,6 +3,7 @@
 
 use alloc::sync::Arc;
 use atomic_refcell::AtomicRefCell;
+use wcontainers_executor::Executor;
 
 use super::Args;
 use crate::file::{Anon, FileRef, OpenFile};
@@ -36,9 +37,9 @@ pub(super) fn channel(counter: &Arc<AtomicRefCell<Counter>>) -> Channel {
     Channel::Object(crate::process::ObjectId::Numbered(counter.borrow().object))
 }
 
-pub(super) fn eventfd2<S: crate::System>(
+pub(super) fn eventfd2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [count, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -100,9 +101,9 @@ pub(super) fn poll(counter: &Counter) -> u16 {
 
 /// `eventfd_read`: the count (or one, as a semaphore) once it is above zero, waited for unless
 /// nonblocking.
-pub(super) fn read<S: crate::System>(
+pub(super) fn read<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -133,9 +134,9 @@ pub(super) fn read<S: crate::System>(
 
 /// `eventfd_write`: adds the value once it fits below the largest count, waited for unless
 /// nonblocking.
-pub(super) fn write<S: crate::System>(
+pub(super) fn write<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],

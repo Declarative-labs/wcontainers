@@ -4,6 +4,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
 use wcontainers_abi::{RegisterBlock, SystemCallRequest};
 use zerocopy::{FromBytes, FromZeros};
@@ -31,9 +32,9 @@ const MAX_ERRNO: u32 = 4095;
 /// The size of Linux's `struct sock_fprog`: a 16 bit length, padding and a pointer.
 const FPROG_SIZE: u64 = 16;
 
-pub(super) fn seccomp<S: crate::System>(
+pub(super) fn seccomp<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [operation, flags, arguments, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -76,9 +77,9 @@ pub(super) fn seccomp<S: crate::System>(
 }
 
 /// `prctl(PR_SET_SECCOMP, mode, filter)`: the call's operations without flags.
-pub(super) fn prctl_set<S: crate::System>(
+pub(super) fn prctl_set<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     mode: u64,
     filter: u64,
@@ -91,9 +92,9 @@ pub(super) fn prctl_set<S: crate::System>(
 }
 
 /// Linux's `seccomp_set_mode_filter`, in its order.
-fn set_filter<S: crate::System>(
+fn set_filter<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     flags: u32,
     fprog: u64,
@@ -190,9 +191,9 @@ fn set_filter<S: crate::System>(
 
 /// Runs the thread's filters on a call, with Docker's answer as the oldest filter's, and acts on what
 /// wins as Linux's `__seccomp_filter` does. `None` lets the call through.
-pub(super) fn filter_call<S: crate::System>(
+pub(super) fn filter_call<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     call: &SystemCallRequest,
     docker: Option<Errno>,
@@ -256,9 +257,9 @@ pub(super) fn filter_call<S: crate::System>(
 }
 
 /// SIGSYS's information for a call a filter stopped: the call, its address and the filter's data.
-fn sigsys_info<S: crate::System>(
+fn sigsys_info<S: crate::System, C: Executor>(
     kernel: &Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     number: u64,
     value: u32,

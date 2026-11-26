@@ -1,12 +1,14 @@
 //! Setting up the container: its root file system, the mounts a default Docker container has, and its
 //! first process.
 
+use crate::guest_machine::GuestMachine;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
-use wcontainers_abi::{Cpu, NANOSECONDS_PER_SECOND, PAGE_SIZE, Resume};
+use wcontainers_abi::{NANOSECONDS_PER_SECOND, PAGE_SIZE, Resume};
 
 use crate::counters::reason;
 use crate::credentials::{CapabilitySets, Credentials, DOCKER_CAPABILITY_SETS, ROOT_GID, ROOT_UID};
@@ -966,7 +968,7 @@ impl Kernel {
     }
 
     /// Every file of the root file system, not crossing into other mounts, in path order.
-    pub fn root_files(&self, cpu: &mut dyn Cpu) -> Vec<FileRecord> {
+    pub fn root_files<C: Executor>(&self, cpu: &mut GuestMachine<C>) -> Vec<FileRecord> {
         let mut out = Vec::new();
         collect(cpu, &self.files.root, b"", &mut out);
         out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -977,9 +979,9 @@ impl Kernel {
     /// process. With the root on the backend this waits for the backend's answers like any call,
     /// so it may still be going on when this returns; a start that fails ends the container, and
     /// [`Kernel::start_failure`] says why.
-    pub fn start<S: crate::System>(
+    pub fn start<S: crate::System, C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
         start: Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
     ) {
@@ -1140,9 +1142,9 @@ impl Kernel {
 
     /// Gives the first process the values runc sets before its program runs, each as the
     /// process's own call would.
-    fn apply_start_options<S: crate::System>(
+    fn apply_start_options<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         options: &StartOptions<'_>,
     ) -> Result<(), Errno> {
@@ -1209,7 +1211,7 @@ impl Kernel {
 
     /// Runs the container's start, the first time or again once the backend has answered: each
     /// part asks the backend as a call does, and a part done is not done again.
-    pub(crate) fn run_start<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
+    pub(crate) fn run_start<S: crate::System, C: Executor>(&mut self, cx: &mut Context<'_, S, C>) {
         let Some(mut starting) = self.starting.take() else {
             return;
         };
@@ -1288,9 +1290,9 @@ impl Kernel {
 
     /// Starts the first process: its working directory, its program loaded, then its standard
     /// descriptors on the ends named at start, as runc sets them up.
-    fn start_first<S: crate::System>(
+    fn start_first<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         starting: &Starting,
     ) -> Result<(), Errno> {
         let pid = starting.pid;
@@ -1367,9 +1369,9 @@ impl Kernel {
 
     /// Descriptors 0 to 2 of the first process on the ends named at start: pipes (with `/dev/null`
     /// as 0 when there is no input end) or a terminal's slave, the kernel holding the other sides.
-    fn standard_descriptors<S: crate::System>(
+    fn standard_descriptors<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         standard: Standard<EndNumber>,
         null: Option<Node>,
@@ -1421,9 +1423,9 @@ impl Kernel {
 
     /// A pipe for one standard descriptor: the side the guest gets (opened with `flags`), the end
     /// holding the other.
-    fn end_pipe<S: crate::System>(
+    fn end_pipe<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         end: EndNumber,
         flags: u32,
     ) -> crate::file::FileRef {
@@ -1458,9 +1460,9 @@ impl Kernel {
     }
 
     /// Replaces a process's program with a loaded image, as the last part of `execve` does.
-    pub(crate) fn install_image<S: crate::System>(
+    pub(crate) fn install_image<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         tid: Tid,
         image: Image,
@@ -1968,7 +1970,12 @@ impl Kernel {
     }
 }
 
-fn collect(cpu: &mut dyn Cpu, directory: &Node, path: &[u8], out: &mut Vec<FileRecord>) {
+fn collect<C: Executor>(
+    cpu: &mut GuestMachine<C>,
+    directory: &Node,
+    path: &[u8],
+    out: &mut Vec<FileRecord>,
+) {
     let inode = directory.borrow();
     let Some(entries) = inode.directory() else {
         return;

@@ -7,6 +7,7 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
+use wcontainers_executor::Executor;
 
 use super::inet::{Endpoint, Protocol, v4_of};
 use super::{SocketRef, State};
@@ -31,9 +32,9 @@ const UDP_BUCKETS: u16 = 1 << 14;
 const SO_ACCEPTCON: u32 = 1 << 16;
 
 /// The bytes of one file of `/proc/net`.
-pub(crate) fn contents<S: crate::System>(
+pub(crate) fn contents<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     file: NetFile,
 ) -> Vec<u8> {
     let text = match file {
@@ -56,7 +57,7 @@ fn pad(out: &mut String, start: usize, width: usize) {
     out.push('\n');
 }
 
-fn dev<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) -> String {
+fn dev<S: crate::System, C: Executor>(kernel: &mut Kernel, cx: &mut Context<'_, S, C>) -> String {
     kernel
         .counters
         .count(cx.host, crate::reason::INTERFACE_COUNTERS_NOT_KEPT, 0);

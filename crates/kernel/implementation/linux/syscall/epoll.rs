@@ -9,6 +9,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
+use wcontainers_executor::Executor;
 
 use super::Args;
 use crate::file::{Anon, FileRef, OpenFile};
@@ -300,9 +301,9 @@ fn unlink(instance: &mut Epoll, key: Key) {
     }
 }
 
-pub(super) fn epoll_create1<S: crate::System>(
+pub(super) fn epoll_create1<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -325,9 +326,9 @@ pub(super) fn epoll_create1<S: crate::System>(
     Ok(fd as u64)
 }
 
-pub(super) fn epoll_ctl<S: crate::System>(
+pub(super) fn epoll_ctl<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [epfd, op, fd, event, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -508,9 +509,9 @@ fn loops(kernel: &Kernel, outer: &EpollRef, inner: &EpollRef) -> bool {
     depth > MAX_NESTS || depth + 1 + up(kernel, outer, 0) > MAX_NESTS
 }
 
-pub(super) fn epoll_pwait<S: crate::System>(
+pub(super) fn epoll_pwait<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [epfd, events, maxevents, timeout, mask, mask_size]: Args,
 ) -> super::Outcome {
@@ -528,9 +529,9 @@ pub(super) fn epoll_pwait<S: crate::System>(
     finish(kernel, tid, result)
 }
 
-pub(super) fn epoll_pwait2<S: crate::System>(
+pub(super) fn epoll_pwait2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [epfd, events, maxevents, timeout, mask, mask_size]: Args,
 ) -> super::Outcome {
@@ -563,9 +564,9 @@ fn finish(kernel: &mut Kernel, tid: Tid, result: Option<Result<u64, Errno>>) -> 
 
 /// One run of `do_epoll_wait`: the ready items reported, or none when the time is up, EINTR for a
 /// signal, or parked until an item has an event.
-fn wait<S: crate::System>(
+fn wait<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     epfd: u64,
     events: u64,
@@ -613,9 +614,9 @@ fn wait<S: crate::System>(
 /// dropped if one-shot (it waits for nothing until changed), kept listed at the end if
 /// level-triggered, and left off until its next event if edge-triggered. Items not reached stay
 /// first in line.
-fn send_events<S: crate::System>(
+fn send_events<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     epoll: &EpollRef,
     events: u64,
@@ -694,9 +695,9 @@ fn send_events<S: crate::System>(
 
 /// `ep_eventpoll_ioctl`: busy polling's parameters, checked, kept and given back; every other
 /// request is EINVAL (measured).
-pub(super) fn ioctl<S: crate::System>(
+pub(super) fn ioctl<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     epoll: &EpollRef,
     request: u32,

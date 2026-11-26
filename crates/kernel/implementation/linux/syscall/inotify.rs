@@ -6,6 +6,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
+use wcontainers_executor::Executor;
 
 use super::{Args, guest};
 use crate::file::{Anon, FileRef, OpenFile};
@@ -128,9 +129,9 @@ pub(super) fn channel(instance: &Arc<AtomicRefCell<Instance>>) -> Channel {
     Channel::Object(crate::process::ObjectId::Numbered(instance.borrow().object))
 }
 
-pub(super) fn inotify_init1<S: crate::System>(
+pub(super) fn inotify_init1<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -177,9 +178,9 @@ fn instance(kernel: &Kernel, tid: Tid, fd: u64) -> Result<Arc<AtomicRefCell<Inst
     of(&file.borrow()).ok_or(Errno::EINVAL)
 }
 
-pub(super) fn inotify_add_watch<S: crate::System>(
+pub(super) fn inotify_add_watch<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, path, mask, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -262,9 +263,9 @@ pub(super) fn inotify_add_watch<S: crate::System>(
     Ok(wd as u64)
 }
 
-pub(super) fn inotify_rm_watch<S: crate::System>(
+pub(super) fn inotify_rm_watch<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, wd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -600,9 +601,9 @@ pub(super) fn waiting(instance: &Instance) -> usize {
 
 /// `inotify_read`: as many whole events as fit, waiting for one unless nonblocking; EINVAL when
 /// the first does not fit.
-pub(super) fn read<S: crate::System>(
+pub(super) fn read<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -647,9 +648,9 @@ pub(super) fn read<S: crate::System>(
 }
 
 /// FIONREAD on an instance.
-pub(super) fn ioctl<S: crate::System>(
+pub(super) fn ioctl<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     instance: &Arc<AtomicRefCell<Instance>>,
     request: u32,

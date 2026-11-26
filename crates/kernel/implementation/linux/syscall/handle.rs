@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 use core::hash::Hasher;
+use wcontainers_executor::Executor;
 
 use siphasher::sip::SipHasher13;
 
@@ -117,9 +118,9 @@ fn generation(kernel: &Kernel, ino: u64) -> u32 {
     hasher.finish() as u32
 }
 
-pub(super) fn name_to_handle_at<S: crate::System>(
+pub(super) fn name_to_handle_at<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, handle, mount, flags, ..]: Args,
 ) -> Result<u64, Errno> {

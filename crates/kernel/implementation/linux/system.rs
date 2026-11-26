@@ -1,12 +1,14 @@
 //! The embedder's side of the kernel beyond the abi's `Host`: the task ids it hands out, the hooks
 //! the kernel announces to it, and the handle to one process that every hook is given.
 
+use crate::guest_machine::GuestMachine;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::ops::{ControlFlow, Range};
 use core::time::Duration;
+use wcontainers_executor::Executor;
 
-use wcontainers_abi::{Cpu, Host, MemoryId, SystemCallRequest};
+use wcontainers_abi::{Host, MemoryId, SystemCallRequest};
 
 use crate::memory::{page_down, page_up};
 use crate::process::{Channel, Pid};
@@ -74,9 +76,9 @@ where
 {
     /// A system call a thread made, before anything of it happens: `Continue` runs the request
     /// returned, `Break` answers it without running it.
-    fn intercept_system_call_request(
+    fn intercept_system_call_request<C: Executor>(
         &self,
-        process: Process<'_>,
+        process: Process<'_, C>,
         thread: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
@@ -85,9 +87,9 @@ where
     }
     /// What a system call the kernel ran answers, before the thread sees it; the thread sees what
     /// this returns.
-    fn intercept_system_call_response(
+    fn intercept_system_call_response<C: Executor>(
         &self,
-        process: Process<'_>,
+        process: Process<'_, C>,
         thread: TaskId,
         request: &SystemCallRequest,
         response: SystemCallResponse,
@@ -97,31 +99,31 @@ where
     }
 
     /// A process made by fork, or the container's first process, before its first instruction.
-    fn on_process_starting(&self, process: Process<'_>) {
+    fn on_process_starting<C: Executor>(&self, process: Process<'_, C>) {
         let _ = process;
     }
     /// A process whose exec has loaded a new program, before the program's first instruction.
-    fn on_program_starting(&self, process: Process<'_>) {
+    fn on_program_starting<C: Executor>(&self, process: Process<'_, C>) {
         let _ = process;
     }
     /// A new thread in an existing process, before its first instruction.
-    fn on_thread_starting(&self, process: Process<'_>, thread: TaskId) {
+    fn on_thread_starting<C: Executor>(&self, process: Process<'_, C>, thread: TaskId) {
         let _ = (process, thread);
     }
     /// A process about to be torn down, its final state still readable.
-    fn on_process_exiting(&self, process: Process<'_>) {
+    fn on_process_exiting<C: Executor>(&self, process: Process<'_, C>) {
         let _ = process;
     }
     /// A request for `bytes` of memory is about to cross the ceiling; if the process is still here
     /// when this returns, the request fails as out of memory.
-    fn on_process_outgrown(&self, process: Process<'_>, bytes: u64) {
+    fn on_process_outgrown<C: Executor>(&self, process: Process<'_, C>, bytes: u64) {
         let _ = (process, bytes);
     }
     /// A thread is about to access a watched page; if the watch is gone when this returns the
     /// thread carries on, otherwise it waits until the process's watches change.
-    fn on_watched_memory_accessing(
+    fn on_watched_memory_accessing<C: Executor>(
         &self,
-        process: Process<'_>,
+        process: Process<'_, C>,
         thread: TaskId,
         address: u64,
         kind: AccessKind,
@@ -129,14 +131,19 @@ where
         let _ = (process, thread, address, kind);
     }
     /// The kernel wrote `range` of the process's memory for `thread`.
-    fn on_memory_written_by_kernel(&self, process: Process<'_>, thread: TaskId, range: Range<u64>) {
+    fn on_memory_written_by_kernel<C: Executor>(
+        &self,
+        process: Process<'_, C>,
+        thread: TaskId,
+        range: Range<u64>,
+    ) {
         let _ = (process, thread, range);
     }
     /// The process maps `range` of its memory to `source` from `offset`, a source some process
     /// may write through a mapping.
-    fn on_shared_memory_mapping(
+    fn on_shared_memory_mapping<C: Executor>(
         &self,
-        process: Process<'_>,
+        process: Process<'_, C>,
         source: MemoryObject,
         offset: u64,
         range: Range<u64>,
@@ -144,9 +151,9 @@ where
         let _ = (process, source, offset, range);
     }
     /// The process no longer maps `range`, announced before as mapping `source` from `offset`.
-    fn on_shared_memory_unmapped(
+    fn on_shared_memory_unmapped<C: Executor>(
         &self,
-        process: Process<'_>,
+        process: Process<'_, C>,
         source: MemoryObject,
         offset: u64,
         range: Range<u64>,
@@ -154,9 +161,9 @@ where
         let _ = (process, source, offset, range);
     }
     /// `thread` has taken `signal` to act on it, before anything of its action.
-    fn on_signal_delivering(
+    fn on_signal_delivering<C: Executor>(
         &self,
-        process: Process<'_>,
+        process: Process<'_, C>,
         thread: TaskId,
         signal: &SignalInformation,
     ) {
@@ -164,11 +171,11 @@ where
     }
     /// Another process is about to read this one's state: it holds its memory open through
     /// `/proc/<pid>/mem`, as [`ProcessInfo::inspected`] tells, which it did not when last told.
-    fn on_inspection_starting(&self, process: Process<'_>) {
+    fn on_inspection_starting<C: Executor>(&self, process: Process<'_, C>) {
         let _ = process;
     }
     /// No other process reads this one's state any more, as [`ProcessInfo::inspected`] tells.
-    fn on_inspection_ended(&self, process: Process<'_>) {
+    fn on_inspection_ended<C: Executor>(&self, process: Process<'_, C>) {
         let _ = process;
     }
 }
@@ -213,9 +220,9 @@ pub(crate) struct KernelWrite {
 }
 
 /// One process of a kernel, for as long as the borrow lasts.
-pub struct Process<'a> {
+pub struct Process<'a, C: Executor> {
     pub(crate) kernel: &'a mut Kernel,
-    pub(crate) cpu: &'a mut dyn Cpu,
+    pub(crate) cpu: &'a mut GuestMachine<C>,
     pub(crate) pid: Pid,
 }
 
@@ -296,7 +303,7 @@ impl ProcessInfo<'_> {
     }
 }
 
-impl Process<'_> {
+impl<C: Executor> Process<'_, C> {
     pub fn id(&self) -> TaskId {
         task_id(self.pid)
     }
@@ -424,7 +431,11 @@ impl Process<'_> {
 
 impl Kernel {
     /// The process an id names, unless it has ended.
-    pub fn process<'a>(&'a mut self, cpu: &'a mut dyn Cpu, id: TaskId) -> Option<Process<'a>> {
+    pub fn process<'a, C: Executor>(
+        &'a mut self,
+        cpu: &'a mut GuestMachine<C>,
+        id: TaskId,
+    ) -> Option<Process<'a, C>> {
         let pid = pid_of(id);
         self.processes
             .get(&pid)
@@ -453,9 +464,9 @@ impl Kernel {
     }
 
     /// Ends the watches thread `tid` of process `pid` had for itself alone, as the thread ends.
-    pub(crate) fn end_thread_watches(
+    pub(crate) fn end_thread_watches<C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         pid: Pid,
         tid: crate::process::Tid,
     ) {
@@ -469,7 +480,7 @@ impl Kernel {
 
     /// Readies the memory of the thread the last [`Next::Run`](wcontainers_abi::Next::Run) handed
     /// out for its turn: the CPU side holds that thread's own watches, and no other thread's.
-    pub fn ready_turn(&mut self, cpu: &mut dyn Cpu) {
+    pub fn ready_turn<C: Executor>(&mut self, cpu: &mut GuestMachine<C>) {
         let Some(tid) = self.running else {
             return;
         };
@@ -479,11 +490,11 @@ impl Kernel {
     }
 
     /// Announces a hook about process `pid` to the embedder, after what the kernel wrote before.
-    pub(crate) fn announce<S: crate::System>(
+    pub(crate) fn announce<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut crate::Context<'_, S>,
+        cx: &mut crate::Context<'_, S, C>,
         pid: Pid,
-        hook: impl FnOnce(&S, Process<'_>),
+        hook: impl FnOnce(&S, Process<'_, C>),
     ) {
         if self.map_notes.sharing_changed.load() {
             self.announce_sharing(cx);
@@ -502,11 +513,11 @@ impl Kernel {
     }
 
     /// As [`Self::announce`] for a process's start: the shared memory it maps is announced after.
-    pub(crate) fn announce_start<S: crate::System>(
+    pub(crate) fn announce_start<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut crate::Context<'_, S>,
+        cx: &mut crate::Context<'_, S, C>,
         pid: Pid,
-        hook: impl FnOnce(&S, Process<'_>),
+        hook: impl FnOnce(&S, Process<'_, C>),
     ) {
         self.announce_kernel_writes(cx);
         if !self.processes.contains_key(&pid) {
@@ -526,9 +537,9 @@ impl Kernel {
     /// Tells the embedder what the kernel wrote into processes' memory, each to the process whose
     /// memory it is: the one it was written for, or, once that one has left the memory (an
     /// exec), another process still using it.
-    pub(crate) fn announce_kernel_writes<S: crate::System>(
+    pub(crate) fn announce_kernel_writes<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut crate::Context<'_, S>,
+        cx: &mut crate::Context<'_, S, C>,
     ) {
         if self.kernel_writes.get_mut().is_empty() {
             return;
@@ -591,9 +602,9 @@ impl Kernel {
 
     /// Tells the embedder of each process whose reading by another process started or ended
     /// since it was last told; whether it told of any.
-    pub(crate) fn announce_inspections<S: crate::System>(
+    pub(crate) fn announce_inspections<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut crate::Context<'_, S>,
+        cx: &mut crate::Context<'_, S, C>,
     ) -> bool {
         let Some(announced) = &self.inspections else {
             return false;
@@ -622,10 +633,10 @@ impl Kernel {
     /// Runs a walk over what a thread is about to touch until it meets no watch: from its start
     /// again whenever a hook raised a watch during it, since that page may lie behind it; false
     /// if the thread must wait.
-    pub(crate) fn walk_watched<S: crate::System>(
+    pub(crate) fn walk_watched<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut crate::Context<'_, S>,
-        mut walk: impl FnMut(&mut Self, &mut crate::Context<'_, S>) -> bool,
+        cx: &mut crate::Context<'_, S, C>,
+        mut walk: impl FnMut(&mut Self, &mut crate::Context<'_, S, C>) -> bool,
     ) -> bool {
         loop {
             let before = self.watches_raised;
@@ -640,9 +651,9 @@ impl Kernel {
 
     /// Tells the embedder that thread `tid` is about to touch a watched address of process `pid`
     /// (its own, or one whose memory it reads); whether the watch is gone when the hook returns.
-    pub(crate) fn watch_touched<S: crate::System>(
+    pub(crate) fn watch_touched<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut crate::Context<'_, S>,
+        cx: &mut crate::Context<'_, S, C>,
         tid: crate::process::Tid,
         pid: Pid,
         address: u64,
@@ -682,18 +693,18 @@ impl Kernel {
 }
 
 /// A call's memory as the walk over what it touches sees it.
-pub(crate) struct CallMemory<'k, 'c, 'x, S> {
+pub(crate) struct CallMemory<'k, 'c, 'x, S, C: Executor> {
     pub kernel: &'k mut Kernel,
-    pub cx: &'c mut crate::Context<'x, S>,
+    pub cx: &'c mut crate::Context<'x, S, C>,
     pub tid: crate::process::Tid,
     /// The memory whose watch the walk stopped at, which the thread waits on.
     pub unmet: Option<MemoryId>,
 }
 
-impl<'k, 'c, 'x, S: crate::System> CallMemory<'k, 'c, 'x, S> {
+impl<'k, 'c, 'x, S: crate::System, C: Executor> CallMemory<'k, 'c, 'x, S, C> {
     pub(crate) fn new(
         kernel: &'k mut Kernel,
-        cx: &'c mut crate::Context<'x, S>,
+        cx: &'c mut crate::Context<'x, S, C>,
         tid: crate::process::Tid,
     ) -> Self {
         Self {
@@ -705,7 +716,7 @@ impl<'k, 'c, 'x, S: crate::System> CallMemory<'k, 'c, 'x, S> {
     }
 }
 
-impl<S: crate::System> CallMemory<'_, '_, '_, S> {
+impl<S: crate::System, C: Executor> CallMemory<'_, '_, '_, S, C> {
     /// Meets the watches on a range; false if the call must wait.
     pub(crate) fn touch(&mut self, address: u64, length: u64, access: AccessKind) -> bool {
         let pid = self.kernel.threads[&self.tid].process;
