@@ -14,6 +14,7 @@ use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_e
 use crate::evex::fused::multiply_add;
 use crate::evex::compare::compare;
 use crate::evex::special::{SpecialOperation, compute_special};
+use crate::float::{narrow_single, read_rounding};
 use crate::evex::convert::to_bfloat16;
 use crate::float::{
     DENORMAL, DENORMALS_ARE_ZEROS, FLAGS, FLUSH_TO_ZERO, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, Precision,
@@ -92,8 +93,18 @@ pub(super) fn execute_evex(
         EvexOperation::Convert(conversion) => {
             let from = form.source_element_bytes();
             let reports_denormal = form.reports_denormal() || is_active(Bug::HalfToSingleReportsDenormal);
+            // VCVTPS2PH rounds in the mode its immediate's bits 1:0 name, or MXCSR's where its bit 2 is set.
+            let immediate = if form.has_immediate() && !is_active(Bug::HalfConversionImmediateIgnored) { Some(decoded.immediate8()) } else { None };
             compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, _| {
-                let outcome = conversion.convert(read_element(&second, index, from), mxcsr);
+                let mxcsr = match immediate {
+                    Some(immediate) if immediate & 4 == 0 => (mxcsr & !(3 << ROUNDING_SHIFT)) | (u32::from(immediate & 3) << ROUNDING_SHIFT),
+                    _ => mxcsr,
+                };
+                // VCVTPS2PH narrows as F16C's VCVTPS2PH does.
+                let outcome = match immediate {
+                    Some(_) => narrow_single(read_element(&second, index, from), read_rounding(mxcsr), mxcsr),
+                    None => conversion.convert(read_element(&second, index, from), mxcsr),
+                };
                 LaneOutcome { before: if reports_denormal { outcome.before } else { outcome.before & !DENORMAL }, ..outcome }
             })?
         }

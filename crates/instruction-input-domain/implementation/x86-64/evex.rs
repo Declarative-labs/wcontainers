@@ -134,6 +134,7 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             rounding: op_code.can_use_rounding_control(),
             suppression: op_code.can_suppress_all_exceptions(),
             maskable: op_code.can_use_op_mask_register(),
+            immediate: form.has_immediate(),
         }),
         EvexOperation::Special { operation, precision, arrangement } => OperandType::EvexSpecialData(EvexSpecialData {
             operation,
@@ -537,6 +538,8 @@ pub struct EvexConvertData {
     pub rounding: bool,
     pub suppression: bool,
     pub maskable: bool,
+    /// VCVTPS2PH, whose immediate names the rounding.
+    pub immediate: bool,
 }
 
 /// A source element's critical values: a floating-point source's sixteen and, for a conversion to integers, each
@@ -641,7 +644,7 @@ fn list_edges_into_half(precision: Precision) -> Vec<u64> {
 /// values; then with each embedded control the form allows and with every other element selected, merging and
 /// zeroing. A memory form takes the rotations with MXCSR at its default and with every exception unmasked.
 pub fn generate_convert_data(data: EvexConvertData) -> Vec<OperandValue> {
-    let EvexConvertData { operation, elements, register, rounding, suppression, maskable } = data;
+    let EvexConvertData { operation, elements, register, rounding, suppression, maskable, immediate } = data;
     let values = list_source_values(operation);
     let source_bytes = match operation {
         EvexOperation::Convert(conversion) => conversion.from.to_bytes(),
@@ -707,7 +710,24 @@ pub fn generate_convert_data(data: EvexConvertData) -> Vec<OperandValue> {
             }
         }
     }
-    all
+    if !immediate {
+        return all;
+    }
+    // VCVTPS2PH: everything above rounding to nearest by the immediate, then each other immediate rounding mode and
+    // MXCSR's (bit 2) with MXCSR toward zero and with every exception unmasked.
+    let with_immediate = |value: OperandValue, immediate: u8| match value {
+        OperandValue::EvexFloatData { first, second, mask, control, mxcsr } => {
+            OperandValue::EvexCompareData { first, second, immediate, mask, control, mxcsr }
+        }
+        value => value,
+    };
+    let mut values: Vec<OperandValue> = all.into_iter().map(|value| with_immediate(value, 0)).collect();
+    for immediate in [1, 2, 3, 4, 0x0B] {
+        for mxcsr in [toward_zero, unmasked] {
+            values.extend(pairs.iter().map(|&pair| with_immediate(datum(pair, NO_MASK, EmbeddedControl::None, mxcsr), immediate)));
+        }
+    }
+    values
 }
 
 /// What the data of an integer EVEX form is made of.
@@ -1197,7 +1217,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                 }
             }
             (
-                OperandType::EvexCompareData(_) | OperandType::EvexSpecialData(_),
+                OperandType::EvexCompareData(_) | OperandType::EvexSpecialData(_) | OperandType::EvexConvertData(_),
                 OperandValue::EvexCompareData { first: one, second: other, immediate: chosen, mask: data_mask, control: embedded, mxcsr },
             ) => {
                 (first, second, immediate, control) = (one, other, Some(chosen), embedded);

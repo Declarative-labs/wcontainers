@@ -447,6 +447,8 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vcvttph2uw, Any, convert(N::Float(Half), N::Unsigned(2), true)),
         (Mnemonic::Vcvtuw2ph, Any, convert(N::Unsigned(2), N::Float(Half), false)),
         (Mnemonic::Vcvtph2ps, Any, convert(N::Float(Half), N::Float(Single), false)),
+        // Rounded in the mode the immediate names; its memory destination is not modeled.
+        (Mnemonic::Vcvtps2ph, Any, convert(N::Float(Single), N::Float(Half), false)),
         (Mnemonic::Vcompressps, Any, EvexOperation::Compress { element_bytes: 4 }),
         (Mnemonic::Vcompresspd, Any, EvexOperation::Compress { element_bytes: 8 }),
         (Mnemonic::Vpcompressb, Any, EvexOperation::Compress { element_bytes: 1 }),
@@ -735,6 +737,9 @@ pub fn find_evex_form(instruction: Instruction) -> Option<EvexForm> {
             }
     })?;
     let in_memory = (0..decoded.op_count()).any(|operand| decoded.op_kind(operand) == OpKind::Memory);
+    if in_memory && decoded.mnemonic() == Mnemonic::Vcvtps2ph {
+        return None;
+    }
     let operation = match *operation {
         EvexOperation::Convert(conversion) => EvexOperation::Convert(Conversion {
             from: widen_to_register(conversion.from, &decoded),

@@ -21,7 +21,7 @@ pub(crate) mod sse_float;
 mod avx_float;
 pub use avx_float::{FusedChoices, FusedNanOrder, InfiniteProductOfZero};
 pub(crate) use avx_float::{
-    FusedLanes, compare_half, convert_integer, convert_to_integer, dot_half, fuse_half, join_halves, narrow_to_halves,
+    FusedLanes, compare_half, convert_integer, convert_to_integer, dot_half, fuse_half, join_halves, narrow_single, narrow_to_halves,
     round_half, widen_halves,
 };
 
