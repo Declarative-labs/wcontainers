@@ -968,6 +968,104 @@ Every milestone this track can reach now is reached (HS0, HS1, HS2 and round 5's
 independent check of this round is next; the guest-reachable option list waits on owner question 2; the hostile-guest
 suite waits on the thread-test design review owed to the owner.
 
+## Round 6 (2026-11-26): the named linter findings, the two read-backs, the ioctl kinds, who sees the family error
+
+The independent check of round 5 held but for one claim: round 5 said its items were reached while 28 linter findings
+of rules that need no model were still open in the track's crates. That claim was wrong; they are repaired below. The
+owner's main (FETCH_HEAD ac696ea19) was already merged (MEASURED: `git merge-base --is-ancestor`, 0 commits ahead).
+Commits: c0e15bdd5 (code), f8e5feb23 (one rustfmt line); pushed. Logs: SCRATCH/host-sockets/hs7/.
+
+### (1) The linter findings the check named (MEASURED: ARM64, linter da55b9d7, no model key; hs7/arm-bar.log)
+
+| Rule | cf3dba9aa | f8e5feb23 |
+|---|---|---|
+| magic_literal | 23 | 1 |
+| comment_too_long | 4 | 0 |
+| hook_name | 1 | 0 |
+| constant_defined_twice | 28 | 27 |
+| comment_budget_exceeded | 1 | 1 |
+| public_outside_interface, conformance_not_run, implementation_folder | 449, 66, 16 | 449, 66, 16 |
+| trait_outside_interface, interface_item, trait_not_implemented | 3, 2, 1 | 3, 2, 1 |
+| total | 594 | 566 |
+
+Repaired by hand, no exclusion, no rule or help text changed: the 22 literals of the track's code (the uapi mirrors'
+array lengths now come from the uapi types: `size_of::<uapi::in_addr>()`, `offset_of!` differences, `TCP_AO_MAXKEYLEN`;
+the Linux 6.18 halves of the last `TCP_INFO` word read through a named `AccurateEcnHalves`; the TCP check's four labels
+and its `[..; 4]` replaced by one match per query and a loop), the four long comments (the TCP and UDP suites' module
+comments now say only what every check shares, and each UDP check's documentation names the network it needs; the
+nix reason in `receive_vectored` moved into its body), `on_processor` renamed `run_on_processor`, and `DATAGRAMS`
+defined once in the UDP host tests' shared `support` module. The 27 `constant_defined_twice` left are all ones the
+linter itself says the crate cannot name (another crate's constant).
+
+Left, each with its smallest example, both in the generated `crates/linux-socket-options/interface.rs`, which this
+run's rules forbid changing: `magic_literal` "8 in `SocketStorage`", from `#[repr(C, align(8))] pub struct
+SocketStorage { .. }` (Rust takes only an integer literal in `repr(align)`, so no repair exists), and
+`comment_budget_exceeded` (4506 comment characters for 253 code lines, allowed 3842), repairable only by changing the
+generator's method documentation, which rewrites that interface file. The structural ones are the round 3 questions.
+
+### (2) The two netlink settings are now read back in every suite run (READ: icmp suite netlink.rs; MEASURED both)
+
+- The tracking chain: after `track_made_connections` the suite asks the kernel for the chain (`NFT_MSG_GETCHAIN`,
+  table `tracked`, chain `output`) and requires its `NFTA_CHAIN_HOOK` to hold `NF_INET_LOCAL_OUT` at priority 0, what
+  `hook output priority 0` names.
+- etf: after every `tc qdisc add ... etf ...` line the suite dumps the link's disciplines and requires the etf one's
+  `TCA_ETF_PARMS` (`struct tc_etf_qopt`) to hold the line's delta and clock and no flag.
+- Planted on both machines at f8e5feb23 (the job's copy only, restored after): the chain sent on `NF_INET_LOCAL_IN` ->
+  the raw host's suite 53 passed, 1 failed ("the kernel holds the tracking chain on another hook than `hook output
+  priority 0`"); etf sent a delta of the line's plus one -> the UDP host's suite 0 passed, 80 failed ("tc qdisc add
+  dev scheduled0 root etf clockid CLOCK_TAI delta 0: the kernel holds another schedule"). Unplanted: 54 and 80 pass.
+
+### (3) The socket ioctl requests on other socket kinds (MEASURED both machines; READ: probe.rs, kernel.rs)
+
+The check's inference held. A new probe test, `every_request_is_measured_on_every_socket_kind_of_its_families`, makes
+each of the three requests on 18 kinds of IPv4 and IPv6 socket (TCP unconnected and connected, MPTCP, UDP, UDP-Lite,
+ICMP echo, raw of three protocols, SCTP stream and seqpacket) in three forms: below the method with the int between
+canaries, below the method with the int and the 1024 bytes after it set to an unmapped address, and through the
+generated method with the implementation's own canaries. The job puts kernel probes on `sock_ioctl` (request, pointer,
+answer), `get_user_ifreq`, `dev_ioctl` and `put_user_ifreq`, and joins the trace to the calls by pointer
+(hs7/join.py). Before the repair (ARM64, hs7/arm1): on every kind but TCP for `SIOCATMARK`, and every kind but TCP
+and MPTCP for `SIOCOUTQNSD`, the kernel copies a whole `struct ifreq` from the pointer (`get_user_ifreq`, 40 bytes
+on these 64-bit machines, READ net/socket.c), hands it to `dev_ioctl` and answers `ENOTTY`; it writes nothing back
+(no `put_user_ifreq`, canaries whole, no `EFAULT`). `SIOCOUTQ` never copies an ifreq: it writes the int on TCP, MPTCP,
+UDP, UDP-Lite and raw, and answers `ENOTTY` on ICMP echo and SCTP.
+
+Repair: the kernel table names, per request, the socket kinds whose handler writes the int (`REQUEST_KINDS`:
+`SIOCOUTQ` stream TCP and MPTCP, datagram UDP and UDP-Lite, raw of any protocol; `SIOCOUTQNSD` stream TCP and MPTCP;
+`SIOCATMARK` stream TCP), the generator refuses a request row with none, and each generated method passes its socket
+through `request_of_kind` (`SO_DOMAIN`, `SO_TYPE`, `SO_PROTOCOL` by rustix), which refuses any other kind with
+`ENOTTY` before the call. The `family_reason` property now also requires the kinds, with three more plants (a protocol
+widened to every one, a type changed, a kind added); `--test generated` 14 passed on both machines. At f8e5feb23 (x86-64
+counts; ARM64 the same): of 54 method calls, 32 never reach the kernel and 22 do, none of them copying an ifreq;
+below the method 27 of 54 calls per form still copy one, as the kernel does. The test also requires the method's answer
+to equal the kernel's below it for every kind and request, so the refusal changes no answer a caller sees: `ENOTTY`
+either way. The generated interface.rs did not change (MEASURED: `cmp` after `REGENERATE=1`).
+
+### (4) Who could see the family check's `ENOPROTOOPT`
+
+No caller today: the five hosts and their suites hand the API crate only sockets they opened as AF_INET or AF_INET6, and the runtime calls the hosts, never the API crate (READ: no other family in the hosts; `git grep` of origin/runtime-restart 30b99ec08).
+Only a future caller passing another family's socket (Unix, packet, netlink) would see `ENOPROTOOPT` (`ENOTTY` for a request) where Linux answers by that family, `EOPNOTSUPP` on a Unix socket.
+
+### The bar at f8e5feb23, both machines (MEASURED: hs7/{arm,x86}-bar.log; `--jobs 12`)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. TCP 143, UDP 80, ICMP 69, raw 54,
+route resolver 38, API suite 14, generator tests 14, probe 96 rows (15 pressed) and the request test (162 lines, no
+kind unavailable), the hosts' other tests: all pass; only the two speed tests ignored, run apart. Calls of `ip`, `tc`
+or `nft`: 0. Speed (median of 4000 batches of 32, three runs): x86-64 TCP 321-371 / 352-427 ns, UDP 1.427-1.492 us /
+762-788 ns; ARM64 TCP 405-408 / 419-424 ns, UDP 1.655-1.694 us / 798-806 ns. The ARM64 UDP send is above round 5's
+1.457-1.462 us, but cf3dba9aa built and run alternately in the same hour gives the same 1.662-1.694 us (hs7/arm-speed-
+ab.log), so it is the machine, not the code.
+
+### For the runtime track
+
+Merge f8e5feb23 (code), or the status commit after it, which changes only this file. No signature changed; the three
+ioctl methods now refuse a socket kind their request was not read for with `ENOTTY`, Linux's own answer there.
+
+### Next
+
+Reached by this track's measurement: HS0, HS1, HS2 and round 6's items, with the two interface.rs findings above left
+by rule. The independent check of round 6 is next; the guest-reachable option list waits on owner question 2; the
+hostile-guest suite waits on the thread-test design review owed to the owner.
+
 ## Owner questions
 
 1. Ruled 2026-11-25 (every outside API: one crate named for it, a safe trait, the unsafe in `implementation/direct`):
@@ -981,6 +1079,14 @@ suite waits on the thread-test design review owed to the owner.
 
 ## SECURITY
 
+- 2026-11-26 round 6 (cf3dba9aa -> f8e5feb23): unsafe lines unchanged, the direct crate 4 -> 4 (the same four calls; the
+  ioctl reason now names the socket kinds), its manifest's `unsafe_code = "deny"` line unchanged, every other crate of the
+  track 0 -> 0; MEASURED by `git grep -nw unsafe` without comments and attributes. No manifest or lock change, so no new
+  dependency; no lint table changed, no exclusion, no linter text changed. New hostile-caller checks: the three ioctl
+  methods refuse every socket kind on which the kernel would read a `struct ifreq` past the int (probe test, both
+  machines, with a kernel trace); the suites read back the tracking chain's hook and etf's schedule. The measurement
+  asked for the `sctp` module on both machines; it stays loaded (in use there, so `modprobe -r` refused). Hostile-guest suite: not built and not run (the
+  thread-test design review is owed to the owner first). Options a guest can reach: unchanged, the 96 methods.
 - 2026-11-26 round 5 (a4fd5da4d -> cf3dba9aa): unsafe lines unchanged, the direct crate 4 -> 4 (the same four calls; all
   four reasons now name the families each entry was read for and the `family_reason` property), every other crate of the
   track 0 -> 0; MEASURED by `git grep -nw unsafe` without comments and attributes. No lint table changed, no exclusion,
