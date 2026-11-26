@@ -4,8 +4,9 @@
 //!
 //! Register numbers are chosen together, not in every combination: first every register operand names a register of
 //! its own, and only there do the other operands take every combination; then each operand names each special
-//! register (the zero register or stack pointer, the link register, the vector register holding zero) while the others
-//! keep their own, and each two operands of one kind name the same register, an ordinary one and each special one.
+//! register (the zero register or stack pointer, the link register, the vector register and the predicate holding
+//! zero) while the others keep their own, and each two operands of one kind name the same register, an ordinary one and
+//! each special one.
 //! Under those numbers the values, controls and written state take each of their values once, beside each other.
 //!
 //! By what the values mean, an operand's value cannot change the outcome when:
@@ -24,6 +25,18 @@
 //! - a source is a NaN or an infinity: no result is rounded, so the rounding mode takes one value, and without a
 //!   subnormal source nothing is flushed, so the flush controls do too;
 //! - a page the access does not reach: its permission takes one value.
+//!
+//! A floating-point source of an SVE instruction whose size field sizes its elements takes only the values of that size:
+//! the domain gives each size's values, and those of another size are bits the instruction does not read as its own.
+//!
+//! Where an SVE access is moved, its predicate chooses which elements reach which page and its offset only where the
+//! base lies, so the two take each of their values once beside each other. The offsets or addresses a vector gives
+//! each element of a gather, scatter or prefetch are its offset, and so is FFR before a first-fault or non-fault load,
+//! which only chooses which elements it keeps.
+//!
+//! A predicate of an SVE instruction that leaves some element inactive only chooses which elements it computes: only
+//! where every element is active do the values, controls and written state take every combination; under any other
+//! predicate they take each of their values once.
 //!
 //! A source the instruction is documented not to read on a path (the register a conditional select does not select,
 //! what a conditional compare compares where its condition fails, with FPCR) is not decided by that: a wrong model
@@ -47,6 +60,8 @@ use core::convert::Infallible;
 
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
+use wcontainers_instruction_input_domain_arm64::advanced_simd::{self, SimdRole};
+use wcontainers_instruction_input_domain_arm64::sve_remaining;
 use wcontainers_instruction_input_domain_arm64::{
     AccessPlacement, Arm64InputDomain, CodePlacement, DataPage, OperandType, OperandValue,
     encode_word,
@@ -59,13 +74,22 @@ use wcontainers_processor_architecture_arm64::floating_point::{
 };
 use wcontainers_processor_architecture_arm64::integer::IntegerOperation;
 use wcontainers_processor_architecture_arm64::load_store::Transfer;
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
+    AccessKind, Offset, RM, to_scalable_access,
+};
+use wcontainers_processor_architecture_arm64::load_store::scalable_element_access::{
+    Addressing, IMMEDIATE4, IMMEDIATE5, to_element_access,
+};
 use wcontainers_processor_architecture_arm64::operand::Operand;
+use wcontainers_processor_architecture_arm64::scalable::is_unallocated;
+use wcontainers_processor_architecture_arm64::system_instruction::to_system_instruction_bytes;
 use wcontainers_processor_architecture_arm64::system_register::{
     HeldRegister, SystemRegisterAccess, to_system_register_access,
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, CONDITIONS, DataAccess, DocumentedOperation, Instruction, InstructionFetch,
-    LoadStoreInstruction, PagePermission, Processor, User, to_documented_operation,
+    LoadStoreInstruction, PagePermission, Processor, StructureInstruction, User,
+    to_documented_operation,
 };
 
 /// The bits of FPCR a Neoverse V2 holds, the fewest of the known chips: AHP, DN, FZ, RMode and FZ16. It has no FEAT_AFP
@@ -186,25 +210,29 @@ enum Allowed {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Group {
     Register,
-    Placement,
-    /// The field that names the system register an MRS or MSR reaches, which decides what else it reads.
+    /// The field that names the system register an MRS or MSR reaches, or the operation SYS does, which decides what
+    /// else it reads.
     Selector,
+    Placement,
     /// The field that names a condition, which with the flags decides what the instruction reads.
     Condition,
     Flags,
     Field,
+    /// The value of an SVE predicate, which decides which elements the instruction computes.
+    Predicate,
     Data,
     Control,
     Written,
 }
 
-const GROUPS: [Group; 9] = [
+const GROUPS: [Group; 10] = [
     Group::Register,
-    Group::Placement,
     Group::Selector,
+    Group::Placement,
     Group::Condition,
     Group::Flags,
     Group::Field,
+    Group::Predicate,
     Group::Data,
     Group::Control,
     Group::Written,
@@ -213,8 +241,16 @@ const GROUPS: [Group; 9] = [
 /// The group of an operand, the field naming a condition aside.
 const fn to_group(operand_type: OperandType) -> Group {
     match operand_type {
-        OperandType::RegisterNumber(_) | OperandType::VectorRegisterNumber(_) => Group::Register,
+        OperandType::RegisterNumber(_)
+        | OperandType::VectorRegisterNumber(_)
+        | OperandType::PredicateRegisterNumber(_)
+        | OperandType::ScalableVectorNumber { .. }
+        | OperandType::PredicateNumber(_)
+        | OperandType::VectorListNumber(_) => Group::Register,
+        OperandType::ScalablePredicateValue(_) => Group::Predicate,
         OperandType::AccessPlacement
+        | OperandType::ScalableStructurePlacement
+        | OperandType::ElementPlacement
         | OperandType::AddressTag
         | OperandType::DataPagePermission(_)
         | OperandType::CodePlacement => Group::Placement,
@@ -224,21 +260,46 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::BitmaskImmediate(_)
         | OperandType::ProgramCounterOffset(_)
         | OperandType::SplitImmediate(_)
+        | OperandType::Pattern(_)
+        | OperandType::EveryValue(_)
         | OperandType::Word(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
         | OperandType::Address { .. }
+        | OperandType::ImplicitAddress(_)
         | OperandType::FloatingPointValue { .. }
         | OperandType::ConvertedInteger { .. }
         | OperandType::ConvertedFloatingPoint { .. }
         | OperandType::Comparand { .. }
         | OperandType::SoftwareThreadId
-        | OperandType::VectorValue { .. } => Group::Data,
+        | OperandType::VectorValue { .. }
+        | OperandType::GoverningPredicate(_)
+        | OperandType::PredicateValue(_)
+        | OperandType::NextVectorValue(_)
+        | OperandType::ShiftAmountVector(_)
+        | OperandType::RegisterBound(_)
+        | OperandType::RegisterNearSaturation(_)
+        | OperandType::FirstFaultValue
+        | OperandType::ScalableVectorValue { .. }
+        | OperandType::ElementOffsets { .. }
+        | OperandType::ElementAddresses { .. }
+        | OperandType::ListedVectorValue { .. } => Group::Data,
         OperandType::SystemRegister(_) => Group::Selector,
         OperandType::FloatingPointControl(_) => Group::Control,
-        OperandType::StatusFlags | OperandType::WrittenConditionFlags | OperandType::MemoryFill => {
-            Group::Written
-        }
+        OperandType::StatusFlags
+        | OperandType::WrittenConditionFlags
+        | OperandType::MemoryFill
+        | OperandType::WrittenFirstFault => Group::Written,
+        OperandType::AdvancedSimd(operand) => match operand.to_role() {
+            SimdRole::Field => Group::Field,
+            SimdRole::Data => Group::Data,
+            SimdRole::Written => Group::Written,
+        },
+        OperandType::Remaining(operand) => match operand.to_role() {
+            SimdRole::Field => Group::Field,
+            SimdRole::Data => Group::Data,
+            SimdRole::Written => Group::Written,
+        },
     }
 }
 
@@ -275,6 +336,8 @@ struct Facts {
     /// Whether every register operand names a register of its own, the one choice of register numbers under which the
     /// other operands take every combination.
     register_representative: bool,
+    /// Whether some predicate the state holds leaves an element of the instruction inactive.
+    partial_predicate: bool,
 }
 
 impl Facts {
@@ -290,6 +353,7 @@ impl Facts {
         subnormal_source: false,
         first_control: true,
         register_representative: true,
+        partial_predicate: false,
     };
 }
 
@@ -387,6 +451,7 @@ impl Cut {
                 })
             })
             .collect();
+        let structure = StructureInstruction::new(instruction);
         let writes_memory = LoadStoreInstruction::new(instruction).is_some_and(|load_store| {
             matches!(
                 load_store.to_operation().transfer,
@@ -395,13 +460,26 @@ impl Cut {
                     | Transfer::Atomic(_)
                     | Transfer::CompareAndSwapPair
             )
-        });
-        let addressing = record.map_or(Vec::new(), |record| {
+        }) || to_scalable_access(instruction)
+            .is_some_and(|access| access.kind == AccessKind::Store)
+            || to_element_access(instruction)
+                .is_some_and(|access| access.kind == AccessKind::Store)
+            || structure.is_some_and(StructureInstruction::is_store)
+            || wcontainers_processor_architecture_arm64::memory_tagging::TagAccessInstruction::new(
+                instruction,
+            )
+            .is_some_and(|access| access.writes_data());
+        // A structure's register post-index is the offset it writes back.
+        let structure_offset = structure
+            .filter(|structure| structure.has_register_offset())
+            .map(|_| wcontainers_processor_architecture_arm64::encoding::RM);
+        let mut addressing = record.map_or(Vec::new(), |record| {
             record
                 .operands
                 .iter()
                 .flat_map(|operand| match *operand {
                     Operand::AddressOffset { field, .. } => vec![field],
+                    Operand::SplitAddressOffset { fields, .. } => fields.to_vec(),
                     Operand::RegisterOffset {
                         number,
                         signed,
@@ -413,8 +491,24 @@ impl Cut {
                         .collect(),
                     _ => Vec::new(),
                 })
+                .chain(structure_offset)
                 .collect()
         });
+        // An SVE access's offset: its register or its immediate's fields.
+        if let Some(access) = to_scalable_access(instruction) {
+            match access.offset {
+                Offset::Register => addressing.push(RM),
+                Offset::Immediate { fields, .. } => addressing.extend(fields.iter().copied()),
+            }
+        }
+        if let Some(access) = to_element_access(instruction) {
+            match access.addressing {
+                Addressing::ScalarPlusScalar | Addressing::VectorPlusScalar => addressing.push(RM),
+                Addressing::ScalarPlusImmediate => addressing.push(IMMEDIATE4),
+                Addressing::ScalarPlusVector { extension, .. } => addressing.extend(extension),
+                Addressing::VectorPlusImmediate => addressing.push(IMMEDIATE5),
+            }
+        }
         let register_operands = groups
             .iter()
             .filter(|group| **group == Group::Register)
@@ -511,9 +605,7 @@ impl Cut {
             match group {
                 Group::Register => facts.held = self.find_held(chosen),
                 Group::Placement => {
-                    let placement = self.find(chosen, |operand_type| {
-                        operand_type == OperandType::AccessPlacement
-                    });
+                    let placement = self.find(chosen, is_placement);
                     let page = |page| {
                         self.find(chosen, |operand_type| {
                             operand_type == OperandType::DataPagePermission(page)
@@ -533,15 +625,19 @@ impl Cut {
                         == Some(OperandValue::AccessPlacement(
                             AccessPlacement::LowerPageStart,
                         ))
-                        && tag == Some(OperandValue::Bits(0))
+                        && matches!(tag, None | Some(OperandValue::Bits(0)))
                         && page(DataPage::Lower) == read_write;
                     facts.moved = (placement.is_some() && !plain)
                         || code == Some(OperandValue::CodePlacement(CodePlacement::PageEnd));
                     facts.partial_store = self.writes_memory
-                        && placement
-                            == Some(OperandValue::AccessPlacement(
-                                AccessPlacement::StraddlesBoundary,
+                        && matches!(
+                            placement,
+                            Some(OperandValue::AccessPlacement(
+                                AccessPlacement::StraddlesBoundary
+                                    | AccessPlacement::StraddlesInsideVector
+                                    | AccessPlacement::StraddlesInsideElement,
                             ))
+                        )
                         && page(DataPage::Lower) == read_write
                         && page(DataPage::Upper) != read_write;
                 }
@@ -560,14 +656,24 @@ impl Cut {
                     facts.undefined |= self
                         .reserved
                         .iter()
-                        .any(|pattern| pattern.is_matching(facts.word));
+                        .any(|pattern| pattern.is_matching(facts.word))
+                        || is_unallocated(self.instruction, facts.word);
                 }
                 Group::Condition => {}
                 // An encoding that is undefined or that EL1 traps decides the outcome whatever the state holds.
                 Group::Selector => {
                     if let Some(OperandValue::Bits(field)) = self.find(chosen, |operand_type| {
                         matches!(operand_type, OperandType::SystemRegister(_))
-                    }) {
+                    }) && matches!(self.instruction, Instruction::Sys | Instruction::Sysl)
+                    {
+                        // A SYS encoding that reaches no memory, and every SYSL one, decides the outcome alone.
+                        facts.undefined |= self.instruction == Instruction::Sysl
+                            || to_system_instruction_bytes(field as u32).is_none();
+                    } else if let Some(OperandValue::Bits(field)) = self
+                        .find(chosen, |operand_type| {
+                            matches!(operand_type, OperandType::SystemRegister(_))
+                        })
+                    {
                         let write = self.instruction == Instruction::MsrRegister;
                         facts.undefined |= match to_system_register_access(field as u32) {
                             SystemRegisterAccess::Undefined | SystemRegisterAccess::Trapped => true,
@@ -623,6 +729,43 @@ impl Cut {
                         facts.nonfinite_source |= exponent == exponent_ones;
                         facts.subnormal_source |= exponent == 0 && fraction != 0;
                     }
+                    // An Advanced SIMD source whose every lane is a NaN or an infinity, at the lanes the word gives.
+                    for (index, operand_type) in self.types.iter().enumerate() {
+                        let OperandType::AdvancedSimd(operand) = *operand_type else {
+                            continue;
+                        };
+                        if facts.held & (1 << index) == 0 {
+                            continue;
+                        }
+                        let value = self.values[index][chosen[index]];
+                        facts.nonfinite_source |=
+                            advanced_simd::is_nonfinite(operand, value, facts.word);
+                        facts.subnormal_source |=
+                            advanced_simd::is_subnormal(operand, value, facts.word);
+                    }
+                    // The same of an operand of the SVE instructions of `sve_remaining` that has a kind of its own.
+                    for (index, operand_type) in self.types.iter().enumerate() {
+                        let OperandType::Remaining(operand) = *operand_type else {
+                            continue;
+                        };
+                        if facts.held & (1 << index) == 0 {
+                            continue;
+                        }
+                        let value = self.values[index][chosen[index]];
+                        facts.nonfinite_source |=
+                            sve_remaining::is_nonfinite(operand, value, facts.word);
+                        facts.subnormal_source |=
+                            sve_remaining::is_subnormal(operand, value, facts.word);
+                    }
+                }
+                Group::Predicate => {
+                    facts.partial_predicate =
+                        self.types.iter().enumerate().any(|(index, operand_type)| {
+                            matches!(operand_type, OperandType::ScalablePredicateValue(_))
+                                && facts.held & (1 << index) != 0
+                                && self.values[index][chosen[index]]
+                                    != OperandValue::Bits(u64::from(u16::MAX))
+                        });
                 }
                 Group::Control => {
                     facts.first_control = self
@@ -710,9 +853,15 @@ impl Cut {
             return Allowed::Every(every);
         }
         let values = self.allow_values(index, chosen, facts);
-        if !facts.register_representative
-            && matches!(group, Group::Data | Group::Control | Group::Written)
-        {
+        let each_beside_the_rest = (!facts.register_representative || facts.partial_predicate)
+            && matches!(group, Group::Data | Group::Control | Group::Written);
+        let moved_access = facts.moved
+            && (to_scalable_access(self.instruction).is_some()
+                || to_element_access(self.instruction).is_some())
+            && (group == Group::Predicate || self.is_addressing(self.types[index]));
+        // Each register a structure store moves goes to bytes of its own, so the registers' combinations do not matter.
+        let listed = matches!(self.types[index], OperandType::ListedVectorValue { .. });
+        if listed || each_beside_the_rest || moved_access {
             Allowed::EachOnce(values)
         } else {
             Allowed::Every(values)
@@ -758,14 +907,17 @@ impl Cut {
         let compares = self.compares(facts);
         match self.groups[index] {
             Group::Register | Group::Condition | Group::Selector => all,
+            Group::Predicate if facts.undefined => one,
+            Group::Predicate => all,
             Group::Placement => {
-                let placement = self.find(chosen, |operand_type| {
-                    operand_type == OperandType::AccessPlacement
-                });
+                let placement = self.find(chosen, is_placement);
                 let reaches_upper = matches!(
                     placement,
                     Some(OperandValue::AccessPlacement(
-                        AccessPlacement::StraddlesBoundary | AccessPlacement::UpperPageStart
+                        AccessPlacement::StraddlesBoundary
+                            | AccessPlacement::StraddlesInsideVector
+                            | AccessPlacement::StraddlesInsideElement
+                            | AccessPlacement::UpperPageStart
                     ))
                 );
                 let reaches_lower = placement
@@ -778,6 +930,8 @@ impl Cut {
                     Some(OperandValue::Bits(high)) if high & !(u64::MAX << ADDRESS_TAG_BITS_SHIFT) != 0
                 );
                 match operand_type {
+                    // A SYS encoding that reaches no memory.
+                    _ if facts.undefined => one,
                     OperandType::DataPagePermission(_) if past_addressable => one,
                     OperandType::DataPagePermission(DataPage::Lower) if !reaches_lower => one,
                     OperandType::DataPagePermission(DataPage::Upper) if !reaches_upper => one,
@@ -794,7 +948,18 @@ impl Cut {
                 if decided || facts.held & (1 << index) == 0 || !read {
                     one
                 } else {
-                    all
+                    // Only the values whose lanes are those the word gives the operand.
+                    let own: Vec<usize> = (0..count)
+                        .filter(|value| {
+                            self.domain.is_value_of_word(
+                                self.instruction,
+                                operand_type,
+                                self.values[index][*value],
+                                facts.word,
+                            )
+                        })
+                        .collect();
+                    if own.is_empty() { one } else { own }
                 }
             }
             Group::Control if facts.undefined || !compares => one,
@@ -806,7 +971,14 @@ impl Cut {
                     let mode = (control >> ROUNDING_MODE_SHIFT) & ((1 << ROUNDING_MODE_BITS) - 1);
                     let flush = control & (FLUSH_TO_ZERO | FLUSH_HALF_TO_ZERO);
                     let flushes_nothing = facts.nonfinite_source && !facts.subnormal_source;
-                    (!facts.nonfinite_source || mode == 0) && (!flushes_nothing || flush == 0)
+                    (!facts.nonfinite_source || mode == 0)
+                        && (!flushes_nothing || flush == 0)
+                        && self.domain.is_value_of_word(
+                            self.instruction,
+                            operand_type,
+                            self.values[index][*value],
+                            facts.word,
+                        )
                 })
                 .collect(),
             Group::Written => match operand_type {
@@ -856,6 +1028,13 @@ impl Cut {
             OperandType::UnsignedImmediate(field)
             | OperandType::SignedImmediate(field)
             | OperandType::RegisterValue { field, .. } => self.addressing.contains(&field),
+            OperandType::SplitImmediate(fields) | OperandType::ProgramCounterOffset(fields) => {
+                fields.iter().all(|field| self.addressing.contains(field))
+            }
+            OperandType::ElementOffsets { .. } | OperandType::ElementAddresses { .. } => true,
+            OperandType::FirstFaultValue => {
+                to_element_access(self.instruction).is_some_and(|access| access.suppresses_faults())
+            }
             _ => false,
         }
     }
@@ -863,7 +1042,8 @@ impl Cut {
 
 /// Each choice of register numbers, as the value of each register operand: first every operand names a register of
 /// its own, then each names each special register of its kind while the others keep theirs, then each two of a kind
-/// name one register, an ordinary one and each special one. Operands that encode one field name one register.
+/// name one register, an ordinary one and each special one. Operands that encode one field name one register. The
+/// kinds are the general-purpose, the vector and the predicate registers.
 ///
 /// # Panics
 ///
@@ -874,17 +1054,22 @@ fn to_register_assignments(
     values: &[Vec<OperandValue>],
 ) -> Vec<Vec<(usize, usize)>> {
     let field = |operand_type: OperandType| match operand_type {
-        OperandType::RegisterNumber(field) => Some((field, false)),
-        OperandType::VectorRegisterNumber(field) => Some((field, true)),
+        OperandType::RegisterNumber(field) => Some((field, RegisterKind::General)),
+        OperandType::VectorRegisterNumber(field)
+        | OperandType::ScalableVectorNumber { field, .. }
+        | OperandType::VectorListNumber(field) => Some((field, RegisterKind::Vector)),
+        OperandType::PredicateRegisterNumber(field) | OperandType::PredicateNumber(field) => {
+            Some((field, RegisterKind::Predicate))
+        }
         _ => None,
     };
     // The first operand of each field, with its kind.
-    let mut named: Vec<(usize, Field, bool)> = Vec::new();
+    let mut named: Vec<(usize, Field, RegisterKind)> = Vec::new();
     for (index, operand_type) in types.iter().enumerate() {
-        if let Some((field, vector)) = field(*operand_type)
+        if let Some((field, kind)) = field(*operand_type)
             && !named.iter().any(|(_, other, _)| *other == field)
         {
-            named.push((index, field, vector));
+            named.push((index, field, kind));
         }
     }
     if named.is_empty() {
@@ -902,12 +1087,12 @@ fn to_register_assignments(
             .filter(|value| !distinct(index).contains(value))
             .collect()
     };
-    let mut used = [0_usize; 2];
+    let mut used = [0_usize; REGISTER_KINDS];
     let base: Vec<OperandValue> = named
         .iter()
-        .map(|(index, _, vector)| {
+        .map(|(index, _, kind)| {
             let own = distinct(*index);
-            let place = &mut used[usize::from(*vector)];
+            let place = &mut used[*kind as usize];
             let Some(number) = own.get(*place).copied() else {
                 panic!("more registers of one kind than distinct numbers in {types:?}")
             };
@@ -923,9 +1108,9 @@ fn to_register_assignments(
             assignments.push(assignment);
         }
     }
-    for (first, (index, _, vector)) in named.iter().enumerate() {
+    for (first, (index, _, kind)) in named.iter().enumerate() {
         for (second, (_, _, other)) in named.iter().enumerate().skip(first + 1) {
-            if vector != other {
+            if kind != other {
                 continue;
             }
             for number in [base[first]].into_iter().chain(special(*index)) {
@@ -962,6 +1147,26 @@ fn to_register_assignments(
         })
         .collect()
 }
+
+/// Whether the operand places the access.
+fn is_placement(operand_type: OperandType) -> bool {
+    matches!(
+        operand_type,
+        OperandType::AccessPlacement
+            | OperandType::ScalableStructurePlacement
+            | OperandType::ElementPlacement
+    )
+}
+
+/// The kinds of register an operand can name, each with its own numbers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RegisterKind {
+    General,
+    Vector,
+    Predicate,
+}
+
+const REGISTER_KINDS: usize = 3;
 
 /// The register of the state an operand of an MRS or MSR gives a value.
 const fn to_held_register(operand_type: OperandType) -> Option<HeldRegister> {

@@ -4,6 +4,7 @@
 // Every exception but a synchronous one from EL0 is unexpected. The handler keeps the current slot in TPIDR_EL1,
 // and leaves the guest by the doorbell's hypervisor call once a slot's `next` is zero.
 
+    .arch_extension sve
     .text
     .balign VECTOR_TABLE_BYTES
 // The vectors: from EL1 (with SP_EL0, then SP_EL1), then from EL0 in AArch64, then in AArch32; each synchronous,
@@ -61,6 +62,29 @@ handler_entry:
     ldp q26, q27, [x2, #416]
     ldp q28, q29, [x2, #448]
     ldp q30, q31, [x2, #480]
+// With SVE, FFR through P0 and then every predicate, each in units of a predicate's bytes.
+    ldr x3, [x0, #SLOT_SCALABLE_VECTORS]
+    cbz x3, 11f
+    add x2, x1, #REGISTERS_PREDICATE
+    ldr p0, [x2, #FIRST_FAULT_PLACE, mul vl]
+    wrffr p0.b
+    ldr p0, [x2, #0, mul vl]
+    ldr p1, [x2, #1, mul vl]
+    ldr p2, [x2, #2, mul vl]
+    ldr p3, [x2, #3, mul vl]
+    ldr p4, [x2, #4, mul vl]
+    ldr p5, [x2, #5, mul vl]
+    ldr p6, [x2, #6, mul vl]
+    ldr p7, [x2, #7, mul vl]
+    ldr p8, [x2, #8, mul vl]
+    ldr p9, [x2, #9, mul vl]
+    ldr p10, [x2, #10, mul vl]
+    ldr p11, [x2, #11, mul vl]
+    ldr p12, [x2, #12, mul vl]
+    ldr p13, [x2, #13, mul vl]
+    ldr p14, [x2, #14, mul vl]
+    ldr p15, [x2, #15, mul vl]
+11:
     ldp x2, x3, [x1, #16]
     ldp x4, x5, [x1, #32]
     ldp x6, x7, [x1, #48]
@@ -129,6 +153,30 @@ handler_entry:
     stp q26, q27, [x2, #416]
     stp q28, q29, [x2, #448]
     stp q30, q31, [x2, #480]
+// With SVE, every predicate, then FFR through P0.
+    mrs x3, tpidr_el1
+    ldr x3, [x3, #SLOT_SCALABLE_VECTORS]
+    cbz x3, 12f
+    add x2, x0, #REGISTERS_PREDICATE
+    str p0, [x2, #0, mul vl]
+    str p1, [x2, #1, mul vl]
+    str p2, [x2, #2, mul vl]
+    str p3, [x2, #3, mul vl]
+    str p4, [x2, #4, mul vl]
+    str p5, [x2, #5, mul vl]
+    str p6, [x2, #6, mul vl]
+    str p7, [x2, #7, mul vl]
+    str p8, [x2, #8, mul vl]
+    str p9, [x2, #9, mul vl]
+    str p10, [x2, #10, mul vl]
+    str p11, [x2, #11, mul vl]
+    str p12, [x2, #12, mul vl]
+    str p13, [x2, #13, mul vl]
+    str p14, [x2, #14, mul vl]
+    str p15, [x2, #15, mul vl]
+    rdffr p0.b
+    str p0, [x2, #FIRST_FAULT_PLACE, mul vl]
+12:
     mrs x0, tpidr_el1
     mov x1, #ENDING_EXCEPTION_FROM_EL0
     str x1, [x0, #SLOT_ENDING]

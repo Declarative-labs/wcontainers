@@ -2,17 +2,26 @@
 
 use core::convert::Infallible;
 
+use crate::advanced_simd::{
+    AdvancedSimdOperation, simulate_advanced_simd, to_advanced_simd_operation,
+};
 use crate::branch::{BranchOperation, simulate_branch, to_branch_operation};
+use crate::cryptography::{
+    CryptographyOperation, simulate_cryptography, to_cryptography_operation,
+};
 use crate::encoding::IMM16;
 use crate::floating_point::{
     FloatingPointOperation, simulate_floating_point, to_floating_point_operation,
 };
 use crate::integer::{ImplicitInputs, IntegerOperation, simulate_integer, to_integer_operation};
+use crate::memory_tagging::{TagOperation, simulate_tag_operation, to_tag_operation};
 use crate::pointer_authentication::{
     PointerAuthenticationOperation, simulate_pointer_authentication,
     to_pointer_authentication_operation,
 };
+use crate::scalable::{ScalableOperation, simulate_scalable, to_scalable_operation};
 use crate::simd::{VectorOperation, simulate_vector, to_vector_operation};
+use crate::sve_remaining::{RemainingOperation, simulate_remaining, to_remaining_operation};
 use crate::{Exception, ExclusiveMonitor, Instruction, Processor};
 
 /// An instruction whose manual leaves no choice, so its documented behavior is its only one.
@@ -27,6 +36,13 @@ pub enum DocumentedOperation {
     FloatingPoint(FloatingPointOperation),
     Vector(VectorOperation),
     PointerAuthentication(PointerAuthenticationOperation),
+    AdvancedSimd(AdvancedSimdOperation),
+    /// An SVE instruction of `scalable`.
+    Scalable(ScalableOperation),
+    /// An SVE instruction of `sve_remaining`.
+    ScalableRemaining(RemainingOperation),
+    Cryptography(CryptographyOperation),
+    MemoryTagging(TagOperation),
     /// A hint or barrier, which changes nothing a single instruction's state shows.
     NoOperation,
     /// Undefined at EL0 whatever its operands.
@@ -93,6 +109,21 @@ pub const fn to_documented_operation(
     if let Some(operation) = to_pointer_authentication_operation(instruction) {
         return Some(DocumentedOperation::PointerAuthentication(operation));
     }
+    if let Some(operation) = to_advanced_simd_operation(instruction) {
+        return Some(DocumentedOperation::AdvancedSimd(operation));
+    }
+    if let Some(operation) = to_scalable_operation(instruction) {
+        return Some(DocumentedOperation::Scalable(operation));
+    }
+    if let Some(operation) = to_remaining_operation(instruction) {
+        return Some(DocumentedOperation::ScalableRemaining(operation));
+    }
+    if let Some(operation) = to_cryptography_operation(instruction) {
+        return Some(DocumentedOperation::Cryptography(operation));
+    }
+    if let Some(operation) = to_tag_operation(instruction) {
+        return Some(DocumentedOperation::MemoryTagging(operation));
+    }
     to_system_operation(instruction)
 }
 
@@ -119,8 +150,18 @@ pub const fn to_implicit_inputs(instruction: Instruction<Infallible>) -> Implici
             program_counter: false,
             floating_point_control: false,
         },
+        Some(DocumentedOperation::AdvancedSimd(operation)) => ImplicitInputs {
+            condition_flags: false,
+            destination: false,
+            program_counter: false,
+            floating_point_control: operation.reads_control(),
+        },
         Some(
             DocumentedOperation::Vector(_)
+            | DocumentedOperation::Scalable(_)
+            | DocumentedOperation::ScalableRemaining(_)
+            | DocumentedOperation::Cryptography(_)
+            | DocumentedOperation::MemoryTagging(_)
             | DocumentedOperation::NoOperation
             | DocumentedOperation::Undefined
             | DocumentedOperation::SupervisorCall,
@@ -155,7 +196,9 @@ pub const fn writes_condition_flags(instruction: Instruction<Infallible>) -> boo
                 | I::ConvertFlagsToExternalFormat
                 | I::ConvertFlagsFromExternalFormat
         )) | Some(DocumentedOperation::FloatingPoint(
-            F::Compare { .. } | F::ConditionalCompare { .. }
+            F::Compare { .. } | F::ConditionalCompare { .. } | F::ConvertToJavaScriptInteger
+        )) | Some(DocumentedOperation::MemoryTagging(
+            TagOperation::SubtractPointer { sets_flags: true }
         ))
     )
 }
@@ -202,6 +245,21 @@ impl DocumentedInstruction {
             }
             DocumentedOperation::PointerAuthentication(operation) => {
                 simulate_pointer_authentication(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::AdvancedSimd(operation) => {
+                simulate_advanced_simd(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::Scalable(operation) => {
+                simulate_scalable(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::ScalableRemaining(operation) => {
+                simulate_remaining(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::Cryptography(operation) => {
+                simulate_cryptography(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::MemoryTagging(operation) => {
+                simulate_tag_operation(processor, word, operation).map(|()| None)
             }
             DocumentedOperation::NoOperation if crate::planted::is(257) => {
                 Err(Exception::UndefinedInstruction)

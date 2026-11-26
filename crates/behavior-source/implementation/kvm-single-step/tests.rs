@@ -11,12 +11,14 @@ use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
-    InstructionFetch, PagePermission, User, ZERO_PROCESSOR,
+    INSTRUCTION_SIZE, InstructionFetch, PagePermission, User, ZERO_PROCESSOR,
 };
 
 use crate::guest_layout::{HANDLER_HALF, linear};
 use crate::syndrome::{to_exception, to_syndrome};
-use crate::{ARENA, HANDLER, KvmSingleStepMachine, MemoryLoading, Refusal, WINDOW_BYTES};
+use crate::{
+    ARENA, EntryPath, HANDLER, KvmSingleStepMachine, MemoryLoading, Refusal, WINDOW_BYTES,
+};
 
 /// Class-specific bits that each name something in some class: none, a level 0 write fault, the most a BRK comment
 /// holds, and all of them.
@@ -53,13 +55,13 @@ const CLEAN_AND_INVALIDATE: u32 = 0xD50B_7E21;
 /// [LDADD X0, X0, \[X1\]](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDADD--LDADDA--LDADDAL--LDADDL--Atomic-add-on-word-or-doubleword-in-memory-), which faults where it leaves its 16 aligned bytes.
 const ATOMIC_ADD: u32 = 0xF820_0020;
 /// [BRK #0](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BRK--Breakpoint-instruction-).
-const BREAKPOINT: u32 = 0xD420_0000;
+pub(crate) const BREAKPOINT: u32 = 0xD420_0000;
 
-const CODE: u64 = PAGE_SIZE;
-const DATA: u64 = 2 * PAGE_SIZE;
+pub(crate) const CODE: u64 = PAGE_SIZE;
+pub(crate) const DATA: u64 = 2 * PAGE_SIZE;
 
 /// The state about to run the word at [`CODE`] with X1 at the address, a writable page at [`DATA`] and the flags.
-fn to_state(
+pub(crate) fn to_state(
     word: u32,
     address: u64,
     flags: ConditionFlags,
@@ -171,7 +173,7 @@ const LOADINGS: [MemoryLoading; 3] = [
     MemoryLoading::Checked,
 ];
 
-fn to_machine(loading: MemoryLoading) -> KvmSingleStepMachine {
+pub(crate) fn to_machine(loading: MemoryLoading) -> KvmSingleStepMachine {
     match KvmSingleStepMachine::with_loading(loading) {
         Ok(chip) => chip,
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
@@ -589,4 +591,70 @@ fn resolving_agrees_with_applying_each_change_in_order() {
         panic!("{refusal:?}");
     }
     assert_eq!(resolved.mapped.len(), 1_000_000);
+}
+
+/// [CPP RCTX, X1](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CPP--Cache-prefetch-prediction-restriction-by-context--an-alias-of-SYS-),
+/// after which a Neoverse V2 takes no software step.
+const PREFETCH_PREDICTION_RESTRICTION: u32 = 0xD50B_73E1;
+/// [ADD X0, X0, #1](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value-).
+const ADD_ONE: u32 = 0x9100_0400;
+/// [NOP](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/NOP--No-operation-).
+pub(crate) const NO_OPERATION: u32 = 0xD503_201F;
+/// [MRS X0, MDCCSR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/MDCCSR-EL0--Monitor-DCC-Status-Register),
+/// which reads zero at EL0 unless MDSCR_EL1.MDE is set.
+const READ_DEBUG_STATUS: u32 = 0xD533_0100;
+
+/// A run ends before the next word in every loading mode and entry path, also where the chip skips the step after the
+/// instruction: the breakpoint on that word stops it, or fetching it faults where its page cannot be executed.
+#[test]
+#[ignore = "needs KVM"]
+fn a_run_ends_before_the_next_word_where_the_chip_skips_the_step() {
+    let at_page_end = CODE + PAGE_SIZE - INSTRUCTION_SIZE;
+    for (loading, entry_path) in LOADINGS.into_iter().flat_map(|loading| {
+        [EntryPath::Plain, EntryPath::Incremental].map(|entry| (loading, entry))
+    }) {
+        let mut chip = to_machine(loading);
+        chip.entry_path = entry_path;
+        for word in [NO_OPERATION, PREFETCH_PREDICTION_RESTRICTION] {
+            let alone = to_state(word, DATA, ConditionFlags::empty());
+            let mut followed = to_state(word, DATA, ConditionFlags::empty());
+            followed
+                .memory_mutations
+                .push(MemoryDelta::ValueAssignment {
+                    start: CODE + INSTRUCTION_SIZE,
+                    bytes: Cow::Owned([ADD_ONE.to_le_bytes(), BREAKPOINT.to_le_bytes()].concat()),
+                });
+            let mut before_data = to_state(word, DATA, ConditionFlags::empty());
+            before_data.processor.program_counter = at_page_end;
+            before_data.memory_mutations[1] = MemoryDelta::ValueAssignment {
+                start: at_page_end,
+                bytes: Cow::Owned(word.to_le_bytes().to_vec()),
+            };
+            for before in [alone, followed, before_data] {
+                let address = before.processor.program_counter;
+                let after = to_after(&mut chip, before);
+                assert_eq!(
+                    (
+                        after.processor.exception,
+                        after.processor.program_counter,
+                        after.processor.general_purpose_registers[0]
+                    ),
+                    (None, address + INSTRUCTION_SIZE, 0),
+                    "{loading:?} {entry_path:?} {word:#x} at {address:#x}"
+                );
+            }
+            // The breakpoint's debug state is gone again for the next state.
+            let mut status = to_state(READ_DEBUG_STATUS, DATA, ConditionFlags::empty());
+            status.processor.general_purpose_registers[0] = u64::MAX;
+            let after = to_after(&mut chip, status);
+            assert_eq!(
+                (
+                    after.processor.exception,
+                    after.processor.general_purpose_registers[0]
+                ),
+                (None, 0),
+                "{loading:?} {entry_path:?} after {word:#x}"
+            );
+        }
+    }
 }

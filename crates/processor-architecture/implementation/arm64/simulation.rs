@@ -9,9 +9,14 @@ use wcontainers_processor_architecture::{
 
 use crate::branch::is_outside_lower_addresses;
 use crate::encoding::{IMM16, RD, RDVL_IMM6, RT};
+use crate::load_store::scalable_access::{simulate_scalable_access, to_scalable_access};
+use crate::load_store::scalable_element_access::{
+    simulate_element_access, to_element_access, to_undecided_register,
+};
 use crate::memory::{read_bytes, read_permission};
 use crate::operand::RegisterThirtyOne;
 use crate::registers::write_register;
+use crate::sve::simulate_scalable;
 use crate::system_register::{simulate_system_register_move, to_undecided_registers};
 use crate::{
     AccessDirection, Arm64, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
@@ -55,7 +60,16 @@ where
         }
         let mut after = processor.clone();
         let undecided = self.apply(&mut after, memory.mutations, mutation_hook);
+        let completed = after.exception.is_none();
         let mut expectation = ProcessorExpectation::new(after);
+        if let Self::ElementAccess { instruction, .. } = *self
+            && completed
+            && let Ok(word) = fetch(memory.mutations, processor.program_counter)
+            && let Some(register) = to_undecided_register(instruction, processor, word)
+        {
+            expectation.vector_registers[register] = RegisterValueExpectation::NonDeterministic;
+            expectation.first_fault_register = RegisterValueExpectation::NonDeterministic;
+        }
         if let Some((register, condition_flags)) = undecided {
             if let Some(expected) = expectation
                 .general_purpose_registers
@@ -121,6 +135,45 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                     );
                     Ok(())
                 }
+                Self::ScalableAccess {
+                    instruction,
+                    choices,
+                } => match to_scalable_access(instruction) {
+                    Some(access) => simulate_scalable_access(
+                        access,
+                        choices,
+                        processor,
+                        memory,
+                        word,
+                        mutation_hook,
+                    ),
+                    None => unreachable!("an SVE access behavior is listed only for an SVE access"),
+                },
+                Self::Structure {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
+                Self::ElementAccess {
+                    instruction,
+                    choices,
+                } => match to_element_access(instruction) {
+                    Some(access) => simulate_element_access(
+                        access,
+                        choices,
+                        processor,
+                        memory,
+                        word,
+                        mutation_hook,
+                    ),
+                    None => unreachable!("an element access behavior is listed only for one"),
+                },
+                Self::TagAccess {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
+                Self::SystemInstruction(behavior) => {
+                    behavior.simulate(processor, memory, word, mutation_hook)
+                }
                 Self::MrsCtrEl0 { cache_type } => {
                     write_register(
                         processor,
@@ -130,6 +183,15 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                     );
                     Ok(())
                 }
+                Self::Scalable {
+                    trapped: Some(code),
+                    ..
+                } => Err(Exception::SmeTrap(code)),
+                Self::Scalable {
+                    operation,
+                    trapped: None,
+                    ..
+                } => simulate_scalable(processor, word, operation),
                 Self::Unimplemented(instruction)
                     if instruction.is_executed_as_hint_without_feature()
                         && !crate::planted::is(508) =>
@@ -177,7 +239,13 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                 ..
             } => Instruction::Mrs,
             Self::SystemRegisterMove { .. } => Instruction::MsrRegister,
-            Self::Unimplemented(instruction) => instruction,
+            Self::Scalable { instruction, .. }
+            | Self::ScalableAccess { instruction, .. }
+            | Self::ElementAccess { instruction, .. }
+            | Self::Unimplemented(instruction) => instruction,
+            Self::Structure { instruction, .. } => instruction.instruction(),
+            Self::TagAccess { instruction, .. } => instruction.instruction(),
+            Self::SystemInstruction(behavior) => behavior.to_instruction(),
             Self::MrsCtrEl0 { .. } | Self::LevelSpecific(_) => return false,
         };
         instruction.to_record().is_some_and(|record| {

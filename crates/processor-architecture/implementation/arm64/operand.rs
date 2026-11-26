@@ -88,6 +88,12 @@ pub enum Operand {
         signedness: Signedness,
         scale: u32,
     },
+    /// A signed immediate split over fields, the most significant first, that a load or store adds to its base in
+    /// units of `1 << scale` bytes.
+    SplitAddressOffset {
+        fields: &'static [Field],
+        scale: u32,
+    },
     /// A register a load or store adds to its base: [option](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--register---Load-register--register--#:~:text=option)<2> extends it signed and
     /// option<0> takes it whole, each fixed where its field is absent, and S shifts it left by the access size's
     /// logarithm.

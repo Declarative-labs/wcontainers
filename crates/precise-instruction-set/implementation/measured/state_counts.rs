@@ -49,6 +49,18 @@ impl Hash {
         for register in processor.vector_registers {
             self.add(&register.to_le_bytes());
         }
+        // Only where one holds a value, so that a state that holds none hashes as before the state held them.
+        if processor
+            .predicate_registers
+            .iter()
+            .any(|predicate| *predicate != 0)
+            || processor.first_fault_register != 0
+        {
+            for register in processor.predicate_registers {
+                self.add(&register.to_le_bytes());
+            }
+            self.add(&processor.first_fault_register.to_le_bytes());
+        }
         self.add(format!("{:?}", processor.exception).as_bytes());
         for mutation in &state.memory_mutations {
             match mutation {
