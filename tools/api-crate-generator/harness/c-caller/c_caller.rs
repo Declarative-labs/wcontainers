@@ -42,6 +42,8 @@ fn an_honest_short_run_calls_every_kind_of_entry() {
     println!("C CALLER honest: entries and exports {CALLED}; {}", printed(&counted));
     assert!(counted[3] > 0, "no call succeeded: {}", printed(&counted));
     assert!(counted[5] > 0, "no object was handed out: {}", printed(&counted));
+    assert_eq!(counted[16], 0, "a failed QueryInterface left a pointer: {}", printed(&counted));
+    assert_eq!(counted[18], 0, "a refusing entry answered other than E_NOTIMPL: {}", printed(&counted));
 }
 
 #[test]
@@ -93,4 +95,6 @@ fn fuzz_every_table() {
         printed(&total)
     );
     assert!(total[3] > 0 && total[5] > 0, "nothing succeeded or was handed out");
+    assert_eq!(total[16], 0, "a failed QueryInterface left a pointer");
+    assert_eq!(total[18], 0, "a refusing entry answered other than E_NOTIMPL");
 }

@@ -25,8 +25,8 @@ use crate::metadata::Method;
 const MOST: u64 = 1 << 16;
 
 /// What one run counts, in the order the C writes them.
-const COUNTED: [&str; 17] = [
-    "calls", "absent", "skipped", "succeeded", "failed", "adopted", "released", "stale_this", "wrong_this", "null_this", "garbage_this", "big_counts", "past_limit", "null_pointers", "exports_called", "query_interfaces", "query_left_pointer",
+const COUNTED: [&str; 19] = [
+    "calls", "absent", "skipped", "succeeded", "failed", "adopted", "released", "stale_this", "wrong_this", "null_this", "garbage_this", "big_counts", "past_limit", "null_pointers", "exports_called", "query_interfaces", "query_left_pointer", "refused", "refused_wrong",
 ];
 
 /// The C type of a Rust C-side type the glue's `c_signature` names.
@@ -50,6 +50,7 @@ fn c_type(rust: &str) -> &'static str {
         "f32" => "float",
         "f64" => "double",
         "()" => "void",
+        super::GUID_ABI => "GuidAbi",
         _ => "",
     }
 }
@@ -113,8 +114,14 @@ impl Writer<'_, '_> {
             }
             match part {
                 Part::Value { c: value_type, .. } => {
-                    let value = if value_type.starts_with('f') { "pick_float(s)" } else { "pick_value(s)" };
-                    let _ = writeln!(text, "        {c} {a} = ({c}){value};");
+                    let value = if value_type == super::GUID_ABI {
+                        "pick_guid(s)".to_string()
+                    } else if value_type.starts_with('f') {
+                        format!("({c})pick_float(s)")
+                    } else {
+                        format!("({c})pick_value(s)")
+                    };
+                    let _ = writeln!(text, "        {c} {a} = {value};");
                 }
                 Part::Count => {
                     let _ = writeln!(text, "        {c} {a} = ({c})n{position};");
@@ -239,9 +246,15 @@ impl Writer<'_, '_> {
                         cases.push_str(&self.c_call(plan, glued, slot.method, &format!("(*(void ***)right)[{place}]"), Some("this"))?);
                         called += 1;
                     }
-                    None => {
-                        let _ = writeln!(cases, "        if ((*(void ***)right)[{place}]) {{ fprintf(stderr, \"C CALLER: a slot the glue leaves out is not null: {}::{}\\n\"); abort(); }}\n        s->counted[ABSENT]++;", key.1, slot.method.name);
-                    }
+                    None => match self.refusal_signature(slot.method) {
+                        Some((types, returned)) => {
+                            cases.push_str(&refused_call(&types, &returned, crate::emit::named(&slot.method.return_type).is_some_and(|k| k.1 == "HRESULT"), &format!("(*(void ***)right)[{place}]"))?);
+                            called += 1;
+                        }
+                        None => {
+                            let _ = writeln!(cases, "        if ((*(void ***)right)[{place}]) {{ fprintf(stderr, \"C CALLER: a slot the glue leaves out is not null: {}::{}\\n\"); abort(); }}\n        s->counted[ABSENT]++;", key.1, slot.method.name);
+                        }
+                    },
                 }
                 let _ = writeln!(cases, "        break;\n    }}");
                 case += 1;
@@ -305,6 +318,39 @@ impl Writer<'_, '_> {
             .filter(|function| spec.only.is_empty() || spec.only.contains(&function.name.as_str()))
             .collect()
     }
+}
+
+/// A call of an entry that refuses its method: arguments of the right types and any values (it reads none), and its
+/// answer checked.
+fn refused_call(types: &[String], returned: &str, status: bool, function: &str) -> Result<String, String> {
+    let mut c_types = vec!["void *".to_string()];
+    let mut args = vec!["this".to_string()];
+    for ty in types {
+        let c = c_type(ty);
+        if c.is_empty() {
+            return Err(format!("a refused entry's parameter of C type {ty} the C caller has no form for"));
+        }
+        c_types.push(c.to_string());
+        args.push(match c {
+            "GuidAbi" => "pick_guid(s)".to_string(),
+            "float" | "double" => format!("({c})pick_float(s)"),
+            _ if c.ends_with('*') => format!("({c})pick_object(s, 1)"),
+            _ => format!("({c})pick_value(s)"),
+        });
+    }
+    let ret = c_type(returned);
+    let mut text = String::new();
+    let _ = writeln!(text, "        typedef {ret} (*F)({});", c_types.join(", "));
+    let _ = writeln!(text, "        F f = (F)({function});\n        if (!f) {{ s->counted[ABSENT]++; break; }}");
+    if status {
+        let _ = writeln!(text, "        if (f({}) != (int32_t)0x80004001u) s->counted[REFUSED_WRONG]++;", args.join(", "));
+    } else if ret == "void" {
+        let _ = writeln!(text, "        f({});", args.join(", "));
+    } else {
+        let _ = writeln!(text, "        (void)f({});", args.join(", "));
+    }
+    let _ = writeln!(text, "        s->counted[REFUSED]++;");
+    Ok(text)
 }
 
 /// Writes the C caller crate beside Direct3D 11's direct crate: caller.c, build.rs, lib.rs, the manifest and the test.
@@ -379,7 +425,9 @@ const C_PRELUDE: &str = r#"#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { CALLS, ABSENT, SKIPPED, SUCCEEDED, FAILED, ADOPTED, RELEASED, STALE_THIS, WRONG_THIS, NULL_THIS, GARBAGE_THIS, BIG_COUNTS, PAST_LIMIT, NULL_POINTERS, EXPORTS_CALLED, QUERY_INTERFACES, QUERY_LEFT_POINTER, COUNTED };
+enum { CALLS, ABSENT, SKIPPED, SUCCEEDED, FAILED, ADOPTED, RELEASED, STALE_THIS, WRONG_THIS, NULL_THIS, GARBAGE_THIS, BIG_COUNTS, PAST_LIMIT, NULL_POINTERS, EXPORTS_CALLED, QUERY_INTERFACES, QUERY_LEFT_POINTER, REFUSED, REFUSED_WRONG, COUNTED };
+
+typedef struct GuidAbi { uint32_t data1; uint16_t data2, data3; uint8_t data4[8]; } GuidAbi;
 
 #define POOL 24
 #define STALE 64
@@ -429,6 +477,13 @@ static uint64_t pick_value(State *s) {
     case 2: return below(s, 1024);
     default: return next(s);
     }
+}
+
+static GuidAbi pick_guid(State *s) {
+    GuidAbi guid;
+    uint64_t words[2] = {next(s), next(s)};
+    memcpy(&guid, words, sizeof guid);
+    return guid;
 }
 
 static double pick_float(State *s) {

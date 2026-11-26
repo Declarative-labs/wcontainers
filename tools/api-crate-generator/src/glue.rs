@@ -104,7 +104,12 @@ enum ValueForm {
     Same,
     Bool,
     Newtype,
+    /// A GUID by value: C passes guiddef.h's structure (`GuidAbi`).
+    Guid,
 }
+
+/// The type the glue passes a GUID by value as.
+const GUID_ABI: &str = "component_object_model_direct::GuidAbi";
 
 /// What the glue writes for one method.
 struct Glued {
@@ -124,6 +129,8 @@ pub(super) struct Writer<'g, 'a> {
     codecs: RefCell<String>,
     pub(super) glued: RefCell<Vec<String>>,
     pub(super) not_glued: RefCell<Vec<String>>,
+    /// Methods a form of the glue does not carry whose entry refuses them (E_NOTIMPL, nothing read or written).
+    pub(super) refused: RefCell<Vec<String>>,
     /// The API whose direct crate is being written: its own items are named without a crate path.
     current: std::cell::Cell<usize>,
     /// Whether the recorder being written is the hostile one (src/glue_hostile.rs).
@@ -139,6 +146,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             codecs: RefCell::new(String::new()),
             glued: RefCell::new(Vec::new()),
             not_glued: RefCell::new(Vec::new()),
+            refused: RefCell::new(Vec::new()),
             current: std::cell::Cell::new(NOWHERE),
             hostile: std::cell::Cell::new(false),
         }
@@ -422,6 +430,42 @@ impl<'g, 'a> Writer<'g, 'a> {
         Ok((kinds, enum_path))
     }
 
+    /// The C types of a method a form of the glue does not carry, for an entry that refuses it without reading or
+    /// writing anything: every parameter by its calling convention only, and the return. None when a parameter or the
+    /// return is a structure by value (its passing is the structure's), or when the method writes through a pointer
+    /// (an out-parameter would be left unwritten).
+    fn refusal_signature(&self, method: &Method) -> Option<(Vec<String>, String)> {
+        let mut types = Vec::new();
+        for param in &method.params {
+            if pointee(&param.ty).is_some() {
+                if param.is_out {
+                    return None;
+                }
+                types.push("*const u8".to_string());
+            } else if named(&param.ty).is_some_and(|k| self.is_object(&k)) {
+                types.push("Raw".to_string());
+            } else if named(&param.ty).is_some_and(|k| k == key(GUID.0, GUID.1)) {
+                types.push(GUID_ABI.to_string());
+            } else {
+                match self.value_part(&param.ty) {
+                    Ok(Part::Value { c, .. }) => types.push(c),
+                    _ => return None,
+                }
+            }
+        }
+        let returned = if named(&method.return_type).is_some_and(|k| k == key(FOUNDATION, "HRESULT")) {
+            "i32".to_string()
+        } else if method.return_type == Type::Void {
+            "()".to_string()
+        } else {
+            match self.value_part(&method.return_type) {
+                Ok(Part::Value { c, .. }) => c,
+                _ => return None,
+            }
+        };
+        Some((types, returned))
+    }
+
     fn glue_of(&self, method: &Method, place: &str) -> Result<Glued, String> {
         let mut counts: BTreeSet<usize> = BTreeSet::new();
         for param in &method.params {
@@ -532,6 +576,9 @@ impl<'g, 'a> Writer<'g, 'a> {
                     return Err(format!("no kind is an {}", interface_key.1));
                 }
                 return Ok(Part::ObjectIn { optional: param.is_optional, kinds, enum_path });
+            }
+            if named(&param.ty).is_some_and(|k| k == key(GUID.0, GUID.1)) {
+                return Ok(Part::Value { c: GUID_ABI.to_string(), rust: self.g.guid_path(NOWHERE), form: ValueForm::Guid });
             }
             return self.value_part(&param.ty);
         };

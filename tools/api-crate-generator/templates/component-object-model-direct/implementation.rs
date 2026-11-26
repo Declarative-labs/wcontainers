@@ -74,6 +74,28 @@ pub fn guid_bytes(guid: &Guid) -> [u8; GUID_SIZE] {
     bytes
 }
 
+/// A GUID passed by value, as guiddef.h declares it: C's calling convention passes this structure.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuidAbi {
+    pub data1: u32,
+    pub data2: u16,
+    pub data3: u16,
+    pub data4: [u8; 8],
+}
+
+impl GuidAbi {
+    /// Returns the GUID it holds.
+    pub fn guid(self) -> Guid {
+        Guid { data1: self.data1, data2: self.data2, data3: self.data3, data4: self.data4 }
+    }
+
+    /// Returns the form C passes `guid` in.
+    pub fn of(guid: &Guid) -> GuidAbi {
+        GuidAbi { data1: guid.data1, data2: guid.data2, data3: guid.data3, data4: guid.data4 }
+    }
+}
+
 /// Bytes laid out for C at the largest alignment a structure of these APIs needs.
 #[repr(C, align(16))]
 pub struct Aligned<const N: usize>(pub [u8; N]);

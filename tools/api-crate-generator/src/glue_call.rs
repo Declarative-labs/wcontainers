@@ -79,7 +79,7 @@ impl Writer<'_, '_> {
             for (name, _) in inputs {
                 let _ = writeln!(text, "        let _ = {name};");
             }
-            text.push_str(&not_glued("a parameter of a row the glue does not handle"));
+            text.push_str(&not_glued("refused by its form: a parameter of a form the glue does not carry (the report's NOT GLUED BY FORM)"));
             text.push_str("    }\n");
             return text;
         };

@@ -1745,9 +1745,29 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
         not_glued.sort();
         not_glued.dedup();
         let _ = writeln!(report, "GLUED {} (both glues): {}", glued.len(), glued.join(", "));
-        let _ = writeln!(report, "NOT GLUED {} (null in our tables; E_NOTIMPL or nothing when called):", not_glued.len());
-        for line in &not_glued {
+        // Each method no form of the glue carries is refused by its form: an entry that reads and writes nothing, or,
+        // where none can be written, a null entry; the calling glue answers E_NOTIMPL.
+        let mut refused = writer.refused.borrow().clone();
+        refused.sort();
+        refused.dedup();
+        let (by_entry, null): (Vec<&String>, Vec<&String>) = not_glued.iter().partition(|line| refused.iter().any(|place| line.starts_with(&format!("{place}:"))));
+        let _ = writeln!(report, "NOT GLUED {} (each refused by its form; the calling glue answers E_NOTIMPL or nothing):", not_glued.len());
+        let _ = writeln!(report, "REFUSED BY AN ENTRY {} (it reads and writes nothing and answers E_NOTIMPL, or nothing):", by_entry.len());
+        for line in &by_entry {
             let _ = writeln!(report, "  {line}");
+        }
+        let _ = writeln!(report, "REFUSED BY A NULL ENTRY {} (a structure by value in the call, or an out-parameter an entry would leave unwritten):", null.len());
+        for line in &null {
+            let _ = writeln!(report, "  {line}");
+        }
+        let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
+        for line in &not_glued {
+            let reason = line.rsplit(": ").next().unwrap_or("").to_string();
+            *reasons.entry(reason).or_default() += 1;
+        }
+        let _ = writeln!(report, "NOT GLUED BY FORM:");
+        for (reason, count) in &reasons {
+            let _ = writeln!(report, "  {count:>4}  {reason}");
         }
     }
     let _ = writeln!(report, "ROWS (parameters, fields and returns mapped by each row of MAPPING.md):");

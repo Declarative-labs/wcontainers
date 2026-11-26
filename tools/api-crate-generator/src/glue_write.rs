@@ -114,6 +114,7 @@ impl Writer<'_, '_> {
             Part::Value { form: ValueForm::Same, .. } => raw.to_string(),
             Part::Value { form: ValueForm::Bool, .. } => format!("{raw} != 0"),
             Part::Value { form: ValueForm::Newtype, rust, .. } => format!("{rust}({raw})"),
+            Part::Value { form: ValueForm::Guid, .. } => format!("{raw}.guid()"),
             _ => raw.to_string(),
         }
     }
@@ -123,6 +124,7 @@ impl Writer<'_, '_> {
             Part::Value { form: ValueForm::Same, .. } => value.to_string(),
             Part::Value { form: ValueForm::Bool, .. } => format!("i32::from({value})"),
             Part::Value { form: ValueForm::Newtype, .. } => format!("{value}.0"),
+            Part::Value { form: ValueForm::Guid, .. } => format!("{}::of(&{value})", super::GUID_ABI),
             _ => value.to_string(),
         }
     }
@@ -755,9 +757,17 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
                 Some(glued) => {
                     let _ = writeln!(abi, "    pub {}: {},", slot.name, writer.fn_type(glued, slot.method, true));
                 }
-                None => {
-                    let _ = writeln!(abi, "    pub {}: Absent,", slot.name);
-                }
+                None => match writer.refusal_signature(slot.method) {
+                    Some((types, returned)) => {
+                        let mut list = vec!["Raw".to_string()];
+                        list.extend(types);
+                        let returns = if returned == "()" { String::new() } else { format!(" -> {returned}") };
+                        let _ = writeln!(abi, "    pub {}: unsafe extern \"system\" fn({}){returns},", slot.name, list.join(", "));
+                    }
+                    None => {
+                        let _ = writeln!(abi, "    pub {}: Absent,", slot.name);
+                    }
+                },
             }
         }
         let _ = writeln!(abi, "}}\n");
@@ -776,6 +786,23 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
                 writer.glued.borrow_mut().push(place);
             }
         }
+        // Entries that refuse a method no form of the glue carries: nothing read or written, E_NOTIMPL answered.
+        for slot in slots.iter().filter(|slot| slot.interface == *interface_key && slot.glued.is_none()) {
+            let Some((types, returned)) = writer.refusal_signature(slot.method) else { continue };
+            if !entries_written.insert(slot.name.clone()) {
+                continue;
+            }
+            let place = format!("{}::{}", slot.interface.1, slot.method.name);
+            let mut list = vec!["_this: Raw".to_string()];
+            list.extend(types.iter().enumerate().map(|(at, ty)| format!("_p{at}: {ty}")));
+            let (returns, answer) = match returned.as_str() {
+                "()" => (String::new(), String::new()),
+                "i32" if crate::emit::named(&slot.method.return_type).is_some_and(|k| k.1 == "HRESULT") => (" -> i32".to_string(), "    wcontainers_component_object_model::constants::E_NOTIMPL.0\n".to_string()),
+                other => (format!(" -> {other}"), "    Default::default()\n".to_string()),
+            };
+            let _ = writeln!(serve, "/// `{place}` as the C side calls it, refused by its form: nothing is read or written, and the method is not\n/// called.\npub extern \"system\" fn {}_refused({}){returns} {{\n{answer}}}\n", slot.name, list.join(", "));
+            writer.refused.borrow_mut().push(place);
+        }
         // The table, filled with the entries, for any object type that is this interface.
         let _ = writeln!(tables, "impl<V: {}> Tables<V> {{", writer.trait_path(interface_key));
         let _ = writeln!(tables, "    /// `{}`'s table for objects of type `V`.", interface_key.1);
@@ -783,6 +810,8 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         for slot in &slots {
             if slot.glued.is_some() {
                 let _ = writeln!(tables, "        {}: {}::<V>,", slot.name, slot.name);
+            } else if writer.refusal_signature(slot.method).is_some() {
+                let _ = writeln!(tables, "        {}: {}_refused,", slot.name, slot.name);
             } else {
                 let _ = writeln!(tables, "        {}: None,", slot.name);
             }
