@@ -15,6 +15,7 @@ pub mod guest_memory;
 pub mod jobs;
 pub mod layout;
 pub mod ordered;
+pub mod process;
 pub mod reference;
 pub mod seeded;
 pub mod state_memory;

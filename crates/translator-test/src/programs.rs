@@ -11,7 +11,6 @@ use linux_raw_sys::general::{SIGALRM, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
 use wcontainers_guest_cpu::Guest as _;
@@ -127,11 +126,9 @@ pub(crate) fn out_directory() -> PathBuf {
     target_folder(PROGRAMS)
 }
 
-/// A file name no other build or run, in this process or another, uses.
+/// A file name no other build or run, in this process or another, uses; one counter for both guests' modules.
 pub(crate) fn unique(stem: &str) -> String {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    format!("{stem}.{}.{n}", std::process::id())
+    crate::process::unique(stem)
 }
 
 pub fn source_directory() -> PathBuf {

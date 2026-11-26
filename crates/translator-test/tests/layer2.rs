@@ -77,7 +77,6 @@ fn natively_in(ways: &[wcontainers_x86::native::Way], what: &str) {
     use wcontainers_translator_test::x86_64::part::native_programs::compare;
     use wcontainers_translator_test::x86_64::progress::run_counting;
     use wcontainers_x86::native::{Check, Way};
-    type G = wcontainers_x86::X86_64;
     let cases = knob("WC_LAYER2_CASES", 64);
     let seed = knob("WC_LAYER2_SEED", 1);
     let from = knob("WC_LAYER2_FROM", 0);
@@ -88,30 +87,37 @@ fn natively_in(ways: &[wcontainers_x86::native::Way], what: &str) {
     at_once(jobs, cases, |i| {
         let case = from + i;
         let result = generator(seed, case).run(
-            &(x86_64::program::<G>(), 1..=64u32, any::<u64>()),
-            |(x86_64::program, bound, _)| {
-                let blob = G::assemble(&x86_64::program);
-                let cpu = x86_64::native::<G>(&blob);
+            &(
+                wcontainers_translator_test::x86_64::layer2::program(),
+                1..=64u32,
+                any::<u64>(),
+            ),
+            |(program, bound, _)| {
+                let blob = wcontainers_translator_test::x86_64::part::assemble(&program);
+                let cpu = wcontainers_translator_test::x86_64::programs::native(&blob);
                 if cpu.status != 0 {
                     count(&faulted, 1);
                 }
-                let counted = run_counting::<G>(&blob, (LookAhead::None, Optimise::Speed));
+                let counted = run_counting(&blob, (LookAhead::None, Optimise::Speed));
                 assert_eq!(counted.ran, cpu, "the WebAssembly output against the CPU");
                 for &way in ways {
                     for look_ahead in [LookAhead::None, LookAhead::Bounded(bound), LookAhead::Full]
                     {
                         for counting in [false, true] {
                             let compared = |way| {
-                                with_reference(&G::REFERENCE, |reference| {
-                                    compare(
-                                        reference,
-                                        &blob,
-                                        (way, look_ahead),
-                                        counting,
-                                        &cpu,
-                                        &counted,
-                                    )
-                                })
+                                with_reference(
+                                    &wcontainers_translator_test::x86_64::part::REFERENCE,
+                                    |reference| {
+                                        compare(
+                                            reference,
+                                            &blob,
+                                            (way, look_ahead),
+                                            counting,
+                                            &cpu,
+                                            &counted,
+                                        )
+                                    },
+                                )
                             };
                             let ours = match compared(way) {
                                 Ok(ours) => ours,
@@ -160,8 +166,8 @@ fn hand_made(
     name: &str,
     code: Vec<u8>,
     bytes: usize,
-) -> wcontainers_translator_test::arm64::programs::Blob {
-    use wcontainers_translator_test::arm64::programs::{Blob, LOAD, STACK_BYTES};
+) -> wcontainers_translator_test::x86_64::programs::Blob {
+    use wcontainers_translator_test::x86_64::programs::{Blob, LOAD, STACK_BYTES};
     let code_bytes = code.len() as u64;
     let mut image = code;
     image.resize(bytes.max(image.len()), 0);
@@ -187,9 +193,8 @@ fn natively_as_the_cpu(
     use wcontainers_translator_test::reference::with_reference;
     use wcontainers_translator_test::x86_64::part::native_programs::compare;
     use wcontainers_translator_test::x86_64::progress::run_counting;
-    type G = wcontainers_x86::X86_64;
-    let cpu = x86_64::native::<G>(blob);
-    let counted = run_counting::<G>(blob, (LookAhead::None, Optimise::Speed));
+    let cpu = wcontainers_translator_test::x86_64::programs::native(blob);
+    let counted = run_counting(blob, (LookAhead::None, Optimise::Speed));
     if counted.ran != cpu {
         return Err(format!(
             "{}: the WebAssembly output {:?} against the CPU's {cpu:?}",
@@ -198,16 +203,19 @@ fn natively_as_the_cpu(
     }
     for look_ahead in [LookAhead::None, LookAhead::Bounded(3), LookAhead::Full] {
         for counting in [false, true] {
-            with_reference(&G::REFERENCE, |reference| {
-                compare(
-                    reference,
-                    blob,
-                    (wcontainers_x86::native::Way::Process, look_ahead),
-                    counting,
-                    &cpu,
-                    &counted,
-                )
-            })
+            with_reference(
+                &wcontainers_translator_test::x86_64::part::REFERENCE,
+                |reference| {
+                    compare(
+                        reference,
+                        blob,
+                        (wcontainers_x86::native::Way::Process, look_ahead),
+                        counting,
+                        &cpu,
+                        &counted,
+                    )
+                },
+            )
             .map_err(|e| format!("{}: {e}", blob.name))?;
         }
     }
@@ -260,7 +268,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
     const BUFFER: u64 = 1 << 16;
     const BUFFER_BYTES: usize = 5 << 20;
     const START: u64 =
-        wcontainers_translator_test::arm64::programs::LOAD + BUFFER + (BUFFER_BYTES as u64) / 2;
+        wcontainers_translator_test::x86_64::programs::LOAD + BUFFER + (BUFFER_BYTES as u64) / 2;
     const IMAGE: usize = BUFFER as usize + BUFFER_BYTES;
     // movs, stos, lods, cmps and scas of each size: the opcodes of their byte forms, the others one more.
     const KINDS: [(&str, u8); 5] = [
@@ -270,14 +278,14 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
         ("cmps", 0xa6),
         ("scas", 0xae),
     ];
-    let arm64::program = |kind: usize,
-                          bytes: u8,
-                          repeat: u8,
-                          narrow: bool,
-                          down: bool,
-                          count: u64,
-                          distance: i64,
-                          value: u8|
+    let program = |kind: usize,
+                   bytes: u8,
+                   repeat: u8,
+                   narrow: bool,
+                   down: bool,
+                   count: u64,
+                   distance: i64,
+                   value: u8|
      -> Vec<u8> {
         let mut a = CodeAssembler::new(64).unwrap();
         a.mov(rsi, START).unwrap();
@@ -307,7 +315,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
         a.xor(edi, edi).unwrap();
         a.syscall().unwrap();
         let code = a
-            .assemble(wcontainers_translator_test::arm64::programs::LOAD)
+            .assemble(wcontainers_translator_test::x86_64::programs::LOAD)
             .unwrap();
         assert!(
             code.len() as u64 <= BUFFER,
@@ -317,7 +325,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
     };
     let failures = Mutex::new(Vec::new());
     // The check's case first.
-    let check = arm64::program(
+    let check = program(
         0,
         1,
         wcontainers_x86::encoding::REP,
@@ -368,7 +376,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
             bytes,
             if down { " std" } else { "" }
         );
-        let code = arm64::program(kind, bytes, repeat, narrow, down, count, distance, value);
+        let code = program(kind, bytes, repeat, narrow, down, count, distance, value);
         if let Err(e) = natively_as_the_cpu(&hand_made(&name, code, IMAGE)) {
             eprintln!("strings natively, seed {seed}, case {case}: {e}");
             failures.lock().unwrap().push(e);

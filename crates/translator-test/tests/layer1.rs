@@ -144,7 +144,7 @@ fn every_form_matches_the_cpu_x86_64() {
 fn every_form_matches_the_cpu_natively_x86_64() {
     use wcontainers_translator_test::x86_64::part::native::{
         ANSWERS_CHECKED, FAR_UNLIKE_MEANING, REFERENCE_HOST, SECOND_CALLS, STOPS_CHECKED,
-        STRINGS_RUN, TRAPS_CHECKED, x86_64::compare,
+        STRINGS_RUN, TRAPS_CHECKED, compare,
     };
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let ended = Mutex::new(BTreeMap::<String, u64>::new());
@@ -153,7 +153,7 @@ fn every_form_matches_the_cpu_natively_x86_64() {
         count,
         " natively",
         |reference, _, case| {
-            let (agreement, how) = x86_64::compare(reference, case, REFERENCE_HOST)?;
+            let (agreement, how) = compare(reference, case, REFERENCE_HOST)?;
             *ended.lock().unwrap().entry(format!("{how:?}")).or_default() += 1;
             Ok(agreement)
         },
@@ -932,7 +932,7 @@ fn the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64() 
             case.state.0[field] = u64::MAX.into();
         }
         let mut answer = answered(&case).expect("an instruction the inside answers");
-        let mut meaning = x86_64::translated_with(&case, |machine| machine.set_clock(ANSWER_CLOCK));
+        let mut meaning = translated_with(&case, |machine| machine.set_clock(ANSWER_CLOCK));
         let ticks = |state: &[u128]| (state[rdx] as u64) << u32::BITS | state[rax] as u64;
         assert_eq!(ticks(&answer.state.0), ANSWER_CLOCK, "{code:02x?}");
         assert!(ticks(&meaning.state.0) >= ANSWER_CLOCK, "{code:02x?}");
@@ -1086,7 +1086,7 @@ fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
     use wcontainers_translator::LookAhead;
     use wcontainers_translator_test::layout::{CODE, DATA};
     use wcontainers_translator_test::x86_64::part::native::{
-        REFERENCE_HOST, run_with_pointers, x86_64::compare as natively,
+        REFERENCE_HOST, compare as natively, run_with_pointers,
     };
     use wcontainers_translator_test::x86_64::part::{FS, GS, plain};
     use wcontainers_x86::x87::{BUSY, SUMMARY};
@@ -1225,7 +1225,7 @@ fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
                 // The reference runs one instruction.
                 if !restore && prior.is_empty() {
                     match natively(&mut reference, &case, REFERENCE_HOST) {
-                        Ok((Agreement::Same, _)) => same += 1,
+                        Ok((x86_64::Agreement::Same, _)) => same += 1,
                         other => {
                             differ += 1;
                             eprintln!("{code:02x?} against the CPU: {other:?}");
@@ -1253,7 +1253,7 @@ fn the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
     use wcontainers_translator_test::x86_64::part::native::{
-        Ended, REFERENCE_HOST, answered_with_pointers, x86_64::compare as natively,
+        Ended, REFERENCE_HOST, answered_with_pointers, compare as natively,
     };
     use wcontainers_translator_test::x86_64::part::{FCW, FS, FSW, FTW, R0, RSP, plain};
     use wcontainers_x86::native::HostMatches;
@@ -1292,8 +1292,8 @@ fn the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64() {
         checked += 1;
         if native {
             match natively(&mut reference, case, different) {
-                Ok((Agreement::Same, Ended::Answered(_))) => same += 1,
-                Ok((Agreement::KnownFailure(why), Ended::Answered(_))) => {
+                Ok((x86_64::Agreement::Same, Ended::Answered(_))) => same += 1,
+                Ok((x86_64::Agreement::KnownFailure(why), Ended::Answered(_))) => {
                     known += 1;
                     eprintln!("{code:02x?} natively: {why}");
                 }
@@ -1526,7 +1526,7 @@ fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_translator_test::layout::{CODE, DATA};
     use wcontainers_translator_test::x86_64::part::native::{
-        Ended, REFERENCE_HOST, x86_64::compare as natively,
+        Ended, REFERENCE_HOST, compare as natively,
     };
     use wcontainers_translator_test::x86_64::part::{FS, GS, RFLAGS, RSP, XMM, plain};
     use wcontainers_x86::{R9, R10, RAX, RBX, RCX, RDI, RSI, USER_END};

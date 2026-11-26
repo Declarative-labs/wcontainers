@@ -135,7 +135,7 @@ fn csmith_natively_in(ways: &[wcontainers_x86::native::Way], what: &str) {
                         let ours = with_reference(
                             &wcontainers_translator_test::x86_64::part::REFERENCE,
                             |reference| {
-                                x86_64::compare(
+                                compare(
                                     reference,
                                     &blob,
                                     (way, look_ahead),

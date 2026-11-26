@@ -13,7 +13,6 @@ use linux_raw_sys::general::SIGALRM;
 use sha2::Digest;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 use wcontainers_docker::PLATFORM_OPTION;
 
 /// Where a container sees a program's source folder, the include folder, the link script's folder and the
@@ -39,29 +38,26 @@ pub const LEVELS: [&str; 6] = ["-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"];
 
 /// Csmith's headers, copied where Docker can read them.
 fn csmith_include() -> PathBuf {
-    static INCLUDE: OnceLock<PathBuf> = OnceLock::new();
-    INCLUDE
-        .get_or_init(|| {
-            let csmith = Command::new("sh")
-                .args(["-c", "dirname $(dirname $(command -v csmith))"])
-                .output()
-                .expect("find csmith (from the Nix shell)");
-            let root = String::from_utf8(csmith.stdout).unwrap();
-            let from = Path::new(root.trim()).join("include");
-            let to = out_directory().join("layer3/include");
-            std::fs::create_dir_all(&to).unwrap();
-            for entry in std::fs::read_dir(&from).expect("csmith's headers") {
-                let entry = entry.unwrap();
-                // The Nix store's files are read only, and so are their copies: replace them.
-                let target = to.join(entry.file_name());
-                if entry.file_type().unwrap().is_file() {
-                    let _ = std::fs::remove_file(&target);
-                    std::fs::copy(entry.path(), &target).unwrap();
-                }
+    crate::process::csmith_include(|| {
+        let csmith = Command::new("sh")
+            .args(["-c", "dirname $(dirname $(command -v csmith))"])
+            .output()
+            .expect("find csmith (from the Nix shell)");
+        let root = String::from_utf8(csmith.stdout).unwrap();
+        let from = Path::new(root.trim()).join("include");
+        let to = out_directory().join("layer3/include");
+        std::fs::create_dir_all(&to).unwrap();
+        for entry in std::fs::read_dir(&from).expect("csmith's headers") {
+            let entry = entry.unwrap();
+            // The Nix store's files are read only, and so are their copies: replace them.
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_file() {
+                let _ = std::fs::remove_file(&target);
+                std::fs::copy(entry.path(), &target).unwrap();
             }
-            to
-        })
-        .clone()
+        }
+        to
+    })
 }
 
 /// The gcc image of the guest's platform, made if it is not there yet.

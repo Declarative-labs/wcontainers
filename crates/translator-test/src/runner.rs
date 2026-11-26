@@ -306,8 +306,7 @@ fn guest_memory(store: &mut Store<Host>, bytes: u64) -> GuestMemory {
 
 /// One engine for the whole process, so compiled modules can be shared.
 pub(crate) fn engine() -> Engine {
-    static ENGINE: OnceLock<Engine> = OnceLock::new();
-    ENGINE.get_or_init(new_engine).clone()
+    crate::process::engine(new_engine)
 }
 
 /// The thread module for code with or without the progress count, each compiled once per guest.
