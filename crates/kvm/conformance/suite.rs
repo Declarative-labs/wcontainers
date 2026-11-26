@@ -36,6 +36,27 @@ pub fn refuses_overlapping_memory<T: Kvm>(_: T) {
     assert!(T::set_user_memory_region(&machine, 1, start, length).is_err());
 }
 
+/// Memory given again to another machine holds what was written into it, and the second machine takes it.
+pub fn gives_memory_again_to_another_machine<T: Kvm>(_: T) {
+    let make_machine = || match KvmSystem::new().and_then(|system| system.create_vm()) {
+        Ok(machine) => machine,
+        Err(_) => panic!("this host has no KVM"),
+    };
+    let (start, length) = GUEST_MEMORY;
+    let first = make_machine();
+    let Ok(memory) = T::set_user_memory_region(&first, 0, start, length) else {
+        panic!("KVM refused the memory");
+    };
+    let written: Vec<u8> = (0..length).map(|offset| !(offset as u8)).collect();
+    assert_eq!(memory.write(&written), length);
+    drop(first);
+    let second = make_machine();
+    assert!(T::set_user_memory_region_again(&second, 0, start, &memory).is_ok());
+    let mut read = vec![u8::MIN; length];
+    assert_eq!(memory.read(&mut read), length);
+    assert!(read == written, "memory given again holds what it held");
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -48,6 +69,11 @@ macro_rules! tests {
         #[test]
         fn refuses_overlapping_memory() {
             $crate::refuses_overlapping_memory($value);
+        }
+
+        #[test]
+        fn gives_memory_again_to_another_machine() {
+            $crate::gives_memory_again_to_another_machine($value);
         }
     };
 }

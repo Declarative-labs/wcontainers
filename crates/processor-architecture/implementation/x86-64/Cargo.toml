@@ -1,0 +1,50 @@
+[package]
+name = "wcontainers-processor-architecture-x86-64"
+description = "The x86-64 architecture as a 64-bit program at ring 3 under Linux sees it: every form of the list, and the simulations of those modeled."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[[test]]
+name = "forms_list"
+path = "tests/forms_list.rs"
+
+[[test]]
+name = "forms_source"
+path = "tests/forms_source.rs"
+
+[[example]]
+name = "generate_forms"
+path = "forms/generate.rs"
+
+[features]
+# Lets the planted-bug harness turn on one planted bug of `planted::PLANTED_BUGS` at a time.
+planted-bugs = []
+
+[dependencies]
+wcontainers-processor-architecture = { path = "../.." }
+bitflags.workspace = true
+# Decoding the instruction at the instruction pointer into its operands (MIT).
+iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder", "instr_info", "op_code_info"] }
+
+[dev-dependencies]
+wcontainers-processor-architecture-conformance = { path = "../../conformance" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-x86-64 = { path = "../../../instruction-input-domain/implementation/x86-64" }
+# The list's generator and its tests read and write its data file (MIT OR Apache-2.0).
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

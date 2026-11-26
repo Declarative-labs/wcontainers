@@ -1,0 +1,31 @@
+[package]
+name = "wcontainers-distinguishing-state-generator-x86-64"
+description = "The critical values of an x86-64 form's operands in every combination, but one value of each data operand where the state's outcome does not depend on them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-distinguishing-state-generator = { path = "../.." }
+wcontainers-instruction-input-domain = { path = "../../../instruction-input-domain" }
+wcontainers-instruction-input-domain-x86-64 = { path = "../../../instruction-input-domain/implementation/x86-64" }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-x86-64 = { path = "../../../processor-architecture/implementation/x86-64" }
+# The operand kinds of a form's code, which say whether its memory operand is written.
+iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "op_code_info"] }
+
+[dev-dependencies]
+wcontainers-distinguishing-state-generator-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true
