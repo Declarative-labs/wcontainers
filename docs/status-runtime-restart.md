@@ -16,6 +16,15 @@ merged); f94a514ef merges origin/executor-restart 62d137472 (one conflict, Cargo
 kept). After it the 67 files of his interface folders (`interface.rs` and the data files beside them) are byte-identical
 to his main (MEASURED, `git diff --quiet FETCH_HEAD` on each).
 
+2026-11-26 (afternoon): his main FETCH_HEAD ac696ea19 already merged (it holds today's named iterator types,
+`MemoryReader` and `Executor::Execution`); merged origin/kernel-port d176769a7 (KS) and origin/executor-restart 9aaaf77a3
+(the stand-in that is `Send`), both without conflict. Every file of his interface folders that exists on his main is
+byte-identical to it (MEASURED, `git diff --quiet FETCH_HEAD HEAD` per file; the only other files in those folders,
+crates/kvm and crates/linux-socket-options, are not on his main). origin/executor-wasmtime does not exist yet (MEASURED,
+`git fetch origin`). The merged kernel does not compile: running.rs:197 builds `Processor` without the two fields
+executor-restart's arm64 merge added (MEASURED, E0063); that file is the kernel track's, so every run below applied a
+throwaway fill in the machine's copy only, never committed (For the orchestrator, line 4).
+
 ## RT0: done (results in SCRATCH/runtime-restart/results-main, results-agents)
 
 ## RT1: built; bar NOT met: the linter (the earlier line here that called it met but for the linter was wrong)
@@ -70,7 +79,7 @@ renamed `on_stop_flag_made`, duplicate constants shared or renamed, items no oth
 | summary_not_one_line | 81 -> 0 | 0 -> 0 | 0 -> 0 |
 | summary_too_long | 44 -> 0 | 0 -> 0 | 0 -> 0 |
 | verb_not_first | 25 -> 0 | 0 -> 0 | 1 -> 0 |
-| number_constant_without_link | 17 -> 0 | 4 -> 0 | 0 -> 0 |
+| number_constant_without_link | 17 -> 0, really 13 (below) | 4 -> 0, really 0 | 0 -> 0 |
 | summary_not_one_sentence | 14 -> 0 | 0 -> 0 | 0 -> 0 |
 | literal_restates_constant | 5 -> 0 | 0 -> 0 | 0 -> 0 |
 | summary_starts_with_name | 4 -> 0 | 0 -> 0 | 0 -> 0 |
@@ -88,6 +97,12 @@ renamed `on_stop_flag_made`, duplicate constants shared or renamed, items no oth
 | model: grammar_unclear, summary_unclear | 12, 14 -> 12, 11 | 0 -> 0 | 0 -> 0 |
 | model: summary_restates_declaration, type_summary_not_noun_phrase, hook_without_participle | 4, 1, 1 -> 0 | 0 -> 0 | 0 -> 0 |
 | total | 872 -> 362 | 45 -> 37 | 68 -> 68 |
+
+CORRECTION (2026-11-26): the independent check did not hold for `number_constant_without_link`. Eight were silenced
+with links that do not fix the value: the suite's EXIT_CODE, BEFORE_INTERRUPTING, SIDE_BY_SIDE, ROUNDS and single-kernel's
+IDLE_POLL and LIMITS (links to our own docs/runtime.md), CHANGES_PER_WAIT (mio's `with_capacity` page) and
+BLOCKS_AT_A_TIME (ruzstd's enum page). So that round cleared 13 of single-kernel's 17 and none of the suite's 4. That was
+a way round the owner's rule; each is now fixed in the code (section RT2), with no link.
 
 The model's rules grow because every rewritten summary and renamed function needs a fresh answer, which a run without
 the key cannot record (all are listed in SCRATCH/runtime-restart/lint/after-findings.tsv). What is left that needs no
@@ -124,62 +139,139 @@ port, and 2 because `CpuSide` is not yet the committed `Executor`), so does unic
 -inside fails (12 errors, one of them its call of the removed `System::started`), so does hardware-virtualization
 through it. All four are X2's or the native track's to move.
 
-## RT2: started; no container ran
+## RT2: containers run through the runners on the stand-in; the suite passes at 1 and 4 runners on both machines
 
-What RT2 asks of this branch first, the kernel's public drive and `Host` gone, was done at RT1: containers run only
-through `Kernel::new`, its runners and `Runner::run`, and the kernel's fallbacks come through `FallbackObserver`.
-origin/kernel-port has nothing newer than e177511f5.
+Built (orchestrator rulings 1 and 2):
+- `wcontainers_runtime::Runtime` is implemented by `Runtime<E, S>` (container.rs). Its `Config` is `RuntimeConfig<E>`:
+  `make_executor` (the kernel's executor from the translator's configuration), `make_runner_executor` (each runner's,
+  from the kernel's: a runner's executor must run on the memories the kernel's makes; the stand-in's `restored` shares
+  its engine), `runners` (the kernel's parallelism) and `idle_poll`. `ImageSource` is a plain tar or an OCI layout; the
+  image must be for `arm64`, the only guest the kernel runs (`GUEST_ARCHITECTURE`). `make_container` refuses a thread
+  ordering other than `Serial` and a replay other than `Exact` with the interface's errors, maps a field refused, a
+  program not found and a file the kernel refused (`Error::FileRefused`, new) to `ContainerError`; the image implements
+  `wcontainers_runtime::Image`.
+- The standard endpoints come from the caller (`ContainerConfig`): pipes, or with `process.terminal` one terminal
+  endpoint, refused unless output, error and any input name the same one. The local system's endpoints and its input
+  reader moved behind them: `LocalSystem::output_end`, `error_end`, `give_input(reader)`, `give_terminal(reader?)`; the
+  reader starts when the container is made. The runtime's own `System` lost `standard` and `on_stop_flag_made`; the
+  arrivals no longer raise a stop flag.
+- Interrupts go through the executor's own `ExecutionInterrupter` (brief question 1, the new path): every executor is
+  wrapped in `Interruptible<E>` (interruptible.rs: an `Executor`, `BehaviorSource`, `Cpu` and `PerThreadWatch` passing
+  every call to `E`), whose `prepare_execution` keeps a share of each execution's interrupter in a slot. The container's
+  interrupter, and a runner that finishes or panics, raise every runner's slot: the execution running is interrupted, and
+  one prepared later is interrupted at once, until the run is over. `StopFlag` is on no runtime path now; it stays only
+  for the old executors (RT3).
+- The runtime's own `Executor` trait (`shared`, `new`, `stop_flag`, `ARCHITECTURE`, `Offer`) and `GuestMachine` are gone:
+  the caller gives the executors through the configuration (line 2 below).
+- conformance_run.rs runs the runtime suite on `LocalSystem` with the unicorn stand-in (dev-dependency without its
+  harness). Its parameters come from the environment: `WCONTAINERS_RUNTIME_SUITE_IMAGE` (a plain tar holding `sh`,
+  `cat`, `cmp`), `WCONTAINERS_RUNTIME_SUITE_RUNNERS`, `WCONTAINERS_RUNTIME_SUITE_IDLE_POLL_MICROSECONDS`.
 
-A container on the stand-in: NO CONTAINER RAN. The stand-in from origin/executor-restart is an `Executor` of his
-interface (MEASURED, a probe test in a throwaway copy, `cargo test --test standin_probe`, ARM64: `is_executor::<StandIn>()`
-compiles) but it is not `Send`, and nothing else stands between it and the kernel: 14 errors, all E0277, all `Send`
-(`Rc<UnsafeCell<UnicornInner>>` and `*mut uc_context` of unicorn-engine itself, `Rc<SharedPages>`,
-`Rc<RefCell<Memory>>` and `Weak<..>` of `UnicornSpace`). His interface asks `Kernel: Sync` and `Runner: Send`, and
-`KernelWithExecutor` holds an executor behind its lock, so its executor must be `Send` (and the kernel's impl asks
-`GuestMemory: Send`). So `KernelWithExecutor<StandIn, (), LocalSystem<StandIn>>` is no `Kernel`, and
-`LocalSystem<StandIn>` no `System`. The executor track made the stand-in thread-bound at X3 when it dropped its
-`unsafe impl Send`; making it `Send` again without `unsafe` means keeping no unicorn handle between executions (an engine
-made per execution on the running thread, the memories as owned bytes), or the kernel holding no executor between
-calls. That is the executor track's or the kernel track's to choose (line 3 below).
+The numbers that were linked falsely, each now derived or a parameter (none has a link):
+- suite EXIT_CODE: `u8::MAX`, the largest status Linux keeps; a shell's own are 0 to 2, 126, 127 and 128 plus a signal.
+- suite BEFORE_INTERRUPTING: measured in the test, as long as a container that only exits took to make and run.
+- suite SIDE_BY_SIDE and ROUNDS: gone; the test copies the shell's own program through a pipeline of one more `cat`
+  stage than the runtime has runners (`Subject::runners`, new) and compares it with `cmp`.
+- IDLE_POLL: `RuntimeConfig::idle_poll`, a parameter of the configuration (and of the suite run).
+- LIMITS: derived from the kernel's own `DOCKER_LIMITS`; the specification's names of Linux's 16 resources are paired
+  with the kernel's `linux::general` numbers (`RESOURCE_NAMES`, linked to runtime-spec v1.2.1 config.md, which names them).
+- CHANGES_PER_WAIT: the poller's events hold one change per source it was given (its waker and every socket made).
+- BLOCKS_AT_A_TIME: each decoding step is `BlockDecodingStrategy::UptoBytes(buffer.len())`, the caller's buffer.
+- RUNNERS (a constant `NonZeroUsize::MIN`): `RuntimeConfig::runners`.
+
+Bar (MEASURED, rustc 1.99.0, `-j 12`; logs SCRATCH/runtime-restart/rt2/bar-arm.log, bar-x86.log, final-*.log; every
+run with the throwaway kernel fill above):
+
+| | ARM64 | x86-64 |
+|---|---|---|
+| rustfmt `--check`, three packages | 0 | 0 |
+| check `--all-targets`, three packages | 0 | 0 |
+| check and clippy `--no-deps -D warnings`, single-kernel `--no-default-features --all-targets` | 0 / 0 | 0 / 0 |
+| clippy `--no-deps -D warnings --all-targets`, three packages | 0 | 0 |
+| single-kernel unit tests | 15 of 15 | 15 of 15 |
+| policy tests (`--all-targets`) | 13 of 13 | 13 of 13 |
+| runtime suite, 1 runner, three rounds | 7 of 7 each | 7 of 7 each |
+| runtime suite, 4 runners, three rounds | 7 of 7 each | 7 of 7 each |
+
+The seven tests: a container runs to its end; a finished container stays finished; a program nowhere is refused; a
+guest in `while :; do :; done` ended by `Interrupter::interrupt` from another thread, twice; an interrupt before a run
+ends that run alone; a pipeline of 2 or 5 processes; a host thread panicking inside a run (the system's standard output
+panics on its first write) ends the container as `Panicked` for every later run. Planted (MEASURED, ARM64): with the
+container's interrupter raising no executor's slot, `an_interrupt_from_another_thread_stops_a_run` runs past 300 s at 1
+and at 4 runners (exit 124) and the other six pass. The image: alpine:3.22 for linux/arm64 from `docker export`.
+
+RT2 IS NOT CLAIMED: its bar also asks the suite, the interrupt test and the harness verdicts on wasmtime (X2 is not on
+origin), the kernel harness at full, none and bounded against j5f's lists, and LTP; and every run above needed the
+throwaway kernel fill, so the merged tip does not build as committed.
+
+Linter (`cargo reviewable check`, ARM64, reviewable-rust da55b9d7, no model key; MEASURED at the tree before the last
+two small fixes): single-kernel 403, suite 39, policy 68. `magic_literal` 0 and `number_constant_without_link` 0 in all
+three. Structural: public_outside_interface 127 / 12 / 41; implementation_folder 34 (the local system's 29, the five
+`Interruptible` impls) / 0 / 14; conformance_not_run 8 / 7 / 1 (the suite takes a `Subject`; conformance_run.rs is more
+than one `tests!` call and names unicorn; the test target needs `std`; and the linter reads `Runtime`, `Container`,
+`Image`, `RunInterrupter` as not exported, being re-exported from private modules); trait_outside_interface 3 / 0 / 0
+(`Answer`, `Execution`, the runtime's `System`: the runtime's `Executor` is gone); trait_not_implemented 1 / 0 / 1;
+unparsed 0 / 0 / 1 (owner line 2). Three `literal_restates_constant` (two "arm64" in image tests, `-c` in the pipeline
+script) are fixed in the commit, not relinted. The model's: summary_unanswered 169 / 10 / 9, name_unanswered 41 / 9 / 1,
+grammar_unclear 10, summary_unclear 8.
 
 ## Next
 
-- RT2 (containers through the runners, the suite at parallelism 1 and 4, interrupts): waits on X3 (a `Send` stand-in,
-  line 3) and X2 (wasmtime on the committed `Executor`), then KS, on this branch. Ready to build here meanwhile, after a
-  word on the terminal: `wcontainers_runtime::Runtime` on the runtime (it takes the standard endpoints from its caller,
-  so the local system's terminal and input reader move behind them).
-- The cores measured at a container's first start (docs/runtime.md section 16): after RT2; waits on a complete sample
-  (the collector stops on both machines today), the collector implementation on his main or this branch, executors
-  whose behavior source is made from a measured set, and his word on where samples are kept and on a failed collection.
+- RT2: waits on (a) the kernel track fixing kernel running.rs:197 on kernel-port (line 4), (b) X2 on
+  origin/executor-wasmtime, to merge and run the suite, the interrupt test and the harness on wasmtime, and (c) the
+  harness `--features runtime` at full, none and bounded against j5f's lists and LTP, which need wasmtime too.
 - RT3: waits on KP2 and X4.
 
 ## For the orchestrator (one line each)
 
-1. Kernel track: `KernelConfig` holds `Start<'static>`, so every container leaks its start (path, arguments,
-   environment, working directory, host name, groups, backend path and mount list, a few kilobytes each); owning its
-   bytes (`struct StartData { path: Vec<u8>, arguments: Vec<Vec<u8>>, environment: Vec<Vec<u8>>, ... }`, or
-   `Start<'a>` with `KernelConfig<'a, ..>`) would end it.
-2. Executor track: X2's executors meet the runtime as `Executor: Cpu + wcontainers_executor::Executor<TranslatorConfig:
-   Clone + Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>> + Send + 'static` plus `shared`, `new`,
-   `stop_flag`, `ARCHITECTURE`, `Offer`; `wcon` reads `Container::run() -> StopReason`.
-3. Executor track (and kernel track): the stand-in is not `Send` (unicorn's own handle, `Rc<SharedPages>`,
-   `UnicornSpace`'s `Rc<RefCell<Memory>>`), and `Kernel: Sync` makes the executor `KernelWithExecutor` holds need it,
-   so no container runs on the stand-in (14 E0277 errors, all `Send`).
+1. Kernel track: `KernelConfig` holds `Start<'static>`, so every container leaks its start (a few kilobytes); owning its
+   bytes, or `KernelConfig<'a, ..>`, would end it.
+2. Executor track (X2): the runtime asks of an executor only `Cpu + wcontainers_executor::Executor<TranslatorConfig: Send
+   + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>> + Send + 'static`; wasmtime is given through `RuntimeConfig
+   { make_executor, make_runner_executor, runners, idle_poll }` and run through `Runtime::make_container`; wcon takes its
+   endpoints from `LocalSystem::output_end`, `error_end`, `give_input`, `give_terminal`.
+3. Kernel track: kernel-port can merge this branch: the 21 errors it measured in single-kernel are main's old copy of the
+   crate; this branch's builds against KS (MEASURED above, with line 4's fill).
+4. Kernel track: crates/kernel/implementation/linux/running.rs:197 `to_processor` lacks `predicate_registers:
+   Default::default(), first_fault_register: 0,` since executor-restart's arm64 merge (E0063).
 
-For the owner (one line each, with the code):
-1. A system cannot be made through his interfaces: `pub trait StandaloneSystem: System { type Config; fn new(config:
-   Self::Config) -> Self; }` (or a `System` the runtime's `Config` makes) would let the runtime suite run as `tests!`
-   and let the local system leave the runtime crate.
-2. The linter does not parse return type notation, which the kernel's own `System` asks of a generic system:
-   `+ Readiness<u32, wait_until_ready(..): Send>` (seeded-test-policy implementation.rs:336, finding `unparsed`).
+For the owner (his files unchanged):
+1. A system has no constructor. Before (crates/system/interface.rs:26):
+   ```rust
+   pub trait System:
+       ProcessTracer + ProcessorInputs + MachineDescription + TaskIdAllocator + StreamTransport + Clock
+       + RandomSource + FallbackObserver<<<Self as ProcessTracer>::Kernel as Kernel>::Fallback> + FuseServer
+       + TcpSockets + UdpSockets + IcmpSockets + RawSockets + RouteResolver + DomainNameResolver + Sync
+   {
+   }
+   ```
+   After:
+   ```rust
+   pub trait System:
+       ProcessTracer + ProcessorInputs + MachineDescription + TaskIdAllocator + StreamTransport + Clock
+       + RandomSource + FallbackObserver<<<Self as ProcessTracer>::Kernel as Kernel>::Fallback> + FuseServer
+       + TcpSockets + UdpSockets + IcmpSockets + RawSockets + RouteResolver + DomainNameResolver + Sync
+   {
+       type Config;
+       fn new(config: Self::Config) -> Self;
+   }
+   ```
+   It would let me delete `LocalSystem::new` and `LocalSystem::serving` (public outside an interface) and the suite's
+   `Parts::system` with the `parts` and `failing_parts` closures that hand over a made system (the suite makes it from a
+   `Config`), and move the local system to crates/system/implementation/local with the system suite run on it, which
+   ends the 29 implementation_folder findings it has in single-kernel.
+2. The linter does not parse return type notation: `S: Measured<measure(..): Send>` gives `unparsed: expected ,`.
+   Minimal reproduction: SCRATCH/runtime/linter-faults/return-type-notation (with-notation and without-notation:
+   reviewable-rust's own examples/conforming plus one async trait; MEASURED: the finding with the notation, none
+   without). Seeded-test-policy implementation.rs:336 and the kernel's own `System` need the notation.
 
 ## SECURITY
 
-- Lines with `unsafe`, before (main / origin/agents) and after: single-kernel 7 / 0 -> 0, runtime suite 0 / 0 -> 0,
-  seeded-test-policy 0 / 0 -> 0. No marked exception; every crate keeps `[lints] workspace = true`.
-- New dependencies: none from outside the workspace. Against main's copy, single-kernel no longer uses `libc` or
-  `polling`.
-- 2026-11-26, after the linter round and the executor merge (MEASURED, `git grep -w unsafe` per folder): single-kernel 0,
-  runtime suite 0, seeded-test-policy 0; each keeps `[lints] workspace = true`. No dependency added (the stand-in
-  probe's dev-dependency on unicorn lived only in a throwaway copy on the rented machine).
+- Lines with `unsafe` (`git grep -w unsafe` per folder), before (main / origin/agents) and now: single-kernel 7 / 0 -> 0,
+  runtime suite 0 / 0 -> 0, seeded-test-policy 0 / 0 -> 0. No marked exception; every crate keeps
+  `[lints] workspace = true`; no lint lowered, no linter exclusion.
+- New dependencies: none from outside the workspace. Single-kernel adds workspace crates behavior-source and
+  processor-architecture (for `Interruptible`) and, as dev-dependencies, the runtime suite and the unicorn stand-in
+  (GPL-2.0-only, test-only, `publish = false`, without its harness). Against main's copy, single-kernel no longer uses
+  `libc` or `polling`.
 - Hostile-guest suite: none exists; none run (the thread-test design review is owed to the owner first).
