@@ -6,19 +6,24 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use wcontainers_abi::Warning;
 use wcontainers_clock::Clock;
 use wcontainers_kernel::{Kernel, Runner, StopReason};
+use wcontainers_system::FallbackObserver;
 
 /// The longest an idle runner waits before it is run again, since nothing tells the runtime that a wait of the kernel's ended.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#16-milestones
 const IDLE_POLL: Duration = Duration::from_millis(1);
 
 /// Why an idle runner was run again before the time the kernel gave.
-pub const IDLE_WITHOUT_WAKE: &str =
+pub(crate) const IDLE_WITHOUT_WAKE: &str =
     "an idle runner is run again after a pause, since the kernel tells of no wake";
 
 /// A container on one kernel, run by that kernel's runners.
-pub struct KernelContainer<K: Kernel, S> {
-    kernel: K,
+pub(crate) struct KernelContainer<K: Kernel, S> {
+    /// The kernel itself, held as long as its runners' container, though only they are run.
+    _kernel: K,
     runners: Vec<(K::Runner, K::Executor)>,
     signals: Arc<Signals>,
     system: Arc<S>,
@@ -37,6 +42,8 @@ struct Signals {
     state: Mutex<Signalled>,
     changed: Condvar,
     idle_polls: AtomicU64,
+    /// How many idle polls the system has been told of.
+    idle_polls_told: AtomicU64,
     /// Ends the executors' runs in progress.
     stop: Box<dyn Fn() + Send + Sync>,
 }
@@ -52,10 +59,10 @@ impl<K, S> KernelContainer<K, S>
 where
     K: Kernel,
     K::Executor: Send,
-    S: Clock + Sync,
+    S: Clock + FallbackObserver<Warning<'static>> + Sync,
 {
-    /// A container whose runners each get an executor `executor` makes; `stop` ends every run in progress of those executors.
-    pub fn new(
+    /// Returns a container whose runners each get an executor `executor` makes; `stop` ends every run of those executors.
+    pub(crate) fn new(
         kernel: K,
         runners: impl Iterator<Item = K::Runner>,
         mut executor: impl FnMut() -> K::Executor,
@@ -65,11 +72,12 @@ where
         let signals = Arc::new(Signals {
             state: Mutex::default(),
             changed: Condvar::new(),
-            idle_polls: AtomicU64::new(0),
+            idle_polls: AtomicU64::default(),
+            idle_polls_told: AtomicU64::default(),
             stop: Box::new(stop),
         });
         let container = Self {
-            kernel,
+            _kernel: kernel,
             runners: runners.map(|runner| (runner, executor())).collect(),
             signals: Arc::clone(&signals),
             system,
@@ -78,21 +86,24 @@ where
         (container, RunInterrupter { signals })
     }
 
-    pub fn kernel(&self) -> &K {
-        &self.kernel
-    }
-
-    pub fn system(&self) -> &S {
+    pub(crate) fn system(&self) -> &S {
         &self.system
     }
 
-    /// How many times an idle runner was run again for [`IDLE_WITHOUT_WAKE`].
-    pub fn idle_polls(&self) -> u64 {
-        self.signals.idle_polls.load(Ordering::Relaxed)
+    /// Tells the system how many times an idle runner was run again for [`IDLE_WITHOUT_WAKE`], when that grew.
+    fn tell_idle_polls(&self) {
+        let polls = self.signals.idle_polls.load(Ordering::Relaxed);
+        if self.signals.idle_polls_told.swap(polls, Ordering::Relaxed) != polls {
+            self.system.on_fallback_used(&Warning {
+                reason: IDLE_WITHOUT_WAKE,
+                count: polls,
+                detail: IDLE_POLL.as_nanos() as u64,
+            });
+        }
     }
 
     /// Runs every runner on its own host thread until one finishes the container or dies, or the run is interrupted.
-    pub fn run(&mut self) -> StopReason {
+    pub(crate) fn run(&mut self) -> StopReason {
         if let Some(ended) = self.ended {
             return ended;
         }
@@ -113,6 +124,8 @@ where
             }
             Some(stopped) => stopped,
         };
+        drop(state);
+        self.tell_idle_polls();
         if matches!(stopped, StopReason::Finished(_) | StopReason::Panicked) {
             self.ended = Some(stopped);
         }
@@ -124,7 +137,7 @@ impl<K, S> wcontainers_runtime::Container for KernelContainer<K, S>
 where
     K: Kernel,
     K::Executor: Send,
-    S: Clock + Sync,
+    S: Clock + FallbackObserver<Warning<'static>> + Sync,
 {
     fn run(&mut self) -> StopReason {
         KernelContainer::run(self)

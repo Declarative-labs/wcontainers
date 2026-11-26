@@ -1,5 +1,4 @@
-//! Free turns ended on the machine's clock: a thread that raises the executor's stop flag once the running
-//! turn's slice has passed.
+//! Free turns ended on the machine's clock, by a thread that raises the stop flag once the running turn's slice has passed.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -44,7 +43,7 @@ impl SliceTimer {
             let shared = shared.clone();
             std::thread::Builder::new()
                 .name(TIMER_THREAD.to_string())
-                .spawn(move || time(&shared, started, &flag))
+                .spawn(move || run_timer(&shared, started, &flag))
                 .expect("a timer thread")
         };
         Self {
@@ -54,7 +53,7 @@ impl SliceTimer {
         }
     }
 
-    /// A turn starts now and ends once `slice_nanoseconds` have passed, or never without a slice.
+    /// Starts a turn now that ends once `slice_nanoseconds` have passed, or never without a slice.
     pub fn turn(&self, slice_nanoseconds: Option<u64>) {
         let at = slice_nanoseconds.map_or(NEVER, |slice| {
             nanoseconds_since(self.started).saturating_add(slice)
@@ -68,12 +67,12 @@ impl SliceTimer {
         }
     }
 
-    /// The turn ended: its deadline is dropped, so a wait past it raises nothing.
+    /// Drops the ended turn's deadline, so a wait past it raises nothing.
     pub fn turn_over(&self) {
         self.shared.at.store(NEVER, Ordering::SeqCst);
     }
 
-    /// Whether no turn's deadline is waiting.
+    /// Returns whether no turn's deadline is waiting.
     #[cfg(test)]
     pub(crate) fn idle(&self) -> bool {
         self.shared.at.load(Ordering::SeqCst) == NEVER
@@ -94,14 +93,11 @@ impl Drop for SliceTimer {
     }
 }
 
-/// The timer thread: sleeps to the deadline, raises the flag when it has passed, and sleeps again
-/// when the deadline moved on meanwhile.
+/// Runs the timer thread, which sleeps to the deadline, raises the flag once it passed, and sleeps again if it moved on.
 ///
-/// A turn stores its deadline and then reads the one slept towards; the thread stores the one it sleeps
-/// towards and then reads the deadline again, holding the lock until it waits. So either the thread
-/// sees the new deadline, or the turn sees an earlier one slept towards and wakes the thread once it
-/// waits.
-fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
+/// A turn stores its deadline, then reads the one slept towards; this stores the one it sleeps towards, then reads
+/// the deadline again under the lock, so one of the two sees the other's.
+fn run_timer(shared: &Deadline, started: Instant, flag: &StopFlag) {
     let mut gone = shared.gone.lock().unwrap_or_else(PoisonError::into_inner);
     loop {
         if *gone {

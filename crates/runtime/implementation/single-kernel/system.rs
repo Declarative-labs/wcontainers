@@ -1,6 +1,6 @@
-//! The local system for an operating system: its clocks and randomness, the container's standard
-//! input, output and error (or its terminal), a directory of the host as the file backend, the host's network, and a
-//! thread that hands the kernel what arrives from outside as it comes.
+//! The local system for an operating system: clocks, randomness, standard streams, files and the host's network.
+//!
+//! A directory of the host is the file backend, and a thread hands the kernel what arrives from outside as it comes.
 
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
@@ -100,14 +100,14 @@ pub(crate) struct LocalState {
 }
 
 impl LocalSystem {
-    /// A system writing the container's standard output and error to these streams.
+    /// Returns a system writing the container's standard output and error to these streams.
     pub fn new(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
         Self::serving(output, error)
     }
 }
 
 impl<E> LocalSystem<E> {
-    /// A system for a kernel on the executor `E`, writing the container's standard output and error to these streams.
+    /// Returns a system for a kernel on the executor `E`, writing the container's standard output and error to these streams.
     pub fn serving(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
         let state = LocalState {
             started: Instant::now(),
@@ -141,15 +141,16 @@ impl<E> LocalSystem<E> {
         self.machine_memory.set(bytes)
     }
 
-    /// Gives the container's first process `input` as its standard input, as `docker run --interactive`
-    /// does; without it, descriptor 0 is `/dev/null`. Read on a thread of its own, never more than
-    /// the kernel has room for.
+    /// Gives the first process `input` as its standard input, as `docker run --interactive` does; else it is `/dev/null`.
+    ///
+    /// It is read on a thread of its own, never more than the kernel has room for.
     pub fn input(&mut self, input: Box<dyn Read + Send>) {
         self.state_mut().input = Some(input);
     }
 
-    /// Lets connections from the host at `at` reach the container's TCP port `port`, as `docker run
-    /// --publish` does. Nothing outside reaches a port not published.
+    /// Lets connections from the host at `at` reach the container's TCP port `port`, as `docker run --publish` does.
+    ///
+    /// Nothing outside reaches a port not published.
     pub fn publish(&mut self, port: u16, at: SocketAddr) {
         let state = self.state_mut();
         state.published.push((port, at));
@@ -158,13 +159,13 @@ impl<E> LocalSystem<E> {
         }
     }
 
-    /// Every warning so far, the kernel's and the executor's.
+    /// Returns every warning so far, the kernel's and the executor's.
     pub fn warnings(&self) -> Vec<Warned> {
         self.state().warnings.clone()
     }
 
     /// Keeps a slow path of the executor, apart from the kernel's fallbacks.
-    pub fn cpu_warning(&self, warning: Warning<'_>) {
+    pub fn keep_cpu_warning(&self, warning: Warning<'_>) {
         self.state().keep(warning, true);
     }
 
@@ -182,8 +183,8 @@ impl<E> LocalSystem<E> {
         for arrival in arrivals {
             let mut state = self.state();
             match arrival {
-                Arrival::Input(bytes) => state.input_arrived(&bytes),
-                Arrival::InputEnded(error) => state.input_ended(error),
+                Arrival::Input(bytes) => state.hold_input(&bytes),
+                Arrival::InputEnded(error) => state.end_input(error),
                 arrival => {
                     if let Some(network) = &mut state.network {
                         network.arrived(&arrival);
@@ -231,24 +232,24 @@ fn deliver_arrivals<E>(system: &Weak<LocalSystem<E>>) {
 }
 
 impl LocalState {
-    /// Bytes of the input, held until the kernel takes them, unless it has let go of its end.
-    fn input_arrived(&mut self, bytes: &[u8]) {
+    /// Holds bytes of the input until the kernel takes them, unless it has let go of its end.
+    fn hold_input(&mut self, bytes: &[u8]) {
         if !self.input_closed {
             self.input_held.extend_from_slice(bytes);
             self.wake_streams();
         }
     }
 
-    /// The input ended: once the kernel has taken what is held, a pipe's endpoint gives no more,
-    /// so the guest reads end of file; a terminal's stays, since its output goes on.
-    fn input_ended(&mut self, error: Option<std::io::Error>) {
+    /// Ends the input: once what is held is taken a pipe's endpoint gives no more; a terminal's stays for its output.
+    fn end_input(&mut self, error: Option<std::io::Error>) {
         if let Some(error) = error {
             let detail = error.raw_os_error().map_or(u64::MAX, |code| code as u64);
             let count = self
                 .warnings
                 .iter()
                 .find(|w| w.reason == INPUT_NOT_READ)
-                .map_or(1, |w| w.count + 1);
+                .map_or(u64::MIN, |w| w.count)
+                + 1;
             self.keep(
                 Warning {
                     reason: INPUT_NOT_READ,
@@ -268,8 +269,7 @@ impl LocalState {
         }
     }
 
-    /// What an endpoint is ready for: output is written as it comes, input once some is held or
-    /// it ended.
+    /// Returns what an endpoint is ready for: output is written as it comes, input once some is held or it ended.
     fn stream_ready(&self, peer: u32) -> ReadinessReport {
         let mut ready = ReadinessReport {
             ready_for: ReadyFor::empty(),
@@ -328,8 +328,7 @@ impl LocalState {
 }
 
 impl<E> Drop for LocalSystem<E> {
-    /// Stops the input's reader once it next waits for room (one blocked reading is left to end with
-    /// the process), and the delivery thread.
+    /// Stops the delivery thread, and the input's reader once it next waits for room; one blocked reading ends with the process.
     fn drop(&mut self) {
         let state = self.state_mut();
         state.input_credit.stop();
@@ -385,14 +384,14 @@ impl InputCredit {
     }
 
     /// Gives back room taken and not used.
-    fn unused(&self, bytes: u64) {
+    fn give_back(&self, bytes: u64) {
         self.give(bytes);
     }
 }
 
-/// The input's reader: reads within the room the kernel gave, and hands each piece over.
+/// Reads the input within the room the kernel gave, and hands each piece over.
 fn read_input(mut input: Box<dyn Read + Send>, credit: &InputCredit, arrivals: &Arrivals) {
-    let mut buffer = vec![0; INPUT_PIECE as usize];
+    let mut buffer = vec![u8::MIN; INPUT_PIECE as usize];
     while let Some(room) = credit.wait(INPUT_PIECE) {
         match input.read(&mut buffer[..room as usize]) {
             Ok(0) => {
@@ -400,10 +399,10 @@ fn read_input(mut input: Box<dyn Read + Send>, credit: &InputCredit, arrivals: &
                 return;
             }
             Ok(read) => {
-                credit.unused(room - read as u64);
+                credit.give_back(room - read as u64);
                 arrivals.push(Arrival::Input(buffer[..read].to_vec()));
             }
-            Err(error) if error.kind() == ErrorKind::Interrupted => credit.unused(room),
+            Err(error) if error.kind() == ErrorKind::Interrupted => credit.give_back(room),
             Err(error) => {
                 arrivals.push(Arrival::InputEnded(Some(error)));
                 return;
@@ -421,14 +420,14 @@ impl LocalState {
     fn realtime_nanoseconds(&mut self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos() as u64)
+            .map_or(u64::MIN, |since| since.as_nanos() as u64)
     }
 
-    fn random(&mut self, into: &mut [u8]) {
+    fn fill_random(&mut self, into: &mut [u8]) {
         getrandom::fill(into).expect("the system's randomness");
     }
 
-    /// Served at once; a message with no reply has an empty one.
+    /// Serves a file request at once; a message with no reply has an empty one.
     fn serve(&mut self, message: &[u8]) -> Result<Vec<u8>, HostError> {
         let files = self.files.as_mut().ok_or(HostError::NotSupported)?;
         Ok(files.serve(message).unwrap_or_default())
@@ -447,7 +446,8 @@ impl LocalState {
             .warnings
             .iter()
             .find(|w| w.reason == name)
-            .map_or(1, |w| w.count + 1);
+            .map_or(u64::MIN, |w| w.count)
+            + 1;
         self.keep(
             Warning {
                 reason: name,
@@ -459,7 +459,7 @@ impl LocalState {
         Err(HostError::Closed)
     }
 
-    /// Input held for the kernel; the reader may read as much again.
+    /// Gives the kernel input held for it; the reader may read as much again.
     fn receive_stream(&mut self, peer: u32, into: &mut [u8]) -> Result<usize, HostError> {
         if Some(peer) != self.input_end {
             // A terminal with no input is one nobody types on, as `docker run --tty` without `--interactive` gives.
@@ -510,7 +510,7 @@ macro_rules! host_on_state {
             fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
                 let $this = self;
                 crate::host_call::receive_into(into, |bytes| {
-                    $state.random(bytes);
+                    $state.fill_random(bytes);
                     Ok(bytes.len())
                 })?;
                 Ok(())
@@ -617,7 +617,7 @@ impl<E: 'static> System for LocalSystem<E> {
     }
 
     /// Arrivals end a free turn.
-    fn stop_flag(&self, flag: StopFlag) {
+    fn on_stop_flag_made(&self, flag: StopFlag) {
         self.state().arrivals.set_flag(flag);
     }
 
@@ -626,7 +626,7 @@ impl<E: 'static> System for LocalSystem<E> {
         Ok(())
     }
 
-    /// The terminal asked for, or pipes; with an input, its reader starts.
+    /// Names the terminal asked for, or pipes; with an input, its reader starts.
     fn standard(&self, terminal: Option<TerminalSize>) -> Standard<u32> {
         let mut state = self.state();
         let standard = match terminal {

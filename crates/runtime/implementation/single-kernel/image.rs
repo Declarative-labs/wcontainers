@@ -1,5 +1,6 @@
-//! A container's root files: a plain tar of files, or an image in the OCI image layout, whose layers
-//! are applied in order with their whiteouts and whose configuration becomes the OCI runtime
+//! A container's root files: a plain tar of files, or an image in the OCI image layout.
+//!
+//! An image's layers are applied in order with their whiteouts, and its configuration becomes the OCI runtime
 //! configuration by the image specification's conversion (`conversion.md`).
 
 use std::collections::{BTreeMap, HashMap};
@@ -43,25 +44,25 @@ enum Kind {
 
 /// The root's files, and for an OCI image its configuration.
 pub struct Image {
-    /// By path from the root without a leading slash ("" is the root itself), so that a directory
-    /// comes before what is in it.
+    /// The files by path from the root without a leading slash ("" is the root), so a directory comes before what it holds.
     files: BTreeMap<Vec<u8>, Entry>,
     configuration: Option<ImageConfiguration>,
 }
 
 /// Symbolic links followed in one lookup before it fails, as Linux's `MAXSYMLINKS`.
+///
+/// https://github.com/torvalds/linux/blob/master/include/linux/namei.h
 const MOST_LINKS: usize = 40;
 
 /// The permission bits of a mode, the rest being its kind.
 const PERMISSION_BITS: u32 = S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO;
-/// Execute permission for anyone.
+/// The bits of a mode any of which makes a regular file one that `PATH` finds, as runc's lookup asks.
 const EXECUTABLE: u32 = S_IXUSR | S_IXGRP | S_IXOTH;
 /// `rwxr-xr-x` and `rw-r--r--`, the modes Docker gives the directory and files it writes.
 const DIRECTORY_MODE: u32 = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
 const FILE_MODE: u32 = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
-/// The OCI image layout's marker file, its version, its index and its blobs' directory
-/// (image-layout.md).
+/// The OCI image layout's marker file, its version, its index and its blobs' directory (image-layout.md).
 pub const LAYOUT_FILE: &str = "oci-layout";
 const LAYOUT_VERSION: &str = "1.0.0";
 pub const INDEX_FILE: &str = "index.json";
@@ -70,8 +71,7 @@ pub const BLOBS_DIRECTORY: &str = "blobs";
 /// Docker's media type of a gzip-compressed layer, which `docker save` writes.
 const DOCKER_LAYER_GZIP: &str = "application/vnd.docker.image.rootfs.diff.tar.gzip";
 
-/// The start of a whiteout's name, and the name of the whiteout that empties its directory
-/// (layer.md).
+/// The start of a whiteout's name, and the name of the whiteout that empties its directory (layer.md).
 const WHITEOUT_PREFIX: &[u8] = b".wh.";
 const OPAQUE_WHITEOUT: &[u8] = b".wh..wh..opq";
 
@@ -80,14 +80,14 @@ const XATTR_PAX_PREFIX: &[u8] = b"SCHILY.xattr.";
 
 /// The annotations conversion.md makes of an image configuration's fields.
 mod annotation {
-    pub const OS: &str = "org.opencontainers.image.os";
-    pub const ARCHITECTURE: &str = "org.opencontainers.image.architecture";
-    pub const VARIANT: &str = "org.opencontainers.image.variant";
-    pub const OS_VERSION: &str = "org.opencontainers.image.os.version";
-    pub const OS_FEATURES: &str = "org.opencontainers.image.os.features";
-    pub const AUTHOR: &str = "org.opencontainers.image.author";
-    pub const STOP_SIGNAL: &str = "org.opencontainers.image.stopSignal";
-    pub const EXPOSED_PORTS: &str = "org.opencontainers.image.exposedPorts";
+    pub(super) const OS: &str = "org.opencontainers.image.os";
+    pub(super) const ARCHITECTURE: &str = "org.opencontainers.image.architecture";
+    pub(super) const VARIANT: &str = "org.opencontainers.image.variant";
+    pub(super) const OS_VERSION: &str = "org.opencontainers.image.os.version";
+    pub(super) const OS_FEATURES: &str = "org.opencontainers.image.os.features";
+    pub(super) const AUTHOR: &str = "org.opencontainers.image.author";
+    pub(super) const STOP_SIGNAL: &str = "org.opencontainers.image.stopSignal";
+    pub(super) const EXPOSED_PORTS: &str = "org.opencontainers.image.exposedPorts";
 }
 
 /// What joins the items of a list in an annotation (conversion.md).
@@ -97,43 +97,85 @@ const LIST_SEPARATOR: &str = ",";
 const CONFIG_VOLUMES: &str = "config.Volumes";
 const CONFIG_USER: &str = "config.User";
 
-/// The account tables in the root (passwd(5), group(5)): their paths, what separates fields and
-/// the members of a group, and what starts a comment line.
+/// The account tables in the root (passwd(5), group(5)), what separates fields and members, and what starts a comment.
 pub const PASSWD: &str = "etc/passwd";
 pub const GROUP: &str = "etc/group";
 pub const FIELD_SEPARATOR: char = ':';
 pub const MEMBER_SEPARATOR: char = ',';
-const COMMENT: char = '#';
+const COMMENT_START: char = '#';
+
+/// The user and group id of root.
+///
+/// https://man7.org/linux/man-pages/man7/credentials.7.html
+pub(crate) const ROOT_ID: u32 = 0;
+
+/// The time the files Docker writes are dated at, the epoch, so that a run repeats.
+///
+/// https://man7.org/linux/man-pages/man2/time.2.html
+const EPOCH_SECONDS: i64 = 0;
+
+/// The root directory, and what separates the parts of a path.
+pub(crate) const ROOT_PATH: &str = "/";
+pub(crate) const SEPARATOR: char = '/';
+pub(crate) const SEPARATOR_BYTE: u8 = SEPARATOR as u8;
+
+/// The parts of a path that name the directory itself and its parent.
+const CURRENT_PART: &[u8] = b".";
+const PARENT_PART: &[u8] = b"..";
+
+/// Why a hard link or symbolic link entry of a layer is refused.
+const LINK_WITHOUT_TARGET: &str = "a link without a target";
+const LINK_OUT_OF_ROOT: &str = "a link out of the root";
+
+/// How many blocks of a zstd frame are decoded at a time.
+///
+/// https://docs.rs/ruzstd/0.9.1/ruzstd/decoding/enum.BlockDecodingStrategy.html
+const BLOCKS_AT_A_TIME: usize = 1;
 
 /// What separates the user from the group in an image configuration's `User` (config.md).
 const USER_GROUP_SEPARATOR: char = ':';
 
-/// The directory Docker writes its files in, and those files: the host name, the hosts file and
-/// the name server's.
+/// The directory Docker writes its files in, and those files: the host name, the hosts file and the name server's.
 const ETC: &[u8] = b"etc";
 const HOSTNAME_FILE: &[u8] = b"etc/hostname";
 const HOSTS_FILE: &[u8] = b"etc/hosts";
 const RESOLV_CONF: &[u8] = b"etc/resolv.conf";
 
-/// An environment variable's assignment of the program search path, what separates its
-/// directories, and what separates a variable's name from its value.
+/// The assignment of the program search path, what separates its directories, and what separates a name from its value.
 const PATH_ASSIGNMENT: &str = "PATH=";
 const PATH_LIST_SEPARATOR: char = ':';
 const ASSIGNMENT: char = '=';
 
-/// Fields of a line of `/etc/passwd` (name, password, uid, gid, comment, home, shell) and of
-/// `/etc/group` (name, password, gid, members), by their places (passwd(5), group(5)).
+/// Fields of a line of `/etc/passwd` and of `/etc/group`, by their places.
 mod field {
-    pub const NAME: usize = 0;
-    pub const UID: usize = 2;
-    pub const GID: usize = 3;
-    pub const HOME: usize = 5;
-    pub const GROUP_GID: usize = 2;
-    pub const GROUP_MEMBERS: usize = 3;
+    /// The name, first in both tables.
+    ///
+    /// https://man7.org/linux/man-pages/man5/passwd.5.html
+    pub(super) const NAME: usize = 0;
+    /// The user id, after the name and the password.
+    ///
+    /// https://man7.org/linux/man-pages/man5/passwd.5.html
+    pub(super) const UID: usize = 2;
+    /// The group id, after the user id.
+    ///
+    /// https://man7.org/linux/man-pages/man5/passwd.5.html
+    pub(super) const GID: usize = 3;
+    /// The home directory, after the comment.
+    ///
+    /// https://man7.org/linux/man-pages/man5/passwd.5.html
+    pub(super) const HOME: usize = 5;
+    /// A group's id, after its name and password.
+    ///
+    /// https://man7.org/linux/man-pages/man5/group.5.html
+    pub(super) const GROUP_GID: usize = 2;
+    /// A group's members, after its id.
+    ///
+    /// https://man7.org/linux/man-pages/man5/group.5.html
+    pub(super) const GROUP_MEMBERS: usize = 3;
 }
 
 impl Image {
-    /// A plain tar of the root's files, such as `docker export` writes.
+    /// Returns the files of a plain tar of the root, such as `docker export` writes.
     pub fn tar(path: &Path) -> Result<Self, Error> {
         let mut files = BTreeMap::new();
         read_layer(open(path)?, path, false, &mut files)?;
@@ -143,9 +185,10 @@ impl Image {
         })
     }
 
-    /// An image in the OCI image layout (the directory `docker save` writes as a tar): the manifest for
-    /// `architecture` (as the image configuration names it, [`crate::Executor::ARCHITECTURE`]) on
-    /// Linux, its blobs checked against their digests and its layers applied in order.
+    /// Returns an image in the OCI image layout, as `docker save` writes it, for Linux on `architecture`.
+    ///
+    /// The architecture is as the image configuration names it ([`crate::Executor::ARCHITECTURE`]); blobs are checked
+    /// against their digests and layers applied in order.
     pub fn oci(directory: &Path, architecture: &str) -> Result<Self, Error> {
         let layout = directory.join(LAYOUT_FILE);
         let header = OciLayout::from_reader(open(&layout)?)
@@ -184,17 +227,17 @@ impl Image {
         })
     }
 
-    /// The architecture an OCI image is for; none for a plain tar.
+    /// Returns the architecture an OCI image is for; none for a plain tar.
     pub fn architecture(&self) -> Option<String> {
         self.configuration
             .as_ref()
             .map(|configuration| configuration.architecture().to_string())
     }
 
-    /// What to run: for an OCI image, the runtime's base configuration ([`crate::base_spec`]) with the
-    /// image configuration converted into it as `conversion.md` says; for a plain tar, the base
-    /// configuration, whose `process.args` the caller sets. Where the image names no user, the user
-    /// is root with the groups `/etc/group` lists it in, as Docker gives it.
+    /// Returns what to run: the base configuration ([`crate::base_spec`]) with an OCI image's configuration converted in.
+    ///
+    /// For a plain tar the caller sets `process.args`. Where the image names no user, the user is root with the groups
+    /// `/etc/group` lists it in, as Docker gives it.
     pub fn spec(&self) -> Result<Spec, Error> {
         let mut spec = crate::base_spec();
         let mut process = spec.process().clone().unwrap_or_default();
@@ -248,7 +291,7 @@ impl Image {
                 config.env().clone().unwrap_or_default(),
             )));
             let cwd = config.working_dir().clone().filter(|cwd| !cwd.is_empty());
-            process.set_cwd(PathBuf::from(cwd.unwrap_or_else(|| "/".to_string())));
+            process.set_cwd(PathBuf::from(cwd.unwrap_or_else(|| ROOT_PATH.to_string())));
             if let Some(user) = config.user().as_deref().filter(|user| !user.is_empty()) {
                 process.set_user(self.user(user)?);
             }
@@ -268,8 +311,9 @@ impl Image {
         Ok(spec)
     }
 
-    /// `process.user` for the image configuration's `User` (`user`, `uid`, `user:group`, `uid:gid`
-    /// and the mixed forms), names looked up in the root's `/etc/passwd` and `/etc/group`.
+    /// Returns `process.user` for the image configuration's `User`, its names looked up in `/etc/passwd` and `/etc/group`.
+    ///
+    /// It takes `user`, `uid`, `user:group`, `uid:gid` and the mixed forms.
     fn user(&self, text: &str) -> Result<User, Error> {
         let passwd = self.table(PASSWD);
         let group = self.table(GROUP);
@@ -306,7 +350,7 @@ impl Image {
             },
             None => account
                 .and_then(|fields| fields.get(field::GID)?.parse().ok())
-                .unwrap_or(0),
+                .unwrap_or(ROOT_ID),
         };
         let mut user = User::default();
         user.set_uid(uid);
@@ -318,15 +362,15 @@ impl Image {
         Ok(user)
     }
 
-    /// The user where the image names none: root, in its groups, as Docker gives it.
+    /// Returns the user where the image names none: root, in its groups, as Docker gives it.
     fn root(&self) -> User {
         let passwd = self.table(PASSWD);
         let account = passwd
             .iter()
-            .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(0));
+            .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(ROOT_ID));
         let gid = account
             .and_then(|fields| fields.get(field::GID)?.parse().ok())
-            .unwrap_or(0);
+            .unwrap_or(ROOT_ID);
         let mut user = User::default();
         user.set_gid(gid);
         let name = account.and_then(|fields| fields.get(field::NAME).copied());
@@ -336,8 +380,7 @@ impl Image {
         user
     }
 
-    /// The additional groups of the user `name` whose group is `gid`, as Docker gives them: `gid`,
-    /// then each group `/etc/group` lists the user in, in its order.
+    /// Returns the groups of the user `name` of group `gid`, as Docker gives them: `gid`, then those listing it in order.
     fn groups(&self, name: &str, gid: u32) -> Vec<u32> {
         let members = self
             .table(GROUP)
@@ -351,17 +394,17 @@ impl Image {
         std::iter::once(gid).chain(members).collect()
     }
 
-    /// The home directory of `uid` in the root's `/etc/passwd`, or `/` as runc has it.
+    /// Returns the home directory of `uid` in the root's `/etc/passwd`, or `/` as runc has it.
     pub(crate) fn home(&self, uid: u32) -> String {
         self.table(PASSWD)
             .iter()
             .find(|fields| fields.get(field::UID).and_then(|f| f.parse().ok()) == Some(uid))
             .and_then(|fields| fields.get(field::HOME))
             .filter(|home| !home.is_empty())
-            .map_or_else(|| "/".to_string(), |home| home.to_string())
+            .map_or_else(|| ROOT_PATH.to_string(), |home| home.to_string())
     }
 
-    /// The lines of a colon-separated table in the root, such as `/etc/passwd`, split into fields.
+    /// Returns the lines of a colon-separated table in the root, such as `/etc/passwd`, split into fields.
     fn table(&self, path: &str) -> Vec<Vec<&str>> {
         match self.lookup(path.as_bytes()) {
             Some(Entry {
@@ -370,36 +413,35 @@ impl Image {
             }) => std::str::from_utf8(bytes)
                 .unwrap_or("")
                 .lines()
-                .filter(|line| !line.starts_with(COMMENT))
+                .filter(|line| !line.starts_with(COMMENT_START))
                 .map(|line| line.split(FIELD_SEPARATOR).collect())
                 .collect(),
             _ => Vec::new(),
         }
     }
 
-    /// The file at `path` (from the root, with `/` between parts), following symbolic links.
+    /// Returns the file at `path` (from the root, with `/` between parts), following symbolic links.
     fn lookup(&self, path: &[u8]) -> Option<&Entry> {
         let mut parts: Vec<Vec<u8>> = split(path).rev().map(<[u8]>::to_vec).collect();
         let mut at: Vec<Vec<u8>> = Vec::new();
-        let mut links = 0;
+        let mut links = usize::MIN;
         while let Some(part) = parts.pop() {
-            match part.as_slice() {
-                b"." => continue,
-                b".." => {
-                    at.pop();
-                    continue;
-                }
-                _ => {}
+            if part == CURRENT_PART {
+                continue;
+            }
+            if part == PARENT_PART {
+                at.pop();
+                continue;
             }
             at.push(part);
-            let entry = self.files.get(&at.join(&b'/'))?;
+            let entry = self.files.get(&at.join(&SEPARATOR_BYTE))?;
             if let Kind::Symlink(target) = &entry.kind {
                 links += 1;
                 if links > MOST_LINKS {
                     return None;
                 }
                 at.pop();
-                if target.starts_with(b"/") {
+                if target.starts_with(&[SEPARATOR_BYTE]) {
                     at.clear();
                 }
                 parts.extend(split(target).rev().map(<[u8]>::to_vec));
@@ -407,19 +449,19 @@ impl Image {
                 return None;
             }
         }
-        self.files.get(&at.join(&b'/'))
+        self.files.get(&at.join(&SEPARATOR_BYTE))
     }
 
-    /// The program `process.args[0]` names, as runc finds it: a name with a slash from the working
-    /// directory, any other name in the directories of `PATH` in `env`, the first that is a file anyone
-    /// may run. None for a name with no slash found in none of them; a path with a slash is the
-    /// kernel's to fail as exec does.
+    /// Returns the program `process.args[0]` names, as runc finds it, or none for a name with no slash found nowhere.
+    ///
+    /// A name with a slash is from the working directory, and the kernel's to fail as exec does; any other is the first
+    /// file anyone may run in the directories of `PATH` in `env`.
     pub(crate) fn program(&self, name: &str, env: &[String], cwd: &str) -> Option<String> {
-        if name.contains('/') {
-            return Some(if name.starts_with('/') {
+        if name.contains(SEPARATOR) {
+            return Some(if name.starts_with(SEPARATOR) {
                 name.to_string()
             } else {
-                format!("{}/{name}", cwd.trim_end_matches('/'))
+                format!("{}{SEPARATOR}{name}", cwd.trim_end_matches(SEPARATOR))
             });
         }
         let path = env
@@ -429,7 +471,7 @@ impl Image {
             .unwrap_or("");
         path.split(PATH_LIST_SEPARATOR)
             .filter(|directory| !directory.is_empty())
-            .map(|directory| format!("{}/{name}", directory.trim_end_matches('/')))
+            .map(|directory| format!("{}{SEPARATOR}{name}", directory.trim_end_matches(SEPARATOR)))
             .find(|candidate| {
                 matches!(
                     self.lookup(candidate.as_bytes()),
@@ -438,8 +480,7 @@ impl Image {
             })
     }
 
-    /// Puts the files in a new kernel's root, directories before what they hold and hard links last,
-    /// with the files Docker writes in every container in place of the image's own.
+    /// Puts the files in a new kernel's root, directories first and hard links last, with Docker's own files in place.
     pub(crate) fn add_to(&self, kernel: &mut Kernel, hostname: &str) -> Result<(), Error> {
         let written = docker_files(hostname);
         let etc = match self.files.get(ETC) {
@@ -492,8 +533,7 @@ impl Image {
     }
 }
 
-/// What Docker writes over its mounts in every container: the host name, the hosts file with the
-/// kernel's made-up address for it, and the kernel's name server.
+/// Returns what Docker writes over its mounts in every container: the host name, the hosts file and the name server.
 fn docker_files(hostname: &str) -> Vec<(Vec<u8>, Entry)> {
     let address = std::net::Ipv4Addr::from(wcontainers_kernel_linux::network::ADDRESS);
     let name_server = std::net::Ipv4Addr::from(wcontainers_kernel_linux::network::NAME_SERVER);
@@ -514,22 +554,22 @@ fn docker_files(hostname: &str) -> Vec<(Vec<u8>, Entry)> {
     ]
 }
 
-/// An entry owned by root, dated at 0 so that a run repeats.
+/// Returns an entry owned by root and dated at the epoch, so that a run repeats.
 fn docker_file(mode: u32, kind: Kind) -> Entry {
     Entry {
         attributes: Attributes {
             mode,
-            uid: 0,
-            gid: 0,
-            mtime_seconds: 0,
+            uid: ROOT_ID,
+            gid: ROOT_ID,
+            mtime_seconds: EPOCH_SECONDS,
         },
         kind,
     }
 }
 
-/// The parts of a path, without empty ones.
+/// Returns the parts of a path, without empty ones.
 fn split(path: &[u8]) -> impl DoubleEndedIterator<Item = &[u8]> {
-    path.split(|byte| *byte == b'/')
+    path.split(|byte| *byte == SEPARATOR_BYTE)
         .filter(|part| !part.is_empty())
 }
 
@@ -548,7 +588,7 @@ fn blob_path(directory: &Path, descriptor: &Descriptor) -> PathBuf {
         .join(digest.digest())
 }
 
-/// A blob's bytes, checked against its descriptor's size and digest.
+/// Returns a blob's bytes, checked against its descriptor's size and digest.
 fn blob(directory: &Path, descriptor: &Descriptor) -> Result<Vec<u8>, Error> {
     let path = blob_path(directory, descriptor);
     let mut bytes = Vec::new();
@@ -575,7 +615,7 @@ fn blob(directory: &Path, descriptor: &Descriptor) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-/// The manifest for linux and `architecture` among an index's descriptors, through nested indexes.
+/// Returns the manifest for linux and `architecture` among an index's descriptors, through nested indexes.
 fn find_manifest(
     directory: &Path,
     descriptors: &[Descriptor],
@@ -647,8 +687,9 @@ fn apply_layer(
     }
 }
 
-/// A zstd stream's bytes, decompressed as libzstd does (RFC 8878): its frames one after another,
-/// skippable frames passed over, and each frame's checksum and declared size checked.
+/// A reader of a zstd stream's bytes, decompressed as libzstd does (RFC 8878).
+///
+/// Its frames come one after another, skippable frames passed over, each frame's checksum and declared size checked.
 struct Zstd<'a> {
     source: &'a [u8],
     decoder: FrameDecoder,
@@ -660,11 +701,21 @@ struct Zstd<'a> {
     begun: bool,
 }
 
-/// Where a zstd frame's header descriptor is, and its bits: the content size field's size, the
-/// single segment flag, and the bit that must be clear (RFC 8878 3.1.1.1.1).
+/// Where a zstd frame's header descriptor is, after the four bytes of its magic number.
+///
+/// https://www.rfc-editor.org/rfc/rfc8878#section-3.1.1
 const ZSTD_DESCRIPTOR_AT: usize = 4;
+/// The header descriptor's content size field's size.
+///
+/// https://www.rfc-editor.org/rfc/rfc8878#section-3.1.1.1.1
 const ZSTD_CONTENT_SIZE_FLAG: u8 = 0b1100_0000;
+/// The header descriptor's single segment flag.
+///
+/// https://www.rfc-editor.org/rfc/rfc8878#section-3.1.1.1.1
 const ZSTD_SINGLE_SEGMENT: u8 = 0b0010_0000;
+/// The header descriptor's bit that must be clear.
+///
+/// https://www.rfc-editor.org/rfc/rfc8878#section-3.1.1.1.1
 const ZSTD_RESERVED: u8 = 0b0000_1000;
 
 impl<'a> Zstd<'a> {
@@ -678,8 +729,7 @@ impl<'a> Zstd<'a> {
         }
     }
 
-    /// Checks the header descriptor of the frame that `header` starts with and the decoder has
-    /// just read, for what the decoder does not check.
+    /// Checks what the decoder does not of the header descriptor of the frame `header` starts, which it has just read.
     fn begin_frame(&mut self, header: &[u8]) -> std::io::Result<()> {
         let descriptor = header[ZSTD_DESCRIPTOR_AT];
         if descriptor & ZSTD_RESERVED != 0 {
@@ -689,7 +739,7 @@ impl<'a> Zstd<'a> {
             ));
         }
         self.declares_size = descriptor & (ZSTD_CONTENT_SIZE_FLAG | ZSTD_SINGLE_SEGMENT) != 0;
-        self.in_frame = Some(0);
+        self.in_frame = Some(u64::MIN);
         Ok(())
     }
 
@@ -716,13 +766,16 @@ impl<'a> Zstd<'a> {
 impl Read for Zstd<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         if buffer.is_empty() {
-            return Ok(0);
+            return Ok(usize::MIN);
         }
         loop {
             if let Some(given) = self.in_frame {
                 while self.decoder.can_collect() == 0 && !self.decoder.is_finished() {
                     self.decoder
-                        .decode_blocks(&mut self.source, BlockDecodingStrategy::UptoBlocks(1))
+                        .decode_blocks(
+                            &mut self.source,
+                            BlockDecodingStrategy::UptoBlocks(BLOCKS_AT_A_TIME),
+                        )
                         .map_err(std::io::Error::other)?;
                 }
                 let read = self.decoder.read(buffer)?;
@@ -735,7 +788,7 @@ impl Read for Zstd<'_> {
             }
             if self.source.is_empty() {
                 if self.begun {
-                    return Ok(0);
+                    return Ok(usize::MIN);
                 }
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -763,8 +816,7 @@ impl Read for Zstd<'_> {
     }
 }
 
-/// Applies one tar to the files: with `whiteouts`, as an OCI layer (`.wh.` names remove what lower
-/// layers hold, `.wh..wh..opq` empties a directory of it).
+/// Applies one tar to the files; with `whiteouts` as an OCI layer, whose `.wh.` names remove what lower layers hold.
 fn read_layer(
     reader: impl Read,
     name: &Path,
@@ -796,7 +848,7 @@ fn read_layer(
                 }
             }
         }
-        let (parent, base) = match path.iter().rposition(|byte| *byte == b'/') {
+        let (parent, base) = match path.iter().rposition(|byte| *byte == SEPARATOR_BYTE) {
             Some(at) => (&path[..at], &path[at + 1..]),
             None => (&path[..0], &path[..]),
         };
@@ -811,10 +863,11 @@ fn read_layer(
         let link = || -> Result<Vec<u8>, Error> {
             Ok(header
                 .link_name_bytes()
-                .ok_or_else(|| fail("a link without a target".to_string()))?
+                .ok_or_else(|| fail(LINK_WITHOUT_TARGET.to_string()))?
                 .into_owned())
         };
-        let device = |number: std::io::Result<Option<u32>>| number.ok().flatten().unwrap_or(0);
+        let device =
+            |number: std::io::Result<Option<u32>>| number.ok().flatten().unwrap_or(u32::MIN);
         let kind = match header.entry_type() {
             tar::EntryType::Directory => Kind::Directory,
             tar::EntryType::Regular | tar::EntryType::Continuous => {
@@ -825,9 +878,9 @@ fn read_layer(
                 Kind::Regular(bytes)
             }
             tar::EntryType::Symlink => Kind::Symlink(link()?),
-            tar::EntryType::Link => Kind::HardLink(
-                clean(&link()?).ok_or_else(|| fail("a link out of the root".into()))?,
-            ),
+            tar::EntryType::Link => {
+                Kind::HardLink(clean(&link()?).ok_or_else(|| fail(LINK_OUT_OF_ROOT.into()))?)
+            }
             tar::EntryType::Char => Kind::CharacterDevice {
                 major: device(header.device_major()),
                 minor: device(header.device_minor()),
@@ -871,15 +924,15 @@ fn read_layer(
     Ok(())
 }
 
-/// Everything under the directory at `path`.
+/// Removes everything under the directory at `path`.
 fn remove_below(files: &mut BTreeMap<Vec<u8>, Entry>, path: &[u8]) {
     if path.is_empty() {
         files.retain(|key, _| key.is_empty());
         return;
     }
     // Paths under it run from "path/" to just before "path0", '0' following '/'.
-    let first = [path, b"/"].concat();
-    let end = [path, b"0"].concat();
+    let first = [path, &[SEPARATOR_BYTE]].concat();
+    let end = [path, &[SEPARATOR_BYTE + 1]].concat();
     let below: Vec<Vec<u8>> = files
         .range(first..end)
         .map(|(key, _)| key.clone())
@@ -893,28 +946,24 @@ fn join(directory: &[u8], name: &[u8]) -> Vec<u8> {
     if directory.is_empty() {
         name.to_vec()
     } else {
-        [directory, b"/", name].concat()
+        [directory, &[SEPARATOR_BYTE], name].concat()
     }
 }
 
-/// A path from the root without a leading slash, `.` parts or a trailing slash; none when `..` would
-/// leave the root.
+/// Returns a path from the root with no leading slash, `.` part or trailing slash; none when `..` would leave the root.
 fn clean(path: &[u8]) -> Option<Vec<u8>> {
     let mut parts: Vec<&[u8]> = Vec::new();
     for part in split(path) {
-        match part {
-            b"." => {}
-            b".." => {
-                parts.pop()?;
-            }
-            _ => parts.push(part),
+        if part == PARENT_PART {
+            parts.pop()?;
+        } else if part != CURRENT_PART {
+            parts.push(part);
         }
     }
-    Some(parts.join(&b'/'))
+    Some(parts.join(&SEPARATOR_BYTE))
 }
 
-/// The image's environment with the runtime's defaults (such as `PATH`) for the names it lacks, so
-/// that a default never removes or changes one of the image's variables.
+/// Returns the image's environment with the runtime's defaults (such as `PATH`) for the names it lacks, and no other.
 fn with_defaults(defaults: Vec<String>, image: Vec<String>) -> Vec<String> {
     let name = |variable: &str| variable.split(ASSIGNMENT).next().unwrap_or("").to_string();
     let named: Vec<String> = image.iter().map(|v| name(v)).collect();
@@ -930,8 +979,7 @@ mod tests {
     use super::*;
     use wcontainers_kernel_linux::linux::general::S_IWGRP;
 
-    /// A tar of (path, contents) pairs: a path ending in `/` is a directory, contents starting with
-    /// `->` a symbolic link.
+    /// Returns a tar of (path, contents) pairs: a path ending in `/` is a directory, contents starting with `->` a link.
     fn layer(entries: &[(&str, &str)]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
         for (path, contents) in entries {
@@ -976,8 +1024,8 @@ mod tests {
         }
         let configuration = config.map(|config| {
             serde_json::from_value(serde_json::json!({
-                "architecture": "arm64", "os": "linux",
-                "rootfs": {"type": "layers", "diff_ids": []},
+                "architecture": "arm64", "os": Os::Linux,
+                "rootfs": oci_spec::image::RootFs::default(),
                 "config": config,
             }))
             .unwrap()
@@ -1031,7 +1079,7 @@ mod tests {
                 ("usr/", ""),
                 ("usr/bin", "->../bin"),
                 ("tmp/", ""),
-                ("tmp/run", "\x7fELF"),
+                ("tmp/program", "\x7fELF"),
             ]],
             None,
         );
@@ -1039,8 +1087,11 @@ mod tests {
         let found = |name, cwd| image.program(name, &env, cwd);
         assert_eq!(found("sh", "/").as_deref(), Some("/usr/bin/sh"));
         // Never from the working directory, which holds it.
-        assert_eq!(found("run", "/tmp"), None);
-        assert_eq!(found("./run", "/tmp").as_deref(), Some("/tmp/./run"));
+        assert_eq!(found("program", "/tmp"), None);
+        assert_eq!(
+            found("./program", "/tmp").as_deref(),
+            Some("/tmp/./program")
+        );
     }
 
     #[test]
@@ -1068,10 +1119,7 @@ mod tests {
         );
         assert_eq!(
             process.env().as_ref().unwrap(),
-            &[
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "A=1"
-            ]
+            &[crate::spec::DEFAULT_PATH, "A=1"]
         );
         assert_eq!(process.cwd(), Path::new("/srv"));
         assert_eq!((process.user().uid(), process.user().gid()), (100, 101));
@@ -1119,8 +1167,7 @@ mod tests {
         assert_eq!(process.env().as_ref().unwrap(), &["PATH=/bin"]);
     }
 
-    /// With no `User`, as Docker: root, in its own group and then the groups that list it, in file
-    /// order.
+    /// Checks that with no `User`, as Docker, the user is root in its own group, then those that list it in file order.
     #[test]
     fn an_image_without_a_user_runs_as_root_in_its_groups() {
         let files: &[(&str, &str)] = &[
@@ -1152,7 +1199,7 @@ web:x:2:
         }
     }
 
-    /// A layer of every kind of entry the layers hold, with the whiteouts of one above it.
+    /// Returns a layer of every kind of entry the layers hold, with the whiteouts of one above it.
     fn layers_of_every_kind() -> [Vec<u8>; 2] {
         let mut builder = tar::Builder::new(Vec::new());
         let mut append = |path: &str, kind, mode, link: Option<&str>, contents: &[u8]| {
@@ -1221,7 +1268,7 @@ web:x:2:
         [lower, upper]
     }
 
-    /// A descriptor of `bytes` as a blob of `media_type`.
+    /// Returns a descriptor of `bytes` as a blob of `media_type`.
     fn descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
         let digest = format!("sha256:{:x}", Sha256::digest(bytes));
         Descriptor::new(
@@ -1231,7 +1278,7 @@ web:x:2:
         )
     }
 
-    /// The files the layers give, each compressed by `compress` as a layer of `media_type`.
+    /// Returns the files the layers give, each compressed by `compress` as a layer of `media_type`.
     fn unpacked(
         layers: &[Vec<u8>],
         media_type: MediaType,
@@ -1252,7 +1299,7 @@ web:x:2:
         encoder.finish().unwrap()
     }
 
-    /// `bytes` as libzstd compresses them at `level`, with a checksum and the content size.
+    /// Returns `bytes` as libzstd compresses them at `level`, with a checksum and the content size.
     fn libzstd(bytes: &[u8], level: i32) -> Vec<u8> {
         let mut encoder = zstd::stream::Encoder::new(Vec::new(), level).unwrap();
         encoder.include_checksum(true).unwrap();
@@ -1263,7 +1310,7 @@ web:x:2:
         encoder.finish().unwrap()
     }
 
-    /// A skippable frame of `length` bytes, with the `n`th of its magic numbers (RFC 8878 3.1.2).
+    /// Returns a skippable frame of `length` bytes, with the `n`th of its magic numbers (RFC 8878 3.1.2).
     fn skippable(n: u32, length: u32) -> Vec<u8> {
         let mut frame = (0x184D_2A50 + n).to_le_bytes().to_vec();
         frame.extend(length.to_le_bytes());
@@ -1271,7 +1318,7 @@ web:x:2:
         frame
     }
 
-    /// What our reader gives of `stream`, read in pieces of `piece` bytes.
+    /// Returns what our reader gives of `stream`, read in pieces of `piece` bytes.
     fn ours(stream: &[u8], piece: usize) -> std::io::Result<Vec<u8>> {
         let mut reader = Zstd::new(stream);
         let mut out = Vec::new();
@@ -1315,9 +1362,10 @@ web:x:2:
         );
     }
 
-    /// Seeded random streams of several frames, with and without checksums and sizes, skippable
-    /// frames between them and after the last, decode as libzstd decodes them. `ZSTD_SEED` (0 if unset) and
-    /// `ZSTD_CASES` (100 if unset) choose them.
+    /// Checks that seeded random streams of several frames, skippable ones among them, decode as libzstd decodes them.
+    ///
+    /// Frames come with and without checksums and sizes; `ZSTD_SEED` (0 if unset) and `ZSTD_CASES` (100 if unset)
+    /// choose the streams.
     #[test]
     fn zstd_streams_decode_as_libzstd_decodes_them() {
         let seed: u64 = std::env::var("ZSTD_SEED").map_or(0, |seed| seed.parse().unwrap());
@@ -1370,7 +1418,7 @@ web:x:2:
         eprintln!("{cases} cases of seed {seed}");
     }
 
-    /// Streams libzstd refuses are refused.
+    /// Checks that streams libzstd refuses, cut, changed, sized wrongly or with a reserved bit set, are refused too.
     #[test]
     fn damaged_zstd_streams_are_refused_as_libzstd_refuses_them() {
         let data: Vec<u8> = (0..99_991u32)

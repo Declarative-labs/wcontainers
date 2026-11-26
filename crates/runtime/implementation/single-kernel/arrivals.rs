@@ -1,4 +1,5 @@
 //! What the system's threads hand the kernel: the network's changes and the standard input's bytes.
+//!
 //! Each arrival wakes the system's delivery thread and ends a free turn.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,8 +10,7 @@ use crate::StopFlag;
 
 /// What arrived from outside for the kernel.
 pub(crate) enum Arrival {
-    /// A socket can be read or written, or a connection finished connecting; `key` is its key in
-    /// the network's poller.
+    /// A socket that can be read or written, or whose connection finished connecting, by its key in the network's poller.
     Ready {
         key: usize,
         readable: bool,
@@ -24,7 +24,7 @@ pub(crate) enum Arrival {
     InputEnded(Option<std::io::Error>),
 }
 
-/// Arrivals from the network's threads and the input's reader, which wake the delivery thread and end a free turn.
+/// A queue of what the network's threads and the input's reader hand over, which wakes the delivery thread and ends a free turn.
 #[derive(Default)]
 pub(crate) struct Arrivals {
     queue: Mutex<Vec<Arrival>>,
@@ -53,7 +53,7 @@ impl Arrivals {
         *self.flag.lock().unwrap_or_else(PoisonError::into_inner) = Some(flag);
     }
 
-    /// What arrived, if anything did.
+    /// Returns what arrived, if anything did.
     pub(crate) fn take(&self) -> Vec<Arrival> {
         if !self.pending.swap(false, Ordering::SeqCst) {
             return Vec::new();

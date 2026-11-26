@@ -34,16 +34,15 @@ use wcontainers_volatile_bytes::VolatileBytes;
 use crate::LocalSystem;
 use crate::host_call::{receive_into, send_from};
 
-/// A TCP connection or listener, or a UDP socket, of the local system, by the network's number
-/// of it.
+/// A TCP connection or listener, or a UDP socket, of the local system, by the network's number of it.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NetworkHandle(pub(crate) u32);
 
 /// Gives the unspecified address of a peer's family, for a local address the host chooses.
 fn unspecified(peer: SocketAddr) -> SocketAddr {
     match peer {
-        SocketAddr::V4(_) => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
-        SocketAddr::V6(_) => SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), 0),
+        SocketAddr::V4(_) => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), u16::MIN),
+        SocketAddr::V6(_) => SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), u16::MIN),
     }
 }
 
@@ -75,13 +74,13 @@ impl<E> TcpConnections for LocalSystem<E> {
         let connection = self
             .state()
             .network()
-            .tcp_connect(peer)
+            .connect_tcp(peer)
             .map_err(TcpLocalEndError::Unbound)?;
         Ok(TcpConnected {
             connection: NetworkHandle(connection),
             local: unspecified(peer),
             start: TcpConnectStart::SynchronizeSent {
-                fast_open_data_taken: ByteCount(0),
+                fast_open_data_taken: ByteCount(usize::MIN),
             },
         })
     }
@@ -93,7 +92,7 @@ impl<E> TcpConnections for LocalSystem<E> {
         payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
         send_from(payload, |bytes| {
-            self.state().network().tcp_send(connection.0, bytes)
+            self.state().network().send_tcp(connection.0, bytes)
         })
         .map(ByteCount)
     }
@@ -114,7 +113,7 @@ impl<E> TcpConnections for LocalSystem<E> {
         let length = receive_into(into, |bytes| {
             self.state()
                 .network()
-                .tcp_receive(connection.0, bytes, peek)
+                .receive_tcp(connection.0, bytes, peek)
         })?;
         Ok(TcpReceived {
             length: ByteCount(length),
@@ -152,16 +151,16 @@ impl<E> TcpConnections for LocalSystem<E> {
             TcpShutdown::Write => Shutdown::Write,
             TcpShutdown::ReadAndWrite => Shutdown::Both,
         };
-        self.state().network().tcp_shut_down(connection.0, how)
+        self.state().network().shut_down_tcp(connection.0, how)
     }
 
     fn close(&self, connection: Self::Connection, _manner: TcpClose) {
-        self.state().network().tcp_close(connection.0);
+        self.state().network().close_tcp(connection.0);
     }
 
     /// Closes the connection, whose port no bind of its own holds, leaving the reset Linux leaves pending.
     fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket> {
-        self.state().network().tcp_close(connection.0);
+        self.state().network().close_tcp(connection.0);
         TcpDisconnected {
             bound_socket: None,
             pending_error: Some(Errno::ECONNRESET),
@@ -236,7 +235,7 @@ impl<E> TcpListeners for LocalSystem<E> {
         let listener = self
             .state()
             .network()
-            .tcp_listen(port.0)
+            .listen_tcp(port.0)
             .map_err(TcpLocalEndError::Unbound)?;
         Ok(TcpListening {
             listener: NetworkHandle(listener),
@@ -249,14 +248,14 @@ impl<E> TcpListeners for LocalSystem<E> {
         listener: &Self::Listener,
         synchronize_header: &'a mut [u8],
     ) -> Result<TcpAccepted<'a, Self::Connection>, HostError> {
-        let connection = self.state().network().tcp_accept(listener.0)?;
-        let unknown = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0);
+        let connection = self.state().network().accept_tcp(listener.0)?;
+        let unknown = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), u16::MIN);
         Ok(TcpAccepted {
             connection: NetworkHandle(connection),
             peer: unknown,
             local: unknown,
             synchronize: ReceivedPacketFields {
-                length: 0,
+                length: usize::MIN,
                 interface: InterfaceIndex(NonZeroU32::MIN),
                 specific_destination: None,
                 largest_fragment: None,
@@ -265,9 +264,9 @@ impl<E> TcpListeners for LocalSystem<E> {
                     software: None,
                     hardware: None,
                 },
-                mark: PacketMark(0),
-                priority: PacketPriority(0),
-                drops_since_previous: DropCount(0),
+                mark: PacketMark(u32::MIN),
+                priority: PacketPriority(u32::MIN),
+                drops_since_previous: DropCount(u32::MIN),
             },
             synchronize_header: &synchronize_header[..0],
         })
@@ -298,7 +297,7 @@ impl<E> TcpListeners for LocalSystem<E> {
     }
 
     fn stop_listening(&self, listener: Self::Listener) {
-        self.state().network().tcp_close(listener.0);
+        self.state().network().close_tcp(listener.0);
     }
 }
 

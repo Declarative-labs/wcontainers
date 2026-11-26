@@ -1,5 +1,4 @@
-//! The Linux error number for an error of the host the local system runs on, whose numbers may differ
-//! (macOS's do).
+//! The Linux error number for an error of the host the local system runs on, whose numbers may differ (macOS's do).
 
 use rustix::io::Errno as Host;
 use wcontainers_kernel::errno::Errno;
@@ -68,7 +67,7 @@ const NUMBERS: &[(Host, u32)] = &[
     (Host::NOBUFS, Errno::ENOBUFS as u32),
 ];
 
-/// Linux's number for a host error; none for one Linux has no number for.
+/// Returns Linux's number for a host error; none for one Linux has no number for.
 pub(crate) fn linux(error: Host) -> Option<u32> {
     NUMBERS
         .iter()
@@ -76,8 +75,7 @@ pub(crate) fn linux(error: Host) -> Option<u32> {
         .map(|&(_, number)| number)
 }
 
-/// Linux's number for a host error from the standard library; none for one Linux has no number
-/// for, or one the host gave no number for.
+/// Returns Linux's number for a standard library error; none for one Linux or the host has no number for.
 pub(crate) fn of_io(error: &std::io::Error) -> Option<u32> {
     error
         .raw_os_error()

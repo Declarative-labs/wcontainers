@@ -1,7 +1,7 @@
-//! The local system's network: the container's connections to the world outside are sockets of the
-//! host, names are looked up by the host's resolver, and a container's TCP port is reached from the
-//! host where it is published. A thread of its own waits for the sockets and raises the stop flag
-//! when one changes, as a lookup's thread does when it finishes.
+//! The local system's network: the container's connections are the host's sockets, reached from the host where published.
+//!
+//! A thread of its own waits for the sockets and raises the stop flag when one changes, as a lookup's thread does when
+//! it finishes.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
@@ -29,23 +29,26 @@ const NETWORK_THREAD: &str = "wcontainers network";
 const WAKE: Token = Token(usize::MAX);
 
 /// The most changes taken from the host in one wait; the rest come with the next.
-const EVENTS_AT_ONCE: usize = 1024;
+///
+/// https://docs.rs/mio/1.2.5/mio/struct.Events.html#method.with_capacity
+const CHANGES_PER_WAIT: usize = 1024;
 
-/// What the poller is asked for when neither reading nor writing is, as it takes at least one: on Linux urgent data,
-/// which a socket here has only beside an error; elsewhere readable, as kqueue reports errors and hang-ups only with a
-/// filter.
+/// What the poller is asked for when neither reading nor writing is, as it takes at least one.
+///
+/// On Linux urgent data, which a socket here has only beside an error; elsewhere readable, as kqueue reports errors and
+/// hang-ups only with a filter.
 #[cfg(target_os = "linux")]
 const LEAST: Interest = Interest::PRIORITY;
 #[cfg(not(target_os = "linux"))]
 const LEAST: Interest = Interest::READABLE;
 
-/// A report of nothing ready.
+/// The report a wait gets before the poller tells of any change.
 const NOTHING: ReadinessReport = ReadinessReport {
     ready_for: ReadyFor::empty(),
     unconditional: UnconditionalEvents::empty(),
 };
 
-/// Whether `ready` ends a wait for `interest`: something asked, an error or a hang-up.
+/// Returns whether `ready` ends a wait for `interest`: something asked, an error or a hang-up.
 fn ends_wait(ready: &ReadinessReport, interest: ReadyFor) -> bool {
     ready.ready_for.intersects(interest) || !ready.unconditional.is_empty()
 }
@@ -101,13 +104,14 @@ pub(crate) struct Network {
     published: HashMap<u16, SocketAddr>,
 }
 
-/// The poller's token of a socket.
+/// Returns the poller's token of a socket.
 fn token(id: u32) -> Token {
     Token(id as usize)
 }
 
-/// Asks the poller for the socket's next change of what is asked, which [`Network::ready`] takes, so one is told at most
-/// once per asking; one ready already is told at once.
+/// Asks the poller for the socket's next change of what is asked, which [`Network::mark_ready`] takes.
+///
+/// So a change is told at most once per asking; one ready already is told at once.
 fn arm(
     registry: &Registry,
     socket: BorrowedFd<'_>,
@@ -144,14 +148,14 @@ fn disarm(registry: &Registry, socket: BorrowedFd<'_>, armed: &mut bool) {
     }
 }
 
-/// Linux's number for a host error, or `otherwise` when Linux has none.
+/// Returns Linux's number for a host error, or `otherwise` when Linux has none.
 fn linux_error(error: &std::io::Error, otherwise: u32) -> i32 {
     errno::of_io(error).unwrap_or(otherwise) as i32
 }
 
 /// Waits for the sockets armed, and tells of each change.
 fn watch(mut poller: Poller, arrivals: &Arrivals, gone: &AtomicBool) {
-    let mut events = Events::with_capacity(EVENTS_AT_ONCE);
+    let mut events = Events::with_capacity(CHANGES_PER_WAIT);
     loop {
         if poller.poll(&mut events, None).is_err() || gone.load(Ordering::SeqCst) {
             return;
@@ -198,7 +202,7 @@ impl Network {
             datagrams: HashMap::new(),
             streams: HashMap::new(),
             listeners: HashMap::new(),
-            last: 0,
+            last: u32::MIN,
             published: HashMap::new(),
         }
     }
@@ -213,7 +217,7 @@ impl Network {
     }
 
     /// Opens a UDP socket of IPv6 or IPv4, bound to a port the host chooses; its number.
-    pub(crate) fn udp_open(&mut self, ipv6: bool) -> Result<u32, HostError> {
+    pub(crate) fn open_udp(&mut self, ipv6: bool) -> Result<u32, HostError> {
         let any = if ipv6 {
             SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), u16::MIN)
         } else {
@@ -235,7 +239,7 @@ impl Network {
     }
 
     /// Connects a UDP socket to an outside address; its local address.
-    pub(crate) fn udp_connect(&mut self, id: u32, to: SocketAddr) -> Result<SocketAddr, HostError> {
+    pub(crate) fn connect_udp(&mut self, id: u32, to: SocketAddr) -> Result<SocketAddr, HostError> {
         let datagram = self.datagrams.get_mut(&id).ok_or(HostError::Closed)?;
         datagram
             .socket
@@ -248,7 +252,7 @@ impl Network {
             .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENOTCONN as u32)))
     }
 
-    pub(crate) fn udp_send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
+    pub(crate) fn send_udp(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
         let datagram = self.datagrams.get_mut(&id).ok_or(HostError::Closed)?;
         match datagram.socket.send(bytes) {
             Ok(count) => Ok(count),
@@ -258,7 +262,7 @@ impl Network {
     }
 
     /// Receives one datagram as the whole packet from its IP header; the packet's length.
-    pub(crate) fn udp_receive(&mut self, id: u32, into: &mut [u8]) -> Result<usize, HostError> {
+    pub(crate) fn receive_udp(&mut self, id: u32, into: &mut [u8]) -> Result<usize, HostError> {
         let datagram = self.datagrams.get_mut(&id).ok_or(HostError::Closed)?;
         let peer = datagram
             .peer
@@ -275,14 +279,14 @@ impl Network {
         })
     }
 
-    pub(crate) fn udp_close(&mut self, id: u32) {
+    pub(crate) fn close_udp(&mut self, id: u32) {
         if let Some(mut datagram) = self.datagrams.remove(&id) {
             disarm(&self.registry, datagram.socket.as_fd(), &mut datagram.armed);
         }
     }
 
     /// Starts a TCP connection to `to`, without waiting; its number.
-    pub(crate) fn tcp_connect(&mut self, to: SocketAddr) -> Result<u32, HostError> {
+    pub(crate) fn connect_tcp(&mut self, to: SocketAddr) -> Result<u32, HostError> {
         let socket = RawSocket::new(Domain::for_address(to), Type::STREAM, Some(Protocol::TCP))
             .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
             .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENETUNREACH as u32)))?;
@@ -317,7 +321,7 @@ impl Network {
         Ok(id)
     }
 
-    pub(crate) fn tcp_send(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
+    pub(crate) fn send_tcp(&mut self, id: u32, bytes: &[u8]) -> Result<usize, HostError> {
         let stream = self.streams.get_mut(&id).ok_or(HostError::Closed)?;
         let socket = stream.socket.as_mut().ok_or(HostError::Closed)?;
         match socket.write(bytes) {
@@ -328,7 +332,7 @@ impl Network {
     }
 
     /// Receives or peeks; zero bytes is the end of the stream.
-    pub(crate) fn tcp_receive(
+    pub(crate) fn receive_tcp(
         &mut self,
         id: u32,
         into: &mut [u8],
@@ -351,7 +355,7 @@ impl Network {
         }
     }
 
-    pub(crate) fn tcp_shut_down(&mut self, id: u32, how: Shutdown) -> Result<(), HostError> {
+    pub(crate) fn shut_down_tcp(&mut self, id: u32, how: Shutdown) -> Result<(), HostError> {
         let stream = self.streams.get(&id).ok_or(HostError::Closed)?;
         let socket = stream.socket.as_ref().ok_or(HostError::Closed)?;
         socket
@@ -359,7 +363,7 @@ impl Network {
             .map_err(|e| HostError::Errno(linux_error(&e, Errno::ENOTCONN as u32)))
     }
 
-    pub(crate) fn tcp_close(&mut self, id: u32) {
+    pub(crate) fn close_tcp(&mut self, id: u32) {
         if let Some(mut stream) = self.streams.remove(&id)
             && let Some(socket) = &stream.socket
         {
@@ -372,9 +376,10 @@ impl Network {
         }
     }
 
-    /// Accepts connections to a container's port where it is published; a listener for a port
-    /// not published is closed to an accept. Its number.
-    pub(crate) fn tcp_listen(&mut self, port: u16) -> Result<u32, HostError> {
+    /// Returns the number of a listener that accepts connections to a container's port where it is published.
+    ///
+    /// A listener for a port not published is closed to an accept.
+    pub(crate) fn listen_tcp(&mut self, port: u16) -> Result<u32, HostError> {
         let socket = match self.published.get(&port) {
             Some(&at) => {
                 let socket = TcpListener::bind(at)
@@ -396,7 +401,7 @@ impl Network {
     }
 
     /// Takes one connection waiting on a listener; its number.
-    pub(crate) fn tcp_accept(&mut self, listener: u32) -> Result<u32, HostError> {
+    pub(crate) fn accept_tcp(&mut self, listener: u32) -> Result<u32, HostError> {
         let socket = self
             .listeners
             .get(&listener)
@@ -434,8 +439,9 @@ impl Network {
         Ok(id)
     }
 
-    /// What a socket is ready for, once it is ready for something asked (an error or a hang-up
-    /// always counts); until then the poller is asked and `waker` kept.
+    /// Returns what a socket is ready for once it is ready for something asked, an error or a hang-up.
+    ///
+    /// Until then the poller is asked and `waker` kept.
     pub(crate) fn poll_ready(
         &mut self,
         id: u32,
@@ -497,7 +503,7 @@ impl Network {
     }
 
     /// Wakes the wait on a socket the poller says changed.
-    fn ready(&mut self, id: u32, readable: bool, writable: bool) {
+    fn mark_ready(&mut self, id: u32, readable: bool, writable: bool) {
         if let Some(datagram) = self.datagrams.get_mut(&id) {
             disarm(&self.registry, datagram.socket.as_fd(), &mut datagram.armed);
             if readable {
@@ -553,8 +559,9 @@ impl Network {
         }
     }
 
-    /// Takes one arrival: a socket's wakes its wait, whose answer the kernel takes when it next settles; the
-    /// standard input's are handed over by the system.
+    /// Takes one arrival: a socket's wakes its wait, whose answer the kernel takes when it next settles.
+    ///
+    /// The standard input's are handed over by the system.
     pub(crate) fn arrived(&mut self, arrival: &Arrival) {
         if let Arrival::Ready {
             key,
@@ -562,7 +569,7 @@ impl Network {
             writable,
         } = *arrival
         {
-            self.ready(key as u32, readable, writable);
+            self.mark_ready(key as u32, readable, writable);
         }
     }
 }
@@ -630,7 +637,7 @@ mod tests {
     fn a_datagram_wakes_its_wait_once() {
         let arrivals = Arc::new(Arrivals::default());
         let mut network = Network::new(arrivals.clone());
-        let id = network.udp_open(false).expect("a UDP socket");
+        let id = network.open_udp(false).expect("a UDP socket");
         let port = network.datagrams[&id]
             .socket
             .local_addr()
@@ -638,7 +645,7 @@ mod tests {
             .port();
         let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, u16::MIN)).expect("a peer");
         network
-            .udp_connect(id, peer.local_addr().expect("the peer's address"))
+            .connect_udp(id, peer.local_addr().expect("the peer's address"))
             .expect("connect");
         let counted = Arc::new(Counted::default());
         let waker = Waker::from(counted.clone());
@@ -666,7 +673,7 @@ mod tests {
             other => panic!("the wait did not finish: {other:?}"),
         }
         assert_eq!(counted.count(), 1);
-        network.udp_close(id);
+        network.close_udp(id);
     }
 
     #[test]
@@ -678,7 +685,7 @@ mod tests {
             .local_addr()
             .expect("its address");
         network.publish(published.port(), published);
-        let listener = network.tcp_listen(published.port()).expect("listen");
+        let listener = network.listen_tcp(published.port()).expect("listen");
         let counted = Arc::new(Counted::default());
         let waker = Waker::from(counted.clone());
         assert!(
@@ -691,7 +698,7 @@ mod tests {
             woken(&mut network, &arrivals, &counted, 1),
             "woken by the connection"
         );
-        let stream = network.tcp_accept(listener).expect("accept");
+        let stream = network.accept_tcp(listener).expect("accept");
         assert!(
             network
                 .poll_ready(stream, ReadyFor::READABLE, &waker)
@@ -704,10 +711,10 @@ mod tests {
         );
         let mut into = [u8::MIN; 16];
         assert_eq!(
-            network.tcp_receive(stream, &mut into, false),
+            network.receive_tcp(stream, &mut into, false),
             Ok(b"bytes".len())
         );
-        network.tcp_close(stream);
-        network.tcp_close(listener);
+        network.close_tcp(stream);
+        network.close_tcp(listener);
     }
 }

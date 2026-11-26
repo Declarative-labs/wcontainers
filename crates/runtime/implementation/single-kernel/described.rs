@@ -1,5 +1,6 @@
-//! The local system as the system interface describes it: the kernel it serves, what programs read from their processor,
-//! the machine they are told of, and ICMP echo sockets, raw sockets and routes through the host's.
+//! The local system as the system interface describes it: the kernel it serves, processor inputs and the machine.
+//!
+//! Its ICMP echo sockets, raw sockets and routes are the host's.
 
 use core::cell::RefCell;
 use std::num::NonZeroUsize;
@@ -34,7 +35,7 @@ const OPENED_WITH_ITS_SOCKET: &str =
     "a socket is only given out once the host's sockets of its kind opened";
 
 /// The kernel a local system on the executor `E` serves; its processes carry no state of the system's.
-pub type LocalKernel<E> = KernelWithExecutor<E, (), LocalSystem<E>>;
+pub(crate) type LocalKernel<E> = KernelWithExecutor<E, (), LocalSystem<E>>;
 
 impl<E> ProcessTracer for LocalSystem<E>
 where
@@ -59,7 +60,7 @@ where
     }
 
     fn read_random_number<P: ProcessOf<(), LocalKernel<E>>>(&self, _: P, _: TaskId) -> u64 {
-        let mut bytes = [0; size_of::<u64>()];
+        let mut bytes = u64::MIN.to_ne_bytes();
         self.fill_random_bytes(&RefCell::new(&mut bytes[..]))
             .expect("the host gives random bytes");
         u64::from_ne_bytes(bytes)
@@ -81,7 +82,7 @@ where
         available
     }
 
-    /// What [`LocalSystem::describe_memory`] set as the container was made.
+    /// Returns what [`LocalSystem::describe_memory`] set as the container was made.
     fn report_memory_size<P: ProcessOf<(), LocalKernel<E>>>(&self, _: P) -> u64 {
         *self
             .machine_memory
@@ -285,7 +286,7 @@ impl<E> wcontainers_system::System for LocalSystem<E> where
 {
 }
 
-/// Every kernel this system can serve is served by the whole system interface.
+/// Checks, as it builds, that every kernel this system can serve is served by the whole system interface.
 #[cfg(test)]
 #[expect(dead_code, reason = "checked as it is built, never called")]
 fn serves_the_whole_interface<E>()

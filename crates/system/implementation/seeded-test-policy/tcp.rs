@@ -26,8 +26,8 @@ use crate::TestPolicy;
 use wcontainers_abi::Host;
 use wcontainers_volatile_bytes::VolatileBytes;
 
-/// The port a binding asks for, 0 where the exit node chooses it.
-fn port_asked(local: &LocalBinding<'_>) -> u16 {
+/// Returns the port a binding asks for, 0 where the exit node chooses it.
+fn binding_port(local: &LocalBinding<'_>) -> u16 {
     match local.port {
         LocalPort::Requested(port) | LocalPort::ChosenByKernel(port) => port.0,
         LocalPort::ChosenByExitNode(_) => u16::MIN,
@@ -62,7 +62,7 @@ impl<H: Host> TcpConnections for TestPolicy<H> {
         local: LocalBinding<'_>,
         _settings: &[BindingSetting<'_>],
     ) -> Result<TcpBound<Self::BoundSocket>, HostError> {
-        self.refuse(u64::from(port_asked(&local)))?;
+        self.refuse(u64::from(binding_port(&local)))?;
         Err(HostError::NotSupported)
     }
 
@@ -184,7 +184,7 @@ impl<H: Host> TcpListeners for TestPolicy<H> {
         _backlog: ListenBacklog,
         _settings: &[TcpListenerSetting<'_>],
     ) -> Result<TcpListening<Self::Listener>, TcpLocalEndError<Self::BoundSocket>> {
-        Err(refused(self, local, port_asked))
+        Err(refused(self, local, binding_port))
     }
 
     fn accept<'a>(

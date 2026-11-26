@@ -140,7 +140,7 @@ impl<E> UdpSockets for LocalSystem<E> {
         }
         self.state()
             .network()
-            .udp_open(version == IpVersion::V6)
+            .open_udp(version == IpVersion::V6)
             .map(NetworkHandle)
     }
 
@@ -158,7 +158,7 @@ impl<E> UdpSockets for LocalSystem<E> {
         route: RouteSelectors<'_>,
     ) -> Result<SocketAddr, HostError> {
         let to = destination(&route)?;
-        self.state().network().udp_connect(socket.0, to)
+        self.state().network().connect_udp(socket.0, to)
     }
 
     fn disconnect(&self, _socket: &Self::Socket) -> Result<UdpLocalEnd, HostError> {
@@ -174,7 +174,7 @@ impl<E> UdpSockets for LocalSystem<E> {
     ) -> Result<(), SendError> {
         self.state()
             .network()
-            .udp_send(socket.0, datagram.payload)
+            .send_udp(socket.0, datagram.payload)
             .map(|_| ())
             .map_err(SendError::Host)
     }
@@ -185,7 +185,7 @@ impl<E> UdpSockets for LocalSystem<E> {
         into: &impl VolatileBytes,
     ) -> Result<UdpReceived, HostError> {
         receive_into(into, |bytes| {
-            self.state().network().udp_receive(socket.0, bytes)
+            self.state().network().receive_udp(socket.0, bytes)
         })
         .map(received)
     }
@@ -206,7 +206,7 @@ impl<E> UdpSockets for LocalSystem<E> {
     }
 
     fn close(&self, socket: Self::Socket) {
-        self.state().network().udp_close(socket.0);
+        self.state().network().close_udp(socket.0);
     }
 }
 

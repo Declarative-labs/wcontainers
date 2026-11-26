@@ -1,5 +1,6 @@
-//! The local system's resolver: a name is looked up by the host's resolver on a thread of its own,
-//! and the answer is a DNS message made from the addresses found.
+//! The local system's resolver, which looks a name up with the host's on a thread of its own.
+//!
+//! The answer is a DNS message made from the addresses found.
 
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -17,6 +18,9 @@ use crate::arrivals::{Arrival, Arrivals};
 /// The name of the threads that look names up.
 const LOOKUP_THREAD: &str = "wcontainers lookup";
 
+/// The port the host's resolver is asked with, which the answer leaves out.
+const LOOKUP_PORT: u16 = u16::MIN;
+
 /// A resolver's answer, the message's bytes.
 pub type NameAnswer = Message<Vec<u8>>;
 
@@ -24,8 +28,9 @@ pub fn to_name_answer(bytes: Vec<u8>) -> Result<NameAnswer, HostError> {
     Message::from_octets(bytes).map_err(|_| HostError::Errno(Errno::EBADMSG as i32))
 }
 
-/// The answer to an address question from the addresses found for its name, of the kind asked
-/// (IPv4 ones for A, others for AAAA), each to be kept no time; "no such name" when none was found.
+/// Returns the answer to an address question from the addresses found for its name, or "no such name" when none was found.
+///
+/// The addresses are those of the kind asked (IPv4 ones for A, others for AAAA), each to be kept no time.
 pub fn address_answer(question: Question<&Name<[u8]>>, found: Option<&[IpAddr]>) -> Vec<u8> {
     let rcode = if found.is_some() {
         Rcode::NOERROR
@@ -63,8 +68,9 @@ struct Slot {
     waker: Option<Waker>,
 }
 
-/// Looks the question's name up on a thread of its own; the arrival it pushes when done wakes an
-/// idle system, which then hands the kernel the waiting call's answer.
+/// Looks the question's name up on a thread of its own.
+///
+/// The arrival it pushes when done wakes an idle system, which then hands the kernel the waiting call's answer.
 pub(crate) async fn resolve(
     arrivals: Arc<Arrivals>,
     question: Question<&Name<[u8]>>,
@@ -80,7 +86,7 @@ pub(crate) async fn resolve(
     let started = std::thread::Builder::new()
         .name(LOOKUP_THREAD.to_string())
         .spawn(move || {
-            let found: Option<Vec<IpAddr>> = (name.as_str(), 0)
+            let found: Option<Vec<IpAddr>> = (name.as_str(), LOOKUP_PORT)
                 .to_socket_addrs()
                 .ok()
                 .map(|found| found.map(|address| address.ip()).collect());

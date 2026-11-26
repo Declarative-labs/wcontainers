@@ -29,21 +29,39 @@ pub struct Parts<R: Runtime> {
     pub standard_error: EndpointOf<R>,
 }
 
-/// The exit status the shell scripts below end with.
+/// The exit status the shell scripts below end with, one no shell gives of its own.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
 const EXIT_CODE: u8 = 7;
 
 /// How long a thread waits before it interrupts a run that has started.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
 const BEFORE_INTERRUPTING: Duration = Duration::from_millis(200);
 
 /// How many shells run side by side in the parallel check.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
 const SIDE_BY_SIDE: usize = 4;
 
 /// How many times each of those shells goes round its loop.
+///
+/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
 const ROUNDS: usize = 2000;
 
-/// Asks a POSIX shell to run `script`.
+/// The POSIX shell the image holds, and its option that runs a script.
+const SHELL: &str = "sh";
+const SCRIPT_OPTION: &str = "-c";
+
+/// A program name no image holds.
+const MISSING_PROGRAM: &str = "no-program-has-this-name";
+
+/// A script that never ends by itself.
+const ENDLESS_SCRIPT: &str = "while :; do :; done";
+
+/// Returns the arguments that ask a POSIX shell to run `script`.
 fn shell(script: &str) -> Vec<String> {
-    ["sh", "-c", script].map(String::from).to_vec()
+    [SHELL, SCRIPT_OPTION, script].map(String::from).to_vec()
 }
 
 fn spec_running(image: &impl Image, args: Vec<String>) -> Spec {
@@ -90,13 +108,13 @@ fn exited() -> StopReason {
     StopReason::Finished(ProcessEnd::Exited { code: EXIT_CODE })
 }
 
-/// A container left alone runs to its end and reports its first process's exit status.
+/// Checks that a container left alone runs to its end and reports its first process's exit status.
 pub fn a_container_runs_to_its_end<R: Runtime>(subject: Subject<R>) {
     let (mut container, _interrupter) = made(&subject, shell(&format!("exit {EXIT_CODE}")));
     assert_eq!(container.run(), exited());
 }
 
-/// A container that has finished reports the same end to every later run.
+/// Checks that a container that has finished reports the same end to every later run.
 pub fn a_finished_container_stays_finished<R: Runtime>(subject: Subject<R>) {
     let (mut container, interrupter) = made(&subject, shell(&format!("exit {EXIT_CODE}")));
     assert_eq!(container.run(), exited());
@@ -104,19 +122,19 @@ pub fn a_finished_container_stays_finished<R: Runtime>(subject: Subject<R>) {
     assert_eq!(container.run(), exited());
 }
 
-/// A program named without a path and found in no directory of `PATH` is refused before anything runs.
+/// Checks that a program named without a path and in no directory of `PATH` is refused before anything runs.
 pub fn a_program_that_is_nowhere_is_refused<R: Runtime>(subject: Subject<R>) {
     let made = make(
         &subject,
-        vec!["no-program-has-this-name".to_string()],
+        vec![MISSING_PROGRAM.to_string()],
         (subject.parts)(),
     );
     assert!(matches!(made, Err(ContainerError::ProgramNotFound)));
 }
 
-/// An interrupt from another thread ends a run that would never end by itself, every time it is asked.
+/// Checks that an interrupt from another thread ends a run that would never end by itself, every time.
 pub fn an_interrupt_from_another_thread_stops_a_run<R: Runtime>(subject: Subject<R>) {
-    let (mut container, interrupter) = made(&subject, shell("while :; do :; done"));
+    let (mut container, interrupter) = made(&subject, shell(ENDLESS_SCRIPT));
     thread::scope(|scope| {
         for _ in 0..2 {
             let interrupting = scope.spawn(|| {
@@ -130,7 +148,7 @@ pub fn an_interrupt_from_another_thread_stops_a_run<R: Runtime>(subject: Subject
     });
 }
 
-/// An interrupt asked before a run ends that run alone; the next one goes on to the container's end.
+/// Checks that an interrupt asked before a run ends that run alone, and the next goes on to the container's end.
 pub fn a_run_goes_on_after_an_interrupt<R: Runtime>(subject: Subject<R>) {
     let (mut container, interrupter) = made(&subject, shell(&format!("exit {EXIT_CODE}")));
     interrupter.interrupt();
@@ -138,7 +156,7 @@ pub fn a_run_goes_on_after_an_interrupt<R: Runtime>(subject: Subject<R>) {
     assert_eq!(container.run(), exited());
 }
 
-/// Several shells working at once all run to their ends.
+/// Checks that several shells working at once all run to their ends.
 pub fn work_side_by_side_runs_to_its_end<R: Runtime>(subject: Subject<R>) {
     let script = format!(
         "for i in $(seq {SIDE_BY_SIDE}); do (j=0; while [ $j -lt {ROUNDS} ]; do j=$((j+1)); done) & done; wait; exit {EXIT_CODE}"
@@ -147,7 +165,7 @@ pub fn work_side_by_side_runs_to_its_end<R: Runtime>(subject: Subject<R>) {
     assert_eq!(container.run(), exited());
 }
 
-/// A host thread that dies inside a run ends the container as panicked, and nothing of it runs again.
+/// Checks that a host thread dying inside a run ends the container as panicked, and nothing of it runs again.
 pub fn a_host_thread_dying_inside_a_run_ends_the_container<R: Runtime>(subject: Subject<R>) {
     let (mut container, _interrupter) = make(
         &subject,
