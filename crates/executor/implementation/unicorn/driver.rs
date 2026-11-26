@@ -14,7 +14,7 @@ use wcontainers_clock::Clock as _;
 use wcontainers_executor::Executor;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::signal::Signal;
-use wcontainers_kernel::{ProcessEnd, StopReason};
+use wcontainers_kernel::{Kernel as _, ProcessEnd, StopReason};
 use wcontainers_kernel_linux::{
     AccessKind, FileRecord, Kernel, MemoryObject, Process, SignalInformation, Standard, Start,
     System, SystemCallResponse, TaskId,
@@ -125,8 +125,8 @@ pub struct Run {
     pub tape: Option<Tape>,
     /// What every guest memory held, for a run that kept a record.
     pub memories: MemoryDigests,
-    /// What the stand-in refused in a copy made at a save, which ends without dropping it, handed
-    /// back so the process it was copied from fails the test as its own stand-in goes.
+    /// What the stand-in refused that the run hands back rather than failing the test with as
+    /// the stand-in goes: nothing, as a stand-in a save replaces hands its refusals to the next.
     pub refused: Vec<crate::standin::Refused>,
 }
 
@@ -217,6 +217,14 @@ struct Injecting {
     notice_at: Vec<u64>,
     notices: StdRng,
     turns: u64,
+    /// Turn counts at which it is saved and brought back.
+    save_at: Vec<u64>,
+    /// How many times it was.
+    saved: usize,
+    /// The run's seed, which each new host's is drawn from.
+    seed: u64,
+    /// How much more the wall clock moves on than the monotonic clock at each save.
+    wall_step: u64,
 }
 
 impl Injecting {
@@ -228,7 +236,21 @@ impl Injecting {
             notice_at: moments_apart(seed ^ NOTICES_SALT, injections.notices, NOTICES_APART),
             notices: StdRng::seed_from_u64(seed ^ NOTICE_BYTES_SALT),
             turns: 0,
+            save_at: save_moments(seed, injections),
+            saved: 0,
+            seed,
+            wall_step: injections.wall_step,
         }
+    }
+
+    /// Whether the run is saved at this turn: if so, the seed of the host it is brought back on.
+    fn save_now(&mut self) -> Option<u64> {
+        if self.save_at.first() != Some(&self.turns) {
+            return None;
+        }
+        self.save_at.remove(0);
+        self.saved += 1;
+        Some(self.seed ^ ((self.saved as u64) << u32::BITS))
     }
 }
 
@@ -280,6 +302,33 @@ impl TestHost {
     pub fn with_hooks(mut self, hooks: Box<dyn Hooks>) -> Self {
         *held(&mut self.hooks) = Some(hooks);
         self
+    }
+}
+
+impl TestHost {
+    /// Brings a saved container's host back as a new one, of `seed`: its clocks start again,
+    /// the wall clock `wall_step` further on against the monotonic one, its choices are drawn
+    /// anew, and it knows none of the old host's connections; what the container wrote stays.
+    fn move_on(&self, seed: u64, wall_step: u64) {
+        let wall = wcontainers_clock::Clock::realtime_nanoseconds(self);
+        self.started
+            .store(self.origin.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        *lock(&self.random) = StdRng::seed_from_u64(seed);
+        if let Some(now) = &self.virtual_now {
+            now.store(0, Ordering::Relaxed);
+        }
+        *lock(&self.schedule) = Schedule::new(seed);
+        self.kernel_work.store(0, Ordering::Relaxed);
+        {
+            let mut network = lock(&self.network);
+            let moved = network.moved();
+            *network = moved;
+        }
+        *lock(&self.ready) = tcp::Readied::default();
+        *lock(&self.stream_ready) = tcp::Readied::default();
+        self.wall_base.store(0, Ordering::Relaxed);
+        let base = wall + wall_step - wcontainers_clock::Clock::monotonic_nanoseconds(self);
+        self.wall_base.store(base, Ordering::Relaxed);
     }
 }
 
@@ -1182,11 +1231,8 @@ fn moments_apart(seed: u64, count: usize, apart: u64) -> Vec<u64> {
 }
 
 /// As [`run`], with what `injections` says: saving the container up to `saves` times at moments
-/// drawn from the seed and bringing it back each time from the copy alone, and sending signals. A save is a new
-/// process holding a copy of this one's memory, as a host that saves copies the kernel's memory
-/// and every guest memory: the copy goes on with a new CPU side made from the saved memories and
-/// registers and a new host whose clock reads differently, while this process only waits for the
-/// copy's run. Each time the host's wall clock has moved on `wall_step` nanoseconds more than its
+/// drawn from the seed and bringing it back each time ([`save_and_bring_back`]), and sending
+/// signals. Each time the host's wall clock has moved on `wall_step` nanoseconds more than its
 /// monotonic clock, as on a host whose wall clock was set while the container was saved.
 pub fn run_injected(
     container: &Container<'_>,
@@ -1247,17 +1293,16 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
 ///
 /// # Panics
 ///
-/// If the run is to be saved: a save copied the test process with `fork`, which no call without
-/// `unsafe` makes.
+/// If a run that keeps or answers from a record is to be saved.
 pub fn run_prepared(
     mut prepared: Prepared,
     container: &Container<'_>,
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
-    assert_eq!(
-        injections.saves, 0,
-        "a save copied the test process with fork(2), which every crate that offers it marks unsafe; saving is not built on the kernel's runners"
+    assert!(
+        injections.saves == 0 || prepared.tape.is_none(),
+        "a run that keeps a record is not saved"
     );
     let mut host = if prepared.wall_clock {
         TestHost {
@@ -1284,55 +1329,48 @@ pub type InterfaceKernel<State> =
 pub type InterfaceRunner<State> =
     wcontainers_kernel_linux::KernelRunner<crate::standin::StandIn, State, TestHost>;
 
+/// A runner of an [`InterfaceKernel`] with the stand-in it runs on, on the engine of the kernel's
+/// own stand-in, whose memories its turns run on.
+pub struct OnRunner<State> {
+    pub runner: InterfaceRunner<State>,
+    pub executor: crate::standin::StandIn,
+}
+
+impl<State: Send> OnRunner<State> {
+    /// Runs what the kernel decides is next on the runner's stand-in.
+    pub fn run(&mut self) -> StopReason {
+        wcontainers_kernel::Runner::run(&mut self.runner, &mut self.executor)
+    }
+}
+
 /// A kernel with the container started on the stand-in, made as the kernel interface makes one,
-/// with `parallelism` runners, and those runners: its first process, with `state`, is loaded and
-/// has not run. The stand-in stays on the host thread that made it, so each runner runs with
-/// [`wcontainers_kernel_linux::KernelRunner::run_on`] on a stand-in of that thread.
+/// with `parallelism` runners, and those runners, each with a stand-in on the kernel's engine: its
+/// first process, with `state`, is loaded and has not run.
 pub fn started_with_executor<State: Clone + Send + 'static>(
     prepared: Prepared,
     container: &Container<'_>,
     state: State,
     parallelism: std::num::NonZeroUsize,
-) -> (
-    InterfaceKernel<State>,
-    Vec<InterfaceRunner<State>>,
-    Arc<TestHost>,
-) {
-    /// The configuration holds a start that lives as long as the kernel: what it names lives as
-    /// long as the test.
-    fn kept(bytes: &[u8]) -> &'static [u8] {
-        Box::leak(bytes.into())
-    }
+) -> (InterfaceKernel<State>, Vec<OnRunner<State>>, Arc<TestHost>) {
     let host = TestHost::repeatable(0, None);
     *host.streams() = Streams::new(prepared.client);
-    let arguments: Vec<&[u8]> = container
-        .arguments
-        .iter()
-        .map(|argument| kept(argument.as_bytes()))
-        .collect();
-    let environment: Vec<&[u8]> = container
-        .environment
-        .iter()
-        .map(|variable| kept(variable.as_bytes()))
-        .collect();
     let cpu = crate::standin::StandIn::with_space(container.address_space);
     let start = Start {
         path: kept(container.path.as_bytes()),
-        arguments: Box::leak(arguments.into_boxed_slice()),
-        environment: Box::leak(environment.into_boxed_slice()),
+        arguments: kept_all(container.arguments),
+        environment: kept_all(container.environment),
         working_directory: kept(container.working_directory.as_bytes()),
         hostname: reference::HOSTNAME.as_bytes(),
         groups: Box::leak(prepared.groups.into_boxed_slice()),
         backend: None,
         standard: host.standard(),
         address_space_bytes: prepared.address_space_bytes,
-        memory_bytes: prepared
-            .memory_bytes
-            .unwrap_or(wcontainers_abi::Cpu::address_space(&cpu).end),
-        ceiling: prepared.ceiling,
+        memory_bytes: prepared.memory_bytes.unwrap_or(container.address_space),
+        ceiling: Some(executor_ceiling(prepared.ceiling, container.address_space)),
         options: prepared.options,
     };
     let host = Arc::new(host);
+    let executors: Vec<_> = (0..parallelism.get()).map(|_| cpu.restored()).collect();
     let config = wcontainers_kernel_linux::KernelConfig::new(
         prepared.kernel,
         cpu,
@@ -1341,9 +1379,33 @@ pub fn started_with_executor<State: Clone + Send + 'static>(
         serial_and_exact(),
         state,
     );
-    let (kernel, runners) =
-        wcontainers_kernel_linux::KernelWithExecutor::with_runners(config, parallelism);
+    let (kernel, runners) = InterfaceKernel::<State>::new(config, parallelism);
+    let runners = runners
+        .zip(executors)
+        .map(|(runner, executor)| OnRunner { runner, executor })
+        .collect();
     (kernel, runners, host)
+}
+
+/// `bytes`, kept for as long as the test: a kernel's configuration holds a start that lives as long
+/// as the kernel.
+fn kept(bytes: &[u8]) -> &'static [u8] {
+    Box::leak(bytes.into())
+}
+
+/// Each of `strings`, kept for as long as the test, as [`kept`].
+fn kept_all(strings: &[&str]) -> &'static [&'static [u8]] {
+    let kept: Vec<&'static [u8]> = strings
+        .iter()
+        .map(|string| kept(string.as_bytes()))
+        .collect();
+    Box::leak(kept.into_boxed_slice())
+}
+
+/// The highest address the stand-in can give a process: the start's ceiling, if any, within the
+/// end of the stand-in's spaces, `end`.
+fn executor_ceiling(ceiling: Option<u64>, end: u64) -> u64 {
+    ceiling.map_or(end, |ceiling| ceiling.min(end))
 }
 
 /// The execution configuration the stand-in runs: one thread at a time, replayed exactly.
@@ -1384,11 +1446,7 @@ pub fn program_on_runners(
     link_flags: &[&str],
     out: &std::path::Path,
     parallelism: std::num::NonZeroUsize,
-) -> (
-    InterfaceKernel<u64>,
-    Vec<InterfaceRunner<u64>>,
-    Arc<TestHost>,
-) {
+) -> (InterfaceKernel<u64>, Vec<OnRunner<u64>>, Arc<TestHost>) {
     program_started(name, link_flags, out, parallelism, Default::default())
 }
 
@@ -1434,12 +1492,11 @@ pub fn program_exit_code_with(
     end_code(end).unwrap_or_else(|failure| panic!("the program did not start: {failure:?}"))
 }
 
-/// Runs a started kernel's threads with `runner`, on a stand-in of this host thread, until its
-/// container ends, with how its first process ended, or every thread waits with no deadline.
-fn run_started(runner: &mut InterfaceRunner<u64>) -> Option<ProcessEnd> {
-    let mut stand_in = crate::standin::StandIn::new();
+/// Runs a started kernel's threads with `runner` until its container ends, with how its first
+/// process ended, or every thread waits with no deadline.
+fn run_started(runner: &mut OnRunner<u64>) -> Option<ProcessEnd> {
     loop {
-        match runner.run_on(&mut stand_in) {
+        match runner.run() {
             StopReason::Finished(end) => return Some(end),
             StopReason::Idle { until: None } => return None,
             StopReason::Interrupted => {}
@@ -1467,11 +1524,7 @@ fn program_started(
     out: &std::path::Path,
     parallelism: std::num::NonZeroUsize,
     options: wcontainers_kernel_linux::StartOptions<'static>,
-) -> (
-    InterfaceKernel<u64>,
-    Vec<InterfaceRunner<u64>>,
-    Arc<TestHost>,
-) {
+) -> (InterfaceKernel<u64>, Vec<OnRunner<u64>>, Arc<TestHost>) {
     let program = crate::guest::build(name, link_flags, out);
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(
@@ -1499,8 +1552,8 @@ fn program_started(
     started_with_executor(prepared, &container, u64::MIN, parallelism)
 }
 
-/// A runner of the kernel the driver runs.
-type DrivenRunner = wcontainers_kernel_linux::KernelRunner<Back, (), TestHost>;
+/// A runner of the kernel the driver runs, with the stand-in it runs on.
+type DrivenRunner = OnRunner<()>;
 
 fn run_hosted(
     prepared: Prepared,
@@ -1521,10 +1574,10 @@ fn run_hosted(
         options,
         ..
     } = prepared;
-    // The kernel's own stand-in makes its memories; the runner runs its turns on another of this
-    // host thread, as an executor stays on the thread that made it.
+    // The kernel's own stand-in makes its memories; the runner runs its turns on another on the
+    // same engine.
     let cpu = back_end(container.address_space, wall_clock);
-    let mut stand_in = back_end(container.address_space, wall_clock);
+    let executor = cpu.restored();
     *held(&mut host.injecting) = Some(Injecting::new(seed, injections));
     *host.streams() = Streams::new(client);
     host.streams().echo = echo;
@@ -1544,39 +1597,39 @@ fn run_hosted(
         ));
         PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    let arguments: Vec<&[u8]> = container
-        .arguments
-        .iter()
-        .map(|argument| argument.as_bytes())
-        .collect();
-    let environment: Vec<&[u8]> = container
-        .environment
-        .iter()
-        .map(|variable| variable.as_bytes())
-        .collect();
     let start = Start {
-        path: container.path.as_bytes(),
-        arguments: &arguments,
-        environment: &environment,
-        working_directory: container.working_directory.as_bytes(),
+        path: kept(container.path.as_bytes()),
+        arguments: kept_all(container.arguments),
+        environment: kept_all(container.environment),
+        working_directory: kept(container.working_directory.as_bytes()),
         hostname: reference::HOSTNAME.as_bytes(),
-        groups: &groups,
-        backend: container.backend.map(str::as_bytes),
+        groups: Box::leak(groups.into_boxed_slice()),
+        backend: container.backend.map(|backend| kept(backend.as_bytes())),
         standard: host.standard(),
         address_space_bytes,
-        memory_bytes: memory_bytes.unwrap_or(wcontainers_abi::Cpu::address_space(&cpu).end),
-        ceiling,
+        memory_bytes: memory_bytes.unwrap_or(container.address_space),
+        ceiling: Some(executor_ceiling(ceiling, container.address_space)),
         options,
     };
     let host = Arc::new(host);
-    let mut driven = Driven::start(kernel, cpu, &host, start, serial_and_exact(), ())
-        .unwrap_or_else(|unsupported| panic!("the stand-in's configuration: {unsupported:?}"));
-    let mut runner = driven.runner(&host);
+    let config = wcontainers_kernel_linux::KernelConfig::new(
+        kernel,
+        cpu,
+        Arc::clone(&host),
+        start,
+        serial_and_exact(),
+        (),
+    );
+    let (mut driven, mut runners) = Driven::new(config, std::num::NonZeroUsize::MIN);
+    let mut runner = OnRunner {
+        runner: runners.next().expect("one runner"),
+        executor,
+    };
     driven.with_parts(|kernel, cpu| host.begin(kernel, cpu));
-    let end = drive(&mut driven, &mut runner, &mut stand_in, &host);
+    let end = drive(&mut driven, &mut runner, &host);
     let input_closed = host.streams().input_closed_by_kernel();
     let outputs_closed = host.finished(|| {
-        let _ = runner.run_on(&mut stand_in);
+        let _ = runner.run();
     });
     let exit_code = end_code(end)?;
     let files = match &*host.backend() {
@@ -1592,7 +1645,10 @@ fn run_hosted(
             tape.len()
         );
     }
-    let turns = host.injecting().turns;
+    let (turns, saved) = {
+        let injecting = host.injecting();
+        (injecting.turns, injecting.saved)
+    };
     let streams = std::mem::take(&mut *host.streams());
     let counters = driven.with_parts(|kernel, _| kernel.counters().collect());
     Ok(Run {
@@ -1605,7 +1661,7 @@ fn run_hosted(
         cpu_warnings: std::mem::take(&mut *lock(&host.cpu_warnings)),
         counters,
         files,
-        saved: 0,
+        saved,
         turns,
         most_input_asked: streams.most_input_asked,
         broken: streams.broken,
@@ -1619,14 +1675,9 @@ fn run_hosted(
 
 /// Runs the container's threads with `runner` on `stand_in` until the container ends, doing what
 /// the outside does each time the runner comes back: how the first process ended.
-fn drive(
-    driven: &mut Driven,
-    runner: &mut DrivenRunner,
-    stand_in: &mut Back,
-    host: &Arc<TestHost>,
-) -> ProcessEnd {
+fn drive(driven: &mut Driven, runner: &mut DrivenRunner, host: &Arc<TestHost>) -> ProcessEnd {
     loop {
-        let stop = runner.run_on(stand_in);
+        let stop = runner.run();
         match stop {
             StopReason::Finished(end) => return end,
             StopReason::Interrupted => {}
@@ -1641,7 +1692,32 @@ fn drive(
             }
         }
         driven.with_parts(|kernel, cpu| host.arrived(kernel, cpu));
+        let save = host.injecting().save_now();
+        if let Some(seed) = save {
+            save_and_bring_back(driven, runner, host, seed);
+        }
     }
+}
+
+/// Saves the container between two runs and brings it back at once, as a host that saves copies
+/// the kernel's memory and every guest memory and brings them back: the kernel goes on with each
+/// memory in a new space of its executor, a new stand-in of the runner with nothing translated or
+/// cached, and a new host of `seed` whose clocks read differently. The test process holds the
+/// kernel's memory throughout, which a copy of it would hold the same.
+fn save_and_bring_back(
+    driven: &mut Driven,
+    runner: &mut DrivenRunner,
+    host: &Arc<TestHost>,
+    seed: u64,
+) {
+    let wall_step = host.injecting().wall_step;
+    let restored = runner.executor.restored();
+    let mut saved = std::mem::replace(&mut runner.executor, restored);
+    let refused = saved.take_refused();
+    runner.executor.refused_in_a_copy(refused);
+    drop(saved);
+    host.move_on(seed, wall_step);
+    driven.with_parts(|kernel, cpu| kernel.restore(cpu, host));
 }
 
 impl TestHost {

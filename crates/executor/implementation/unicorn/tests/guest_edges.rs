@@ -1,24 +1,28 @@
 //! Guests through `execute` at the edges of the space, of alignment and of copies of pages a guest wrote.
 
 use std::borrow::Cow;
-use std::pin::pin;
-use std::task::{Context, Poll, Waker};
 
-use aarch64_cpu::registers::ESR_EL1;
-use wcontainers_abi::{Access, Cpu, LOWEST_ADDRESS, PAGE_SIZE, Permissions, SystemCallRequest};
-use wcontainers_executor::memory_space::MemorySpace;
+use wcontainers_abi::{Access, LOWEST_ADDRESS, PAGE_SIZE, Permissions, SystemCallRequest};
+use wcontainers_behavior_source::BehaviorSource;
+use wcontainers_executor::memory_space::{MemorySpace, PageTable};
 use wcontainers_executor::{
-    Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
+    Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
+    TrapHandler,
 };
-use wcontainers_executor_unicorn::space::UnicornSpace;
-use wcontainers_executor_unicorn::standin::{ALIGNMENT_FAULT_STATUS, StandIn};
-use wcontainers_processor_architecture::MemoryDelta;
-use wcontainers_processor_architecture_arm64::syndrome::{FaultStatus, encode_syndrome};
+use wcontainers_executor_unicorn::space::{UnicornPageTable, UnicornSpace};
+use wcontainers_executor_unicorn::standin::{SPACE_32_BIT, StandIn};
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot};
 use wcontainers_processor_architecture_arm64::{
-    DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch, PagePermission, Processor,
-    ZERO_PROCESSOR,
+    AccessDirection, Arm64, DataAccess, Exception, FaultStatus, INSTRUCTION_SIZE, InstructionFetch,
+    PagePermission, User, ZERO_PROCESSOR,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
+
+/// The processor's state at EL0.
+type Processor = wcontainers_processor_architecture_arm64::Processor<()>;
+
+/// A space of the stand-in with its pages.
+type Space = (UnicornSpace, UnicornPageTable);
 
 const BRK_0: u32 = 0xd420_0000;
 const STR_X1_X0: u32 = 0xf900_0001;
@@ -55,15 +59,25 @@ impl TrapHandler for Terminating {
     }
 }
 
+/// A sink for an instruction that must change no memory.
+struct NoChange;
+
+impl MemorySink<Arm64<User>> for NoChange {
+    fn on_memory_mutated(&mut self, _mutation: MemoryDelta<'_, Arm64<User>>) {
+        panic!("a fault changes no memory")
+    }
+}
+
 /// Writes the instructions at the start of the code page and lets it be read and executed.
-fn place(space: &UnicornSpace, instructions: &[u32]) {
+fn place(space: &mut Space, instructions: &[u32]) {
     let bytes: Vec<u8> = instructions
         .iter()
         .flat_map(|word| word.to_le_bytes())
         .collect();
     let end = LOWEST_ADDRESS + u64::try_from(bytes.len()).unwrap();
-    space.borrow(LOWEST_ADDRESS..end).unwrap().write(&bytes);
+    space.0.borrow(LOWEST_ADDRESS..end).unwrap().write(&bytes);
     space
+        .1
         .set_permissions(LOWEST_ADDRESS..LOWEST_ADDRESS + PAGE_SIZE, READ_EXECUTE)
         .unwrap();
 }
@@ -80,25 +94,24 @@ fn start(registers: &[(usize, u64)]) -> Processor {
     processor
 }
 
-/// Returns the state the execution stopped at, which must be ready at its first poll.
+/// Returns the state the execution stopped at, which the stand-in never waits for.
 fn run(
     executor: &mut StandIn,
-    space: &UnicornSpace,
+    space: &Space,
     processor: Processor,
     handler: &mut Terminating,
 ) -> Processor {
-    let (execution, _interrupter) = executor.execute(processor, space, handler);
-    match pin!(execution).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(state) => state,
-        Poll::Pending => {
-            panic!("the stand-in's execution blocks, so it is ready at its first poll")
-        }
+    let (execution, _interrupter) = executor.prepare_execution(processor, &space.0);
+    match execution.run(handler) {
+        ExecutionStop::Terminated(state) => state,
+        ExecutionStop::Waiting { .. } => panic!("the stand-in never waits"),
     }
 }
 
-fn read_word(space: &UnicornSpace, address: u64) -> u64 {
+fn read_word(space: &Space, address: u64) -> u64 {
     let mut bytes = [u8::MIN; size_of::<u64>()];
     space
+        .0
         .borrow(address..address + size_of::<u64>() as u64)
         .unwrap()
         .read(&mut bytes);
@@ -106,7 +119,7 @@ fn read_word(space: &UnicornSpace, address: u64) -> u64 {
 }
 
 /// Stores the value at the address with a guest's `str x1, [x0]`, which must complete.
-fn guest_store(executor: &mut StandIn, space: &UnicornSpace, address: u64, value: u64) {
+fn guest_store(executor: &mut StandIn, space: &mut Space, address: u64, value: u64) {
     place(space, &[STR_X1_X0, BRK_0]);
     let mut handler = Terminating::default();
     let stopped = run(
@@ -118,7 +131,7 @@ fn guest_store(executor: &mut StandIn, space: &UnicornSpace, address: u64, value
     assert_eq!(handler.faults, []);
     assert_eq!(
         stopped.program_counter,
-        LOWEST_ADDRESS + INSTRUCTION_BYTES,
+        LOWEST_ADDRESS + INSTRUCTION_SIZE,
         "{stopped:?}"
     );
 }
@@ -126,9 +139,9 @@ fn guest_store(executor: &mut StandIn, space: &UnicornSpace, address: u64, value
 #[test]
 fn a_load_past_the_end_is_a_translation_fault() {
     let mut executor = StandIn::new();
-    let end = executor.address_space().end;
-    let space = executor.create_guest_memory().unwrap();
-    place(&space, &[LDR_X1_X0, BRK_0]);
+    let end = SPACE_32_BIT;
+    let mut space = executor.create_guest_memory().unwrap();
+    place(&mut space, &[LDR_X1_X0, BRK_0]);
     let mut handler = Terminating::default();
     let stopped = run(
         &mut executor,
@@ -140,12 +153,10 @@ fn a_load_past_the_end_is_a_translation_fault() {
     assert_eq!(stopped.program_counter, LOWEST_ADDRESS);
     assert_eq!(
         stopped.exception,
-        Some(Exception {
-            syndrome: encode_syndrome(
-                ESR_EL1::EC::Value::DataAbortLowerEL,
-                FaultStatus::TranslationFaultLevel3 as u64
-            ),
-            fault_address: Some(end + PAGE_SIZE),
+        Some(Exception::DataAbort {
+            status: FaultStatus::TranslationFaultLevel3,
+            access: AccessDirection::Read,
+            address: end + PAGE_SIZE,
         })
     );
 }
@@ -153,21 +164,18 @@ fn a_load_past_the_end_is_a_translation_fault() {
 #[test]
 fn a_jump_to_the_end_is_a_translation_fault() {
     let mut executor = StandIn::new();
-    let end = executor.address_space().end;
-    let space = executor.create_guest_memory().unwrap();
-    place(&space, &[BR_X0]);
+    let end = SPACE_32_BIT;
+    let mut space = executor.create_guest_memory().unwrap();
+    place(&mut space, &[BR_X0]);
     let mut handler = Terminating::default();
     let stopped = run(&mut executor, &space, start(&[(0, end)]), &mut handler);
     assert_eq!(handler.faults, [(end, Access::Execute)]);
     assert_eq!(stopped.program_counter, end);
     assert_eq!(
         stopped.exception,
-        Some(Exception {
-            syndrome: encode_syndrome(
-                ESR_EL1::EC::Value::InstrAbortLowerEL,
-                FaultStatus::TranslationFaultLevel3 as u64
-            ),
-            fault_address: Some(end),
+        Some(Exception::InstructionAbort {
+            status: FaultStatus::TranslationFaultLevel3,
+            address: end,
         })
     );
 }
@@ -175,11 +183,12 @@ fn a_jump_to_the_end_is_a_translation_fault() {
 #[test]
 fn an_unaligned_exclusive_load_is_an_alignment_fault() {
     let mut executor = StandIn::new();
-    let space = executor.create_guest_memory().unwrap();
+    let mut space = executor.create_guest_memory().unwrap();
     space
+        .1
         .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
         .unwrap();
-    place(&space, &[LDXR_X1_X0, BRK_0]);
+    place(&mut space, &[LDXR_X1_X0, BRK_0]);
     let mut handler = Terminating::default();
     let before = start(&[(0, DATA + 1), (1, VALUE)]);
     let stopped = run(&mut executor, &space, before.clone(), &mut handler);
@@ -191,9 +200,10 @@ fn an_unaligned_exclusive_load_is_an_alignment_fault() {
     );
     assert_eq!(
         stopped.exception,
-        Some(Exception {
-            syndrome: encode_syndrome(ESR_EL1::EC::Value::DataAbortLowerEL, ALIGNMENT_FAULT_STATUS),
-            fault_address: Some(DATA + 1),
+        Some(Exception::DataAbort {
+            status: FaultStatus::AlignmentFault,
+            access: AccessDirection::Read,
+            address: DATA + 1,
         })
     );
 }
@@ -201,11 +211,12 @@ fn an_unaligned_exclusive_load_is_an_alignment_fault() {
 #[test]
 fn an_unaligned_exclusive_load_through_the_stack_pointer_is_its_alignment_fault() {
     let mut executor = StandIn::new();
-    let space = executor.create_guest_memory().unwrap();
+    let mut space = executor.create_guest_memory().unwrap();
     space
+        .1
         .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
         .unwrap();
-    place(&space, &[LDXR_X1_SP, BRK_0]);
+    place(&mut space, &[LDXR_X1_SP, BRK_0]);
     let mut handler = Terminating::default();
     let before = Processor {
         stack_pointer: DATA + 1,
@@ -215,10 +226,7 @@ fn an_unaligned_exclusive_load_through_the_stack_pointer_is_its_alignment_fault(
     assert_eq!(stopped.program_counter, LOWEST_ADDRESS);
     assert_eq!(
         stopped.exception,
-        Some(Exception {
-            syndrome: encode_syndrome(ESR_EL1::EC::Value::SPAlignmentFault, u64::MIN),
-            fault_address: None,
-        })
+        Some(Exception::StackPointerAlignmentFault)
     );
 }
 
@@ -247,15 +255,20 @@ fn an_unaligned_exclusive_load_alone_is_an_alignment_fault() {
             },
         },
     ];
-    executor.execute_single_instruction_in_place(&mut processor, &memory, |_| {
-        panic!("a fault changes no memory")
-    });
+    executor
+        .execute_single_instruction_in_place(
+            &mut processor,
+            MemorySnapshot { mutations: &memory },
+            &mut NoChange,
+        )
+        .unwrap();
     assert_eq!(processor.program_counter, LOWEST_ADDRESS);
     assert_eq!(
         processor.exception,
-        Some(Exception {
-            syndrome: encode_syndrome(ESR_EL1::EC::Value::DataAbortLowerEL, ALIGNMENT_FAULT_STATUS),
-            fault_address: Some(DATA + 1),
+        Some(Exception::DataAbort {
+            status: FaultStatus::AlignmentFault,
+            access: AccessDirection::Read,
+            address: DATA + 1,
         })
     );
 }
@@ -263,14 +276,16 @@ fn an_unaligned_exclusive_load_alone_is_an_alignment_fault() {
 #[test]
 fn a_copy_keeps_a_store_to_zeroed_pages_put_under_writable_addresses() {
     let mut executor = StandIn::new();
-    let written = executor.create_guest_memory().unwrap();
-    let copy = executor.create_guest_memory().unwrap();
+    let mut written = executor.create_guest_memory().unwrap();
+    let mut copy = executor.create_guest_memory().unwrap();
     written
+        .1
         .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
         .unwrap();
-    written.unmap_from(DATA..DATA + PAGE_SIZE).unwrap();
-    guest_store(&mut executor, &written, DATA, VALUE);
-    copy.copy_from(DATA..DATA + PAGE_SIZE, &written, DATA)
+    written.1.unmap_from(DATA..DATA + PAGE_SIZE).unwrap();
+    guest_store(&mut executor, &mut written, DATA, VALUE);
+    copy.1
+        .copy_from(DATA..DATA + PAGE_SIZE, &written.1, DATA)
         .unwrap();
     assert_eq!(read_word(&copy, DATA), VALUE);
 }
@@ -279,17 +294,20 @@ fn a_copy_keeps_a_store_to_zeroed_pages_put_under_writable_addresses() {
 fn a_copy_keeps_a_store_made_through_another_space_s_mapping() {
     let mut executor = StandIn::new();
     let owner = executor.create_guest_memory().unwrap();
-    let mapper = executor.create_guest_memory().unwrap();
-    let copy = executor.create_guest_memory().unwrap();
+    let mut mapper = executor.create_guest_memory().unwrap();
+    let mut copy = executor.create_guest_memory().unwrap();
     mapper
+        .1
         .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
         .unwrap();
     mapper
-        .map_from(DATA..DATA + PAGE_SIZE, &owner, DATA)
+        .1
+        .map_from(DATA..DATA + PAGE_SIZE, &owner.1, DATA)
         .unwrap();
-    guest_store(&mut executor, &mapper, DATA, VALUE);
+    guest_store(&mut executor, &mut mapper, DATA, VALUE);
     assert_eq!(read_word(&owner, DATA), VALUE);
-    copy.copy_from(DATA..DATA + PAGE_SIZE, &owner, DATA)
+    copy.1
+        .copy_from(DATA..DATA + PAGE_SIZE, &owner.1, DATA)
         .unwrap();
     assert_eq!(read_word(&copy, DATA), VALUE);
 }
@@ -297,19 +315,22 @@ fn a_copy_keeps_a_store_made_through_another_space_s_mapping() {
 #[test]
 fn a_copy_of_a_copy_keeps_a_store_the_first_copy_s_guest_made() {
     let mut executor = StandIn::new();
-    let original = executor.create_guest_memory().unwrap();
-    let first = executor.create_guest_memory().unwrap();
-    let second = executor.create_guest_memory().unwrap();
+    let mut original = executor.create_guest_memory().unwrap();
+    let mut first = executor.create_guest_memory().unwrap();
+    let mut second = executor.create_guest_memory().unwrap();
     original
+        .1
         .set_permissions(DATA..DATA + PAGE_SIZE, READ_WRITE)
         .unwrap();
-    original.unmap_from(DATA..DATA + PAGE_SIZE).unwrap();
+    original.1.unmap_from(DATA..DATA + PAGE_SIZE).unwrap();
     first
-        .copy_from(DATA..DATA + PAGE_SIZE, &original, DATA)
+        .1
+        .copy_from(DATA..DATA + PAGE_SIZE, &original.1, DATA)
         .unwrap();
-    guest_store(&mut executor, &first, DATA, VALUE);
+    guest_store(&mut executor, &mut first, DATA, VALUE);
     second
-        .copy_from(DATA..DATA + PAGE_SIZE, &first, DATA)
+        .1
+        .copy_from(DATA..DATA + PAGE_SIZE, &first.1, DATA)
         .unwrap();
     assert_eq!(read_word(&second, DATA), VALUE);
     assert_eq!(read_word(&original, DATA), u64::MIN);
@@ -319,17 +340,14 @@ fn a_copy_of_a_copy_keeps_a_store_the_first_copy_s_guest_made() {
 fn calls_to_higher_levels_are_undefined_at_el0() {
     for call in [SMC_0, HVC_0] {
         let mut executor = StandIn::new();
-        let space = executor.create_guest_memory().unwrap();
-        place(&space, &[call, BRK_0]);
+        let mut space = executor.create_guest_memory().unwrap();
+        place(&mut space, &[call, BRK_0]);
         let mut handler = Terminating::default();
         let stopped = run(&mut executor, &space, start(&[]), &mut handler);
         assert_eq!(stopped.program_counter, LOWEST_ADDRESS, "{call:#x}");
         assert_eq!(
             stopped.exception,
-            Some(Exception {
-                syndrome: encode_syndrome(ESR_EL1::EC::Value::Unknown, u64::MIN),
-                fault_address: None,
-            }),
+            Some(Exception::UndefinedInstruction),
             "{call:#x}"
         );
     }
