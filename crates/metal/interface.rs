@@ -965,6 +965,38 @@ pub const DRAW_INDEXED_ARGUMENTS_BYTES: u64 = 20;
 /// https://developer.apple.com/documentation/metal/mtldispatchthreadgroupsindirectarguments
 pub const DISPATCH_ARGUMENTS_BYTES: u64 = 12;
 
+/// The arguments of an indirect draw, as the GPU reads them from `DRAW_ARGUMENTS_BYTES`.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DrawPrimitivesIndirectArguments {
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub vertex_start: u32,
+    pub base_instance: u32,
+}
+
+/// The arguments of an indirect indexed draw, as the GPU reads them from `DRAW_INDEXED_ARGUMENTS_BYTES`.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DrawIndexedPrimitivesIndirectArguments {
+    pub index_count: u32,
+    pub instance_count: u32,
+    pub index_start: u32,
+    pub base_vertex: i32,
+    pub base_instance: u32,
+}
+
+/// The arguments of an indirect dispatch, as the GPU reads them from `DISPATCH_ARGUMENTS_BYTES`.
+///
+/// https://developer.apple.com/documentation/metal/mtldispatchthreadgroupsindirectarguments
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DispatchThreadgroupsIndirectArguments {
+    /// The threadgroups on each axis: width, height and depth.
+    pub threadgroups_per_grid: Size,
+}
+
 /// What the offset of indirect arguments in their buffer is a multiple of.
 ///
 /// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawprimitives(type:indirectbuffer:indirectbufferoffset:)

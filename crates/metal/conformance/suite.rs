@@ -2,11 +2,14 @@
 
 use wcontainers_metal::{
     BlendFactor, BlendOperation, Blending, BlitCommand, BlitOption, ColorWriteMask,
-    CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DepthStencilDescriptor,
-    EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
-    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MAX_VERTEX_STRIDE,
-    MakeBufferError, MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, Metal,
-    Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType, ReadContentsError, RenderCommand,
+    CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DISPATCH_ARGUMENTS_BYTES,
+    DRAW_ARGUMENTS_BYTES, DRAW_INDEXED_ARGUMENTS_BYTES, DepthStencilDescriptor,
+    DispatchThreadgroupsIndirectArguments, DrawIndexedPrimitivesIndirectArguments,
+    DrawPrimitivesIndirectArguments, EncodeBlitCommandsError, EncodeComputeCommandsError,
+    EncodeRenderCommandsError, FunctionSource, INDIRECT_ARGUMENTS_ALIGNMENT, IndexType, LoadAction,
+    MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MAX_VERTEX_STRIDE, MakeBufferError,
+    MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, Metal, Origin,
+    PixelFormat, PrimitiveTopologyClass, PrimitiveType, ReadContentsError, RenderCommand,
     RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget, ResourceSlot,
     SamplerAddressMode, SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter,
@@ -137,7 +140,32 @@ const WORDS_BYTES: u64 = (WORD_COUNT * size_of::<u32>()) as u64;
 const WORD_COUNT: usize = 8;
 
 /// One color as the tests' functions read it, a `vec4<f32>`.
-type Color = [f32; 4];
+type Color = [f32; COLOR_CHANNELS];
+
+/// The channels of a color: red, green, blue and alpha.
+///
+/// https://www.w3.org/TR/WGSL/#vector-types
+const COLOR_CHANNELS: usize = 4;
+
+/// Opaque green, the color the covering draws write.
+///
+/// https://www.w3.org/TR/WGSL/#vector-types
+const GREEN: Color = [0.0, 1.0, 0.0, 1.0];
+
+/// Returns the bytes of a color as a function reads it from a buffer.
+fn color_bytes(color: Color) -> Vec<u8> {
+    color
+        .iter()
+        .flat_map(|channel| channel.to_le_bytes())
+        .collect()
+}
+
+/// Returns the texel a color is stored as in an `RGBA8Unorm` texture: each channel scaled to a byte and rounded.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/rgba8unorm
+fn rgba8_unorm(color: Color) -> [u8; COLOR_CHANNELS] {
+    color.map(|channel| (channel * f32::from(u8::MAX)).round() as u8)
+}
 
 /// The slots of the tests' resources: the uniform, the sampler, the texture and the storage buffer.
 ///
@@ -164,6 +192,18 @@ const SLOTS: &[ResourceSlot] = &[
         index: WORDS_SLOT,
     },
 ];
+
+/// The viewport of the whole target, over every depth from the nearest to the farthest.
+///
+/// https://developer.apple.com/documentation/metal/mtlviewport
+const TARGET_VIEWPORT: Viewport = Viewport {
+    origin_x: 0.0,
+    origin_y: 0.0,
+    width: TARGET_SIDE as f64,
+    height: TARGET_SIDE as f64,
+    znear: 0.0,
+    zfar: 1.0,
+};
 
 /// Bytes no test writes by accident.
 fn pattern(length: usize) -> Vec<u8> {
@@ -368,14 +408,7 @@ fn covering_draw<M: Metal>(
             length: COVERING_BYTES,
             index: VERTICES,
         },
-        RenderCommand::SetViewports(vec![Viewport {
-            origin_x: 0.0,
-            origin_y: 0.0,
-            width: f64::from(TARGET_SIDE),
-            height: f64::from(TARGET_SIDE),
-            znear: 0.0,
-            zfar: 1.0,
-        }]),
+        RenderCommand::SetViewports(vec![TARGET_VIEWPORT]),
         RenderCommand::SetScissorRects(vec![ScissorRect {
             x: u32::MIN,
             y: u32::MIN,
@@ -411,26 +444,44 @@ pub fn has_a_name<M: Metal>(subject: M) {
     assert!(!subject.name().is_empty());
 }
 
+/// The bytes of the buffer the contents tests write and read.
+///
+/// https://developer.apple.com/documentation/metal/mtlbuffer/contents()
+const CONTENTS_BYTES: u64 = 64;
+
+/// Where the contents test writes `CONTENTS_WRITTEN`: off every word, so that no alignment is assumed.
+///
+/// https://developer.apple.com/documentation/metal/mtlbuffer/contents()
+const CONTENTS_WRITE_OFFSET: u64 = 3;
+
+/// The bytes the contents test writes.
+///
+/// https://developer.apple.com/documentation/metal/mtlbuffer/contents()
+const CONTENTS_WRITTEN: [u8; 3] = [1, 2, 3];
+
 /// Checks that bytes written into a buffer read back, and that ranges past its end are refused.
 pub fn writes_and_reads_buffer_contents<M: Metal>(mut subject: M) {
-    let bytes = pattern(64);
+    let bytes = pattern(CONTENTS_BYTES as usize);
     let buffer = filled(&mut subject, &bytes);
     subject
-        .write_contents(&buffer, 3, &[1, 2, 3])
+        .write_contents(&buffer, CONTENTS_WRITE_OFFSET, &CONTENTS_WRITTEN)
         .expect("Metal answers write contents");
     let mut expected = bytes.clone();
-    expected[3..6].copy_from_slice(&[1, 2, 3]);
-    let mut read = vec![u8::MIN; 64];
+    let start = CONTENTS_WRITE_OFFSET as usize;
+    expected[start..start + CONTENTS_WRITTEN.len()].copy_from_slice(&CONTENTS_WRITTEN);
+    let mut read = vec![u8::MIN; CONTENTS_BYTES as usize];
     subject
         .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     assert_eq!(read, expected);
+    // The same write ending one byte past the end, and a read starting one byte past it.
+    let past = CONTENTS_BYTES - CONTENTS_WRITTEN.len() as u64 + 1;
     assert_eq!(
-        subject.write_contents(&buffer, 62, &[u8::MIN; 3]),
+        subject.write_contents(&buffer, past, &CONTENTS_WRITTEN),
         Err(WriteContentsError::OutOfRange)
     );
     assert_eq!(
-        subject.read_contents(&buffer, 65, &mut [u8::MIN; 1]),
+        subject.read_contents(&buffer, CONTENTS_BYTES + 1, &mut [u8::MIN; 1]),
         Err(ReadContentsError::OutOfRange)
     );
 }
@@ -495,13 +546,48 @@ pub fn frees_a_buffer_whose_command_buffer_was_dropped<M: Metal>(mut subject: M)
         .expect("Metal answers write contents");
 }
 
+/// The bytes of the buffer the copy and fill test writes into.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/copy(from:sourceoffset:to:destinationoffset:size:)
+const COPY_BYTES: usize = 32;
+
+/// Where the copy test reads, writes and how much, each a multiple of four bytes as macOS's copies take them.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/copy(from:sourceoffset:to:destinationoffset:size:)
+const COPY_FROM: usize = 4;
+
+/// Where the copy test writes.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/copy(from:sourceoffset:to:destinationoffset:size:)
+const COPY_TO: usize = 8;
+
+/// How many bytes the copy test copies.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/copy(from:sourceoffset:to:destinationoffset:size:)
+const COPY_LENGTH: usize = 8;
+
+/// Where the fill test fills, past the copied bytes, a multiple of four as macOS's fills take it.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
+const FILL_AT: usize = 20;
+
+/// How many bytes the fill test fills.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
+const FILL_LENGTH: usize = 4;
+
+/// The byte the fill test fills with, unlike any of `pattern`'s neighbours.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
+const FILL_VALUE: u8 = 0xab;
+
 /// Checks that copies between buffers and a texture, and a fill, move exactly the bytes they name.
 pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
     let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
     let bytes = pattern((row * u64::from(TARGET_SIDE)) as usize);
     let source = filled(&mut subject, &bytes);
     let texture = target(&mut subject);
-    let copy = filled(&mut subject, &[u8::MIN; 32]);
+    let copy = filled(&mut subject, &[u8::MIN; COPY_BYTES]);
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
@@ -527,26 +613,27 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
                 },
                 BlitCommand::CopyFromBufferToBuffer {
                     source_buffer: source.clone(),
-                    source_offset: 4,
+                    source_offset: COPY_FROM as u64,
                     destination_buffer: copy.clone(),
-                    destination_offset: 8,
-                    size: 8,
+                    destination_offset: COPY_TO as u64,
+                    size: COPY_LENGTH as u64,
                 },
                 BlitCommand::FillBuffer {
                     buffer: copy.clone(),
-                    offset: 20,
-                    length: 4,
-                    value: 0xab,
+                    offset: FILL_AT as u64,
+                    length: FILL_LENGTH as u64,
+                    value: FILL_VALUE,
                 },
             ],
         )
         .expect("Metal answers encode blit commands");
     finish(&mut subject, &command_buffer);
     assert_eq!(read_texture(&mut subject, &texture), bytes);
-    let mut expected = vec![u8::MIN; 32];
-    expected[8..16].copy_from_slice(&bytes[4..12]);
-    expected[20..24].fill(0xab);
-    let mut read = vec![u8::MIN; 32];
+    let mut expected = vec![u8::MIN; COPY_BYTES];
+    expected[COPY_TO..COPY_TO + COPY_LENGTH]
+        .copy_from_slice(&bytes[COPY_FROM..COPY_FROM + COPY_LENGTH]);
+    expected[FILL_AT..FILL_AT + FILL_LENGTH].fill(FILL_VALUE);
+    let mut read = vec![u8::MIN; COPY_BYTES];
     subject
         .read_contents(&copy, u64::MIN, &mut read)
         .expect("Metal answers read contents");
@@ -594,7 +681,7 @@ pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject:
     finish(&mut subject, &command_buffer);
     assert_eq!(
         read_texture(&mut subject, &texture),
-        [0, 255, 0, 255].repeat((TARGET_SIDE * TARGET_SIDE) as usize)
+        rgba8_unorm(GREEN).repeat((TARGET_SIDE * TARGET_SIDE) as usize)
     );
 }
 
@@ -1496,11 +1583,7 @@ pub fn refuses_a_viewport_that_is_not_finite<M: Metal>(mut subject: M) {
     let texture = target(&mut subject);
     let viewport = Viewport {
         origin_x: f64::NAN,
-        origin_y: 0.0,
-        width: f64::from(TARGET_SIDE),
-        height: f64::from(TARGET_SIDE),
-        znear: 0.0,
-        zfar: 1.0,
+        ..TARGET_VIEWPORT
     };
     refuses_draw(
         &mut subject,
@@ -1691,42 +1774,60 @@ fn drawn_within_bounds<M: Metal>(
     Ok(read_texture(subject, &drawn))
 }
 
+/// A depth halfway between the nearest and the farthest.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthtestbounds(_:)
+const MIDDLE_DEPTH: f64 = 0.5;
+
+/// Stored depths, the bounds they are tested against, and whether the fragment over each is drawn.
+///
+/// A fragment is drawn where the depth stored under it lies within the bounds, both ends included.
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthtestbounds(_:)
+const DEPTH_BOUNDS_CASES: [(f64, (f32, f32), bool); 5] = [
+    (0.75, (0.0, 0.5), false),
+    (0.75, (0.5, 1.0), true),
+    (0.5, (0.5, 0.5), true),
+    (0.25, (0.5, 1.0), false),
+    (0.25, (0.0, 1.0), true),
+];
+
+/// Depth bounds that are refused: outside zero to one, out of order, or not numbers.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthtestbounds(_:)
+const REFUSED_DEPTH_BOUNDS: [(f32, f32); 5] = [
+    (-0.25, 0.5),
+    (0.25, 1.5),
+    (0.75, 0.25),
+    (f32::NAN, 1.0),
+    (0.0, f32::INFINITY),
+];
+
 /// Checks that depth test bounds discard the fragments whose stored depth lies outside them, bounds included.
 ///
 /// Where Metal has them; and that they are refused where it lacks them, outside zero to one, out of order, not
 /// numbers, or in a pass with no depth attachment.
 pub fn discards_fragments_whose_stored_depth_is_outside_the_bounds<M: Metal>(mut subject: M) {
     let (green, clear) = green_and_clear();
-    let bad = [
-        (-0.25, 0.5),
-        (0.25, 1.5),
-        (0.75, 0.25),
-        (f32::NAN, 1.0),
-        (0.0, f32::INFINITY),
-    ];
     if !subject.supports_depth_test_bounds() {
-        for bounds in [(0.0, 1.0), (0.25, 0.75)].into_iter().chain(bad) {
-            assert!(drawn_within_bounds(&mut subject, 0.5, bounds).is_err());
+        for (_, bounds, _) in DEPTH_BOUNDS_CASES {
+            assert!(drawn_within_bounds(&mut subject, MIDDLE_DEPTH, bounds).is_err());
+        }
+        for bounds in REFUSED_DEPTH_BOUNDS {
+            assert!(drawn_within_bounds(&mut subject, MIDDLE_DEPTH, bounds).is_err());
         }
         return;
     }
-    for (stored, bounds, drawn) in [
-        (0.75, (0.0, 0.5), &clear),
-        (0.75, (0.5, 1.0), &green),
-        (0.5, (0.5, 0.5), &green),
-        (0.25, (0.5, 1.0), &clear),
-        (0.25, (0.0, 1.0), &green),
-    ] {
+    for (stored, bounds, draws) in DEPTH_BOUNDS_CASES {
         assert_eq!(
             &drawn_within_bounds(&mut subject, stored, bounds).expect("bounds taken"),
-            drawn,
+            if draws { &green } else { &clear },
             "stored depth {stored} within {bounds:?}"
         );
     }
-    for bounds in bad {
+    for bounds in REFUSED_DEPTH_BOUNDS {
         assert!(
             matches!(
-                drawn_within_bounds(&mut subject, 0.5, bounds),
+                drawn_within_bounds(&mut subject, MIDDLE_DEPTH, bounds),
                 Err(EncodeRenderCommandsError::Invalid(_))
             ),
             "bounds {bounds:?}"
@@ -2718,7 +2819,7 @@ fn word_bytes(words: &[u32]) -> Vec<u8> {
 fn green_and_clear() -> (Vec<u8>, Vec<u8>) {
     let texels = (TARGET_SIDE * TARGET_SIDE) as usize;
     (
-        [0, 255, 0, 255].repeat(texels),
+        rgba8_unorm(GREEN).repeat(texels),
         vec![u8::MIN; texels * RGBA8_BYTES as usize],
     )
 }
@@ -2741,10 +2842,7 @@ fn green_draw<M: Metal>(
 ) -> Vec<RenderCommand<M>> {
     let depth_stencil = no_depth(subject);
     let vertices = covering(subject);
-    let color = filled(
-        subject,
-        &word_bytes(&[u32::MIN, 1.0f32.to_bits(), u32::MIN, 1.0f32.to_bits()]),
-    );
+    let color = filled(subject, &color_bytes(GREEN));
     let mut commands = covering_draw(
         state,
         &vertices,
@@ -2779,6 +2877,224 @@ fn drawn_with<M: Metal>(
     read_texture(subject, &texture)
 }
 
+/// Returns the bytes the GPU reads of an indirect draw's arguments, each little-endian in the order of Metal's.
+fn draw_bytes(arguments: DrawPrimitivesIndirectArguments) -> Vec<u8> {
+    let DrawPrimitivesIndirectArguments {
+        vertex_count,
+        instance_count,
+        vertex_start,
+        base_instance,
+    } = arguments;
+    word_bytes(&[vertex_count, instance_count, vertex_start, base_instance])
+}
+
+/// Returns the bytes the GPU reads of an indirect indexed draw's arguments, in the order of Metal's structure.
+fn indexed_draw_bytes(arguments: DrawIndexedPrimitivesIndirectArguments) -> Vec<u8> {
+    let DrawIndexedPrimitivesIndirectArguments {
+        index_count,
+        instance_count,
+        index_start,
+        base_vertex,
+        base_instance,
+    } = arguments;
+    [
+        index_count.to_le_bytes(),
+        instance_count.to_le_bytes(),
+        index_start.to_le_bytes(),
+        base_vertex.to_le_bytes(),
+        base_instance.to_le_bytes(),
+    ]
+    .concat()
+}
+
+/// Returns the bytes the GPU reads of an indirect dispatch's arguments, in the order of Metal's structure.
+fn dispatch_bytes(arguments: DispatchThreadgroupsIndirectArguments) -> Vec<u8> {
+    let Size {
+        width,
+        height,
+        depth,
+    } = arguments.threadgroups_per_grid;
+    word_bytes(&[width, height, depth])
+}
+
+// Each structure is as long as the bytes its indirect call reads.
+const _: () = assert!(size_of::<DrawPrimitivesIndirectArguments>() as u64 == DRAW_ARGUMENTS_BYTES);
+const _: () = assert!(
+    size_of::<DrawIndexedPrimitivesIndirectArguments>() as u64 == DRAW_INDEXED_ARGUMENTS_BYTES
+);
+const _: () =
+    assert!(size_of::<DispatchThreadgroupsIndirectArguments>() as u64 == DISPATCH_ARGUMENTS_BYTES);
+
+/// One draw of the covering triangle, as the arguments of an indirect draw.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
+const COVERING_DRAW: DrawPrimitivesIndirectArguments = DrawPrimitivesIndirectArguments {
+    vertex_count: COVERING_VERTICES,
+    instance_count: 1,
+    vertex_start: 0,
+    base_instance: 0,
+};
+
+/// The indirect draws of the counts test, each with whether it draws the covering triangle.
+///
+/// Only a draw of some vertices and some instances, whose last vertex and last instance a `u32` holds, draws.
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawprimitives(type:indirectbuffer:indirectbufferoffset:)
+const INDIRECT_DRAWS: [(DrawPrimitivesIndirectArguments, bool); 8] = [
+    (COVERING_DRAW, true),
+    (
+        DrawPrimitivesIndirectArguments {
+            base_instance: u32::MAX - 1,
+            ..COVERING_DRAW
+        },
+        true,
+    ),
+    (
+        DrawPrimitivesIndirectArguments {
+            instance_count: 2,
+            base_instance: u32::MAX - 1,
+            ..COVERING_DRAW
+        },
+        false,
+    ),
+    (
+        DrawPrimitivesIndirectArguments {
+            vertex_start: u32::MAX - 1,
+            ..COVERING_DRAW
+        },
+        false,
+    ),
+    (
+        DrawPrimitivesIndirectArguments {
+            instance_count: 2,
+            base_instance: u32::MAX,
+            ..COVERING_DRAW
+        },
+        false,
+    ),
+    (
+        DrawPrimitivesIndirectArguments {
+            vertex_count: u32::MAX,
+            instance_count: u32::MAX,
+            vertex_start: u32::MAX,
+            base_instance: u32::MAX,
+        },
+        false,
+    ),
+    (
+        DrawPrimitivesIndirectArguments {
+            vertex_count: 0,
+            ..COVERING_DRAW
+        },
+        false,
+    ),
+    (
+        DrawPrimitivesIndirectArguments {
+            instance_count: 0,
+            ..COVERING_DRAW
+        },
+        false,
+    ),
+];
+
+/// One indexed draw of the covering triangle, as the arguments of an indirect indexed draw.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+const COVERING_INDEXED_DRAW: DrawIndexedPrimitivesIndirectArguments =
+    DrawIndexedPrimitivesIndirectArguments {
+        index_count: COVERING_VERTICES,
+        instance_count: 1,
+        index_start: 0,
+        base_vertex: 0,
+        base_instance: 0,
+    };
+
+/// The byte offset of the covering triangle's own indices in `SHIFTED_INDICES`.
+///
+/// https://developer.apple.com/documentation/metal/mtlindextype/uint32
+const SHIFTED_OWN_OFFSET: u64 = COVERING_VERTICES as u64 * size_of::<u32>() as u64;
+
+/// The indexed draws of the counts test from `SHIFTED_INDICES`, each with its index offset and whether it draws.
+///
+/// The shifted indices with a base vertex of minus one draw the triangle; a draw reaching past the indices bound, or
+/// whose first index or first instance plus its count passes the largest `u32`, draws nothing.
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+const INDIRECT_INDEXED_DRAWS: [(DrawIndexedPrimitivesIndirectArguments, u64, bool); 10] = [
+    (COVERING_INDEXED_DRAW, SHIFTED_OWN_OFFSET, true),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            base_vertex: -1,
+            ..COVERING_INDEXED_DRAW
+        },
+        0,
+        true,
+    ),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            base_instance: u32::MAX - 1,
+            ..COVERING_INDEXED_DRAW
+        },
+        SHIFTED_OWN_OFFSET,
+        true,
+    ),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            index_start: 1,
+            ..COVERING_INDEXED_DRAW
+        },
+        SHIFTED_OWN_OFFSET,
+        false,
+    ),
+    (
+        COVERING_INDEXED_DRAW,
+        SHIFTED_OWN_OFFSET + INDIRECT_ARGUMENTS_ALIGNMENT,
+        false,
+    ),
+    (ONE_INDEX_DRAW, 2 * SHIFTED_OWN_OFFSET, false),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            index_count: 0,
+            ..COVERING_INDEXED_DRAW
+        },
+        2 * SHIFTED_OWN_OFFSET,
+        false,
+    ),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            index_count: 2,
+            index_start: u32::MAX,
+            ..COVERING_INDEXED_DRAW
+        },
+        SHIFTED_OWN_OFFSET,
+        false,
+    ),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            instance_count: 2,
+            base_instance: u32::MAX - 1,
+            ..COVERING_INDEXED_DRAW
+        },
+        SHIFTED_OWN_OFFSET,
+        false,
+    ),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            index_count: u32::MAX,
+            ..COVERING_INDEXED_DRAW
+        },
+        SHIFTED_OWN_OFFSET,
+        false,
+    ),
+];
+
+/// An indexed draw of one index.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+const ONE_INDEX_DRAW: DrawIndexedPrimitivesIndirectArguments =
+    DrawIndexedPrimitivesIndirectArguments {
+        index_count: 1,
+        ..COVERING_INDEXED_DRAW
+    };
+
 /// Checks that draws read their counts from a buffer when they run.
 ///
 /// One reaching past what is bound, or whose first index or instance plus its count passes the largest `u32`, draws
@@ -2786,18 +3102,8 @@ fn drawn_with<M: Metal>(
 pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
-    let most = u32::MAX;
-    for (arguments, drawn) in [
-        ([3, 1, 0, 0], &green),
-        ([3, 1, 0, most - 1], &green),
-        ([3, 2, 0, most - 1], &clear),
-        ([3, 1, most - 1, u32::MIN], &clear),
-        ([3, 2, 0, most], &clear),
-        ([most, most, most, most], &clear),
-        ([0, 1, 0, 0], &clear),
-        ([3, 0, 0, 0], &clear),
-    ] {
-        let buffer = filled(&mut subject, &word_bytes(&arguments));
+    for (arguments, draws) in INDIRECT_DRAWS {
+        let buffer = filled(&mut subject, &draw_bytes(arguments));
         let draw = RenderCommand::DrawPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
             indirect_buffer: buffer,
@@ -2805,26 +3111,13 @@ pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
         };
         assert_eq!(
             &drawn_with(&mut subject, &state, draw),
-            drawn,
+            if draws { &green } else { &clear },
             "a draw of arguments {arguments:?}"
         );
     }
-    // Six indices: three past the covering triangle's from 0, its own from 12 bytes on.
     let indices = filled(&mut subject, &word_bytes(&SHIFTED_INDICES));
-    let minus_one = u32::from_le_bytes((-1i32).to_le_bytes());
-    for (arguments, index_offset, drawn) in [
-        ([3, 1, 0, 0, 0], 12, &green),
-        ([3, 1, 0, minus_one, 0], 0, &green),
-        ([3, 1, 0, 0, most - 1], 12, &green),
-        ([3, 1, 1, 0, 0], 12, &clear),
-        ([3, 1, 0, 0, 0], 16, &clear),
-        ([1, 1, 0, 0, 0], 24, &clear),
-        ([0, 1, 0, 0, 0], 24, &clear),
-        ([2, 1, most, u32::MIN, u32::MIN], 12, &clear),
-        ([3, 2, 0, 0, most - 1], 12, &clear),
-        ([most, 1, u32::MIN, u32::MIN, u32::MIN], 12, &clear),
-    ] {
-        let buffer = filled(&mut subject, &word_bytes(&arguments));
+    for (arguments, index_offset, draws) in INDIRECT_INDEXED_DRAWS {
+        let buffer = filled(&mut subject, &indexed_draw_bytes(arguments));
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
             index_type: IndexType::UInt32,
@@ -2835,7 +3128,7 @@ pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
         };
         assert_eq!(
             &drawn_with(&mut subject, &state, draw),
-            drawn,
+            if draws { &green } else { &clear },
             "an indexed draw of arguments {arguments:?} from index offset {index_offset}"
         );
     }
@@ -2847,7 +3140,7 @@ pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
 pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, _) = green_and_clear();
-    let written = filled(&mut subject, &word_bytes(&[3, 1, u32::MIN, u32::MIN]));
+    let written = filled(&mut subject, &draw_bytes(COVERING_DRAW));
     let arguments = filled(&mut subject, &[u8::MIN; 16]);
     let draw = RenderCommand::DrawPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
@@ -2891,6 +3184,41 @@ pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut 
     assert_eq!(read_texture(&mut subject, &texture), green);
 }
 
+/// The threads of a threadgroup of `DOUBLE` on its first axis, as its `workgroup_size` says.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-workgroup_size
+const DOUBLE_GROUP_WIDTH: u32 = 4;
+
+/// Returns the arguments of an indirect dispatch of `width` by `height` by `depth` threadgroups.
+const fn groups(width: u32, height: u32, depth: u32) -> DispatchThreadgroupsIndirectArguments {
+    DispatchThreadgroupsIndirectArguments {
+        threadgroups_per_grid: Size {
+            width,
+            height,
+            depth,
+        },
+    }
+}
+
+/// The dispatches of `DOUBLE` the GPU reads, each with the most threadgroups it may run and whether it doubles.
+///
+/// Only the two groups that cover the words, within the most, double them; more groups on an axis than the most, more
+/// threads on an axis than a `u32` holds, or no groups, dispatch nothing.
+/// https://developer.apple.com/documentation/metal/mtldispatchthreadgroupsindirectarguments
+const INDIRECT_DISPATCHES: [(DispatchThreadgroupsIndirectArguments, u32, bool); 7] = [
+    (groups(2, 1, 1), 2, true),
+    (groups(3, 1, 1), 2, false),
+    (groups(2, 1, 3), 2, false),
+    (groups(1, 1, 1), 0, false),
+    (
+        groups(u32::MAX / DOUBLE_GROUP_WIDTH + 1, 1, 1),
+        u32::MAX,
+        false,
+    ),
+    (groups(u32::MAX, 1, 1), u32::MAX, false),
+    (groups(2, 1, 0), 2, false),
+];
+
 /// Checks that a dispatch reads its threadgroups from a buffer when it runs.
 ///
 /// One of more groups on an axis than its most, or of more threads on an axis than a `u32` holds, dispatches nothing.
@@ -2900,19 +3228,9 @@ pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
     let state = subject
         .make_compute_pipeline_state(&compute)
         .expect("Metal answers make compute pipeline state");
-    // The function's threadgroup is four threads wide and one high and deep.
-    let widest = u32::MAX / 4;
-    for (groups, most, doubled) in [
-        ([2, 1, 1], 2, true),
-        ([3, 1, 1], 2, false),
-        ([2, 1, 3], 2, false),
-        ([1, 1, 1], 0, false),
-        ([widest + 1, 1, 1], u32::MAX, false),
-        ([u32::MAX, 1, 1], u32::MAX, false),
-        ([2, 1, u32::MIN], 2, false),
-    ] {
+    for (groups, most, doubled) in INDIRECT_DISPATCHES {
         let buffer = filled(&mut subject, &word_bytes(&words));
-        let arguments = filled(&mut subject, &word_bytes(&groups));
+        let arguments = filled(&mut subject, &dispatch_bytes(groups));
         let command_buffer = subject
             .make_command_buffer()
             .expect("Metal answers make command buffer");
@@ -2953,29 +3271,64 @@ pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
     }
 }
 
+/// The bytes of the buffer of indirect arguments the refusals read: two draws' arguments.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
+const INDIRECT_SPAN: u64 = 2 * DRAW_ARGUMENTS_BYTES;
+
+/// Offsets of a draw's arguments in `INDIRECT_SPAN` bytes that are refused: off four bytes, or reaching past the end.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawprimitives(type:indirectbuffer:indirectbufferoffset:)
+const REFUSED_DRAW_OFFSETS: [u64; 5] = [
+    2,
+    DRAW_ARGUMENTS_BYTES + 1,
+    INDIRECT_SPAN - DRAW_ARGUMENTS_BYTES + INDIRECT_ARGUMENTS_ALIGNMENT,
+    INDIRECT_SPAN,
+    INDIRECT_SPAN + INDIRECT_ARGUMENTS_ALIGNMENT,
+];
+
+/// Offsets of an indexed draw's arguments in `INDIRECT_SPAN` bytes, and of its three indices, that are refused.
+///
+/// Each is off its size, reaches past its buffer's end, or wraps.
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+const REFUSED_INDEXED_DRAW_OFFSETS: [(u64, u64); 8] = [
+    (2, 0),
+    (INDIRECT_SPAN - DRAW_INDEXED_ARGUMENTS_BYTES + 1, 0),
+    (
+        INDIRECT_SPAN - DRAW_INDEXED_ARGUMENTS_BYTES + INDIRECT_ARGUMENTS_ALIGNMENT,
+        0,
+    ),
+    (u64::MAX - 3, 0),
+    (0, 2),
+    (0, SHIFTED_OWN_OFFSET + INDIRECT_ARGUMENTS_ALIGNMENT),
+    (0, u64::MAX - 3),
+    (0, u64::MAX),
+];
+
+/// Offsets of a dispatch's arguments in `INDIRECT_SPAN` bytes that are refused.
+///
+/// Each is off four bytes, reaches past the end, or wraps.
+/// https://developer.apple.com/documentation/metal/mtldispatchthreadgroupsindirectarguments
+const REFUSED_DISPATCH_OFFSETS: [u64; 5] = [
+    2,
+    INDIRECT_SPAN - DISPATCH_ARGUMENTS_BYTES + 1,
+    INDIRECT_SPAN - DISPATCH_ARGUMENTS_BYTES + INDIRECT_ARGUMENTS_ALIGNMENT,
+    u64::MAX - 3,
+    u64::MAX,
+];
+
 /// Checks that indirect arguments outside their buffer are refused before anything is encoded.
 ///
 /// So are an indexed draw's index offset outside its buffer, and either off its alignment or with an end that wraps.
 pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
-    let arguments = filled(
-        &mut subject,
-        &word_bytes(&[
-            3,
-            1,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-        ]),
-    );
+    // One draw's arguments, then zeros to `INDIRECT_SPAN`.
+    let mut words = draw_bytes(COVERING_DRAW);
+    words.resize(INDIRECT_SPAN as usize, u8::MIN);
+    let arguments = filled(&mut subject, &words);
     let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
-    let mut offsets = vec![2, 17, 20, 32, 36];
-    offsets.extend(WRAPPING_OFFSETS);
-    for offset in offsets {
+    for offset in REFUSED_DRAW_OFFSETS.into_iter().chain(WRAPPING_OFFSETS) {
         let draw = RenderCommand::DrawPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
             indirect_buffer: arguments.clone(),
@@ -2983,16 +3336,7 @@ pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M)
         };
         refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
     }
-    for (offset, index_offset) in [
-        (2, 0),
-        (13, 0),
-        (16, 0),
-        (u64::MAX - 3, 0),
-        (u64::MIN, 2),
-        (u64::MIN, 16),
-        (u64::MIN, u64::MAX - 3),
-        (u64::MIN, u64::MAX),
-    ] {
+    for (offset, index_offset) in REFUSED_INDEXED_DRAW_OFFSETS {
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
             index_type: IndexType::UInt32,
@@ -3008,7 +3352,7 @@ pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M)
     let compute_state = subject
         .make_compute_pipeline_state(&compute)
         .expect("Metal answers make compute pipeline state");
-    for offset in [2, 21, 24, u64::MAX - 3, u64::MAX] {
+    for offset in REFUSED_DISPATCH_OFFSETS {
         let command_buffer = subject
             .make_command_buffer()
             .expect("Metal answers make command buffer");
@@ -3207,28 +3551,65 @@ fn drawn_with_all<M: Metal>(
     read_texture(subject, &texture)
 }
 
+/// The covering triangle's three 16-bit indices and one byte more, so that the buffer's length is odd.
+///
+/// https://developer.apple.com/documentation/metal/mtlindextype/uint16
+const ODD_LENGTH_INDICES: [u8; 7] = [0, 0, 1, 0, 2, 0, 0xff];
+
+/// The bytes of one 16-bit index.
+///
+/// https://developer.apple.com/documentation/metal/mtlindextype/uint16
+const INDEX_16_BYTES: u64 = size_of::<u16>() as u64;
+
+/// Indexed draws of `ODD_LENGTH_INDICES` as 16-bit indices, each with its index buffer offset and whether it draws.
+///
+/// From byte 2 five bytes are left, two whole indices; from byte 6 one byte, no whole index.
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+const ODD_LENGTH_DRAWS: [(DrawIndexedPrimitivesIndirectArguments, u64, bool); 6] = [
+    (COVERING_INDEXED_DRAW, 0, true),
+    (COVERING_INDEXED_DRAW, INDEX_16_BYTES, false),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            index_count: 2,
+            ..COVERING_INDEXED_DRAW
+        },
+        INDEX_16_BYTES,
+        false,
+    ),
+    (ONE_INDEX_DRAW, 3 * INDEX_16_BYTES, false),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            index_start: 1,
+            ..COVERING_INDEXED_DRAW
+        },
+        0,
+        false,
+    ),
+    (
+        DrawIndexedPrimitivesIndirectArguments {
+            index_count: u32::MAX,
+            index_start: 1,
+            ..COVERING_INDEXED_DRAW
+        },
+        0,
+        false,
+    ),
+];
+
+/// Index buffer offsets of `ODD_LENGTH_INDICES` that are refused: off two bytes, at the lone byte, and past the end.
+///
+/// https://developer.apple.com/documentation/metal/mtlindextype/uint16
+const ODD_LENGTH_REFUSED_OFFSETS: [u64; 3] = [1, 7, 8];
+
 /// Checks that an indexed draw of 16-bit indices in a buffer of an odd length counts only whole indices.
 ///
 /// One reaching the last, lone byte draws nothing, and an offset off two bytes or past the end is refused.
 pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
-    // Three 16-bit indices 0, 1, 2 and one byte more: 7 bytes.
-    let indices = filled(
-        &mut subject,
-        &[u8::MIN, u8::MIN, 1, u8::MIN, 2, u8::MIN, 0xff],
-    );
-    for (arguments, index_offset, drawn) in [
-        ([3, 1, 0, 0, 0], 0u64, &green),
-        // From byte 2, five bytes are left: two whole indices.
-        ([3, 1, 0, 0, 0], 2, &clear),
-        ([2, 1, 0, 0, 0], 2, &clear),
-        // From byte 6, one byte: no whole index.
-        ([1, 1, 0, 0, 0], 6, &clear),
-        ([3, 1, 1, 0, 0], 0, &clear),
-        ([u32::MAX, 1, 1, u32::MIN, u32::MIN], 0, &clear),
-    ] {
-        let buffer = filled(&mut subject, &word_bytes(&arguments));
+    let indices = filled(&mut subject, &ODD_LENGTH_INDICES);
+    for (arguments, index_offset, draws) in ODD_LENGTH_DRAWS {
+        let buffer = filled(&mut subject, &indexed_draw_bytes(arguments));
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
             index_type: IndexType::UInt16,
@@ -3239,16 +3620,13 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
         };
         assert_eq!(
             &drawn_with(&mut subject, &state, draw),
-            drawn,
+            if draws { &green } else { &clear },
             "16-bit indexed draw of {arguments:?} from byte {index_offset}"
         );
     }
     let texture = target(&mut subject);
-    for index_offset in [1u64, 7, 8] {
-        let buffer = filled(
-            &mut subject,
-            &word_bytes(&[1, 1, u32::MIN, u32::MIN, u32::MIN]),
-        );
+    for index_offset in ODD_LENGTH_REFUSED_OFFSETS {
+        let buffer = filled(&mut subject, &indexed_draw_bytes(ONE_INDEX_DRAW));
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
             index_type: IndexType::UInt16,
@@ -3261,6 +3639,11 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
     }
 }
 
+/// An indirect dispatch of one threadgroup.
+///
+/// https://developer.apple.com/documentation/metal/mtldispatchthreadgroupsindirectarguments
+const ONE_GROUP: DispatchThreadgroupsIndirectArguments = groups(1, 1, 1);
+
 /// Checks that one buffer may be a draw's arguments, indices and vertices at once.
 ///
 /// Its words read as positions lie within a pixel of the origin, so the triangle covers no pixel centre. Arguments
@@ -3268,42 +3651,22 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
 pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
-    // Words: the indexed arguments [3, 1, 0, 0, 0], read as indices 3, 1, 0.
-    let shared = filled(
-        &mut subject,
-        &word_bytes(&[
-            3,
-            1,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-        ]),
-    );
+    // The indexed arguments of the covering draw, read as indices 3, 1 and 0 too, then zeros.
+    let mut words = indexed_draw_bytes(COVERING_INDEXED_DRAW);
+    words.resize(INDIRECT_SPAN as usize, u8::MIN);
+    let shared = filled(&mut subject, &words);
     let depth_stencil = no_depth(&mut subject);
-    let color = filled(
-        &mut subject,
-        &word_bytes(&[u32::MIN, 1.0f32.to_bits(), u32::MIN, 1.0f32.to_bits()]),
-    );
+    let color = filled(&mut subject, &color_bytes(GREEN));
     let commands = vec![
         RenderCommand::SetRenderPipelineState(state.clone()),
         RenderCommand::SetDepthStencilState(depth_stencil),
         RenderCommand::SetVertexBuffer {
             buffer: shared.clone(),
             offset: u64::MIN,
-            length: 32,
+            length: INDIRECT_SPAN,
             index: VERTICES,
         },
-        RenderCommand::SetViewports(vec![Viewport {
-            origin_x: 0.0,
-            origin_y: 0.0,
-            width: f64::from(TARGET_SIDE),
-            height: f64::from(TARGET_SIDE),
-            znear: 0.0,
-            zfar: 1.0,
-        }]),
+        RenderCommand::SetViewports(vec![TARGET_VIEWPORT]),
         RenderCommand::SetScissorRects(vec![ScissorRect {
             x: u32::MIN,
             y: u32::MIN,
@@ -3338,10 +3701,10 @@ pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mu
         clear,
         "one buffer in every role"
     );
-    // Arguments ending at the last byte of a 36-byte buffer are taken; a 16-byte buffer is short for indexed ones.
-    let mut words = vec![0u32; 4];
-    words.extend([3, 1, 0, 0, 0]);
-    let edge = filled(&mut subject, &word_bytes(&words));
+    // Arguments ending at the last byte of their buffer are taken; a draw's arguments are short for indexed ones.
+    let mut words = vec![u8::MIN; DRAW_ARGUMENTS_BYTES as usize];
+    words.extend(indexed_draw_bytes(COVERING_INDEXED_DRAW));
+    let edge = filled(&mut subject, &words);
     let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
     let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
@@ -3349,14 +3712,14 @@ pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mu
         index_buffer: indices.clone(),
         index_buffer_offset: u64::MIN,
         indirect_buffer: edge,
-        indirect_buffer_offset: 16,
+        indirect_buffer_offset: DRAW_ARGUMENTS_BYTES,
     };
     assert_eq!(
         &drawn_with(&mut subject, &state, draw),
         &green,
         "arguments at the buffer's end"
     );
-    let short = filled(&mut subject, &word_bytes(&[3, 1, u32::MIN, u32::MIN]));
+    let short = filled(&mut subject, &draw_bytes(COVERING_DRAW));
     let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
         index_type: IndexType::UInt32,
@@ -3367,13 +3730,15 @@ pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mu
     };
     let texture = target(&mut subject);
     refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
-    // An 8-byte buffer is short for a dispatch's 12.
+    // A buffer one word short of a dispatch's arguments.
     let words_buffer = filled(&mut subject, &pattern(WORDS_BYTES as usize));
     let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
     let compute_state = subject
         .make_compute_pipeline_state(&compute)
         .expect("Metal answers make compute pipeline state");
-    let eight = filled(&mut subject, &word_bytes(&[1, 1]));
+    let mut short_words = dispatch_bytes(ONE_GROUP);
+    short_words.truncate((DISPATCH_ARGUMENTS_BYTES - INDIRECT_ARGUMENTS_ALIGNMENT) as usize);
+    let eight = filled(&mut subject, &short_words);
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
@@ -3404,43 +3769,82 @@ pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mu
 /// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
 const THOUSAND: usize = 1000;
 
+/// Indexed draws of the covering triangle's indices that draw nothing.
+///
+/// Each reaches past the three indices, or its first instance plus its instances wraps.
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+const HOSTILE_INDEXED_DRAWS: [DrawIndexedPrimitivesIndirectArguments; 5] = [
+    DrawIndexedPrimitivesIndirectArguments {
+        index_start: 1,
+        ..COVERING_INDEXED_DRAW
+    },
+    DrawIndexedPrimitivesIndirectArguments {
+        index_count: u32::MAX,
+        ..COVERING_INDEXED_DRAW
+    },
+    DrawIndexedPrimitivesIndirectArguments {
+        instance_count: 2,
+        base_instance: u32::MAX,
+        ..COVERING_INDEXED_DRAW
+    },
+    DrawIndexedPrimitivesIndirectArguments {
+        index_count: 2,
+        index_start: u32::MAX,
+        ..COVERING_INDEXED_DRAW
+    },
+    DrawIndexedPrimitivesIndirectArguments {
+        instance_count: u32::MAX,
+        base_instance: 2,
+        ..COVERING_INDEXED_DRAW
+    },
+];
+
+/// Draws without indices that draw nothing.
+///
+/// In each, the first vertex plus the count, or the first instance plus the instances, wraps.
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
+const HOSTILE_DRAWS: [DrawPrimitivesIndirectArguments; 3] = [
+    DrawPrimitivesIndirectArguments {
+        vertex_start: u32::MAX,
+        ..COVERING_DRAW
+    },
+    DrawPrimitivesIndirectArguments {
+        instance_count: 2,
+        base_instance: u32::MAX,
+        ..COVERING_DRAW
+    },
+    DrawPrimitivesIndirectArguments {
+        vertex_count: u32::MAX,
+        vertex_start: 1,
+        ..COVERING_DRAW
+    },
+];
+
 /// Checks a thousand indirect draws in one pass, each at its own offset of one buffer, indexed and not in turn.
 ///
 /// Every one whose counts wrap or reach past its indices draws nothing, and a good last one still draws.
 pub fn draws_a_thousand_indirect_draws_in_one_pass<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
-    let most = u32::MAX;
-    // Read as an indexed draw: past the three indices, or first instance plus instances wrapping.
-    let hostile: [[u32; 5]; 5] = [
-        [3, 1, 1, u32::MIN, u32::MIN],
-        [most, 1, u32::MIN, u32::MIN, u32::MIN],
-        [3, 2, u32::MIN, u32::MIN, most],
-        [2, 1, most, u32::MIN, u32::MIN],
-        [3, most, u32::MIN, u32::MIN, 2],
-    ];
-    // Read as a draw without indices: first vertex plus count, or first instance plus instances, wrapping.
-    let plain: [[u32; 5]; 3] = [
-        [3, 1, most, u32::MIN, u32::MIN],
-        [3, 2, u32::MIN, most, u32::MIN],
-        [most, 1, 1, u32::MIN, u32::MIN],
-    ];
     let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
     for last_is_good in [true, false] {
         let mut words = Vec::new();
         for k in 0..THOUSAND {
-            if k == THOUSAND - 1 && last_is_good {
-                words.extend([3, 1, 0, 0, 0]);
+            let mut slot = if k == THOUSAND - 1 && last_is_good {
+                indexed_draw_bytes(COVERING_INDEXED_DRAW)
             } else if k % 2 == 0 {
-                words.extend(hostile[k % hostile.len()]);
+                indexed_draw_bytes(HOSTILE_INDEXED_DRAWS[k % HOSTILE_INDEXED_DRAWS.len()])
             } else {
-                words.extend(plain[k % plain.len()]);
-            }
+                draw_bytes(HOSTILE_DRAWS[k % HOSTILE_DRAWS.len()])
+            };
+            // Every slot is as long as an indexed draw's arguments; a draw without indices reads the first of them.
+            slot.resize(DRAW_INDEXED_ARGUMENTS_BYTES as usize, u8::MIN);
+            words.extend(slot);
         }
-        let arguments = filled(&mut subject, &word_bytes(&words));
+        let arguments = filled(&mut subject, &words);
         let draws: Vec<RenderCommand<M>> = (0..THOUSAND)
             .map(|k| {
-                let at = (k * 20) as u64;
+                let at = k as u64 * DRAW_INDEXED_ARGUMENTS_BYTES;
                 if k % 2 == 0 {
                     RenderCommand::DrawIndexedPrimitivesIndirect {
                         primitive_type: PrimitiveType::Triangle,
@@ -3474,10 +3878,11 @@ pub fn draws_a_thousand_indirect_draws_in_one_pass<M: Metal>(mut subject: M) {
 pub fn draws_the_largest_count_from_vertex_zero<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, _) = green_and_clear();
-    let buffer = filled(
-        &mut subject,
-        &word_bytes(&[u32::MAX, 1, u32::MIN, u32::MIN]),
-    );
+    let largest = DrawPrimitivesIndirectArguments {
+        vertex_count: u32::MAX,
+        ..COVERING_DRAW
+    };
+    let buffer = filled(&mut subject, &draw_bytes(largest));
     let draw = RenderCommand::DrawPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
         indirect_buffer: buffer,
@@ -3524,6 +3929,11 @@ fn spin<M: Metal>(subject: &mut M, command_buffer: &M::CommandBuffer, words: &M:
 /// https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpustarttime
 pub const SPIN_STEPS: u32 = 1 << 23;
 
+/// The words `spin` reads: the seed it starts from, then the steps it takes, then the words it writes.
+///
+/// https://www.w3.org/TR/WGSL/#for-statement
+const SPIN_WORDS: [u32; WORD_COUNT] = [1, SPIN_STEPS, 0, 0, 0, 0, 0, 0];
+
 /// Checks that timestamps written around work hold the GPU's clock in nanoseconds.
 ///
 /// They are in order, and apart by about the time the CPU waited for the work, which runs for tens of milliseconds.
@@ -3531,19 +3941,7 @@ pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
     let Ok(timestamps) = subject.make_timestamp_buffer(3) else {
         return;
     };
-    let words = filled(
-        &mut subject,
-        &word_bytes(&[
-            1,
-            SPIN_STEPS,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-        ]),
-    );
+    let words = filled(&mut subject, &word_bytes(&SPIN_WORDS));
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
@@ -3581,27 +3979,38 @@ pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
     );
 }
 
+/// The places of the timestamp buffer the range tests make.
+///
+/// https://developer.apple.com/documentation/metal/mtlcountersamplebufferdescriptor/samplecount
+const TIMESTAMP_PLACES: u32 = 4;
+
+/// Reads of `TIMESTAMP_PLACES` places that are refused, as a first place and a count: each reaches past the last.
+///
+/// https://developer.apple.com/documentation/metal/mtlcountersamplebuffer/resolvecounterrange(_:)
+const REFUSED_TIMESTAMP_READS: [(u32, usize); 6] =
+    [(0, 5), (4, 1), (3, 2), (5, 0), (u32::MAX, 2), (1, 4)];
+
 /// Checks that timestamp buffers of no places or past the most, and reads past the last place, are refused.
 pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
-    for count in [0, wcontainers_metal::MAX_TIMESTAMPS + 1, u32::MAX] {
+    for count in [u32::MIN, wcontainers_metal::MAX_TIMESTAMPS + 1, u32::MAX] {
         assert_eq!(
             subject.make_timestamp_buffer(count).err(),
             Some(wcontainers_metal::MakeTimestampBufferError::Count)
         );
     }
-    let Ok(timestamps) = subject.make_timestamp_buffer(4) else {
+    let Ok(timestamps) = subject.make_timestamp_buffer(TIMESTAMP_PLACES) else {
         return;
     };
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
-    for index in [4, 5, u32::MAX] {
+    for index in [TIMESTAMP_PLACES, TIMESTAMP_PLACES + 1, u32::MAX] {
         assert_eq!(
             subject.encode_timestamp(&command_buffer, &timestamps, index),
             Err(wcontainers_metal::EncodeTimestampError::OutOfRange)
         );
     }
-    for (first, count) in [(0, 5), (4, 1), (3, 2), (5, 0), (u32::MAX, 2), (1, 4)] {
+    for (first, count) in REFUSED_TIMESTAMP_READS {
         let mut into = vec![u64::MIN; count];
         assert_eq!(
             subject.read_timestamps(&timestamps, first, &mut into),
@@ -3611,7 +4020,7 @@ pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
     }
     let mut none = [u64::MIN; 0];
     subject
-        .read_timestamps(&timestamps, 4, &mut none)
+        .read_timestamps(&timestamps, TIMESTAMP_PLACES, &mut none)
         .expect("Metal answers read timestamps");
     subject
         .commit(&command_buffer)
@@ -3627,19 +4036,7 @@ pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subje
     let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
         return;
     };
-    let words = filled(
-        &mut subject,
-        &word_bytes(&[
-            1,
-            SPIN_STEPS,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-        ]),
-    );
+    let words = filled(&mut subject, &word_bytes(&SPIN_WORDS));
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
@@ -3661,19 +4058,7 @@ pub fn waits_for_a_dropped_writer_before_reading_timestamps<M: Metal>(mut subjec
     let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
         return;
     };
-    let words = filled(
-        &mut subject,
-        &word_bytes(&[
-            1,
-            SPIN_STEPS,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-            u32::MIN,
-        ]),
-    );
+    let words = filled(&mut subject, &word_bytes(&SPIN_WORDS));
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
