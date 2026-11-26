@@ -82,6 +82,9 @@ const RENAMED_BLAKE3: &str = "wcontainers_nir_mesa_blake3";
 const RENAMED_PREFIX: &str = "wcontainers_nir_mesa_";
 const INNER_PREFIX: &str = "blake3_";
 const OUTER_PREFIXES: &[&str] = &["blake3_hasher_", "blake3_version"];
+/// BLAKE3's x86-64 assembly defines each function a second time with a leading underscore (the
+/// name macOS gives C functions), and the crate's copy of it does too.
+const ASSEMBLY_UNDERSCORE: char = '_';
 /// The tools that list an archive's symbols and rename an object's, and the variables that may name
 /// others.
 const NM: &str = "nm";
@@ -241,7 +244,8 @@ fn renamed_blake3(folder: &Path) -> PathBuf {
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .filter(|name| {
-            name.starts_with(INNER_PREFIX) && !OUTER_PREFIXES.iter().any(|p| name.starts_with(p))
+            let bare = name.trim_start_matches(ASSEMBLY_UNDERSCORE);
+            bare.starts_with(INNER_PREFIX) && !OUTER_PREFIXES.iter().any(|p| bare.starts_with(p))
         })
         .collect();
     inner.sort_unstable();
@@ -273,7 +277,9 @@ fn renamed_blake3(folder: &Path) -> PathBuf {
         .enumerate()
     {
         let source = folder.join(member);
-        let name = Path::new(member).file_name().expect("a member names a file");
+        let name = Path::new(member)
+            .file_name()
+            .expect("a member names a file");
         let copy = objects.join(format!("{index}-{}", name.to_string_lossy()));
         let status = std::process::Command::new(tool(OBJCOPY_VARIABLE, OBJCOPY))
             .arg(format!("{REDEFINE_FLAG}{}", renames_file.display()))
