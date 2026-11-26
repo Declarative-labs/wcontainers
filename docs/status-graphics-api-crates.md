@@ -267,6 +267,92 @@ generated conformance suite; fuzzing 3 seeds x 10M over every table under Addres
 hostile tests the pins of the whole set owe (SetExceptionMode, the info queues' breaks, CreateDeviceContextState, the
 calls never made), which the generated caller is to try.
 
+## AC3, after the check of 8beac0bb8: default deny (2026-11-26, commit 330c3352b)
+
+The check did not hold on the claim that the safety hole was closed as a class: safe code reached
+`IDXGIFactory::CreateSoftwareAdapter(module)` and the system would load and run code from the module. The cause was the
+method: src/undo.rs searched the API by names and flag values for what could undo a reliance, so a name the list missed
+got through. Replaced by default deny (src/kinds.rs); src/undo.rs now only matches each mark's reason to what it relies on.
+
+- **Kinds.** Every parameter and return of every method the set carries is classified by its metadata type into nine
+  kinds, each with one rule (printed as `RULE` lines): number; flags (an enumeration, by type or `AssociatedEnum`, or a
+  number named Flag/Mask/Option the metadata links to none); object of a kind of the set; memory the caller lends for the
+  call; memory lent until a later call (refused unless an exception line holds it); a handle the kernel checks (HANDLE,
+  HWND, HDC, HMONITOR); a handle or address the system trusts (HMODULE, HINSTANCE, LPARAM, WPARAM, function pointers,
+  raw `void*` with no size, `void**` not an object, an integer of pointer width passed in, an object of no kind of the
+  set); text; a structure (its fields by their own kinds). A type of no kind fails the generator, and so does a typedef
+  src/api.rs `HANDLES` does not name. A trusted part, or memory lent until later with no line, makes the calling glue
+  refuse the method (E_NOTIMPL, the system never called) unless a row of src/api.rs gives that exact method's rule with
+  its reason and hostile test.
+- **Every value judged.** Every enumeration met has one judgment (`Any`: every value plain, with its reason; or
+  `Declared`: only declared values or bits pass, the glue refusing others), and special values cleared or refused
+  wherever a parameter passes them, each with a hostile test. An enumeration judged by declared or special values inside
+  memory (a structure, an array) makes the method refused: the glue checks them only on a parameter by value.
+- **Effects judged.** Every interface and export of the set has one effects judgment (src/api.rs `effects`): what none of
+  its methods but the rows can do to a fact the marks rely on. These judgments are READ, not tested.
+- **Rows** (`pins`, now rows for exact methods): Answers, Clears, Refuses, NotCalled, and NullOnly (a trusted handle passed
+  only as null, replacing the exception line NullHandle). The rows the search had marked harmless are gone (no search
+  finds them any more); no row is marked harmless. Each row and each special value names a hostile test; one missing from
+  the tests written fails the generator (a never-called row may instead be shown by its calling form holding no call out).
+- **Changed judgments**, by reason: D3D11_CREATE_DEVICE_DEBUG and DXGI_CREATE_FACTORY_DEBUG refused (the debug layer
+  breaks, through our frames, when the DirectX control panel's registry settings say so); undeclared bits of
+  D3D11_CREATE_DEVICE_FLAG and DXGI_CREATE_FACTORY_FLAGS refused; D3D11_MAP declared values only; D3D11_COPY_DISCARD in
+  CopySubresourceRegion1 refused (it may drop memory a view holds, as DiscardResource, never called).
+- **Interface by id glued** (`REFIID riid, void** ppv`, both glues, to make the factory reachable for the probes): the
+  calling glue asks each candidate kind for its newest interface by QueryInterface, else holds a foreign object; the
+  serving glue serves the kind and asks it for the id (a foreign object answered E_NOINTERFACE). 14 methods more glued.
+- **The recorder** (`crates/<api>/implementation/recorder`, generated, `forbid`): every trait of the API implemented,
+  every call logged with its by-value arguments, objects made on demand; and `served(module)` in each direct crate, the
+  calling glue over the serving glue's own exports of any implementation (one mark each). The whole set's hostile tests
+  and probes (harness/whole/hostile.rs) reach the recorder through both glues.
+
+MEASURED, x86-64 job gac3/20261126-130049 at 330c3352b (log ac3/measure/tip-330c3352b.log, reports beside it):
+
+| Bar | Result |
+|---|---|
+| Generator: build, test | status 0, 0 warnings; 2 tests pass |
+| Trait layer (AC1): twice, check, clippy, linter | IDENTICAL; 0; 0; 283 findings (unchanged) |
+| Slice (AC2): twice, check, clippy, clippy --all-targets, direct tests | IDENTICAL; 0; 0; 0; 0 (round trip passes) |
+| Slice harness, each test alone, default + small-table + AddressSanitizer | 75 of 75 status 0 |
+| Slice fuzzing, 16 runs of 10M under AddressSanitizer | 16 of 16 status 0; 0 reports, 0 hangs, 0 promises broken |
+| Whole set (AC3): twice, check, clippy, clippy --all-targets | IDENTICAL; 0; 0; 0 |
+| Whole set and slice type-checked for x86_64-pc-windows-gnu | 0, 0 (job gac3win) |
+| Whole set: treatments of 643 methods | passed 583, checked 13, answered 1, never called 22, refused 24 |
+| Whole set: parts by kind | number 827, lends 581, object 316, flags 122, kernel-handle 20, text 18, trusted 12, lent-until 2, structure 2 |
+| Whole set: GLUED / NOT GLUED | 475 / 168 (was 461 / 182) |
+| Whole set: tests owed by rows and special values | all found (40 lines) |
+| Whole set: hostile tests and 30 probes, default and AddressSanitizer | 47 of 47 pass, both |
+| Marks, matched to reasons | slice 354, whole set 2,553; 0 unmatched |
+| Linter, whole set with its glue / slice | 10,521 / 2,079 (magic_literal 5,305 / 927, public_outside_interface 4,517 / 771) |
+
+**Calling forms changed** against 8beac0bb8 (ac3/measure/compare.txt, every method of every call.rs): 686 forms; 48
+changed. calls -> refused 1: IDXGIFactory::CreateSoftwareAdapter (the hole). calls -> calls with new checks 4:
+D3D11CreateDevice and D3D11CreateDeviceAndSwapChain (flags' judgment, null-only module), ID3D11DeviceContext::Map
+(declared values), CopySubresourceRegion1 (discard refused). not glued -> calls 17 (interface by id: OpenSharedResource,
+OpenSharedResource1, CreateFence, OpenSharedFence, GetParent, GetDevice, GetResource, EnumWarpAdapter,
+EnumAdapterByGpuPreference, GetCoreWindow, the three CreateDXGIFactory, DXGIGetDebugInterface1). not glued -> refused 24
+(same answer, now by kind: raw pointers in UpdateSubresource(1), UpdateTiles, Write/ReadFromSubresource, the video
+extensions and decoder buffers' descriptions, SECURITY_ATTRIBUTES, the info queues' messages and filters, GetBufferPointer,
+RegisterDestructionCallback, CreateTexture2D1/3D1). The rest are comment changes of rows.
+
+**The thirty probes** (safe Rust under `forbid(unsafe_code)`, through both glues to the recorder): 28 held; 2 got
+through, both by rule: probe 15 (MakeWindowAssociation with any HWND) and probe 16 (OpenSharedResource with any HANDLE)
+reach the system, being handles the kernel checks. Held: a module through CreateSoftwareAdapter and both exports, a
+forged IUnknown, exceptions and breaks turned on, the debug layers, undeclared flag bits, protection turned off, the
+device lock, a deferred context, the reference rasterizer, raw-pointer CPU access, UpdateSubresource, bytes lying about
+their length, mismatched and out-of-range counts, short initial data, an oversized buffer, undeclared Map kinds, a double
+Map, lent memory after Unmap (reads and writes nothing) and after every object is dropped (still the system's), a child
+outliving its device, 16,000 clones and drops on eight threads (no object leaked or freed early). Three probes were
+corrected after their first run, each a wrong expectation, not the glue: 19 used CreateQuery (not glued: a query or a
+predicate) instead of CreateQuery1; 27 expected 256 lent bytes where the glue lends the description's bytes raised to the
+system's pitches (lengths.rs `at_least_pitches`, 64 KiB here, the serving shadow holding them whole); 28 counted the
+device's death, which the lent memory does not rely on (it holds the context and the resource).
+
+Left of AC3: the 168 methods not glued (most: 39 arrays out, 37 GUIDs by value, 12 structures holding a pointer); a
+generated hostile C caller over every table; the generated conformance suite; fuzzing 3 seeds x 10M over every table
+under AddressSanitizer (the recorder is the first generated implementation it can drive); the linter per rule; the effects
+judgments are not yet tested.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
