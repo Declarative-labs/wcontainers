@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-machine-labels"
+description = "The labels of a machine that describe what surrounds its cores, which a collected sample's file carries as a comment."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "labels.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# sysctlbyname as a safe call (MIT).
+sysctl = "0.7.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# The registry read safely (MIT OR Apache-2.0).
+windows-registry = "0.100.0"
+
+[lints]
+workspace = true
