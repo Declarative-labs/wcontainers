@@ -177,7 +177,86 @@ All jobs on the x86-64 machine, the slice written by the generator, built in a w
   the recorded description; GetDevice looks up relations by role. The machine was ten times busier than for the
   spike's table.
 
+## AC2 repaired after the check of ec8df4b51 (2026-11-26; logs in wcontainers-scratch/graphics-api-crates/ac2r/)
+
+The check did not hold: safe code could call `set_multithread_protected(false)` through the calling glue and turn off
+the protection its `Send` and `Sync` rest on; `the_toy_through_both_glues` failed at the tip; the whole set's build
+listed a harness glob it does not write; Map+Unmap, CreateBuffer and GetDevice cost more than the spike; two seeds gave
+one game; the fake never lowered its count of contexts. Every bar below is MEASURED at ab721bebf (x86-64 job
+gac-r/20261126-1129xx, `.gactip.sh`, log tip-ab721bebf.log and the folder tip-ab721bebf/).
+
+- **The class, closed in the generator** (src/undo.rs, the `pins` of src/api.rs): every mark's reason is matched to the
+  facts it relies on (layout, a live object, free threading, a call that returns, memory lent until its end, no
+  callback, the C caller's pointers, the library's exports, the glue's key, the harness's stand-ins); a reason no line
+  matches fails the generator. For each fact a search over the WHOLE metadata of every API of the set (a slice
+  included) finds the methods that could undo it (an interface named Multithread; Deferred, DeviceContextState; a flags
+  type with a SINGLETHREADED or DEBUG value; ExceptionMode, BreakOn; Map, GetDC, ReleaseDC, Discard, Offer, Reclaim,
+  UseRef, Resize, Trim, Evict, DecoderBuffer; Release, Destroy, Free, PrivateData; a delegate or Callback). Each method
+  found needs a pin: answered (SetMultithreadProtected answers TRUE and never reaches the system), a value cleared
+  (D3D11_CREATE_DEVICE_SINGLETHREADED in both exports, the single-threaded context state flag), a value refused
+  (SetExceptionMode non-zero, SetBreakOn* TRUE in both info queues), never called (Enter, Leave, CreateDeferredContext*,
+  Discard*, DXGI's surface Map/Unmap/GetDC/ReleaseDC, Offer/Reclaim*, MapDesktopSurface, SetUseRef, decoder buffers,
+  RegisterDestructionCallback), or shown harmless with the reason. An unpinned method, a stale pin, or a pin of a method
+  the slice's calling glue carries without its hostile test fails the generator. Report: 341 marks, 219 reasons, 85
+  pins, 0 failures (slice); the whole set's 35 marks of COM's crate, 0 failures.
+- **Hostile tests** (harness tests/undo.rs, and the C attack `attack_undo_threads`): through the calling glue over the
+  fake, SetMultithreadProtected(false) twice on the context and on the multithread object answers TRUE and the fake sees
+  0 unprotections; a single-threaded device asked through both exports reaches the fake without the flag and protected;
+  the same C program through both glues gets TRUE and the fake sees nothing undone, while on the fake directly (the
+  control) it turns protection off. The checker's own probe, unchanged, under forbid: "protection before the first call
+  true, before the second true", status 0.
+- **The tip's failures fixed**: the round trip asked an 88-byte query for 4 bytes (now an event query, 4 bytes) and read
+  a discarding Map's contents (now READ_WRITE; a discarding Map lends cleared memory, a read-only Map writes nothing
+  back, both tested); the whole set's workspace lists the harness glob only when a harness is written.
+- **Small faults**: the fuzzer's first state is splitmix64 of the seed and the thread (seeds 12 and 13 now give
+  10000197 and 10000207 calls in pass-correct); the fake lowers its count of contexts when a device dies (pass-correct
+  alive by kind all 0).
+
+| Bar at ab721bebf | Result |
+|---|---|
+| Generator builds, test | status 0, 0 warnings |
+| Whole set (AC1): written twice | IDENTICAL; 77 / 440 Direct3D 11, 47 / 191 DXGI, 2 / 4 d3dcommon; unmapped 37 lines |
+| Whole set: check, clippy -D warnings, tests | 0, 0, 0 |
+| Slice: written twice; check; clippy; clippy --all-targets; direct crates' tests | IDENTICAL; 0; 0; 0; 0 (the round trip passes) |
+| Harness, each test alone, default + small-table + AddressSanitizer | 69 of 69 status 0 (23 tests, undo included) |
+| Fuzzing, 4 modes x 3 seeds x 10M, ASan, plus front-correct and pass-correct | 16 of 16 status 0; 0 reports, 0 hangs, 0 promises broken |
+| Linter, whole set / slice | 283 / 2,069 findings (public_outside_interface 130 / 769, magic_literal 53 / 924, rest in the logs) |
+
+- **Costs: the cause, by profile** (perf on the served path, profile/perf-*.txt): GetDevice looked our object up twice
+  (once for `this`, again inside `related`); CreateBuffer took a counted reference of the device and looked the new
+  object up again only to relate them, grew the record past its first allocation, and gave back two vectors per dead
+  object; Map filled the shadow even for a discarding Map and wrote back after a read-only one. Removed: the second
+  lookup (`related_of`, and `made_by_of`, which reads the maker from the record under the word's lock with no reference
+  taken; the maker is immutable in the record and read with no lock), the relation made in the record before serving
+  (`record_related`), the record's room for its parts, the vectors at death, the fill for a discarding Map (cleared
+  instead: no earlier lending's bytes), the write-back after a read-only Map, and the pool's lock for a thread's own
+  blocks. Same core, one after another, low load (measure-tip-b93d1d922-side-by-side.log, spike's run.sh measure):
+
+| ns, same core 92, load 10 | Ours: added by serving / pass-through | Spike: added / pass-through | ec8df4b51 (A/B, load 6) |
+|---|---|---|---|
+| Draw | 31.6 / 58.6 | 24.1 / 37.8 | 22.7 / 43.7 |
+| GetDevice + Release | 53.5 / 68.9 | 60.5 / 73.1 | 104.2 / 122.7 |
+| Map + Unmap | 308.0 / 496.3 | 215.5 / 456.9 | 304.1 / 543.1 |
+| CreateBuffer + Release | 271.5 / 343.9 | 353.6 / 397.2 | 382.5 / 478.3 |
+
+  At ab721bebf (load 29 to 35): Draw 24.1 / 46.1, GetDevice 57.9 / 74.5, Map+Unmap 324.0 / 459.8, CreateBuffer 271.8 /
+  366.3. What remains, and why it is needed (profile): Map+Unmap's pass-through is within 9% of the spike's; its added
+  cost is four lookups (context and resource, each a word's lock and a counted `Arc`, 17%), four round trips of the
+  lendings' lock (11%: a subresource stays busy while the implementation's map and unmap run, with no lock held), and
+  the shadow written back through the implementation's `VolatileBytes` at Unmap (the C side needs raw memory, and bytes
+  another party may change pass only through `VolatileBytes`). Draw's added cost is one lookup (31% of a served Draw:
+  the word's lock and the `Arc` that keeps the object alive while the implementation runs with no lock); run-to-run
+  spread of the same binary on this shared machine is 10 to 20% (the front alone, which no change touched, measured 120
+  and 147 ns for Map in two builds).
+
 ## The merge of graphics-layout (asked for AC4): stopped
+
+2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
+wcontainers-scratch/graphics-api-crates/graphics-layout-interface-changes/. MEASURED (`git diff` of the merge base
+e9fff41e3, graphics-layout 97e1daafe and his main ac696ea19): six of the nine (icmp-sockets, raw-sockets, system,
+tcp-sockets, udp-sockets, volatile-bytes) are already on his main exactly as graphics-layout has them, so the merge
+changes nothing in them; three are new interface files his main does not have: shader-converters (+140), win32 (+128),
+test-window (+26).
 
 `git merge-tree` of the track against origin's graphics-layout (97e1daafe): 97 conflicting files (shaders 25,
 wcontainers-shaders 13, shader-converters 13, opengl 8, nir 4, direct3d-12 4, ...). Since the merge base e9fff41e3,
