@@ -45,11 +45,15 @@ where
         let undecided = self.apply(&mut after, memory.mutations, mutation_hook);
         let completed = after.exception.is_none();
         let mut expectation = ProcessorExpectation::new(after);
-        if let Self::ElementAccess { instruction, .. } = *self
+        if let Self::ElementAccess {
+            instruction,
+            choices,
+        } = *self
             && completed
             && let Ok(word) = fetch(memory.mutations, processor.program_counter)
         {
-            expectation.suppressible_load = to_suppressible_load(instruction, processor, word);
+            expectation.suppressible_load =
+                to_suppressible_load(instruction, choices, processor, memory.mutations, word);
         }
         if let Some((register, condition_flags)) = undecided {
             if let Some(uncompared) = expectation
