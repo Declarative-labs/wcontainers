@@ -132,6 +132,8 @@ impl Writer<'_, '_> {
     /// One serving entry: `this` is the bound on the object's type, or none for an export (whose module is `M`).
     fn serving_entry(&self, fn_name: &str, method: &Method, glued: &Glued, bound: Option<&str>, top: &str, place: &str) -> String {
         let (parameters, returned) = self.c_signature(glued, method);
+        // Every ask of the implementation is made through the model of this entry, by value (src/trust.rs).
+        let model = crate::trust::Model::new(&self.g.asked, format!("serving glue {place} ({fn_name})"));
         let api_type = if bound.is_some() { "V::Api" } else { "M" };
         let top_of_api = self.g.top_path(self.current.get(), NOWHERE);
         // The role `this` plays for an object it relates to: its kind's name (none for an abstract base, a child).
@@ -400,7 +402,8 @@ impl Writer<'_, '_> {
             let _ = writeln!(inner, "            let lent = lent.downcast::<(Shadow, <{api_type} as {top_of_api}>::Mapped, bool)>().ok().map(|held| *held);");
             let _ = writeln!(inner, "            let data = lent.map(|(shadow, data, written_back)| {{");
             let _ = writeln!(inner, "                // Memory lent for reading only has nothing to write back (an exception line of src/api.rs).");
-            let _ = writeln!(inner, "                if written_back {{ shadow.empty_into(&data); }}");
+            let empty = model.ask("the Mapped lent at Map, ended here", "mapped", "write_from", "shadow.empty_into(&data);");
+            let _ = writeln!(inner, "                if written_back {{ {empty} }}");
             let _ = writeln!(inner, "                shadow.give_back();\n                data\n            }});");
         }
         // A description answered from what the glue recorded when the object was made.
@@ -456,7 +459,8 @@ impl Writer<'_, '_> {
         // An object handed out again: from what the glue recorded, before asking the implementation.
         let again = !status && outs.len() == 1 && glued.returned.is_none() && matches!(outs[0].1, Part::ObjectOut { made: false, .. }) && bound.is_some();
         let receiver = if bound.is_some() { "found.value()" } else { "found" };
-        let call = format!("{receiver}.{}({})", Self::method_name_of(method, bound.is_none(), self), args.join(", "));
+        let method_name = Self::method_name_of(method, bound.is_none(), self);
+        let call = model.ask("the implementation's object of the entry", "api-trait", &method_name, format!("{receiver}.{method_name}({})", args.join(", ")));
         if again {
             if let (name, Part::ObjectOut { kinds, .. }, _) = &outs[0] {
                 let kind_type = self.kind_type(kinds[0], api_type);
@@ -524,15 +528,19 @@ impl Writer<'_, '_> {
                     let expression = coded.path.replace('<', "::<");
                     let _ = writeln!(inner, "            let lent_length = mapped_length_found(&{resource}_found, {subresource}, {name}_value.{row}, {name}_value.{depth});");
                     let _ = writeln!(inner, "            // No longer than the implementation's own bytes: the glue lends no memory it did not lend.");
-                    let _ = writeln!(inner, "            let lent_length = lent_length.filter(|length| u64::try_from(*length).is_ok_and(|length| length <= wcontainers_volatile_bytes::VolatileBytes::len(&{name}_value.{data})));");
+                    let mapped = format!("the Mapped `{name}` the implementation's {method_name} returned");
+                    let length = model.ask(&mapped, "mapped", "len", format!("wcontainers_volatile_bytes::VolatileBytes::len(&{name}_value.{data})"));
+                    let _ = writeln!(inner, "            let lent_length = lent_length.filter(|length| u64::try_from(*length).is_ok_and(|length| length <= {length}));");
                     let _ = writeln!(inner, "            let Some(shadow) = lent_length.and_then(Shadow::allocate) else {{");
-                    let _ = writeln!(inner, "                found.value().{until}({resource}_found.get(), {subresource});\n                return Err(E_FAIL);\n            }};");
+                    let unmap = model.ask("the implementation's object of the entry", "api-trait", &until, format!("found.value().{until}({resource}_found.get(), {subresource});"));
+                    let _ = writeln!(inner, "                {unmap}\n                return Err(E_FAIL);\n            }};");
                     let (how, read_only, discard) = self.g.lent_of(place).and_then(|exception| match exception {
                         Exception::Lent { how, read_only, discard, .. } => Some((names::value_name(how), *read_only, *discard)),
                         _ => None,
                     }).unwrap_or_default();
                     let _ = writeln!(inner, "            // Contents the API leaves undefined are cleared, not read; memory lent for reading only is not written back (an exception line of src/api.rs).");
-                    let _ = writeln!(inner, "            if {how}.0 == {discard} {{ shadow.clear(); }} else {{ shadow.fill_from(&{name}_value.{data}); }}");
+                    let fill = model.ask(&mapped, "mapped", "read_to", format!("shadow.fill_from(&{name}_value.{data});"));
+                    let _ = writeln!(inner, "            if {how}.0 == {discard} {{ shadow.clear(); }} else {{ {fill} }}");
                     let _ = writeln!(inner, "            let written_back = {how}.0 != {read_only};");
                     let _ = writeln!(inner, "            let {name}_record = {expression} {{ {data}: shadow.address(), {row}: {name}_value.{row}, {depth}: {name}_value.{depth} }};");
                     let _ = writeln!(inner, "            reservation.settle(Box::new((shadow, {name}_value.{data}, written_back)));");

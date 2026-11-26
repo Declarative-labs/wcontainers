@@ -126,6 +126,8 @@ struct Generator<'a> {
     all_methods: BTreeMap<Key, Vec<Method>>,
     /// Each method's kinds and treatment (src/kinds.rs), once classified.
     classified: RefCell<Option<kinds::Classified>>,
+    /// Every ask of the other party the emitted functions make, by value (src/trust.rs).
+    asked: RefCell<crate::trust::Ledger>,
 }
 
 fn alias(api: &Api) -> String {
@@ -322,6 +324,7 @@ impl<'a> Generator<'a> {
             lengths: RefCell::new(BTreeMap::new()),
             all_methods,
             classified: RefCell::new(None),
+            asked: RefCell::new(crate::trust::Ledger::default()),
         };
         generator.find_kinds();
         generator
@@ -1764,7 +1767,7 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
     // Every mark's reason matched to what it relies on, and every hostile test the rows owe written.
     report.push_str(&crate::undo::check(out)?);
     // Every safe trait of the other party asked once per value: the glue carries the answer (src/trust.rs).
-    let asked = crate::trust::check(out).map_err(|failure| format!("{report}{failure}"))?;
+    let asked = crate::trust::check(out, Some(&generator.asked.borrow())).map_err(|failure| format!("{report}{failure}"))?;
     report.push_str(&asked);
     if let Some(classified) = generator.classified.borrow().as_ref() {
         match kinds::check_tests(classified, out, writes_glue) {

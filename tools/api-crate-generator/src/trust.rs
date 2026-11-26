@@ -3,9 +3,17 @@
 //! A safe trait promises nothing its signature does not hold: a caller's `VolatileBytes` may answer a different `len`
 //! on each call, and an implementation's `Clone` may panic. `OTHER_PARTY` lists every safe trait whose implementation
 //! comes from the caller of the calling glue or from the implementation behind the serving glue, each method the glue
-//! calls, and what the glue's marks assume of its answers (nothing but what the type holds). `check` reads every Rust
-//! file of the direct crates written and fails the generator when one function asks one value the same method of such
-//! a trait twice: the glue asks once and carries the answer.
+//! calls, how often one function may ask one value it (`Limit`), and what the glue's marks assume of its answers
+//! (nothing but what the type holds).
+//!
+//! The check follows the VALUE, not the text: every call of such a method that the generator emits is made through a
+//! `Model` of the function being emitted (`Model::ask`), which names the value by where it came from (the method's
+//! parameter by its place in the metadata, the `Mapped` a Map returned, the implementation's object of the entry), never
+//! by the name the emitted text gives it, so a second ask through another name is the same value asked twice. A model
+//! records into the generator's `Ledger` when it ends; an ask past its limit, or of a method the list does not name,
+//! fails the generator. `check` then reads the written files as a cross-check: the calls of `VolatileBytes` it finds
+//! in the generated files must be exactly the ones the models recorded, so an emission that went around the model is
+//! found by its count.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -33,6 +41,21 @@ pub struct Trusted {
     /// never assumed, a panic, a re-entrant call or a call that never returns leaving no table or lent buffer in a
     /// state a mark relies on.
     pub held: &'static str,
+    /// The key a `Model::ask` names this entry by.
+    pub key: &'static str,
+    /// Each method by name (`*` for every method of the trait) and how often one function may ask one value it.
+    pub asks: &'static [(&'static str, Limit)],
+}
+
+/// How often one emitted function may ask one value of the other party one method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// At most once: the answer is carried, never asked again.
+    Once,
+    /// Never: the glue does not call it.
+    Never,
+    /// Any number of times: the glue's own types or the language's, not the other party's code.
+    Free,
 }
 
 /// Every safe trait of the other party the glue meets.
@@ -42,55 +65,161 @@ pub const OTHER_PARTY: &[Trusted] = &[
         party: Party::Caller,
         called: "len once, write once",
         held: "len asked once before any step of the call; that answer sizes our buffer and is the count the system is told; the system writes only our buffer; write runs last, after every object is adopted, and its answer is not used; no lock or reservation is held while either runs",
+        key: "caller-bytes",
+        asks: &[("len", Limit::Once), ("write", Limit::Once), ("read", Limit::Never), ("read_to", Limit::Never), ("write_from", Limit::Never)],
     },
     Trusted {
         name: "VolatileBytes (an implementation's Mapped, serving Map and Unmap)",
         party: Party::Implementation,
         called: "len once at Map, read_to once at Map, write_from once at Unmap",
         held: "the shadow lent to C is ours, sized by the recorded description and pitches and no longer than the one len; read_to and write_from reach only sinks and sources of ours bounded by the shadow; the subresource is reserved, not locked, while they run, and a reservation dropped by a panic frees it",
+        key: "mapped",
+        asks: &[("len", Limit::Once), ("read_to", Limit::Once), ("write_from", Limit::Once), ("read", Limit::Never), ("write", Limit::Never)],
     },
     Trusted {
         name: "every generated API trait (the implementation's methods)",
         party: Party::Implementation,
         called: "each method once per call from C",
         held: "descriptions, kinds and sizes answered from what the glue recorded, never asked again; a method runs under no lock of the glue, with the object held by an Arc; a panic is caught (guarded) and answered E_FAIL; a re-entrant call finds the table as any other call does",
+        key: "api-trait",
+        asks: &[("*", Limit::Once)],
     },
     Trusted {
         name: "Clone, PartialEq, Eq, Hash of an implementation's objects",
         party: Party::Implementation,
         called: "never",
         held: "the glue keys its tables by the address of its own words and by role; an object handed out again comes from the record",
+        key: "identity",
+        asks: &[("clone", Limit::Never), ("eq", Limit::Never), ("ne", Limit::Never), ("hash", Limit::Never)],
     },
     Trusted {
         name: "Drop of an implementation's objects and Mapped",
         party: Party::Implementation,
         called: "when the last reference goes",
         held: "dropped after every lock, inside guarded: a panic is caught and its payload kept, a re-entrant call finds no lock held",
+        key: "drop",
+        asks: &[("drop", Limit::Once)],
     },
     Trusted {
         name: "slices and Options of plain data and of the calling glue's objects",
         party: Party::GlueOnly,
         called: "len, iter, to_vec",
         held: "a slice's length is the language's; the elements are the generated plain types and the glue's own System types, whose Clone and Hash the glue writes",
+        key: "slices",
+        asks: &[("*", Limit::Free)],
     },
     Trusted {
         name: "Adopt",
         party: Party::GlueOnly,
         called: "adopt, INTERFACE",
         held: "adopt is an unsafe fn, which no crate under forbid(unsafe_code) can write; the glue calls it only on its own System types",
+        key: "adopt",
+        asks: &[("adopt", Limit::Free), ("INTERFACE", Limit::Free)],
+    },
+    Trusted {
+        name: "ByteSink, ByteSource of the caller (given to the calling glue's lent memory, ForeignLent)",
+        party: Party::Caller,
+        called: "write once per read_to, read once per write_from",
+        held: "read_to copies the system's bytes out under the view's lock and gives the copy to the sink after it; write_from lets the source fill a buffer of ours under no lock and clamps its answer to the buffer's length before copying in; neither answer sizes anything the system sees",
+        key: "caller-sink-source",
+        asks: &[("write", Limit::Once), ("read", Limit::Once)],
     },
     Trusted {
         name: "Deref, AsRef, Borrow, Ord of the caller's types",
         party: Party::Caller,
         called: "never",
         held: "no trait signature takes a type bound by them; Found's Deref is the glue's own",
+        key: "caller-conversions",
+        asks: &[("*", Limit::Never)],
     },
     Trusted {
         name: "Iterator of the caller's types",
         party: Party::Caller,
         called: "never",
         held: "no trait signature takes an iterator",
+        key: "caller-iterator",
+        asks: &[("*", Limit::Never)],
     },
+];
+
+/// What the models of every emitted function recorded: asks per entry and method, and the failures.
+#[derive(Default)]
+pub struct Ledger {
+    /// Per entry key and method, how many asks were emitted in all.
+    pub counts: BTreeMap<(String, String), usize>,
+    /// How many functions were modeled.
+    pub functions: usize,
+    /// One line per ask past its limit or of a method the list does not name.
+    pub failures: Vec<String>,
+}
+
+impl Ledger {
+    /// The asks of `VolatileBytes` methods the models recorded (the caller's bytes and an implementation's `Mapped`),
+    /// which the written text must hold exactly.
+    pub fn volatile_bytes_asks(&self) -> usize {
+        self.counts.iter().filter(|((key, _), _)| key == "caller-bytes" || key == "mapped").map(|(_, count)| count).sum()
+    }
+}
+
+/// The generator's model of one function it emits: every ask of the other party, by value. It records into the
+/// ledger when it is dropped, so that no early return of the emitting code loses its asks.
+pub struct Model<'l> {
+    ledger: &'l std::cell::RefCell<Ledger>,
+    function: String,
+    asked: std::cell::RefCell<BTreeMap<(String, &'static str, String), usize>>,
+}
+
+/// The limit of `method` in the entry named `key`, or none when the list names neither.
+pub fn limit_of(key: &str, method: &str) -> Option<(&'static str, Limit)> {
+    let trusted = OTHER_PARTY.iter().find(|trusted| trusted.key == key)?;
+    trusted.asks.iter().find(|(name, _)| *name == method).or_else(|| trusted.asks.iter().find(|(name, _)| *name == "*")).map(|(_, limit)| (trusted.key, *limit))
+}
+
+impl<'l> Model<'l> {
+    /// A model of the function `function` (its place and side), recording into `ledger`.
+    pub fn new(ledger: &'l std::cell::RefCell<Ledger>, function: impl Into<String>) -> Model<'l> {
+        Model { ledger, function: function.into(), asked: std::cell::RefCell::new(BTreeMap::new()) }
+    }
+
+    /// Records one ask of `method` of the entry `key` on the value `value` (named by where it came from, never by the
+    /// emitted name), and returns `text`, the expression that makes it.
+    pub fn ask(&self, value: &str, key: &str, method: &str, text: impl Into<String>) -> String {
+        match limit_of(key, method) {
+            Some((key, _)) => *self.asked.borrow_mut().entry((value.to_string(), key, method.to_string())).or_default() += 1,
+            None => self.ledger.borrow_mut().failures.push(format!("UNLISTED: {}: asks {value}'s {method} of `{key}`, which OTHER_PARTY does not name", self.function)),
+        }
+        text.into()
+    }
+}
+
+impl Drop for Model<'_> {
+    fn drop(&mut self) {
+        let mut ledger = self.ledger.borrow_mut();
+        ledger.functions += 1;
+        for ((value, key, method), count) in self.asked.borrow().iter() {
+            *ledger.counts.entry(((*key).to_string(), method.clone())).or_default() += count;
+            match limit_of(key, method).map(|(_, limit)| limit) {
+                Some(Limit::Once) if *count > 1 => {
+                    let line = format!("ASKED TWICE: {}: asks {value}'s {method} {count} times: the other party's answer may change between calls", self.function);
+                    ledger.failures.push(line);
+                }
+                Some(Limit::Never) => {
+                    let line = format!("NEVER ASKED: {}: asks {value}'s {method} {count} times, which the glue never calls", self.function);
+                    ledger.failures.push(line);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The asks of the hand-written templates (fixed text, read by `template_asks_hold`): file, function, entry, method,
+/// how many.
+pub const TEMPLATE_ASKS: &[(&str, &str, &str, &str, usize)] = &[
+    ("lent.rs", "fill_from", "mapped", "read_to", 1),
+    ("lent.rs", "empty_into", "mapped", "write_from", 1),
+    ("lent.rs", "read_to", "caller-sink-source", "write", 1),
+    ("lent.rs", "write_from", "caller-sink-source", "read", 1),
 ];
 
 /// The methods of `VolatileBytes` the glue may call, and the glue's helpers that call one on their argument.
@@ -359,7 +488,7 @@ fn direct_files(folder: &Path, files: &mut Vec<std::path::PathBuf>) {
 
 /// Checks every direct crate written under `out` (a folder holding `crates/`), and returns the report's section: the
 /// list, then the calls seen.
-pub fn check(out: &Path) -> Result<String, String> {
+pub fn check(out: &Path, ledger: Option<&Ledger>) -> Result<String, String> {
     let mut report = String::from("OTHER PARTY (safe traits the glue meets; what the marked code holds whatever they answer):\n");
     for trusted in OTHER_PARTY {
         let _ = writeln!(report, "  {} [{:?}]: calls {}; {}", trusted.name, trusted.party, trusted.called, trusted.held);
@@ -368,19 +497,117 @@ pub fn check(out: &Path) -> Result<String, String> {
     direct_files(&out.join("crates"), &mut files);
     let mut failures = Vec::new();
     let mut seen = 0;
+    let mut template = 0;
     for path in &files {
         let text = std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
         let (found, calls) = twice(&path.display().to_string(), &text);
         failures.extend(found);
         seen += calls;
+        // COM's direct crate is the templates' text, copied.
+        if path.components().any(|part| part.as_os_str() == "component-object-model") {
+            template += calls;
+        }
     }
-    let _ = writeln!(report, "ASKED ONCE: {} files of the direct crates, {seen} calls of the other party's VolatileBytes, {} asked twice", files.len(), failures.len());
+    let _ = writeln!(report, "ASKED ONCE (text, cross-check): {} files of the direct crates, {seen} calls of VolatileBytes found ({template} in the templates), {} asked twice by name", files.len(), failures.len());
+    if let Some(ledger) = ledger {
+        let _ = writeln!(report, "ASKED ONCE (by value, the generator's model): {} functions modeled, {} failures", ledger.functions, ledger.failures.len());
+        for ((key, method), count) in &ledger.counts {
+            let limit = limit_of(key, method).map_or("unlisted".to_string(), |(_, limit)| format!("{limit:?}"));
+            let _ = writeln!(report, "  {key}.{method}: {count} asks, limit per value and function {limit}");
+        }
+        for (file, function, key, method, count) in TEMPLATE_ASKS {
+            let _ = writeln!(report, "  template {file} fn {function}: {key}.{method} {count}, read from the template's text");
+        }
+        failures.extend(ledger.failures.iter().cloned());
+        // Every VolatileBytes call in the generated files was made through a model: the counts are equal.
+        let modeled = ledger.volatile_bytes_asks();
+        if modeled + template != seen {
+            failures.push(format!("NOT MODELED: the generated files hold {} calls of VolatileBytes and the models recorded {modeled}: an emission went around `Model::ask`", seen - template));
+        }
+    }
     if failures.is_empty() { Ok(report) } else { Err(format!("{report}{}", failures.join("\n"))) }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::twice;
+    use super::{Ledger, Model, OTHER_PARTY, TEMPLATE_ASKS, functions, twice};
+    use std::cell::RefCell;
+
+    fn failures(asks: &[(&str, &str, &str, &str)]) -> Vec<String> {
+        let ledger = RefCell::new(Ledger::default());
+        {
+            let model = Model::new(&ledger, "test fn");
+            for (value, key, method, text) in asks {
+                let _ = model.ask(value, key, method, *text);
+            }
+        }
+        ledger.into_inner().failures
+    }
+
+    #[test]
+    fn a_second_ask_through_another_name_is_the_same_value() {
+        // The corner the check of 6f40f3c9d named: the text calls the value `data` once and `alias` once; the model
+        // names it by its place in the metadata, so both asks are of one value.
+        let found = failures(&[("parameter 2 (pData)", "caller-bytes", "len", "data.len()"), ("parameter 2 (pData)", "caller-bytes", "len", "alias.len()")]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].starts_with("ASKED TWICE"), "{found:?}");
+    }
+
+    #[test]
+    fn two_values_asked_once_each_pass() {
+        let found = failures(&[("parameter 2 (pData)", "caller-bytes", "len", "a.len()"), ("parameter 3 (pOther)", "caller-bytes", "len", "a.len()"), ("parameter 2 (pData)", "caller-bytes", "write", "a.write(&b);")]);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn every_entry_of_the_list_is_held_by_its_limits() {
+        // Each entry asked each of its methods twice on one value: a Once or Never method fails, a Free one passes.
+        for trusted in OTHER_PARTY {
+            for (method, limit) in trusted.asks {
+                let method = if *method == "*" { "any_method" } else { method };
+                let found = failures(&[("one value", trusted.key, method, "x"), ("one value", trusted.key, method, "y")]);
+                match limit {
+                    super::Limit::Free => assert!(found.is_empty(), "{}.{method}: {found:?}", trusted.key),
+                    super::Limit::Once => assert!(found.len() == 1 && found[0].starts_with("ASKED TWICE"), "{}.{method}: {found:?}", trusted.key),
+                    super::Limit::Never => assert!(found.len() == 1 && found[0].starts_with("NEVER ASKED"), "{}.{method}: {found:?}", trusted.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_never_called_method_asked_once_fails() {
+        let found = failures(&[("the implementation's object", "identity", "clone", "found.clone()")]);
+        assert!(found.len() == 1 && found[0].starts_with("NEVER ASKED"), "{found:?}");
+    }
+
+    #[test]
+    fn an_unlisted_trait_or_method_fails() {
+        let found = failures(&[("v", "no-such-entry", "len", "v.len()"), ("v", "mapped", "truncate", "v.truncate()")]);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.iter().all(|line| line.starts_with("UNLISTED")), "{found:?}");
+    }
+
+    #[test]
+    fn an_implementation_method_asked_twice_in_one_entry_fails() {
+        let found = failures(&[("the implementation's object of the entry", "api-trait", "map", "found.value().map()"), ("the implementation's object of the entry", "api-trait", "unmap", "u"), ("the implementation's object of the entry", "api-trait", "map", "again.map()")]);
+        assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    #[test]
+    fn the_templates_make_the_asks_they_declare() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/component-object-model-direct");
+        for (file, function, key, method, count) in TEMPLATE_ASKS {
+            let text = std::fs::read_to_string(folder.join(file)).expect("template");
+            let bodies: Vec<_> = functions(&text).into_iter().filter(|f| f.name == *function).collect();
+            assert_eq!(bodies.len(), 1, "{file} fn {function}");
+            let body = &bodies[0];
+            let called: usize = body.parameters.iter().filter(|(name, _)| name != "&self" && name != "self").map(|(name, _)| body.body.matches(&format!("{name}.{method}(")).count()).sum();
+            assert_eq!(called, *count, "{file} fn {function}: {key}.{method}");
+            let all: usize = ["len", "read", "write", "read_to", "write_from"].iter().filter(|m| *m != method).map(|m| body.parameters.iter().map(|(name, _)| body.body.matches(&format!("{name}.{m}(")).count()).sum::<usize>()).sum();
+            assert_eq!(all, 0, "{file} fn {function} asks its argument something else");
+        }
+    }
 
     #[test]
     fn a_length_asked_twice_of_the_callers_bytes_fails() {

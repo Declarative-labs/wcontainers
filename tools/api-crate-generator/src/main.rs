@@ -110,7 +110,7 @@ fn main() -> ExitCode {
             }
         }
         // The check that every safe trait of the other party is asked once per value, on crates written earlier.
-        ("once-check", [out]) => match trust::check(std::path::Path::new(out)) {
+        ("once-check", [out]) => match trust::check(std::path::Path::new(out), None) {
             Ok(report) => {
                 println!("{report}");
                 ExitCode::SUCCESS

@@ -30,6 +30,8 @@ impl Writer<'_, '_> {
     #[allow(clippy::too_many_arguments, reason = "the method's own parts")]
     fn calling_method(&self, method: &Method, glued: Option<&Glued>, rust_name: &str, inputs: &[(String, String)], result: &str, call_target: &str, slot: &str, this: bool, api_type: &str, place: &str, face: Option<(&str, &str)>) -> String {
         let mut text = String::new();
+        // Every ask of the caller's values is made through the model of this function, by value (src/trust.rs).
+        let model = crate::trust::Model::new(&self.g.asked, format!("calling glue {place}{}", face.map_or(String::new(), |(table, _)| format!(" through {table}"))));
         let parameters: String = inputs.iter().map(|(name, ty)| format!(", {name}: {ty}")).collect();
         let returns = if result == "()" { String::new() } else { format!(" -> {result}") };
         let _ = writeln!(text, "    fn {rust_name}(&self{parameters}){returns} {{");
@@ -138,16 +140,15 @@ impl Writer<'_, '_> {
         // The caller's bytes (src/trust.rs): each length is asked once, before anything of the call is under way, and
         // that one answer both sizes our buffer and is the count the system is told; the caller's `write` runs last.
         let mut writes_back = String::new();
-        for (name, part) in &glued.parts {
+        for (position, (name, part)) in glued.parts.iter().enumerate() {
             let Part::BytesOut { optional, .. } = part else { continue };
-            let length = if *optional { format!("{name}.map_or(0, |bytes| bytes.len())") } else { format!("{name}.len()") };
+            // The value is the method's parameter at this place in the metadata, whatever the text calls it.
+            let value = format!("parameter {position} ({})", method.params.get(position).map_or("", |param| param.name.as_str()));
+            let length = model.ask(&value, "caller-bytes", "len", if *optional { format!("{name}.map_or(0, |bytes| bytes.len())") } else { format!("{name}.len()") });
             let _ = writeln!(body, "        let Ok({name}_length) = usize::try_from({length}) else {{ {fail} }};");
             let _ = writeln!(body, "        let mut {name}_buffer = Vec::new();\n        if {name}_buffer.try_reserve_exact({name}_length).is_err() {{ {} }}\n        {name}_buffer.resize({name}_length, 0_u8);", if status { "return Err(E_OUTOFMEMORY);" } else { &fail });
-            if *optional {
-                let _ = writeln!(writes_back, "        if let Some(bytes) = {name} {{ bytes.write(&{name}_buffer); }}");
-            } else {
-                let _ = writeln!(writes_back, "        {name}.write(&{name}_buffer);");
-            }
+            let write = model.ask(&value, "caller-bytes", "write", if *optional { format!("if let Some(bytes) = {name} {{ bytes.write(&{name}_buffer); }}") } else { format!("{name}.write(&{name}_buffer);") });
+            let _ = writeln!(writes_back, "        {write}");
         }
         let mut args: Vec<String> = Vec::new();
         let mut after = String::new();
