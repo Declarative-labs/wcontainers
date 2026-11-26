@@ -1277,6 +1277,13 @@ pub enum Bug {
     SixteenBitJumpTargetWhole,
     /// A step in compatibility mode keeps RSP's upper half.
     CompatibilityStepKeepsStackUpperHalf,
+    /// CMPS and SCAS take AF from bit 3 of the operands and difference, not bit 4.
+    StringCompareAuxiliaryFromBitThree,
+    /// SUB, CMP, SBB and NEG take AF from bit 3 of the operands and difference, not bit 4.
+    SubtractAuxiliaryFromBitThree,
+    /// A VEX form whose destination is also a source (FMA, the dot products, the blends into it) keeps that register's
+    /// ZMM bits 256 to 511.
+    VexReadDestinationKeepsZmmUpperBits,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1869,6 +1876,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CountJumpTestsDoubleword, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
     row(Bug::SixteenBitJumpTargetWhole, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
     row(Bug::CompatibilityStepKeepsStackUpperHalf, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
+    row(Bug::StringCompareAuxiliaryFromBitThree, "CMPS, SCAS", Family::String(|form| form.compares()), Origin::X87AndRefused),
+    row(Bug::SubtractAuxiliaryFromBitThree, "SUB, CMP, SBB, NEG", integer(|o| matches!(o, Operation::Subtract | Operation::Compare | Operation::SubtractWithBorrow | Operation::Negate)), Origin::X87AndRefused),
+    row(Bug::VexReadDestinationKeepsZmmUpperBits, "AVX family", Family::Avx(|_| true), Origin::X87AndRefused),
 ];
 
 const TRIGONOMETRIC: [Instruction; 4] = [Instruction::Fsin, Instruction::Fcos, Instruction::Fptan, Instruction::Fsincos];
@@ -2255,6 +2265,12 @@ pub(crate) fn mutate_integer(
         (Bug::CompareWritesDifference, Operation::Compare) => outcome.result = Some(d.wrapping_sub(s) & mask),
         (Bug::NegateOverflowNeverSet, Operation::Negate) => outcome.flags.remove(Flags::OVERFLOW),
         (Bug::NegateAuxiliaryCleared, Operation::Negate) => outcome.flags.remove(Flags::AUXILIARY_CARRY),
+        (Bug::SubtractAuxiliaryFromBitThree, Operation::Subtract | Operation::Compare | Operation::SubtractWithBorrow) => {
+            outcome.flags.set(Flags::AUXILIARY_CARRY, (d ^ s ^ result) & 0x08 != 0);
+        }
+        (Bug::SubtractAuxiliaryFromBitThree, Operation::Negate) => {
+            outcome.flags.set(Flags::AUXILIARY_CARRY, (d ^ result) & 0x08 != 0);
+        }
         (Bug::IncrementSetsCarry, Operation::Increment) => outcome.flags.set(Flags::CARRY, d == mask),
         (Bug::IncrementOverflowOnlyAtSixtyFourBits, Operation::Increment) => {
             let overflow = length == 8 && outcome.flags.contains(Flags::OVERFLOW);

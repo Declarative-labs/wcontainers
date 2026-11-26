@@ -144,7 +144,8 @@ fn compare(first: u64, second: u64, bytes: u64, flags: Flags) -> Flags {
     changed.set(Flags::ZERO, result == 0);
     changed.set(Flags::SIGN, result & top != 0);
     changed.set(Flags::OVERFLOW, (first ^ second) & (first ^ result) & top != 0);
-    changed.set(Flags::AUXILIARY_CARRY, (first ^ second ^ result) & 0x10 != 0);
+    let auxiliary = if is_active(Bug::StringCompareAuxiliaryFromBitThree) { 0x08 } else { 0x10 };
+    changed.set(Flags::AUXILIARY_CARRY, (first ^ second ^ result) & auxiliary != 0);
     changed.set(Flags::PARITY, (result as u8).count_ones().is_multiple_of(2));
     changed
 }

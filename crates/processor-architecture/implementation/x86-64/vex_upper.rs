@@ -23,9 +23,15 @@ pub(super) fn zero_written_upper_bits(processor: &mut Processor, decoded: &Decod
         }
         _ => {
             let mut factory = InstructionInfoFactory::new();
-            for used in factory.info(decoded).used_registers() {
+            let info = factory.info(decoded);
+            // A destination the form also reads, as an operand: iced lists every VEX destination register as written.
+            let read_destination = (is_active(Bug::VexReadDestinationKeepsZmmUpperBits)
+                && matches!(info.op0_access(), OpAccess::ReadWrite | OpAccess::ReadCondWrite))
+            .then_some(decoded.op0_register().number());
+            for used in info.used_registers() {
                 let register = used.register();
-                let written = matches!(used.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite);
+                let written = matches!(used.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite)
+                    && read_destination != Some(register.number());
                 if written && (register.is_xmm() || register.is_ymm() || register.is_zmm()) && register.number() < VECTOR_REGISTERS {
                     processor.zmm_upper_halves[register.number()] = [0; 2];
                 }
