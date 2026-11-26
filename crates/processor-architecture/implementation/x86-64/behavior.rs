@@ -280,8 +280,9 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
             .collect();
     }
     if let Some(form) = find_evex_integer_form(instruction) {
-        // An aligned store lies on one page.
-        return take(&ACROSS_FAULT, form.place == EvexIntegerPlace::Store && form.to_alignment().is_none())
+        // An aligned store lies on one page; no state tells VPMOVQW's 32-bit store's two choices apart on the chip.
+        let split_word_pair = form.memory_bytes(false) == 4 && form.lane == crate::vector::Lane::Word;
+        return take(&ACROSS_FAULT, form.place == EvexIntegerPlace::Store && form.to_alignment().is_none() && !split_word_pair)
             .iter()
             .map(|&across_fault| PreciseInstruction::EvexInteger { instruction, across_fault })
             .collect();

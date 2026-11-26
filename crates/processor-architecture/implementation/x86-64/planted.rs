@@ -51,6 +51,8 @@ pub enum Origin {
     Mandatory,
     /// The VEX family's second pass: ZMM's bits above 255, AVX-VNNI and the XSAVE family.
     VexSecondPass,
+    /// The rest of AVX-512's first half: the byte and word forms, packs, unpacks, broadcasts, moves and the rest.
+    EvexFirstHalf,
 }
 
 /// The forms a bug shows on.
@@ -1143,6 +1145,50 @@ pub enum Bug {
     DotProductsWrappedFirst,
     /// XSAVES and XRSTORS check their memory operand's page before the privilege level.
     SupervisorSaveChecksOperandFirst,
+    /// VPADDS, VPADDUS, VPSUBS and VPSUBUS wrap rather than saturate.
+    EvexSaturationWraps,
+    /// VPAVGB and VPAVGW halve the sum without adding one.
+    EvexAverageTruncates,
+    /// VPMADDUBSW wraps its word sums rather than saturating them.
+    EvexMultiplyAddBytesWraps,
+    /// The packs saturate as if signed whatever the form.
+    EvexPackAlwaysSigned,
+    /// The unpacks take the second source's lane first.
+    EvexIntegerUnpackSourcesSwapped,
+    /// VPSLLDQ and VPSRLDQ take their count modulo 16.
+    EvexByteShiftCountModulo,
+    /// VPCMPB, VPCMPW, VPCMPUB and VPCMPUW compare unsigned as signed and signed as unsigned.
+    EvexByteWordCompareSignednessSwapped,
+    /// A broadcast repeats a lane of the destination's width, not the source's.
+    EvexBroadcastDestinationLane,
+    /// A tuple broadcast repeats its first lane alone.
+    EvexBroadcastTupleFirstLane,
+    /// VMOVSHDUP duplicates the even singles.
+    EvexDuplicateOddAsEven,
+    /// A form whose memory lanes are not the destination's reads only the lanes its writemask lets through.
+    EvexWholeReadSuppressed,
+    /// VANDNPS, VANDNPD, VPANDND and VPANDNQ complement the second source.
+    EvexAndNotComplementsSecond,
+    /// VPMOVM2B to VPMOVM2Q set the lanes whose opmask bit is clear.
+    EvexFromMaskInverted,
+    /// VPMOVB2M to VPMOVQ2M take each lane's lowest bit.
+    EvexToMaskLowestBit,
+    /// VPMOVSX extends with zeros.
+    EvexExtendSignedWithZeros,
+    /// The saturating narrowing forms truncate.
+    EvexNarrowTruncates,
+    /// VDBPSADBW ignores its immediate, taking the second source's doublewords in order.
+    EvexBlockDifferencesInOrder,
+    /// VINSERTI32X4 to VINSERTF64X4 replace the lowest part whatever the immediate.
+    EvexInsertLowestPart,
+    /// VEXTRACTI32X4 to VEXTRACTF64X4 read the immediate's every bit, past the parts there are.
+    EvexExtractIndexUnreduced,
+    /// VMOVHLPS moves the low quadword high, and VMOVLHPS, VMOVHPS and VMOVHPD the high one low.
+    EvexHalvesMovedTheOtherWay,
+    /// VPINSRB to VPINSRQ replace the lowest lane whatever the immediate.
+    EvexInsertLaneLowest,
+    /// VMOVD and VMOVQ into an XMM register keep its other lanes.
+    EvexMoveLowKeepsOthers,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1672,6 +1718,28 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::DotUnsignedBytesSigned, "VPDPBUSD, VPDPBUSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { words: false, .. })), Origin::VexSecondPass),
     row(Bug::SupervisorSaveChecksOperandFirst, "XSAVES, XRSTORS", Family::Forms(SUPERVISOR_SAVES), Origin::VexSecondPass),
     row(Bug::DotProductsWrappedFirst, "VPDPBUSDS, VPDPWSSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { saturate: true, .. })), Origin::VexSecondPass),
+    row(Bug::EvexSaturationWraps, "VPADDS, VPSUBUS", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::AddSaturating(..) | LaneOperation::SubtractSaturating(..)))), Origin::EvexFirstHalf),
+    row(Bug::EvexAverageTruncates, "VPAVGB, VPAVGW", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::Average(_)))), Origin::EvexFirstHalf),
+    row(Bug::EvexMultiplyAddBytesWraps, "VPMADDUBSW", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::MultiplyAddBytes)), Origin::EvexFirstHalf),
+    row(Bug::EvexPackAlwaysSigned, "VPACKUSWB, VPACKUSDW", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::Pack(_, Signedness::Unsigned)))), Origin::EvexFirstHalf),
+    row(Bug::EvexIntegerUnpackSourcesSwapped, "VPUNPCKL, VPUNPCKH", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::UnpackHigh(_) | LaneOperation::UnpackLow(_)))), Origin::EvexFirstHalf),
+    row(Bug::EvexByteShiftCountModulo, "VPSLLDQ, VPSRLDQ", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::ShiftBytesLeft | LaneOperation::ShiftBytesRight))), Origin::EvexFirstHalf),
+    row(Bug::EvexByteWordCompareSignednessSwapped, "VPCMPB, VPCMPUW", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::CompareIntoMask(ComparePredicate::Immediate(_))) && matches!(form.lane, Lane::Byte | Lane::Word)), Origin::EvexFirstHalf),
+    row(Bug::EvexBroadcastDestinationLane, "VPACKSSDW, VPACKUSDW broadcasts", Family::EvexInteger(|form| form.place == EvexIntegerPlace::Memory && form.can_broadcast() && form.source_lane() != form.lane), Origin::EvexFirstHalf),
+    row(Bug::EvexBroadcastTupleFirstLane, "VBROADCASTI32X2 to VBROADCASTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::BroadcastTuple(_))), Origin::EvexFirstHalf),
+    row(Bug::EvexDuplicateOddAsEven, "VMOVSHDUP", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::DuplicateOddSingles)), Origin::EvexFirstHalf),
+    row(Bug::EvexWholeReadSuppressed, "VPACKSSWB, VPUNPCKLBW, VPSADBW in memory", Family::EvexInteger(|form| form.place == EvexIntegerPlace::Memory && !form.is_element_wise() && form.can_mask()), Origin::EvexFirstHalf),
+    row(Bug::EvexFromMaskInverted, "VPMOVM2B to VPMOVM2Q", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::FromMask), Origin::EvexFirstHalf),
+    row(Bug::EvexToMaskLowestBit, "VPMOVB2M to VPMOVQ2M", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::ToMask), Origin::EvexFirstHalf),
+    row(Bug::EvexExtendSignedWithZeros, "VPMOVSX", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Extend { signedness: Signedness::Signed, .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexNarrowTruncates, "VPMOVSDB, VPMOVUSQW", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Narrow { saturation: Some(_), .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexBlockDifferencesInOrder, "VDBPSADBW", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::DoubleBlockDifferences), Origin::EvexFirstHalf),
+    row(Bug::EvexInsertLowestPart, "VINSERTI32X4 to VINSERTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Insert { .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexExtractIndexUnreduced, "VEXTRACTI32X4 to VEXTRACTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Extract { .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexHalvesMovedTheOtherWay, "VMOVHLPS, VMOVLHPS, VMOVHPS", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow | LaneOperation::MoveLowToHigh))), Origin::EvexFirstHalf),
+    row(Bug::EvexInsertLaneLowest, "VPINSRB to VPINSRQ", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::InsertLane), Origin::EvexFirstHalf),
+    row(Bug::EvexMoveLowKeepsOthers, "VMOVD, VMOVQ", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::MoveLowZeroing(_)))), Origin::EvexFirstHalf),
+    row(Bug::EvexAndNotComplementsSecond, "VANDNPS, VPANDND", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::AndNot)), Origin::EvexFirstHalf),
 ];
 
 const SEGMENT_LOADS: &[Instruction] = &[
@@ -1878,6 +1946,82 @@ pub(crate) fn mutate_evex(form: &EvexIntegerForm, destination: &Zmm, first: &Zmm
         }
         (Some(Bug::RotateRightAsLeft), EvexIntegerOperation::Rotate { left: false, by_lane }) => {
             recompute(EvexIntegerOperation::Rotate { left: true, by_lane }, first, second, immediate)
+        }
+        (Some(Bug::EvexSaturationWraps), EvexIntegerOperation::Lanes(LaneOperation::AddSaturating(lane, _))) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::Add(lane)), first, second, immediate)
+        }
+        (Some(Bug::EvexSaturationWraps), EvexIntegerOperation::Lanes(LaneOperation::SubtractSaturating(lane, _))) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::Subtract(lane)), first, second, immediate)
+        }
+        (Some(Bug::EvexAverageTruncates), EvexIntegerOperation::Lanes(LaneOperation::Average(lane))) => {
+            let count = form.count_lanes();
+            let (a, b) = (to_lanes(lane, first, count), to_lanes(lane, second, count));
+            from_lanes(lane, &a.iter().zip(&b).map(|(x, y)| (x + y) >> 1).collect::<alloc::vec::Vec<_>>())
+        }
+        (Some(Bug::EvexMultiplyAddBytesWraps), EvexIntegerOperation::Lanes(LaneOperation::MultiplyAddBytes)) => {
+            let bytes = form.length.to_bits() as usize / 8;
+            let (a, b) = (to_lanes(Lane::Byte, first, bytes), to_lanes(Lane::Byte, second, bytes));
+            let sums: alloc::vec::Vec<u64> = (0..bytes / 2)
+                .map(|pair| {
+                    let product = |index: usize| a[index] as i64 * to_signed(b[index], u8::BITS);
+                    (product(2 * pair) + product(2 * pair + 1)) as u64 & 0xFFFF
+                })
+                .collect();
+            from_lanes(Lane::Word, &sums)
+        }
+        (Some(Bug::EvexPackAlwaysSigned), EvexIntegerOperation::Lanes(LaneOperation::Pack(lane, _))) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::Pack(lane, Signedness::Signed)), first, second, immediate)
+        }
+        (Some(Bug::EvexIntegerUnpackSourcesSwapped), EvexIntegerOperation::Lanes(LaneOperation::UnpackHigh(_) | LaneOperation::UnpackLow(_))) => {
+            recompute(form.operation, second, first, immediate)
+        }
+        (Some(Bug::EvexByteShiftCountModulo), EvexIntegerOperation::Lanes(LaneOperation::ShiftBytesLeft | LaneOperation::ShiftBytesRight)) => {
+            recompute(form.operation, first, second, immediate % 16)
+        }
+        (Some(Bug::EvexByteWordCompareSignednessSwapped), EvexIntegerOperation::CompareIntoMask(ComparePredicate::Immediate(signedness)))
+            if matches!(form.lane, Lane::Byte | Lane::Word) =>
+        {
+            let swapped = match signedness {
+                Signedness::Signed => Signedness::Unsigned,
+                Signedness::Unsigned => Signedness::Signed,
+            };
+            recompute(EvexIntegerOperation::CompareIntoMask(ComparePredicate::Immediate(swapped)), first, second, immediate)
+        }
+        (Some(Bug::EvexBroadcastTupleFirstLane), EvexIntegerOperation::BroadcastTuple(_)) => {
+            recompute(EvexIntegerOperation::BroadcastTuple(1), first, second, immediate)
+        }
+        (Some(Bug::EvexDuplicateOddAsEven), EvexIntegerOperation::Lanes(LaneOperation::DuplicateOddSingles)) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::DuplicateEvenSingles), first, second, immediate)
+        }
+        (Some(Bug::EvexAndNotComplementsSecond), EvexIntegerOperation::Lanes(LaneOperation::AndNot)) => {
+            recompute(form.operation, second, first, immediate)
+        }
+        (Some(Bug::EvexFromMaskInverted), EvexIntegerOperation::FromMask) => recompute(form.operation, first, &[!second[0], 0, 0, 0], immediate),
+        (Some(Bug::EvexToMaskLowestBit), EvexIntegerOperation::ToMask) => {
+            let lanes = to_lanes(form.lane, second, form.count_lanes());
+            [u128::from(lanes.iter().enumerate().fold(0u64, |all, (index, value)| all | (value & 1) << index)), 0, 0, 0]
+        }
+        (Some(Bug::EvexExtendSignedWithZeros), EvexIntegerOperation::Extend { from, .. }) => {
+            recompute(EvexIntegerOperation::Extend { from, signedness: Signedness::Unsigned }, first, second, immediate)
+        }
+        (Some(Bug::EvexNarrowTruncates), EvexIntegerOperation::Narrow { from, .. }) => {
+            recompute(EvexIntegerOperation::Narrow { from, saturation: None }, first, second, immediate)
+        }
+        (Some(Bug::EvexBlockDifferencesInOrder), EvexIntegerOperation::DoubleBlockDifferences) => recompute(form.operation, first, second, 0xE4),
+        (Some(Bug::EvexInsertLowestPart), EvexIntegerOperation::Insert { .. }) => recompute(form.operation, first, second, 0),
+        (Some(Bug::EvexInsertLaneLowest), EvexIntegerOperation::InsertLane) => recompute(form.operation, first, second, 0),
+        (Some(Bug::EvexMoveLowKeepsOthers), EvexIntegerOperation::Lanes(LaneOperation::MoveLowZeroing(lane))) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::MoveLow(lane)), destination, second, immediate)
+        }
+        (Some(Bug::EvexHalvesMovedTheOtherWay), EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow)) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::MoveLowToHigh), first, second, immediate)
+        }
+        (Some(Bug::EvexHalvesMovedTheOtherWay), EvexIntegerOperation::Lanes(LaneOperation::MoveLowToHigh)) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow), first, second, immediate)
+        }
+        (Some(Bug::EvexExtractIndexUnreduced), EvexIntegerOperation::Extract { quarters }) => {
+            let index = usize::from(immediate) * quarters;
+            core::array::from_fn(|quarter| if quarter < quarters && index + quarter < 4 { second[index + quarter] } else { 0 })
         }
         _ => result,
     }

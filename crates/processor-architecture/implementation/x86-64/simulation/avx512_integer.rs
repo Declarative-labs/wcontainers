@@ -5,7 +5,8 @@
 //! raises no fault, as the manual's memory fault suppression gives it. A broadcast lane and VPBROADCAST's memory are
 //! read once any lane is let through, and checked as a legacy access of their size is (with a writemask other than
 //! k0, for being canonical before for alignment);
-//! VBROADCASTI reads each lane of its tuple that some lane let through repeats; a shift's count is read always.
+//! VBROADCASTI reads each lane of its tuple that some lane let through repeats; a shift's count, and the memory of a
+//! form whose lanes are not the destination's, is read whole always.
 //! Where some lane is accessed, VMOVDQA's alignment is checked first, then every lane for being canonical, then for
 //! its page. A load faults at the lowest byte refused; so does a store, but under a writemask other than k0, where
 //! that byte's page is not the page of the store's first byte, at the highest byte refused on it.
@@ -17,7 +18,7 @@ use iced_x86::{Instruction as Decoded, OpKind, Register};
 use wcontainers_processor_architecture::MemoryDelta;
 
 use super::opmask::to_opmask_number;
-use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, find_fault, locate};
+use super::{Memory, MemoryOperand, check_alignment, check_canonical, expect_code, find_fault, locate};
 use crate::behavior::StoreAcrossFault;
 use crate::avx512_integer::{EvexIntegerForm, EvexIntegerOperation, EvexIntegerPlace, Zmm, find_evex_integer_form, from_lanes, read_zmm, to_lanes, write_zmm};
 use crate::memory::{PAGE_BYTES, read_bytes};
@@ -53,6 +54,9 @@ pub(super) fn execute_evex_integer(
         OpKind::Register if form.place == EvexIntegerPlace::General => {
             let register = decoded.op_register(last);
             [u128::from(processor.general_purpose_registers[register.full_register().number()]), 0, 0, 0]
+        }
+        OpKind::Register if form.operation == EvexIntegerOperation::FromMask => {
+            [u128::from(processor.opmask_registers[to_opmask_number(decoded.op_register(last))]), 0, 0, 0]
         }
         OpKind::Register => read_vector(processor, decoded.op_register(last)),
         _ => read_source(form, processor, memory, decoded, active)?,
@@ -97,15 +101,15 @@ fn write_vector(processor: &mut Processor, register: Register, value: Zmm) {
 /// The runs of bytes, from the operand's address, that the form reads or writes of its memory operand.
 fn list_accessed(form: &EvexIntegerForm, broadcast: bool, active: u64) -> Vec<(u64, u64)> {
     let bytes = form.memory_bytes(broadcast);
-    let lane_bytes = u64::from(form.lane.to_bits() / 8);
+    let lane_bytes = u64::from(form.memory_lane().to_bits() / 8);
     let active = if is_active(Bug::EvexIntegerNoFaultSuppression) { u64::MAX } else { active };
     let lanes = form.count_lanes() as u64;
     match form.operation {
-        EvexIntegerOperation::ShiftByCount(_) => alloc::vec![(0, bytes)],
+        _ if !form.is_element_wise() && !is_active(Bug::EvexWholeReadSuppressed) => alloc::vec![(0, bytes)],
         _ if broadcast || form.operation == EvexIntegerOperation::Broadcast => {
             if active & to_low_bits(lanes as usize) != 0 { alloc::vec![(0, bytes)] } else { Vec::new() }
         }
-        EvexIntegerOperation::BroadcastTuple => {
+        EvexIntegerOperation::BroadcastTuple(_) => {
             let tuple = bytes / lane_bytes;
             (0..tuple)
                 .filter(|element| (0..lanes).any(|lane| lane % tuple == *element && active >> lane & 1 != 0))
@@ -158,23 +162,36 @@ fn check_runs(
     }
 }
 
+/// Faults as an access of at most eight bytes does before its pages are checked, alignment checking covering it
+/// whole: the first byte canonical, or under a writemask that suppresses faults the bytes accessed, then aligned.
+fn check_small_access(
+    form: &EvexIntegerForm,
+    processor: &Processor,
+    operand: MemoryOperand,
+    runs: &[(u64, u64)],
+    length: u64,
+    masked: bool,
+) -> Result<(), Exception> {
+    if runs.is_empty() || length > 8 {
+        return Ok(());
+    }
+    if masked && form.is_element_wise() {
+        for &(offset, run) in runs {
+            check_canonical(MemoryOperand { address: operand.address.wrapping_add(offset), stack: operand.stack }, run)?;
+        }
+    } else {
+        check_canonical(operand, 1)?;
+    }
+    check_alignment(processor.flags, operand, length)
+}
+
 /// The memory source: its accessed lanes read, a broadcast lane repeated in every lane.
 fn read_source(form: &EvexIntegerForm, processor: &Processor, memory: Memory<'_, '_>, decoded: &Decoded, active: u64) -> Result<Zmm, Exception> {
     let broadcast = decoded.is_broadcast() && !is_active(Bug::EvexIntegerBroadcastIgnored);
     let operand = locate(processor, decoded);
     let runs = list_accessed(form, broadcast, active);
     let masked = decoded.op_mask() != Register::None;
-    // One lane read alone is an access of its size, which alignment checking covers.
-    if let [(0, length)] = runs.as_slice()
-        && (broadcast || form.operation == EvexIntegerOperation::Broadcast)
-    {
-        if masked {
-            check_canonical(operand, *length)?;
-            check_alignment(processor.flags, operand, *length)?;
-        } else {
-            check_access(processor.flags, memory, operand, *length, Access::Read)?;
-        }
-    }
+    check_small_access(form, processor, operand, &runs, form.memory_bytes(broadcast), masked)?;
     check_runs(form, memory, operand, &runs, Access::Read, masked)?;
     let bytes: [u8; ZMM_BYTES] = read_bytes(memory, operand.address);
     let mut value = [0u8; ZMM_BYTES];
@@ -184,13 +201,14 @@ fn read_source(form: &EvexIntegerForm, processor: &Processor, memory: Memory<'_,
     }
     let whole: Zmm = core::array::from_fn(|quarter| u128::from_le_bytes(value[16 * quarter..16 * quarter + 16].try_into().expect("sixteen bytes")));
     if broadcast {
-        let lane = to_lanes(form.lane, &whole, 1)[0];
-        return Ok(from_lanes(form.lane, &alloc::vec![lane; form.count_lanes()]));
+        let lane = if is_active(Bug::EvexBroadcastDestinationLane) { form.lane } else { form.source_lane() };
+        let count = (form.length.to_bits() / lane.to_bits()) as usize;
+        return Ok(from_lanes(lane, &alloc::vec![to_lanes(lane, &whole, 1)[0]; count]));
     }
     Ok(whole)
 }
 
-/// VMOVDQA's and VMOVDQU's store: the lanes the writemask lets through, each run of them one write; where a lane's
+/// A move's store, or a narrowing store's narrowed lanes: the lanes the writemask lets through, each run of them one write; where a lane's
 /// page refuses the store, what the behavior across a fault writes below it.
 fn store_vector(
     form: &EvexIntegerForm,
@@ -201,14 +219,30 @@ fn store_vector(
     across_fault: StoreAcrossFault,
     mut on_memory_mutated: impl FnMut(MemoryDelta<'_, X86_64>),
 ) -> Result<(), Exception> {
-    let source = read_vector(processor, decoded.op1_register());
+    let register = read_vector(processor, decoded.op1_register());
+    let source = match form.operation {
+        EvexIntegerOperation::Narrow { .. } | EvexIntegerOperation::Extract { .. } => {
+            let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
+            form.compute(&[0; 4], &[0; 4], &register, immediate)
+        }
+        _ => register,
+    };
     let operand = locate(processor, decoded);
     let runs = list_accessed(form, false, active);
+    // A store that does not suppress faults checks every byte but writes only the lanes let through.
+    let lane_bytes = u64::from(form.memory_lane().to_bits() / 8);
+    let written: Vec<(u64, u64)> = (0..form.count_lanes() as u64)
+        .filter(|lane| active >> lane & 1 != 0)
+        .map(|lane| (lane * lane_bytes, lane_bytes))
+        .collect();
     let mut bytes = [0u8; ZMM_BYTES];
     for (quarter, value) in source.iter().enumerate() {
         bytes[16 * quarter..16 * quarter + 16].copy_from_slice(&value.to_le_bytes());
     }
-    let fault = check_runs(form, memory, operand, &runs, Access::Write, decoded.op_mask() != Register::None).err();
+    let masked = decoded.op_mask() != Register::None;
+    let fault = check_small_access(form, processor, operand, &runs, form.memory_bytes(false), masked)
+        .and_then(|()| check_runs(form, memory, operand, &runs, Access::Write, masked && form.is_element_wise()))
+        .err();
     let below = match fault {
         Some(Exception::PageFault { address, .. }) if across_fault == StoreAcrossFault::WritesBytesBelowFault => address,
         Some(_) => operand.address,
@@ -216,7 +250,7 @@ fn store_vector(
     };
     // Adjacent lanes are one run of bytes.
     let mut merged: Vec<(u64, u64)> = Vec::new();
-    for &(offset, length) in &runs {
+    for &(offset, length) in &written {
         match merged.last_mut() {
             Some((start, run)) if *start + *run == offset => *run += length,
             _ => merged.push((offset, length)),
