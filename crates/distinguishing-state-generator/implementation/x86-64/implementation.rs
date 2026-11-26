@@ -24,6 +24,17 @@
 //! values in turn instead of in the product, the sum of every other operand's index choosing, so that each meets
 //! every value of every other operand.
 //!
+//! An EVEX writemask decides which lanes are written, independently of what is computed in them: where the data
+//! take every combination, the state without a writemask takes each, and each other writemask takes those whose
+//! data indices sum to its own index less one modulo the other writemasks' count, so that it meets every value of
+//! every data operand and the data's combinations are not repeated for each writemask.
+//!
+//! Two more operands of an EVEX form take their values in turn, the sum of the other structure operands' indices
+//! choosing: the flags where the access is wider than eight bytes, which alignment checking never covers, so that
+//! they only pass through; and the writemask where the outcome does not depend on the data and the access cannot
+//! fault (or the code faults before it runs), so that the writemask decides no fault and the merging it does is
+//! the plain access's.
+//!
 //! A form not yet modeled has one state, its sample encoding: a chip that lacks the form raises #UD whatever the
 //! state holds.
 
@@ -100,6 +111,12 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
         let in_turn = find_flags_in_turn(&types, &data, &values);
         let structure: Vec<usize> = (0..types.len()).filter(|index| !data[*index] && Some(*index) != in_turn).collect();
         let data_operands: Vec<usize> = (0..types.len()).filter(|index| data[*index]).collect();
+        let writemask = types.iter().position(|operand_type| matches!(operand_type, OperandType::Writemask { .. }));
+        let evex = find_evex_form(instruction).is_some() || find_evex_integer_form(instruction).is_some();
+        let in_memory = types.iter().any(|operand_type| matches!(operand_type, OperandType::Memory { .. }));
+        let position = |index: Option<usize>| index.and_then(|index| structure.iter().position(|&operand| operand == index));
+        let flags = position(types.iter().position(|operand_type| *operand_type == OperandType::Flags(FlagSet::Unread)));
+        let writemask_position = position(writemask);
         for chosen in combine(structure.iter().map(|&index| values[index].len()).collect()) {
             let mut operands: Vec<Option<OperandValue>> = alloc::vec![None; types.len()];
             for (&index, &value) in structure.iter().zip(&chosen) {
@@ -108,6 +125,25 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
             let width = find_access_bytes(instruction, &operands);
             let decided = operands.iter().flatten().any(|value| decides_without_data(*value, shape, width, relative))
                 || is_misaligned_under_alignment_check(&operands, width);
+            // Whether the structure operand at the position takes another value than its turn.
+            let out_of_turn = |position: usize| {
+                let others = chosen.iter().enumerate().filter(|(other, _)| *other != position).map(|(_, value)| value).sum::<usize>();
+                chosen[position] != others % values[structure[position]].len()
+            };
+            if evex && in_memory && width > 8 && flags.is_some_and(out_of_turn) {
+                continue;
+            }
+            let access = operands.iter().flatten().find_map(|value| match value {
+                OperandValue::Access(access) => Some(*access),
+                _ => None,
+            });
+            let mask_decides = access.is_some_and(|access| {
+                !access.layout.faults_before_execution()
+                    && (shape.is_some_and(|shape| faults(access, shape, width)) || is_misaligned_under_alignment_check(&operands, width))
+            });
+            if decided && access.is_some() && !mask_decides && writemask_position.is_some_and(out_of_turn) {
+                continue;
+            }
             let in_part = operands.iter().flatten().any(|value| stores_in_part(*value, shape, width));
             let data_choices: Vec<Vec<usize>> = if decided {
                 // Each data operand one value, but the value in memory and CMPXCHG's comparison every value where the
@@ -145,7 +181,16 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                     })
                     .collect()
             } else {
-                combine(data_operands.iter().map(|&index| values[index].len()).collect())
+                let all = combine(data_operands.iter().map(|&index| values[index].len()).collect());
+                // The writemask's index among its values; the first is no writemask.
+                let turn = writemask.and_then(|index| {
+                    let position = structure.iter().position(|&operand| operand == index)?;
+                    (chosen[position] > 0 && values[index].len() > 2).then(|| (chosen[position] - 1, values[index].len() - 1))
+                });
+                match turn {
+                    Some((turn, others)) => all.into_iter().filter(|choice| choice.iter().sum::<usize>() % others == turn).collect(),
+                    None => all,
+                }
             };
             for choice in data_choices {
                 for (&index, &value) in data_operands.iter().zip(&choice) {
