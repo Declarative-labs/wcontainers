@@ -4,12 +4,12 @@
 //! side. Calls other than the waits answer at once, so an answer of `WouldBlock` is tried again until [`DEADLINE`]; the
 //! waits are polled by hand with a waker that counts its wakes.
 //!
-//! The checks watch the wire through the host's packet and raw sockets, so they run as root on a Linux host, in a
-//! network namespace of their own whose loopback is up with the `fq` queueing discipline (which honours a transmit
+//! The checks watch the wire through the host's packet and raw sockets, so they run as root on a Linux host, each in a
+//! network namespace of its own that [`prepared_network`] makes, whose loopback is up with the `fq` queueing discipline (which honours a transmit
 //! delay), with `net.ipv4.tcp_fastopen` at 3 (fast open for clients and listeners), `net.ipv6.flowlabel_consistency`
 //! at 0 (which flow label reflection needs), `net.ipv4.tcp_fwmark_accept` at 1 (an accepted socket takes its SYN's
 //! mark), `net.ipv6.conf.lo.forwarding` at 1 (loopback may then join any anycast address, not only those its
-//! prefixes hold), the `dctcp`, `vegas` and `bbr` congestion controls available, a local route for 127.0.0.7 with the `tcp_usec_ts`
+//! prefixes hold), the `dctcp`, `vegas` and `bbr` congestion controls available (their modules loaded on the host), a local route for 127.0.0.7 with the `tcp_usec_ts`
 //! feature (TCP timestamps in microseconds) and one VRF device, the only master interface there.
 
 use core::cell::{Cell, RefCell};
@@ -3564,10 +3564,12 @@ const MEMBERSHIP_V4: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 123);
 /// https://www.rfc-editor.org/rfc/rfc4291
 const MEMBERSHIP_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x123);
 
-/// The host's tables of the multicast groups and anycast addresses each interface has joined.
-const IPV4_GROUPS: &str = "/proc/net/igmp";
-const IPV6_GROUPS: &str = "/proc/net/igmp6";
-const IPV6_ANYCAST: &str = "/proc/net/anycast6";
+/// The tables of the multicast groups and anycast addresses each interface of the calling thread's namespace has joined.
+///
+/// `/proc/net` is the namespace of the process's first thread, `/proc/thread-self/net` that of the calling thread.
+const IPV4_GROUPS: &str = "/proc/thread-self/net/igmp";
+const IPV6_GROUPS: &str = "/proc/thread-self/net/igmp6";
+const IPV6_ANYCAST: &str = "/proc/thread-self/net/anycast6";
 
 /// Gives how many sockets of the host have joined the group on the interface, by its table; none when it is not listed.
 fn group_users(group: IpAddr, interface: InterfaceIndex) -> Option<usize> {
@@ -4909,11 +4911,11 @@ const CONNECTION_OWNER: UserId = UserId(1001);
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const LISTENER_OWNER: UserId = UserId(1002);
 
-/// The host's tables of TCP sockets, a line for each.
+/// The tables of TCP sockets of the calling thread's namespace, a line for each.
 ///
 /// Slot, local and peer address (each the address and port in hexadecimal after a colon), state, queues, timer, retransmissions, user and more.
-const IPV4_TCP_SOCKETS: &str = "/proc/net/tcp";
-const IPV6_TCP_SOCKETS: &str = "/proc/net/tcp6";
+const IPV4_TCP_SOCKETS: &str = "/proc/thread-self/net/tcp";
+const IPV6_TCP_SOCKETS: &str = "/proc/thread-self/net/tcp6";
 const ADDRESS_PORT_SEPARATOR: char = ':';
 /// The tables write addresses and ports in hexadecimal.
 ///
@@ -5832,21 +5834,37 @@ fn own_network_namespace() {
 /// Brings the calling thread's loopback up through the kernel's routing socket, as `ip link set lo up` does.
 #[cfg(target_os = "linux")]
 fn bring_loopback_up() {
+    bring_up(loopback_index(), "bring the loopback up");
+}
+
+/// Gives the index of the calling thread's loopback.
+#[cfg(target_os = "linux")]
+fn loopback_index() -> u32 {
+    nix::net::if_::if_nametoindex(LOOPBACK_NAME).expect("the loopback's index")
+}
+
+/// Brings a link of the calling thread's namespace up, as `ip link set <link> up` does.
+#[cfg(target_os = "linux")]
+fn bring_up(index: u32, what: &str) {
+    use netlink_packet_route::RouteNetlinkMessage;
+    use netlink_packet_route::link::{LinkFlags, LinkMessage};
+    let mut link = LinkMessage::default();
+    link.header.index = index;
+    link.header.flags = LinkFlags::Up;
+    link.header.change_mask = LinkFlags::Up;
+    ask_routing(RouteNetlinkMessage::SetLink(link), NO_FLAGS, what);
+}
+
+/// Sends one request to the kernel's routing socket of the calling thread's namespace and checks that it is done.
+#[cfg(target_os = "linux")]
+fn ask_routing(message: netlink_packet_route::RouteNetlinkMessage, flags: u16, what: &str) {
     use netlink_packet_core::{
         NLM_F_ACK, NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload,
     };
     use netlink_packet_route::RouteNetlinkMessage;
-    use netlink_packet_route::link::{LinkFlags, LinkMessage};
-    let mut link = LinkMessage::default();
-    link.header.index = nix::net::if_::if_nametoindex(LOOPBACK_NAME).expect("the loopback's index");
-    link.header.flags = LinkFlags::Up;
-    link.header.change_mask = LinkFlags::Up;
     let mut header = NetlinkHeader::default();
-    header.flags = NLM_F_REQUEST | NLM_F_ACK;
-    let mut request = NetlinkMessage::new(
-        header,
-        NetlinkPayload::from(RouteNetlinkMessage::SetLink(link)),
-    );
+    header.flags = NLM_F_REQUEST | NLM_F_ACK | flags;
+    let mut request = NetlinkMessage::new(header, NetlinkPayload::from(message));
     request.finalize();
     let mut bytes = vec![u8::MIN; request.buffer_len()];
     request.serialize(&mut bytes);
@@ -5856,18 +5874,149 @@ fn bring_loopback_up() {
     socket
         .connect(&netlink_sys::SocketAddr::new(u32::MIN, u32::MIN))
         .expect("connect the routing socket to the kernel");
-    socket
-        .send(&bytes, i32::from(u8::MIN))
-        .expect("ask for the loopback up");
+    socket.send(&bytes, i32::from(u8::MIN)).expect(what);
     let mut reply = Vec::with_capacity(LOOPBACK_ANSWER_ROOM);
     socket
         .recv(&mut reply, i32::from(u8::MIN))
         .expect("the kernel's answer");
     match NetlinkMessage::<RouteNetlinkMessage>::deserialize(&reply).map(|answer| answer.payload) {
         Ok(NetlinkPayload::Error(error)) if error.code.is_none() => {}
-        other => panic!("bring the loopback up: {other:?}"),
+        other => panic!("{what}: {other:?}"),
     }
 }
+
+/// The routing request flags of a request that changes only what is there.
+#[cfg(target_os = "linux")]
+const NO_FLAGS: u16 = 0;
+
+/// Moves the calling thread into a network namespace of its own, set up as the module's documentation says.
+///
+/// Each check runs in one, so that what one check makes or sees on loopback reaches no other.
+#[cfg(target_os = "linux")]
+pub fn prepared_network() {
+    own_network_namespace();
+    bring_loopback_up();
+    let loopback = loopback_index();
+    add_microsecond_route(loopback);
+    queue_fairly(loopback);
+    for (setting, value) in NAMESPACE_SETTINGS {
+        std::fs::write(setting, value).expect(setting);
+    }
+    add_vrf_device();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn prepared_network() {
+    panic!("network namespaces are Linux's");
+}
+
+/// The namespace's settings the checks need, each file and its value.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html
+#[cfg(target_os = "linux")]
+const NAMESPACE_SETTINGS: [(&str, &str); 4] = [
+    // Fast open for clients and listeners.
+    ("/proc/sys/net/ipv4/tcp_fastopen", "3"),
+    // Flow label reflection needs the consistency check off.
+    ("/proc/sys/net/ipv6/flowlabel_consistency", "0"),
+    // An accepted socket takes its SYN's mark.
+    ("/proc/sys/net/ipv4/tcp_fwmark_accept", "1"),
+    // Loopback may then join any anycast address, not only those its prefixes hold.
+    ("/proc/sys/net/ipv6/conf/lo/forwarding", "1"),
+];
+
+/// Adds a local route for `MICROSECOND_CLOCK` with the `tcp_usec_ts` feature, as `ip route add local 127.0.0.7 dev lo
+/// table local features tcp_usec_ts` does.
+#[cfg(target_os = "linux")]
+fn add_microsecond_route(loopback: u32) {
+    use netlink_packet_core::{NLM_F_CREATE, NLM_F_EXCL};
+    use netlink_packet_route::route::{
+        RouteAddress, RouteAttribute, RouteMessage, RouteMetric, RouteProtocol, RouteScope,
+        RouteType,
+    };
+    use netlink_packet_route::{AddressFamily, RouteNetlinkMessage};
+    let mut route = RouteMessage::default();
+    route.header.address_family = AddressFamily::Inet;
+    route.header.destination_prefix_length = ONE_ADDRESS_V4;
+    route.header.table = linux_raw_sys::netlink::rt_class_t::RT_TABLE_LOCAL as u8;
+    route.header.protocol = RouteProtocol::Boot;
+    route.header.scope = RouteScope::Host;
+    route.header.kind = RouteType::Local;
+    route.attributes = vec![
+        RouteAttribute::Destination(RouteAddress::Inet(MICROSECOND_CLOCK)),
+        RouteAttribute::Oif(loopback),
+        RouteAttribute::Metrics(vec![RouteMetric::Features(
+            linux_raw_sys::netlink::RTAX_FEATURE_TCP_USEC_TS,
+        )]),
+    ];
+    ask_routing(
+        RouteNetlinkMessage::NewRoute(route),
+        NLM_F_CREATE | NLM_F_EXCL,
+        "add the microsecond route",
+    );
+}
+
+/// The prefix length of one IPv4 address.
+#[cfg(target_os = "linux")]
+const ONE_ADDRESS_V4: u8 = 32;
+
+/// Gives loopback the `fq` queueing discipline, which honours a transmit delay, as `tc qdisc replace dev lo root fq`
+/// does.
+#[cfg(target_os = "linux")]
+fn queue_fairly(loopback: u32) {
+    use netlink_packet_core::{NLM_F_CREATE, NLM_F_REPLACE};
+    use netlink_packet_route::RouteNetlinkMessage;
+    use netlink_packet_route::tc::{TcAttribute, TcHandle, TcMessage};
+    let mut discipline =
+        TcMessage::with_index(i32::try_from(loopback).expect("an interface index"));
+    discipline.header.parent = TcHandle::ROOT;
+    discipline.attributes = vec![TcAttribute::Kind(FAIR_QUEUE.to_owned())];
+    ask_routing(
+        RouteNetlinkMessage::NewQueueDiscipline(discipline),
+        NLM_F_CREATE | NLM_F_REPLACE,
+        "give loopback the fq queueing discipline",
+    );
+}
+
+/// The name of the fair queue packet scheduler.
+///
+/// https://man7.org/linux/man-pages/man8/tc-fq.8.html
+#[cfg(target_os = "linux")]
+const FAIR_QUEUE: &str = "fq";
+
+/// Adds the namespace's one VRF device and brings it up, as `ip link add conformance-vrf type vrf table 10` and `ip
+/// link set conformance-vrf up` do.
+#[cfg(target_os = "linux")]
+fn add_vrf_device() {
+    use netlink_packet_core::{NLM_F_CREATE, NLM_F_EXCL};
+    use netlink_packet_route::RouteNetlinkMessage;
+    use netlink_packet_route::link::{
+        InfoData, InfoKind, InfoVrf, LinkAttribute, LinkInfo, LinkMessage,
+    };
+    let mut link = LinkMessage::default();
+    link.attributes = vec![
+        LinkAttribute::IfName(VRF_NAME.to_owned()),
+        LinkAttribute::LinkInfo(vec![
+            LinkInfo::Kind(InfoKind::Vrf),
+            LinkInfo::Data(InfoData::Vrf(vec![InfoVrf::TableId(VRF_TABLE)])),
+        ]),
+    ];
+    ask_routing(
+        RouteNetlinkMessage::NewLink(link),
+        NLM_F_CREATE | NLM_F_EXCL,
+        "add the VRF device",
+    );
+    let index = nix::net::if_::if_nametoindex(VRF_NAME).expect("the VRF device's index");
+    bring_up(index, "bring the VRF device up");
+}
+
+/// The name and routing table of the namespace's VRF device.
+///
+/// https://docs.kernel.org/networking/vrf.html
+#[cfg(target_os = "linux")]
+const VRF_NAME: &str = "conformance-vrf";
+#[cfg(target_os = "linux")]
+const VRF_TABLE: u32 = 10;
 
 #[cfg(not(target_os = "linux"))]
 fn bring_loopback_up() {
@@ -8622,36 +8771,43 @@ macro_rules! tests {
     ($value:expr) => {
         #[test]
         fn connect_and_accept_name_both_ends() {
+            $crate::prepared_network();
             $crate::connect_and_accept_name_both_ends($value);
         }
 
         #[test]
         fn a_bound_socket_holds_its_port_until_released() {
+            $crate::prepared_network();
             $crate::a_bound_socket_holds_its_port_until_released($value);
         }
 
         #[test]
         fn connect_and_listen_take_a_bound_socket_and_its_port() {
+            $crate::prepared_network();
             $crate::connect_and_listen_take_a_bound_socket_and_its_port($value);
         }
 
         #[test]
         fn a_failed_connect_or_listen_gives_back_its_bound_socket() {
+            $crate::prepared_network();
             $crate::a_failed_connect_or_listen_gives_back_its_bound_socket($value);
         }
 
         #[test]
         fn a_clashing_connect_gives_back_only_a_port_bound_by_number() {
+            $crate::prepared_network();
             $crate::a_clashing_connect_gives_back_only_a_port_bound_by_number($value);
         }
 
         #[test]
         fn disconnect_gives_back_only_a_port_bound_by_number() {
+            $crate::prepared_network();
             $crate::disconnect_gives_back_only_a_port_bound_by_number($value);
         }
 
         #[test]
         fn disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose() {
+            $crate::prepared_network();
             $crate::disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose(
                 $value,
             );
@@ -8659,626 +8815,762 @@ macro_rules! tests {
 
         #[test]
         fn pending_error_is_taken_once() {
+            $crate::prepared_network();
             $crate::pending_error_is_taken_once($value);
         }
 
         #[test]
         fn pending_error_holds_an_icmp_error_of_an_established_connection() {
+            $crate::prepared_network();
             $crate::pending_error_holds_an_icmp_error_of_an_established_connection($value);
         }
 
         #[test]
         fn an_md5_key_holds_only_in_the_vrf_it_names() {
+            $crate::prepared_network();
             $crate::an_md5_key_holds_only_in_the_vrf_it_names($value);
         }
 
         #[test]
         fn listener_reads_its_accept_queue_and_backlog() {
+            $crate::prepared_network();
             $crate::listener_reads_its_accept_queue_and_backlog($value);
         }
 
         #[test]
         fn leaving_repair_without_a_window_probe_sends_none() {
+            $crate::prepared_network();
             $crate::leaving_repair_without_a_window_probe_sends_none($value);
         }
 
         #[test]
         fn a_listener_removes_a_key_asynchronously() {
+            $crate::prepared_network();
             $crate::a_listener_removes_a_key_asynchronously($value);
         }
 
         #[test]
         fn keys_are_for_the_vrf_named() {
+            $crate::prepared_network();
             $crate::keys_are_for_the_vrf_named($value);
         }
 
         #[test]
         fn ecn_mode_is_what_both_ends_negotiated() {
+            $crate::prepared_network();
             $crate::ecn_mode_is_what_both_ends_negotiated($value);
         }
 
         #[test]
         fn accept_cuts_the_synchronize_header_to_the_buffer() {
+            $crate::prepared_network();
             $crate::accept_cuts_the_synchronize_header_to_the_buffer($value);
         }
 
         #[test]
         fn connect_settings_apply_to_the_synchronize() {
+            $crate::prepared_network();
             $crate::connect_settings_apply_to_the_synchronize($value);
         }
 
         #[test]
         fn bytes_arrive_in_order_both_ways() {
+            $crate::prepared_network();
             $crate::bytes_arrive_in_order_both_ways($value);
         }
 
         #[test]
         fn send_reports_the_bytes_it_took() {
+            $crate::prepared_network();
             $crate::send_reports_the_bytes_it_took($value);
         }
 
         #[test]
         fn connects_over_ipv6() {
+            $crate::prepared_network();
             $crate::connects_over_ipv6($value);
         }
 
         #[test]
         fn dual_stack_listener_accepts_ipv4() {
+            $crate::prepared_network();
             $crate::dual_stack_listener_accepts_ipv4($value);
         }
 
         #[test]
         fn multipath_is_negotiated_when_both_ends_ask() {
+            $crate::prepared_network();
             $crate::multipath_is_negotiated_when_both_ends_ask($value);
         }
 
         #[test]
         fn requested_port_is_bound() {
+            $crate::prepared_network();
             $crate::requested_port_is_bound($value);
         }
 
         #[test]
         fn exit_node_chooses_a_port_outside_the_reserved() {
+            $crate::prepared_network();
             $crate::exit_node_chooses_a_port_outside_the_reserved($value);
         }
 
         #[test]
         fn stopped_listener_refuses_connections() {
+            $crate::prepared_network();
             $crate::stopped_listener_refuses_connections($value);
         }
 
         #[test]
         fn accept_without_a_connection_would_block() {
+            $crate::prepared_network();
             $crate::accept_without_a_connection_would_block($value);
         }
 
         #[test]
         fn write_shutdown_ends_the_peers_stream() {
+            $crate::prepared_network();
             $crate::write_shutdown_ends_the_peers_stream($value);
         }
 
         #[test]
         fn read_shutdown_ends_the_own_stream() {
+            $crate::prepared_network();
             $crate::read_shutdown_ends_the_own_stream($value);
         }
 
         #[test]
         fn shutdown_of_both_directions_ends_both() {
+            $crate::prepared_network();
             $crate::shutdown_of_both_directions_ends_both($value);
         }
 
         #[test]
         fn orderly_close_ends_the_peers_stream() {
+            $crate::prepared_network();
             $crate::orderly_close_ends_the_peers_stream($value);
         }
 
         #[test]
         fn abort_resets_the_peer() {
+            $crate::prepared_network();
             $crate::abort_resets_the_peer($value);
         }
 
         #[test]
         fn peek_leaves_the_bytes() {
+            $crate::prepared_network();
             $crate::peek_leaves_the_bytes($value);
         }
 
         #[test]
         fn peek_at_an_offset_skips_bytes() {
+            $crate::prepared_network();
             $crate::peek_at_an_offset_skips_bytes($value);
         }
 
         #[test]
         fn urgent_byte_is_read_apart() {
+            $crate::prepared_network();
             $crate::urgent_byte_is_read_apart($value);
         }
 
         #[test]
         fn urgent_inline_keeps_the_byte_in_the_stream() {
+            $crate::prepared_network();
             $crate::urgent_inline_keeps_the_byte_in_the_stream($value);
         }
 
         #[test]
         fn cork_holds_data_until_uncorked() {
+            $crate::prepared_network();
             $crate::cork_holds_data_until_uncorked($value);
         }
 
         #[test]
         fn more_to_come_holds_data_until_pushed() {
+            $crate::prepared_network();
             $crate::more_to_come_holds_data_until_pushed($value);
         }
 
         #[test]
         fn push_ignoring_neither_keeps_the_cork() {
+            $crate::prepared_network();
             $crate::push_ignoring_neither_keeps_the_cork($value);
         }
 
         #[test]
         fn push_ignoring_neither_sends_data_held_for_more() {
+            $crate::prepared_network();
             $crate::push_ignoring_neither_sends_data_held_for_more($value);
         }
 
         #[test]
         fn record_end_starts_a_new_segment() {
+            $crate::prepared_network();
             $crate::record_end_starts_a_new_segment($value);
         }
 
         #[test]
         fn unread_byte_reports_count_what_is_left() {
+            $crate::prepared_network();
             $crate::unread_byte_reports_count_what_is_left($value);
         }
 
         #[test]
         fn bytes_that_are_no_slice_carry_sends_and_receives() {
+            $crate::prepared_network();
             $crate::bytes_that_are_no_slice_carry_sends_and_receives($value);
         }
 
         #[test]
         fn one_receive_into_a_lent_buffer_takes_more_than_a_page() {
+            $crate::prepared_network();
             $crate::one_receive_into_a_lent_buffer_takes_more_than_a_page($value);
         }
 
         #[test]
         fn one_receive_into_bytes_that_are_no_slice_takes_more_than_a_page() {
+            $crate::prepared_network();
             $crate::one_receive_into_bytes_that_are_no_slice_takes_more_than_a_page($value);
         }
 
         #[test]
         fn listener_unread_byte_reports_reach_the_connections_it_accepts() {
+            $crate::prepared_network();
             $crate::listener_unread_byte_reports_reach_the_connections_it_accepts($value);
         }
 
         #[test]
         fn receive_software_timestamps_when_asked() {
+            $crate::prepared_network();
             $crate::receive_software_timestamps_when_asked($value);
         }
 
         #[test]
         fn software_transmit_report_names_the_send() {
+            $crate::prepared_network();
             $crate::software_transmit_report_names_the_send($value);
         }
 
         #[test]
         fn reports_name_their_sends_among_plain_ones() {
+            $crate::prepared_network();
             $crate::reports_name_their_sends_among_plain_ones($value);
         }
 
         #[test]
         fn acknowledgement_report_follows_the_peers_acknowledgement() {
+            $crate::prepared_network();
             $crate::acknowledgement_report_follows_the_peers_acknowledgement($value);
         }
 
         #[test]
         fn discarding_empties_the_error_queue() {
+            $crate::prepared_network();
             $crate::discarding_empties_the_error_queue($value);
         }
 
         #[test]
         fn empty_error_queue_would_block() {
+            $crate::prepared_network();
             $crate::empty_error_queue_would_block($value);
         }
 
         #[test]
         fn icmp_error_reaches_a_synchronizing_connection_over_ipv4() {
+            $crate::prepared_network();
             $crate::icmp_error_reaches_a_synchronizing_connection_over_ipv4($value);
         }
 
         #[test]
         fn icmp_error_reaches_a_synchronizing_connection_over_ipv6() {
+            $crate::prepared_network();
             $crate::icmp_error_reaches_a_synchronizing_connection_over_ipv6($value);
         }
 
         #[test]
         fn transmit_report_carries_the_packet_when_asked() {
+            $crate::prepared_network();
             $crate::transmit_report_carries_the_packet_when_asked($value);
         }
 
         #[test]
         fn transmit_statistics_come_with_the_report_when_asked() {
+            $crate::prepared_network();
             $crate::transmit_statistics_come_with_the_report_when_asked($value);
         }
 
         #[test]
         fn wireless_status_request_still_sends() {
+            $crate::prepared_network();
             $crate::wireless_status_request_still_sends($value);
         }
 
         #[test]
         fn fast_open_with_data_puts_it_in_the_synchronize() {
+            $crate::prepared_network();
             $crate::fast_open_with_data_puts_it_in_the_synchronize($value);
         }
 
         #[test]
         fn fast_open_until_first_send_defers_the_synchronize() {
+            $crate::prepared_network();
             $crate::fast_open_until_first_send_defers_the_synchronize($value);
         }
 
         #[test]
         fn fast_open_without_cookie_needs_no_first_connect() {
+            $crate::prepared_network();
             $crate::fast_open_without_cookie_needs_no_first_connect($value);
         }
 
         #[test]
         fn fast_open_keys_and_queue_decide_what_the_listener_takes() {
+            $crate::prepared_network();
             $crate::fast_open_keys_and_queue_decide_what_the_listener_takes($value);
         }
 
         #[test]
         fn keep_alive_probes_end_an_unanswered_connection() {
+            $crate::prepared_network();
             $crate::keep_alive_probes_end_an_unanswered_connection($value);
         }
 
         #[test]
         fn rearming_the_keep_alive_timer_sends_a_due_probe() {
+            $crate::prepared_network();
             $crate::rearming_the_keep_alive_timer_sends_a_due_probe($value);
         }
 
         #[test]
         fn no_delay_sends_small_segments_while_others_are_unacknowledged() {
+            $crate::prepared_network();
             $crate::no_delay_sends_small_segments_while_others_are_unacknowledged($value);
         }
 
         #[test]
         fn quick_acknowledgement_settings_time_the_acknowledgement() {
+            $crate::prepared_network();
             $crate::quick_acknowledgement_settings_time_the_acknowledgement($value);
         }
 
         #[test]
         fn delayed_acknowledgement_is_sent_on_demand() {
+            $crate::prepared_network();
             $crate::delayed_acknowledgement_is_sent_on_demand($value);
         }
 
         #[test]
         fn send_settings_bound_what_a_connection_takes() {
+            $crate::prepared_network();
             $crate::send_settings_bound_what_a_connection_takes($value);
         }
 
         #[test]
         fn receive_settings_bound_what_the_peer_sends() {
+            $crate::prepared_network();
             $crate::receive_settings_bound_what_the_peer_sends($value);
         }
 
         #[test]
         fn window_clamp_bounds_the_synchronize_window() {
+            $crate::prepared_network();
             $crate::window_clamp_bounds_the_synchronize_window($value);
         }
 
         #[test]
         fn retransmission_settings_time_the_retransmissions() {
+            $crate::prepared_network();
             $crate::retransmission_settings_time_the_retransmissions($value);
         }
 
         #[test]
         fn user_timeout_ends_an_unacknowledged_connection() {
+            $crate::prepared_network();
             $crate::user_timeout_ends_an_unacknowledged_connection($value);
         }
 
         #[test]
         fn synchronize_retries_end_an_unanswered_connect() {
+            $crate::prepared_network();
             $crate::synchronize_retries_end_an_unanswered_connect($value);
         }
 
         #[test]
         fn defer_accept_holds_a_connection_until_data() {
+            $crate::prepared_network();
             $crate::defer_accept_holds_a_connection_until_data($value);
         }
 
         #[test]
         fn fin_wait_2_settings_decide_how_a_closed_connection_ends() {
+            $crate::prepared_network();
             $crate::fin_wait_2_settings_decide_how_a_closed_connection_ends($value);
         }
 
         #[test]
         fn arrival_settings_drop_what_they_refuse() {
+            $crate::prepared_network();
             $crate::arrival_settings_drop_what_they_refuse($value);
         }
 
         #[test]
         fn header_settings_mark_each_segment() {
+            $crate::prepared_network();
             $crate::header_settings_mark_each_segment($value);
         }
 
         #[test]
         fn fixed_flow_label_marks_every_segment() {
+            $crate::prepared_network();
             $crate::fixed_flow_label_marks_every_segment($value);
         }
 
         #[test]
         fn anycast_addresses_are_joined_and_left() {
+            $crate::prepared_network();
             $crate::anycast_addresses_are_joined_and_left($value);
         }
 
         #[test]
         fn multicast_groups_are_joined_and_left() {
+            $crate::prepared_network();
             $crate::multicast_groups_are_joined_and_left($value);
         }
 
         #[test]
         fn md5_keys_admit_only_connections_signed_with_them() {
+            $crate::prepared_network();
             $crate::md5_keys_admit_only_connections_signed_with_them($value);
         }
 
         #[test]
         fn authentication_keys_admit_only_connections_signed_with_them() {
+            $crate::prepared_network();
             $crate::authentication_keys_admit_only_connections_signed_with_them($value);
         }
 
         #[test]
         fn authentication_options_choose_the_keys_in_use() {
+            $crate::prepared_network();
             $crate::authentication_options_choose_the_keys_in_use($value);
         }
 
         #[test]
         fn congestion_control_is_the_one_named() {
+            $crate::prepared_network();
             $crate::congestion_control_is_the_one_named($value);
         }
 
         #[test]
         fn pacing_rate_spreads_what_is_sent() {
+            $crate::prepared_network();
             $crate::pacing_rate_spreads_what_is_sent($value);
         }
 
         #[test]
         fn transmit_delay_holds_each_segment() {
+            $crate::prepared_network();
             $crate::transmit_delay_holds_each_segment($value);
         }
 
         #[test]
         fn address_sharing_lets_connections_leave_from_one_port() {
+            $crate::prepared_network();
             $crate::address_sharing_lets_connections_leave_from_one_port($value);
         }
 
         #[test]
         fn port_sharing_lets_listeners_share_a_port() {
+            $crate::prepared_network();
             $crate::port_sharing_lets_listeners_share_a_port($value);
         }
 
         #[test]
         fn nonlocal_addresses_are_bound_only_when_bindable() {
+            $crate::prepared_network();
             $crate::nonlocal_addresses_are_bound_only_when_bindable($value);
         }
 
         #[test]
         fn listener_backlog_bounds_the_accept_queue() {
+            $crate::prepared_network();
             $crate::listener_backlog_bounds_the_accept_queue($value);
         }
 
         #[test]
         fn negative_route_advice_picks_a_new_flow() {
+            $crate::prepared_network();
             $crate::negative_route_advice_picks_a_new_flow($value);
         }
 
         #[test]
         fn flow_label_reflection_answers_with_the_peers_label() {
+            $crate::prepared_network();
             $crate::flow_label_reflection_answers_with_the_peers_label($value);
         }
 
         #[test]
         fn window_probe_is_answered_and_changes_no_setting() {
+            $crate::prepared_network();
             $crate::window_probe_is_answered_and_changes_no_setting($value);
         }
 
         #[test]
         fn timestamp_clock_set_in_repair_mode_stamps_segments() {
+            $crate::prepared_network();
             $crate::timestamp_clock_set_in_repair_mode_stamps_segments($value);
         }
 
         #[test]
         fn timestamp_clock_in_the_other_unit_counts_in_it() {
+            $crate::prepared_network();
             $crate::timestamp_clock_in_the_other_unit_counts_in_it($value);
         }
 
         #[test]
         fn transmit_statistics_describe_the_connection() {
+            $crate::prepared_network();
             $crate::transmit_statistics_describe_the_connection($value);
         }
 
         #[test]
         fn delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled() {
+            $crate::prepared_network();
             $crate::delayed_acknowledgement_leaves_the_mode_when_none_is_scheduled($value);
         }
 
         #[test]
         fn accept_names_where_the_synchronize_arrived() {
+            $crate::prepared_network();
             $crate::accept_names_where_the_synchronize_arrived($value);
         }
 
         #[test]
         fn connect_and_listen_make_sockets_of_their_owner() {
+            $crate::prepared_network();
             $crate::connect_and_listen_make_sockets_of_their_owner($value);
         }
 
         #[test]
         fn connect_in_repair_mode_is_established_at_once() {
+            $crate::prepared_network();
             $crate::connect_in_repair_mode_is_established_at_once($value);
         }
 
         #[test]
         fn listener_timestamping_reaches_the_connections_it_accepts() {
+            $crate::prepared_network();
             $crate::listener_timestamping_reaches_the_connections_it_accepts($value);
         }
 
         #[test]
         fn saved_synchronize_is_taken_once() {
+            $crate::prepared_network();
             $crate::saved_synchronize_is_taken_once($value);
         }
 
         #[test]
         fn authentication_counters_are_set_only_where_authentication_is() {
+            $crate::prepared_network();
             $crate::authentication_counters_are_set_only_where_authentication_is($value);
         }
 
         #[test]
         fn listener_state_reads_a_listener() {
+            $crate::prepared_network();
             $crate::listener_state_reads_a_listener($value);
         }
 
         #[test]
         fn information_reads_what_the_connection_did() {
+            $crate::prepared_network();
             $crate::information_reads_what_the_connection_did($value);
         }
 
         #[test]
         fn congestion_control_state_names_the_algorithm() {
+            $crate::prepared_network();
             $crate::congestion_control_state_names_the_algorithm($value);
         }
 
         #[test]
         fn queues_count_unread_unacknowledged_and_unsent() {
+            $crate::prepared_network();
             $crate::queues_count_unread_unacknowledged_and_unsent($value);
         }
 
         #[test]
         fn tuned_values_follow_the_settings() {
+            $crate::prepared_network();
             $crate::tuned_values_follow_the_settings($value);
         }
 
         #[test]
         fn timestamp_reads_the_clock_in_its_unit() {
+            $crate::prepared_network();
             $crate::timestamp_reads_the_clock_in_its_unit($value);
         }
 
         #[test]
         fn repaired_connection_continues_where_the_original_left_off() {
+            $crate::prepared_network();
             $crate::repaired_connection_continues_where_the_original_left_off($value);
         }
 
         #[test]
         fn authentication_state_reads_the_keys_and_counters() {
+            $crate::prepared_network();
             $crate::authentication_state_reads_the_keys_and_counters($value);
         }
 
         #[test]
         fn authentication_repair_values_are_read_and_written() {
+            $crate::prepared_network();
             $crate::authentication_repair_values_are_read_and_written($value);
         }
 
         #[test]
         fn multipath_state_describes_the_connection() {
+            $crate::prepared_network();
             $crate::multipath_state_describes_the_connection($value);
         }
 
         #[test]
         fn multipath_connection_answers_every_query() {
+            $crate::prepared_network();
             $crate::multipath_connection_answers_every_query($value);
         }
 
         #[test]
         fn last_received_header_records_where_the_last_packet_came() {
+            $crate::prepared_network();
             $crate::last_received_header_records_where_the_last_packet_came($value);
         }
 
         #[test]
         fn incoming_processor_is_read_as_received_or_set() {
+            $crate::prepared_network();
             $crate::incoming_processor_is_read_as_received_or_set($value);
         }
 
         #[test]
         fn header_options_go_out_in_the_synchronize() {
+            $crate::prepared_network();
             $crate::header_options_go_out_in_the_synchronize($value);
         }
 
         #[test]
         fn connection_settings_set_twice_equal_set_once() {
+            $crate::prepared_network();
             $crate::connection_settings_set_twice_equal_set_once($value);
         }
 
         #[test]
         fn ipv6_connection_settings_set_twice_equal_set_once() {
+            $crate::prepared_network();
             $crate::ipv6_connection_settings_set_twice_equal_set_once($value);
         }
 
         #[test]
         fn listener_settings_set_twice_equal_set_once() {
+            $crate::prepared_network();
             $crate::listener_settings_set_twice_equal_set_once($value);
         }
 
         #[test]
         fn refusable_connection_settings_set_twice_equal_set_once() {
+            $crate::prepared_network();
             $crate::refusable_connection_settings_set_twice_equal_set_once($value);
         }
 
         #[test]
         fn waits_on_many_connections_each_wake_once() {
+            $crate::prepared_network();
             $crate::waits_on_many_connections_each_wake_once($value);
         }
 
         #[test]
         fn wait_for_room_finishes_when_the_peer_reads() {
+            $crate::prepared_network();
             $crate::wait_for_room_finishes_when_the_peer_reads($value);
         }
 
         #[test]
         fn wait_for_urgent_data_finishes_when_it_arrives() {
+            $crate::prepared_network();
             $crate::wait_for_urgent_data_finishes_when_it_arrives($value);
         }
 
         #[test]
         fn wait_for_the_peers_shutdown_finishes_when_it_comes() {
+            $crate::prepared_network();
             $crate::wait_for_the_peers_shutdown_finishes_when_it_comes($value);
         }
 
         #[test]
         fn wait_for_a_hang_up_finishes_when_both_ways_are_shut() {
+            $crate::prepared_network();
             $crate::wait_for_a_hang_up_finishes_when_both_ways_are_shut($value);
         }
 
         #[test]
         fn a_wait_gives_the_facts_the_connection_has_and_no_others() {
+            $crate::prepared_network();
             $crate::a_wait_gives_the_facts_the_connection_has_and_no_others($value);
         }
 
         #[test]
         fn a_wait_gives_the_facts_the_listener_has_and_no_others() {
+            $crate::prepared_network();
             $crate::a_wait_gives_the_facts_the_listener_has_and_no_others($value);
         }
 
         #[test]
         fn wait_for_an_error_finishes_when_the_peer_resets() {
+            $crate::prepared_network();
             $crate::wait_for_an_error_finishes_when_the_peer_resets($value);
         }
 
         mod configurable_tcp_connections {
-            $crate::wcontainers_configurable_conformance::tests!($crate::configured_connection($value));
+            $crate::wcontainers_configurable_conformance::tests!({
+                $crate::prepared_network();
+                $crate::configured_connection($value)
+            });
         }
 
         mod configurable_tcp_listeners {
-            $crate::wcontainers_configurable_conformance::tests!($crate::configured_listener($value));
+            $crate::wcontainers_configurable_conformance::tests!({
+                $crate::prepared_network();
+                $crate::configured_listener($value)
+            });
         }
 
         mod negative_route_advice {
-            $crate::wcontainers_negative_route_advisable_conformance::tests!($crate::advised_connection($value));
+            $crate::wcontainers_negative_route_advisable_conformance::tests!({
+                $crate::prepared_network();
+                $crate::advised_connection($value)
+            });
         }
 
         $crate::wcontainers_readiness_conformance::tests!(
             readiness_tcp_connections,
-            ready: $crate::waiting_for_data($value),
-            failing: $crate::waiting_for_urgent_data_until_a_report($value)
+            ready: {
+                $crate::prepared_network();
+                $crate::waiting_for_data($value)
+            },
+            failing: {
+                $crate::prepared_network();
+                $crate::waiting_for_urgent_data_until_a_report($value)
+            }
         );
 
         // The failure above is an error alone; this one is a hang-up alone, so each ends a wait by itself.
         mod readiness_tcp_connections_hanging_up {
             #[test]
             fn a_failure_ends_a_wait_that_did_not_ask_for_it() {
+                $crate::prepared_network();
                 $crate::wcontainers_readiness_conformance::a_failure_ends_a_wait_that_did_not_ask_for_it(
                     $crate::waiting_for_urgent_data_until_both_ways_are_shut($value),
                 );
@@ -9289,26 +9581,31 @@ macro_rules! tests {
         mod readiness_tcp_listeners {
             #[test]
             fn a_wait_does_not_finish_before_the_handle_is_ready() {
+                $crate::prepared_network();
                 $crate::wcontainers_readiness_conformance::a_wait_does_not_finish_before_the_handle_is_ready($crate::waiting_for_a_connection($value));
             }
 
             #[test]
             fn a_wait_finishes_when_the_handle_becomes_ready() {
+                $crate::prepared_network();
                 $crate::wcontainers_readiness_conformance::a_wait_finishes_when_the_handle_becomes_ready($crate::waiting_for_a_connection($value));
             }
 
             #[test]
             fn a_wait_made_when_ready_finishes_at_once() {
+                $crate::prepared_network();
                 $crate::wcontainers_readiness_conformance::a_wait_made_when_ready_finishes_at_once($crate::waiting_for_a_connection($value));
             }
 
             #[test]
             fn a_dropped_wait_is_withdrawn() {
+                $crate::prepared_network();
                 $crate::wcontainers_readiness_conformance::a_dropped_wait_is_withdrawn($crate::waiting_for_a_connection($value));
             }
 
             #[test]
             fn many_waits_each_wake_once() {
+                $crate::prepared_network();
                 $crate::wcontainers_readiness_conformance::many_waits_each_wake_once($crate::waiting_for_a_connection($value));
             }
         }
