@@ -165,6 +165,26 @@ impl Writer<'_, '_> {
             None => format!("let found = {};", fail("module::<M>()", "E_FAIL")),
         };
         let _ = writeln!(inner, "            {this_lookup}");
+        // Counts past the header's range are refused before any array is read; a keep value reads none.
+        let refused = if status { "Err(E_INVALIDARG)" } else { "None" };
+        let mut kept_by: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+        for (count, most, start, keep, keeps) in &glued.ranges {
+            let count_name = &glued.parts[*count].0;
+            let keep_test = keep.map_or("false".to_string(), |keep| format!("{count_name} == {keep:#x}"));
+            let _ = writeln!(inner, "            let {count_name}_keep = {keep_test};");
+            let span = match start {
+                Some(start) => format!("{}.checked_add({count_name}).is_none_or(|end| end > {most})", glued.parts[*start].0),
+                None => format!("{count_name} > {most}"),
+            };
+            let _ = writeln!(inner, "            if !{count_name}_keep && {span} {{ return {refused}; }}");
+            if keep.is_some() {
+                for (position, (_, part)) in glued.parts.iter().enumerate() {
+                    if matches!(part, Part::ValuesIn { count: c, .. } | Part::ObjectsIn { count: c, .. } if c == count) || keeps.contains(&position) {
+                        kept_by.insert(position, format!("{count_name}_keep"));
+                    }
+                }
+            }
+        }
         let mut args = Vec::new();
         let mut outs: Vec<(String, &Part, String)> = Vec::new();
         let counts: Vec<&String> = Vec::new();
@@ -201,7 +221,11 @@ impl Writer<'_, '_> {
                         None => format!("object::<{}>(KEY, {name}.addr())", self.kind_type(kinds[0], api_type)),
                     };
                     let get = if enum_path.is_some() { "get()" } else { "value()" };
-                    if *optional {
+                    let position = glued.parts.iter().position(|(n, _)| n == name).unwrap_or(usize::MAX);
+                    if let Some(keep) = kept_by.get(&position) {
+                        let _ = writeln!(inner, "            let {name}_found = if {keep} || {name}.is_null() {{ None }} else {{ Some({}) }};", fail(&lookup, "E_INVALIDARG"));
+                        args.push(format!("{name}_found.as_ref().map(|held| held.{get})"));
+                    } else if *optional {
                         let _ = writeln!(inner, "            let {name}_found = if {name}.is_null() {{ None }} else {{ Some({}) }};", fail(&lookup, "E_INVALIDARG"));
                         args.push(format!("{name}_found.as_ref().map(|held| held.{get})"));
                     } else {
@@ -209,10 +233,16 @@ impl Writer<'_, '_> {
                         args.push(format!("{name}_found.{get}"));
                     }
                 }
-                Part::ValuesIn { count, element, size } => {
+                Part::ValuesIn { count, element, size, optional } => {
                     let count_name = &glued.parts[*count].0;
+                    let position = glued.parts.iter().position(|(n, _)| n == name).unwrap_or(usize::MAX);
+                    let keep = kept_by.get(&position).cloned();
+                    if let Some(keep) = &keep {
+                        let _ = writeln!(inner, "            let {name}: Option<Vec<_>> = if {keep} {{ None }} else {{ Some({{");
+                    }
                     let _ = writeln!(inner, "            let {name}_count = {};", fail(&format!("usize::try_from({count_name}).ok().filter(|count| *count <= {MOST_ELEMENTS})"), "E_INVALIDARG"));
-                    let _ = writeln!(inner, "            let {name}_bytes = if {name}_count == 0 {{ Some(Vec::new()) }} else {{");
+                    let empty = if *optional { format!("{name}_count == 0 || {name}.is_null()") } else { format!("{name}_count == 0") };
+                    let _ = writeln!(inner, "            let {name}_bytes = if {empty} {{ Some(Vec::new()) }} else {{");
                     let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
                     let _ = writeln!(inner, "                // SAFETY: the metadata's `NativeArrayInfo` names `{}` as the count of `{metadata}`: that many elements of {size} bytes, readable for the call.", method.params[*count].name);
                     let _ = writeln!(inner, "                unsafe {{ read_only_at({name}, {name}_count * {size}) }}\n            }};");
@@ -222,13 +252,26 @@ impl Writer<'_, '_> {
                     };
                     let read = Self::convert_in(element, &format!("get_{c}(element, 0)"));
                     let _ = writeln!(inner, "            let {name}: Vec<_> = {}.as_chunks::<{size}>().0.iter().map(|element| {read}).collect();", fail(&format!("{name}_bytes"), "E_INVALIDARG"));
-                    args.push(format!("&{name}"));
+                    if keep.is_some() {
+                        let _ = writeln!(inner, "            {name}\n            }}) }};");
+                        args.push(format!("{name}.as_deref()"));
+                    } else {
+                        args.push(format!("&{name}"));
+                    }
                 }
-                Part::ObjectsIn { count, kind } => {
+                Part::ObjectsIn { count, kind, optional } => {
                     let count_name = &glued.parts[*count].0;
                     let kind_type = self.kind_type(*kind, api_type);
+                    let position = glued.parts.iter().position(|(n, _)| n == name).unwrap_or(usize::MAX);
+                    let keep = kept_by.get(&position).cloned();
                     let _ = writeln!(inner, "            let {name}_count = {};", fail(&format!("usize::try_from({count_name}).ok().filter(|count| *count <= {MOST_ELEMENTS})"), "E_INVALIDARG"));
-                    let _ = writeln!(inner, "            let {name}_bytes = if {name}_count == 0 {{ Some(Vec::new()) }} else {{");
+                    // A null array of an `_opt_` parameter is that many nulls; under a keep value none is read.
+                    let mut empty = format!("{name}_count == 0");
+                    if let Some(keep) = &keep {
+                        empty = format!("{empty} || {keep}");
+                    }
+                    let nulls = if *optional { format!("Some(vec![0_u8; {name}_count * size_of::<usize>()])") } else { "None".to_string() };
+                    let _ = writeln!(inner, "            let {name}_bytes = if {empty} {{ Some(Vec::new()) }} else if {name}.is_null() {{ {nulls} }} else {{");
                     let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
                     let _ = writeln!(inner, "                // SAFETY: the metadata's `NativeArrayInfo` names `{}` as the count of `{metadata}`: that many pointers, readable for the call.", method.params[*count].name);
                     let _ = writeln!(inner, "                unsafe {{ read_only_at({name}.cast::<u8>(), {name}_count * size_of::<usize>()) }}\n            }};");
@@ -238,7 +281,10 @@ impl Writer<'_, '_> {
                     let _ = writeln!(inner, "                {name}_found.push(if address == 0 {{ None }} else {{ Some({}) }});", fail(&format!("object::<{kind_type}>(KEY, address)"), "E_INVALIDARG"));
                     let _ = writeln!(inner, "            }}");
                     let _ = writeln!(inner, "            let {name}: Vec<Option<&{kind_type}>> = {name}_found.iter().map(|held| held.as_ref().map(|held| held.value())).collect();");
-                    args.push(format!("&{name}"));
+                    match &keep {
+                        Some(keep) => args.push(format!("(!{keep}).then_some(&{name}[..])")),
+                        None => args.push(format!("&{name}")),
+                    }
                 }
                 Part::BytesOut { count, optional } => {
                     let count_name = &glued.parts[*count].0;
@@ -326,8 +372,10 @@ impl Writer<'_, '_> {
         if let Some((resource, subresource)) = &ending {
             let _ = writeln!(inner, "            let ending = {resource}_found.part::<Lendings>().and_then(|lendings| lendings.begin_end({subresource}));");
             let _ = writeln!(inner, "            let Some((lent, busy)) = ending else {{ return {}; }};", if status { "Ok(())" } else { "Some(())" });
-            let _ = writeln!(inner, "            if let Some((shadow, data)) = lent.downcast_ref::<(Shadow, <{api_type} as {top_of_api}>::Mapped)>()");
-            let _ = writeln!(inner, "                && let Some(contents) = shadow.contents()\n            {{\n                let _ = wcontainers_volatile_bytes::VolatileBytes::write(data, &contents);\n            }}");
+            let _ = writeln!(inner, "            let lent = lent.downcast::<(Shadow, <{api_type} as {top_of_api}>::Mapped)>().ok().map(|held| *held);");
+            let _ = writeln!(inner, "            let data = lent.map(|(shadow, data)| {{");
+            let _ = writeln!(inner, "                if let Some(contents) = shadow.contents() {{ let _ = wcontainers_volatile_bytes::VolatileBytes::write(&data, &contents); }}");
+            let _ = writeln!(inner, "                shadow.give_back();\n                data\n            }});");
         }
         // An object handed out again: from what the glue recorded, before asking the implementation.
         let again = !status && outs.len() == 1 && glued.returned.is_none() && matches!(outs[0].1, Part::ObjectOut { made: false, .. }) && bound.is_some();

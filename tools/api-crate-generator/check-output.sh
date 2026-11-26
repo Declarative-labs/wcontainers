@@ -39,7 +39,7 @@ cp "$repository/rust-toolchain.toml" "$build/"
 {
     echo '[workspace]'
     echo 'resolver = "3"'
-    echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*"]'
+    echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*", "crates/*/implementation/*/harness"]'
     echo
     sed -n '/^\[workspace.package\]/,/^$/p' "$repository/Cargo.toml"
     echo '[workspace.metadata.reviewable]'

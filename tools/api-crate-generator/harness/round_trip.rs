@@ -352,7 +352,7 @@ impl d3d11::DeviceContext for Toy {
         }
         Ok(())
     }
-    fn om_set_render_targets_and_unordered_access_views(&self, render_target_views: &[Option<&Toy>], depth_stencil_view: Option<&Toy>, uav_start_slot: u32, unordered_access_views: &[Option<&Toy>], uav_initial_counts: &[u32]) {}
+    fn om_set_render_targets_and_unordered_access_views(&self, render_target_views: Option<&[Option<&Toy>]>, depth_stencil_view: Option<&Toy>, uav_start_slot: u32, unordered_access_views: Option<&[Option<&Toy>]>, uav_initial_counts: Option<&[u32]>) {}
 }
 
 /// Bytes of ours behind a lock, as a caller's buffer.
@@ -456,7 +456,7 @@ fn the_toy_through_both_glues() {
     let given = INITIAL.lock().unwrap_or_else(PoisonError::into_inner).clone();
     assert_eq!(given, vec![vec![16], vec![64, 16], vec![]], "the serving glue copied each subresource at the length its description and pitch give");
     let view = device.create_render_target_view(ResourceRef::Texture2D(&texture), None).expect("a view");
-    context.om_set_render_targets_and_unordered_access_views(&[Some(&view)], None, 0, &[], &[]);
+    context.om_set_render_targets_and_unordered_access_views(Some(&[Some(&view)]), None, 0, None, None);
     context.ia_set_vertex_buffers(0, &[Some(&buffer)], &[4], &[0]);
     let texture_mapped = context.map(ResourceRef::Texture2D(&texture), 0, Map(4), 0).expect("a texture map");
     assert_eq!(texture_mapped.row_pitch, 16);

@@ -8,7 +8,9 @@
 //!
 //! `Shadow` is memory of ours the serving glue lends the C side from Map to Unmap, from a pool Rust's allocator never
 //! gets back: the C side writes it at any moment, also after its Unmap, and only ever through its address. Blocks
-//! come in size classes, powers of two, so that a pool reused by lengths a program chooses stays bounded.
+//! come in size classes, powers of two, so that a pool reused by lengths a program chooses stays bounded. A block goes
+//! back to the pool only through an Unmap (`give_back`); one whose object died while mapped is never lent again, so
+//! that a program writing it after the release cannot reach a later mapping.
 
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
@@ -126,6 +128,9 @@ struct PoolBlock {
 /// Blocks of ours that no shadow holds now.
 static POOL: Mutex<Vec<PoolBlock>> = Mutex::new(Vec::new());
 
+/// Blocks whose object died while they were lent: kept for life, never lent again.
+static ABANDONED: Mutex<Vec<PoolBlock>> = Mutex::new(Vec::new());
+
 impl Shadow {
     /// Returns memory of this many bytes, from the pool or new; what it holds at first is unspecified. None when the
     /// allocator cannot give it.
@@ -173,10 +178,19 @@ impl Shadow {
     }
 }
 
+impl Shadow {
+    /// Gives the block back to the pool, at the Unmap that ends the lending.
+    pub fn give_back(mut self) {
+        if let Some(block) = self.0.take() {
+            POOL.lock().unwrap_or_else(PoisonError::into_inner).push(block);
+        }
+    }
+}
+
 impl Drop for Shadow {
     fn drop(&mut self) {
         if let Some(block) = self.0.take() {
-            POOL.lock().unwrap_or_else(PoisonError::into_inner).push(block);
+            ABANDONED.lock().unwrap_or_else(PoisonError::into_inner).push(block);
         }
     }
 }

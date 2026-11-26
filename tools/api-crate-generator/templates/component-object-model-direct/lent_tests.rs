@@ -95,13 +95,16 @@ fn revoked_memory_reads_and_writes_nothing() {
 }
 
 #[test]
-fn a_shadow_keeps_what_was_filled_and_goes_back_to_the_pool() {
+fn a_shadow_keeps_what_was_filled_and_goes_back_to_the_pool_only_at_unmap() {
     let shadow = Shadow::allocate(LENGTH).expect("a small block");
     assert_eq!(shadow.fill(&[FILL; LENGTH]), LENGTH);
     assert_eq!(shadow.contents(), Some(vec![FILL; LENGTH]));
     let address = shadow.address();
-    drop(shadow);
+    shadow.give_back();
     let again = Shadow::allocate(LENGTH).expect("a small block");
-    assert_eq!(again.address(), address, "a block of the same class comes back from the pool");
+    assert_eq!(again.address(), address, "a block given back at Unmap comes back from the pool");
+    drop(again);
+    let other = Shadow::allocate(LENGTH).expect("a small block");
+    assert_ne!(other.address(), address, "a block dropped while lent is never lent again");
     assert!(Shadow::allocate(usize::MAX).is_none());
 }

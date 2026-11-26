@@ -16,6 +16,27 @@ use crate::names;
 #[path = "glue.rs"]
 mod glue;
 
+/// The spike's harness, ported to the generated glue: hand-written beside the generator, copied beside the slice's
+/// Direct3D 11 glue as a test-only package.
+const HARNESS: &[(&str, &str)] = &[
+    ("Cargo.toml", include_str!("../harness/stand-ins/Cargo.toml")),
+    ("build.rs", include_str!("../harness/stand-ins/build.rs")),
+    ("lib.rs", include_str!("../harness/stand-ins/lib.rs")),
+    ("front.rs", include_str!("../harness/stand-ins/front.rs")),
+    ("liar.rs", include_str!("../harness/stand-ins/liar.rs")),
+    ("tests/game.rs", include_str!("../harness/stand-ins/tests/game.rs")),
+    ("tests/attack_c.rs", include_str!("../harness/stand-ins/tests/attack_c.rs")),
+    ("tests/attack_table.rs", include_str!("../harness/stand-ins/tests/attack_table.rs")),
+    ("tests/check2_c.rs", include_str!("../harness/stand-ins/tests/check2_c.rs")),
+    ("tests/fuzz.rs", include_str!("../harness/stand-ins/tests/fuzz.rs")),
+    ("c/d3d11_slice.h", include_str!("../harness/stand-ins/c/d3d11_slice.h")),
+    ("c/fake_d3d11.c", include_str!("../harness/stand-ins/c/fake_d3d11.c")),
+    ("c/game.c", include_str!("../harness/stand-ins/c/game.c")),
+    ("c/attack.c", include_str!("../harness/stand-ins/c/attack.c")),
+    ("c/check2.c", include_str!("../harness/stand-ins/c/check2.c")),
+    ("c/fuzz.c", include_str!("../harness/stand-ins/c/fuzz.c")),
+];
+
 pub const HEADER: &str = "Written by tools/api-crate-generator from the Win32 metadata, version 63.0.31, and never by hand.";
 const UNKNOWN: (&str, &str) = ("Windows.Win32.System.Com", "IUnknown");
 const FOUNDATION: &str = "Windows.Win32.Foundation";
@@ -445,6 +466,11 @@ impl<'a> Generator<'a> {
     /// Whether `record.field` is the read-only bytes of an initial-data exception line.
     fn initial_bytes_field(&self, record: &str, field: &str) -> bool {
         self.exceptions().any(|e| matches!(e, Exception::InitialData { record: r, bytes, .. } if *r == record && *bytes == field))
+    }
+
+    /// The count-range exception line of a method's count parameter, if any.
+    fn count_range(&self, method: &str, count: &str) -> Option<&'static Exception> {
+        self.exceptions().find(|e| matches!(e, Exception::CountRange { method: m, count: c, .. } if *m == method && *c == count))
     }
 
     /// The bound-object exception line of a method, if any.
@@ -896,10 +922,18 @@ impl<'a> Generator<'a> {
                         return Passed::In(optional(format!("&[{}; {length}]", self.element_in(inner, at, place))));
                     }
                     if let Some(count) = integer_argument(array, "CountParamIndex") {
-                        let count_is_pointer = usize::try_from(count).ok().and_then(|c| method.params.get(c)).is_some_and(|c| pointee(&c.ty).is_some());
+                        let count_param = usize::try_from(count).ok().and_then(|c| method.params.get(c));
+                        let count_is_pointer = count_param.is_some_and(|c| pointee(&c.ty).is_some());
                         if is_out || (is_in_out && !is_const) {
                             self.count(if count_is_pointer { Row::ArrayOutCounted } else { Row::ArrayOut });
                             return Passed::Out(format!("Vec<{}>", self.element_out(inner, at, place)));
+                        }
+                        let method_place = place.split('(').next().unwrap_or(place);
+                        let keeps = count_param.and_then(|c| self.count_range(method_place, &c.name)).is_some_and(|e| matches!(e, Exception::CountRange { keep: Some(_), .. }));
+                        if keeps {
+                            // The header's keep value: none, and what is bound stays (an exception line).
+                            self.count(Row::ExceptionLine);
+                            return Passed::In(format!("Option<&[{}]>", self.element_in(inner, at, place)));
                         }
                         self.count(Row::ArrayIn);
                         return Passed::In(format!("&[{}]", self.element_in(inner, at, place)));
@@ -1633,6 +1667,12 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
             let direct = out.join("crates").join(apis[position].folder).join("implementation").join("direct");
             std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
             std::fs::write(direct.join("tests").join("round_trip.rs"), include_str!("../harness/round_trip.rs")).map_err(|error| error.to_string())?;
+            // The spike's harness, ported: the fake system and C programs, the front and the liar, and their tests.
+            for (name, text) in HARNESS {
+                let path = direct.join("harness").join(name);
+                std::fs::create_dir_all(path.parent().unwrap_or(&direct)).map_err(|error| error.to_string())?;
+                std::fs::write(&path, text).map_err(|error| format!("{name}: {error}"))?;
+            }
             let manifest = direct.join("Cargo.toml");
             let mut text = std::fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
             let at = text.find("\n# A C boundary").unwrap_or(text.len());

@@ -109,6 +109,11 @@ pub enum Exception {
     /// `function`'s handle `param` must be null: the calling glue refuses any other value, which the system would load
     /// as a module of code.
     NullHandle { function: &'static str, param: &'static str },
+    /// `method`'s count `count` is at most `most` (with `start`, `start + count` is), as the header's `_In_range_`
+    /// states, or is the header's `keep` value, which keeps what is bound: the arrays it counts then reach the trait as
+    /// `None` and are not read, nor are the parameters in `keeps`. Out of range, the glue refuses the call (E_INVALIDARG,
+    /// or nothing for a method returning nothing), so that no count past the header's reads an array.
+    CountRange { method: &'static str, count: &'static str, most: u32, start: Option<&'static str>, keep: Option<u32>, keeps: &'static [&'static str] },
     /// The system's objects of `kind` and the context made with them are free threaded only under the system's
     /// multithread protection: the calling glue asks a new `kind` for `interface` and calls `method` with TRUE before
     /// handing it out, and refuses the object if it cannot.
@@ -243,9 +248,18 @@ const DIRECT3D_11_EXCEPTIONS: &[Exception] = &[
     // software rasterizer, which the system would load and run.
     Exception::NullHandle { function: "D3D11CreateDevice", param: "Software" },
     Exception::NullHandle { function: "D3D11CreateDeviceAndSwapChain", param: "Software" },
-    // https://learn.microsoft.com/windows/win32/api/d3d11_4/nf-d3d11_4-id3d11multithread-setmultithreadprotected:
-    // the immediate context is free threaded only under the device's multithread protection.
-    Exception::ProtectThreads { kind: "ID3D11Device", interface: "ID3D11Multithread", method: "SetMultithreadProtected" },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-omsetrendertargetsandunorderedaccessviews:
+    // NumRTVs at most D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT or D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL (which
+    // keeps the depth stencil view too); UAVStartSlot + NumUAVs at most D3D11_1_UAV_SLOT_COUNT, or NumUAVs
+    // D3D11_KEEP_UNORDERED_ACCESS_VIEWS.
+    Exception::CountRange { method: "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews", count: "NumRTVs", most: 8, start: None, keep: Some(0xffff_ffff), keeps: &["pDepthStencilView"] },
+    Exception::CountRange { method: "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews", count: "NumUAVs", most: 64, start: Some("UAVStartSlot"), keep: Some(0xffff_ffff), keeps: &[] },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-iasetvertexbuffers:
+    // StartSlot + NumBuffers at most D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT.
+    Exception::CountRange { method: "ID3D11DeviceContext::IASetVertexBuffers", count: "NumBuffers", most: 32, start: Some("StartSlot"), keep: None, keeps: &[] },
+    // https://learn.microsoft.com/windows/win32/api/d3d11_4/nn-d3d11_4-id3d11multithread: the immediate context is
+    // free threaded only under its multithread protection, which the context answers by QueryInterface.
+    Exception::ProtectThreads { kind: "ID3D11DeviceContext", interface: "ID3D11Multithread", method: "SetMultithreadProtected" },
 ];
 
 /// The spike's slice of DXGI (SPIKE.md): a surface's description, and a swap chain's Present and GetBuffer.
@@ -285,7 +299,7 @@ pub const DIRECT3D_11_SLICE: Api = Api {
         // Not of the spike's 27: the calling glue turns on the system's multithread protection with it.
         "ID3D11Multithread::SetMultithreadProtected",
     ],
-    faces: &[("ID3D11Device", &["ID3D11Multithread"]), ("ID3D11Texture2D", &["IDXGISurface"])],
+    faces: &[("ID3D11DeviceContext", &["ID3D11Multithread"]), ("ID3D11Texture2D", &["IDXGISurface"])],
     ..DIRECT3D_11
 };
 

@@ -107,15 +107,45 @@ impl Writer<'_, '_> {
                         .map(|(n, p)| (n, p))
                         .collect();
                     let c = self.count_c_type(&param.ty);
+                    let range = glued.ranges.iter().find(|(count, ..)| *count == position);
                     let length = |(user, part): &(&String, &Part)| match part {
                         Part::BytesOut { optional: true, .. } => format!("{user}.map_or(0, |bytes| bytes.len())"),
                         Part::BytesOut { .. } => format!("{user}.len()"),
                         _ => format!("{user}.len()"),
                     };
-                    if let Some(first) = users.first() {
+                    // An `_opt_` array of values may be empty for none, whatever the count.
+                    let required: Vec<&(&String, &Part)> = users.iter().filter(|(_, part)| !matches!(part, Part::ValuesIn { optional: true, .. })).collect();
+                    if let Some((_, most, start, Some(keep), _)) = range {
+                        // The header's keep value when every array it counts is none (an exception line).
+                        let first = required.first().copied().or(users.first()).map(|(user, _)| (*user).clone()).unwrap_or_default();
+                        let _ = writeln!(body, "        let {name}: {c} = match {first} {{ None => {keep:#x}, Some(values) => {{ let Ok(count) = {c}::try_from(values.len()) else {{ {fail} }}; count }} }};");
+                        for (user, part) in &users {
+                            if matches!(part, Part::ValuesIn { optional: true, .. }) {
+                                let _ = writeln!(body, "        if {user}.is_some_and(|values| !values.is_empty() && {c}::try_from(values.len()).ok() != Some({name})) {{ {fail} }}");
+                            } else {
+                                let _ = writeln!(body, "        if {user}.map(|values| {c}::try_from(values.len()).ok()) != {first}.map(|values| {c}::try_from(values.len()).ok()) {{ {fail} }}");
+                            }
+                        }
+                        let span = match start {
+                            Some(start) => format!("{}.checked_add({name}).is_none_or(|end| end > {most})", glued.parts[*start].0),
+                            None => format!("{name} > {most}"),
+                        };
+                        let _ = writeln!(body, "        if {name} != {keep:#x} && {span} {{ {fail} }}");
+                    } else if let Some(first) = required.first().copied().or(users.first()) {
                         let _ = writeln!(body, "        let Ok({name}) = {c}::try_from({}) else {{ {fail} }};", length(first));
-                        for other in users.iter().skip(1) {
-                            let _ = writeln!(body, "        if {c}::try_from({}).ok() != Some({name}) {{ {fail} }}", length(other));
+                        for other in users.iter().filter(|other| other.0 != first.0) {
+                            if matches!(other.1, Part::ValuesIn { optional: true, .. }) {
+                                let _ = writeln!(body, "        if !{}.is_empty() && {c}::try_from({}).ok() != Some({name}) {{ {fail} }}", other.0, length(other));
+                            } else {
+                                let _ = writeln!(body, "        if {c}::try_from({}).ok() != Some({name}) {{ {fail} }}", length(other));
+                            }
+                        }
+                        if let Some((_, most, start, None, _)) = range {
+                            let span = match start {
+                                Some(start) => format!("{}.checked_add({name}).is_none_or(|end| end > {most})", glued.parts[*start].0),
+                                None => format!("{name} > {most}"),
+                            };
+                            let _ = writeln!(body, "        if {span} {{ {fail} }}");
                         }
                     } else {
                         let _ = writeln!(body, "        let {name}: {c} = 0;");
@@ -162,7 +192,8 @@ impl Writer<'_, '_> {
                         args.push(format!("{{ let held = {name}; {raw} }}"));
                     }
                 }
-                Part::ValuesIn { element, .. } => {
+                Part::ValuesIn { element, count, optional, .. } => {
+                    let kept = glued.ranges.iter().any(|(c, _, _, keep, _)| c == count && keep.is_some());
                     let c = match element.as_ref() {
                         Part::Value { c, .. } => c.clone(),
                         _ => "u32".to_string(),
@@ -172,16 +203,27 @@ impl Writer<'_, '_> {
                         Part::Value { form: super::ValueForm::Same, .. } => ".copied()".to_string(),
                         other => format!(".map(|value| {})", Self::convert_out(other, "*value")),
                     };
+                    let source = if kept { format!("{name}.unwrap_or_default()") } else { name.clone() };
                     if mapped == ".copied()" {
-                        let _ = writeln!(body, "        let {name}_c: Vec<{c}> = {name}.to_vec();");
+                        let _ = writeln!(body, "        let {name}_c: Vec<{c}> = {source}.to_vec();");
                     } else {
-                        let _ = writeln!(body, "        let {name}_c: Vec<{c}> = {name}.iter(){mapped}.collect();");
+                        let _ = writeln!(body, "        let {name}_c: Vec<{c}> = {source}.iter(){mapped}.collect();");
                     }
-                    args.push(format!("{name}_c.as_ptr().cast::<u8>()"));
+                    if *optional || kept {
+                        args.push(format!("if {name}_c.is_empty() {{ null() }} else {{ {name}_c.as_ptr().cast::<u8>() }}"));
+                    } else {
+                        args.push(format!("{name}_c.as_ptr().cast::<u8>()"));
+                    }
                 }
-                Part::ObjectsIn { .. } => {
-                    let _ = writeln!(body, "        let {name}_raw: Vec<Raw> = {name}.iter().map(|held| held.map_or(null_mut(), |held| held.raw())).collect();");
-                    args.push(format!("{name}_raw.as_ptr()"));
+                Part::ObjectsIn { count, .. } => {
+                    let kept = glued.ranges.iter().any(|(c, _, _, keep, _)| c == count && keep.is_some());
+                    let source = if kept { format!("{name}.unwrap_or_default()") } else { name.clone() };
+                    let _ = writeln!(body, "        let {name}_raw: Vec<Raw> = {source}.iter().map(|held| held.map_or(null_mut(), |held| held.raw())).collect();");
+                    if kept {
+                        args.push(format!("if {name}.is_none() {{ null() }} else {{ {name}_raw.as_ptr() }}"));
+                    } else {
+                        args.push(format!("{name}_raw.as_ptr()"));
+                    }
                 }
                 Part::BytesOut { optional, .. } => {
                     let length = if *optional { format!("{name}.map_or(0, |bytes| bytes.len())") } else { format!("{name}.len()") };

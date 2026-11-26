@@ -1,0 +1,9 @@
+#!/bin/bash
+# The C compiler for the AddressSanitizer build of the stand-ins: zig's clang, whose instrumentation links with the
+# Rust toolchain's AddressSanitizer runtime (gcc's would bring its own runtime). Drops cc-rs's target flag, which zig
+# spells differently.
+args=()
+for arg in "$@"; do
+    case $arg in --target=*) ;; *) args+=("$arg") ;; esac
+done
+exec zig cc "${args[@]}"

@@ -72,9 +72,9 @@ enum Part {
     StructIn { optional: bool, coded: Coded },
     ObjectIn { optional: bool, kinds: Vec<usize>, enum_path: Option<String> },
     /// An array of values and the index of its count.
-    ValuesIn { count: usize, element: Box<Part>, size: u64 },
+    ValuesIn { count: usize, element: Box<Part>, size: u64, optional: bool },
     /// An array of objects, each may be null, and the index of its count.
-    ObjectsIn { count: usize, kind: usize },
+    ObjectsIn { count: usize, kind: usize, optional: bool },
     /// A count another parameter names, dropped from the trait.
     Count,
     ObjectOut { kinds: Vec<usize>, made: bool },
@@ -106,6 +106,9 @@ enum ValueForm {
 /// What the glue writes for one method.
 struct Glued {
     parts: Vec<(String, Part)>,
+    /// Counts with a range (an exception line): the count's index, the most, the start's index, the keep value, and
+    /// the indices the keep value leaves unread.
+    ranges: Vec<(usize, u32, Option<usize>, Option<u32>, Vec<usize>)>,
     status: bool,
     /// A value the method returns, not a status.
     returned: Option<Part>,
@@ -190,14 +193,15 @@ impl<'g, 'a> Writer<'g, 'a> {
         let (size, _) = self.layouts.of_record(record)?;
         let mut decode = String::new();
         let mut encode = String::new();
-        let mut decode_only = record.kind == RecordKind::Union;
+        let union = record.kind == RecordKind::Union;
+        let mut decode_only = false;
         let mut used = BTreeSet::new();
         // A lent record crosses with its memory's address: `Record<usize>`.
         let lent_field = match self.g.lent_record(&record.name) {
             Some(Exception::Lent { field, .. }) => Some(*field),
             _ => None,
         };
-        for (field, (offset, _)) in record.fields.iter().zip(&places) {
+        for (field, (offset, field_size)) in record.fields.iter().zip(&places) {
             let mut name = names::value_name(&field.name);
             while !used.insert(name.clone()) {
                 name.push('_');
@@ -212,8 +216,19 @@ impl<'g, 'a> Writer<'g, 'a> {
             decode_only |= only;
             let _ = writeln!(decode, "        {name}: {read},");
             if !decode_only {
-                let _ = writeln!(encode, "    {}", self.write_value(&field.ty, record, rust_name, &at, &format!("value.{name}"))?);
+                let statement = self.write_value(&field.ty, record, rust_name, &at, &format!("value.{name}"))?;
+                if union {
+                    // A union is written as the largest of its members that is not all zeros: exact for a value read
+                    // from C (every member holds the same bytes) and for one built with the other members zeroed.
+                    let _ = writeln!(encode, "    {{\n        let mut scratch = [0_u8; {size}];\n        {{\n            let bytes = &mut scratch[..];\n            {statement}\n        }}");
+                    let _ = writeln!(encode, "        if scratch != [0_u8; {size}] && {field_size} > chosen.0 {{\n            chosen = ({field_size}, scratch);\n        }}\n    }}");
+                } else {
+                    let _ = writeln!(encode, "    {statement}");
+                }
             }
+        }
+        if union && !decode_only {
+            encode = format!("    let mut chosen = (0_u64, [0_u8; {size}]);\n{encode}    bytes[..{size}].copy_from_slice(&chosen.1);\n");
         }
         let mut text = String::new();
         let path = if lent_field.is_some() { format!("{path}<usize>") } else { path.to_string() };
@@ -422,7 +437,17 @@ impl<'g, 'a> Writer<'g, 'a> {
         } else {
             Some(self.value_part(&method.return_type).map_err(|why| format!("return: {why}"))?)
         };
-        Ok(Glued { parts, status, returned })
+        let mut ranges = Vec::new();
+        for exception in self.g.exceptions() {
+            if let Exception::CountRange { method: m, count, most, start, keep, keeps } = exception
+                && *m == place
+            {
+                let index = |name: &str| method.params.iter().position(|p| p.name == name);
+                let Some(count) = index(count) else { return Err(format!("no count {count}")) };
+                ranges.push((count, *most, start.and_then(index), *keep, keeps.iter().filter_map(|k| index(k)).collect()));
+            }
+        }
+        Ok(Glued { parts, ranges, status, returned })
     }
 
     /// A parameter an exception line of src/api.rs maps, if any.
@@ -500,11 +525,11 @@ impl<'g, 'a> Writer<'g, 'a> {
                 if kinds.len() != 1 || enum_path.is_some() {
                     return Err("an array of objects of several kinds".to_string());
                 }
-                return Ok(Part::ObjectsIn { count, kind: kinds[0] });
+                return Ok(Part::ObjectsIn { count, kind: kinds[0], optional: param.is_optional });
             }
             let element = self.value_part(inner)?;
             let (size, _) = primitive_or_record_size(&self.layouts, inner).ok_or("an element of unknown size")?;
-            return Ok(Part::ValuesIn { count, element: Box::new(element), size });
+            return Ok(Part::ValuesIn { count, element: Box::new(element), size, optional: param.is_optional });
         }
         if let Some(bytes) = bytes {
             if !(is_out || param.is_out && !is_const) {
