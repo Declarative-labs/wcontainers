@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-observation-collector-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-observation-collector = { path = ".." }
+wcontainers-processor-architecture = { path = "../../processor-architecture" }
+
+[lints]
+workspace = true
