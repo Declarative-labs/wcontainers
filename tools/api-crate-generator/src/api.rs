@@ -520,6 +520,8 @@ pub const DIRECT3D_11_SLICE: Api = Api {
 /// The crates written together: each API with the ones it names, lowest first.
 pub const SETS: &[(&str, &[&Api])] = &[
     ("direct3d-11", &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_11]),
+    // The same APIs with both glues for every method (AC3), kept apart from the trait layer until they build.
+    ("direct3d-11-glue", &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_11]),
     (
         "direct3d-11-slice",
         &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE_SLICE, &DIRECT3D_11_SLICE],
@@ -529,6 +531,11 @@ pub const SETS: &[(&str, &[&Api])] = &[
 /// The whole API of a folder, of which a slice is a part.
 pub fn whole(folder: &str) -> Option<&'static Api> {
     by_name("direct3d-11")?.iter().copied().find(|api| api.folder == folder)
+}
+
+/// Whether a set's direct crates are written: a slice's, and the whole APIs' glue set.
+pub fn writes_glue(name: &str) -> bool {
+    name != "direct3d-11"
 }
 
 pub fn by_name(name: &str) -> Option<&'static [&'static Api]> {

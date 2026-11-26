@@ -315,12 +315,18 @@ impl Writer<'_, '_> {
                     let _ = writeln!(body, "            {name}_words.extend(bytes.as_chunks::<8>().0.iter().map(|word| u64::from_ne_bytes(*word)));\n        }}");
                     args.push(format!("if {name}_list.is_empty() {{ null() }} else {{ {name}_words.as_ptr().cast::<u8>() }}"));
                 }
-                Part::UnknownIn { .. } => {
-                    let kinds: Vec<usize> = (0..self.g.kinds.len()).filter(|&k| self.g.kinds[k].api == self.current.get()).collect();
-                    let path = format!("{}::UnknownRef", alias(self.g.apis[self.current.get()]));
-                    let mut arms: Vec<String> = kinds.iter().map(|&k| format!("Some({path}::{}(object)) => object.raw()", self.g.kinds[k].name)).collect();
-                    arms.push(format!("Some({path}::Unknown(foreign)) => match foreign.object().downcast_ref::<ForeignUnknown>() {{ Some(held) => held.raw(), None => {{ {fail} }} }}"));
-                    arms.push("None => null_mut()".to_string());
+                Part::UnknownIn { optional } => {
+                    // The UnknownRef of the API whose interface holds the method (a face's is its own API's).
+                    let owner = place.split_once("::").and_then(|(interface, _)| self.g.interface_api.iter().find(|(k, _)| k.1 == interface).map(|(_, &a)| a)).unwrap_or(self.current.get());
+                    let kinds: Vec<usize> = (0..self.g.kinds.len()).filter(|&k| self.g.kinds[k].api == owner).collect();
+                    let path = format!("{}::UnknownRef", alias(self.g.apis[owner]));
+                    // An `_opt_` pointer reaches the trait as an `Option`; a required one as the reference itself.
+                    let wrap = |pattern: String| if *optional { format!("Some({pattern})") } else { pattern };
+                    let mut arms: Vec<String> = kinds.iter().map(|&k| format!("{} => object.raw()", wrap(format!("{path}::{}(object)", self.g.kinds[k].name)))).collect();
+                    arms.push(format!("{} => match foreign.object().downcast_ref::<ForeignUnknown>() {{ Some(held) => held.raw(), None => {{ {fail} }} }}", wrap(format!("{path}::Unknown(foreign)"))));
+                    if *optional {
+                        arms.push("None => null_mut()".to_string());
+                    }
                     let _ = writeln!(body, "        let {name}_raw: Raw = match {name} {{ {} }};", arms.join(", "));
                     args.push(format!("{name}_raw"));
                 }
@@ -457,9 +463,20 @@ impl Writer<'_, '_> {
         (format!("match &{value} {{ {} }}", raw.join(", ")), format!("match &{value} {{ {} }}", keep.join(", ")))
     }
 
+    /// The interface a `<Interface>Ref` enum is of, by its path: two APIs may each have a trait of that name (Direct3D 11's
+    /// and DXGI's `Resource`), so the crate alias the path starts with picks the API, and the smallest key decides any
+    /// tie, never a hash map's order.
     fn enum_interface(&self, enum_path: &str) -> Key {
-        let name = enum_path.rsplit("::").next().unwrap_or("").trim_end_matches("Ref");
-        self.g.trait_names.iter().find(|(_, trait_name)| *trait_name == name).map(|(k, _)| k.clone()).unwrap_or_default()
+        let (prefix, last) = enum_path.rsplit_once("::").unwrap_or(("", enum_path));
+        let name = last.trim_end_matches("Ref");
+        let api = self.g.apis.iter().position(|spec| alias(spec) == prefix);
+        self.g
+            .trait_names
+            .iter()
+            .filter(|(k, trait_name)| *trait_name == name && api.is_none_or(|api| self.g.interface_api.get(*k) == Some(&api)))
+            .map(|(k, _)| k.clone())
+            .min()
+            .unwrap_or_default()
     }
 
     fn out_interface(&self, param: &crate::metadata::Param) -> Option<Key> {
@@ -568,6 +585,8 @@ impl Writer<'_, '_> {
                     }
                 }
             }
+            // Each trait once per type: a face's chain may share bases with the kind's or another face's.
+            let mut implemented: Vec<Key> = traits.clone();
             for interface_key in &traits {
                 let root_has_api = !g.apiless.borrow().contains(&g.chain_root(interface_key));
                 let is_root = g.chain_root(interface_key) == *interface_key;
@@ -596,6 +615,10 @@ impl Writer<'_, '_> {
                 let face_table = if face_api == api { format!("{}Table", g.trait_names[face]) } else { format!("{}::{}Table", direct_alias(g.apis[face_api].folder), g.trait_names[face]) };
                 let face_iid = self.iid(face);
                 for interface_key in self.chain(face) {
+                    if implemented.contains(&interface_key) {
+                        continue;
+                    }
+                    implemented.push(interface_key.clone());
                     let root_has_api = !g.apiless.borrow().contains(&g.chain_root(&interface_key));
                     let is_root = g.chain_root(&interface_key) == interface_key;
                     let _ = writeln!(text, "impl<A: System> {} for {name}<A> {{", self.trait_path(&interface_key));
@@ -606,7 +629,8 @@ impl Writer<'_, '_> {
                     let slots = self.slots(face);
                     for slot in slots.iter().filter(|slot| slot.interface == interface_key && g.read.interfaces[&interface_key].methods.iter().any(|m| m.name == slot.method.name)) {
                         let place = format!("{}::{}", interface_key.1, slot.method.name);
-                        let (inputs, result) = self.trait_signature(slot.method, api, "Self::Api", &place);
+                        // The face's trait names its own API's types (its UnknownRef, its Object enums).
+                        let (inputs, result) = self.trait_signature(slot.method, face_api, "Self::Api", &place);
                         self.current.set(saved);
                         text.push_str(&self.calling_method(slot.method, slot.glued.as_ref(), &Self::method_name(slot.method), &inputs, &result, "self.object", &slot.name, true, "A", &place, Some((&face_table, &face_iid))));
                         self.current.set(face_api);
@@ -674,7 +698,33 @@ impl Writer<'_, '_> {
                         lines.push(format!("    type {name} = System{}<Self>;", g.kinds[kind_index].name));
                     }
                 }
-                let _ = writeln!(text, "impl {other_top} for {name} {{\n{}\n}}\n", lines.join("\n"));
+                let mut other_functions = String::new();
+                let other_spec = g.apis[other];
+                let mut listed: Vec<&Method> = g
+                    .read
+                    .functions
+                    .iter()
+                    .filter(|((namespace, _), _)| other_spec.namespaces.contains(&namespace.as_str()))
+                    .map(|(_, function)| function)
+                    .filter(|function| other_spec.library.is_some_and(|library| function.library.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(library))))
+                    .filter(|function| other_spec.only.is_empty() || other_spec.only.contains(&function.name.as_str()))
+                    .collect();
+                listed.sort_by(|a, b| a.name.cmp(&b.name));
+                for function in listed {
+                    let rust_name = names::escaped(snake(crate::names::strip_first(&function.name, other_spec.function_prefixes)));
+                    let mut renamed = function.clone();
+                    renamed.name = crate::names::strip_first(&function.name, other_spec.function_prefixes).to_string();
+                    let (inputs, result) = self.trait_signature(&renamed, other, "Self", &function.name);
+                    let parameters: String = inputs.iter().map(|(n, t)| format!(", {n}: {t}")).collect();
+                    let returns = if result == "()" { String::new() } else { format!(" -> {result}") };
+                    let _ = writeln!(other_functions, "    fn {rust_name}(&self{parameters}){returns} {{");
+                    for (n, _) in &inputs {
+                        let _ = writeln!(other_functions, "        let _ = {n};");
+                    }
+                    let answer = if result.starts_with("Result<") { "Err(E_NOTIMPL)" } else if result.starts_with("Option<") { "None" } else if result == "()" { "" } else { "Default::default()" };
+                    let _ = writeln!(other_functions, "        // Another library's export ({}): its own API's System calls it; this one never loads that library.\n        {answer}\n    }}", other_spec.library.unwrap_or(""));
+                }
+                let _ = writeln!(text, "impl {other_top} for {name} {{\n{}\n{other_functions}}}\n", lines.join("\n"));
                 let _ = writeln!(text, "impl {other_direct}::System for {name} {{}}\n");
             }
         }

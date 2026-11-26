@@ -682,7 +682,8 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "        let _ = unsafe {{ write_bytes({name}.cast::<u8>(), &{name}_written) }};");
         }
         if status {
-            let _ = writeln!(text, "        status(&answer)");
+            // By its path: a parameter may be named `status`.
+            let _ = writeln!(text, "        wcontainers_component_object_model_direct::status(&answer)");
         } else if glued.returned.is_some() {
             let _ = writeln!(text, "        answer.map_or(Default::default(), |written| written.0)");
         } else {

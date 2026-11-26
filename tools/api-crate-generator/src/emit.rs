@@ -1490,7 +1490,7 @@ fn with_imports(apis: &[&Api], own: usize, header: &str, body: &str) -> String {
     text
 }
 
-pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, String> {
+pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool) -> Result<String, String> {
     let generator = Generator::new(index, apis);
     let mut report = String::new();
     // Traits first: they decide which enums and which records of other namespaces the data files hold.
@@ -1662,15 +1662,16 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
         let kinds = generator.kinds.iter().filter(|kind| kind.api == api).count();
         let _ = writeln!(report, "CRATE {}: interfaces {interfaces} methods {methods} object kinds {kinds}", spec.folder);
     }
-    // The glue: each API's direct crate, for a slice (the whole APIs follow at AC3).
-    if apis.iter().any(|api| !api.only.is_empty()) {
+    // The glue: each API's direct crate, for a slice and for the whole APIs (AC3).
+    let sliced = apis.iter().any(|api| !api.only.is_empty());
+    if writes_glue {
         let writer = glue::Writer::new(&generator);
         for (api, spec) in apis.iter().enumerate().skip(1) {
             let folder = out.join("crates").join(spec.folder);
             report.push_str(&glue::write_direct(&writer, api, &folder)?);
         }
-        // The pass-through test of the slice, hand-written beside the generator, goes with Direct3D 11's glue.
-        if let Some(position) = apis.iter().position(|api| api.folder == "direct3d-11") {
+        // The pass-through test and the spike's harness, hand-written for the slice, go with its Direct3D 11 glue.
+        if sliced && let Some(position) = apis.iter().position(|api| api.folder == "direct3d-11") {
             let direct = out.join("crates").join(apis[position].folder).join("implementation").join("direct");
             std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
             std::fs::write(direct.join("tests").join("round_trip.rs"), include_str!("../harness/round_trip.rs")).map_err(|error| error.to_string())?;

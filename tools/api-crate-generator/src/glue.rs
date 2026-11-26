@@ -39,7 +39,8 @@ fn plus(at: &str, amount: u64) -> String {
 
 /// The offset of element `index` of an array at `at`.
 fn element_at(at: &str, size: u64) -> String {
-    if at == "0" { format!("index * {size}") } else { format!("{at} + index * {size}") }
+    let step = if size == 1 { "index".to_string() } else { format!("index * {size}") };
+    if at == "0" { step } else { format!("{at} + {step}") }
 }
 
 fn snake(name: &str) -> String {
@@ -323,12 +324,16 @@ impl<'g, 'a> Writer<'g, 'a> {
                 let path = self.g.data_path(owner, Module::Structures, &rust, NOWHERE);
                 let ident = format!("{}_{}", snake(&outer.namespace.replace('.', "_")), snake(&rust)).to_ascii_lowercase();
                 let coded = self.codec(nested, &path, &ident, &rust)?;
-                (!coded.decode_only).then(|| format!("encode_{}(&{value}, &mut bytes[{at}..{}]);", coded.ident, plus(at, coded.size)))
+                (!coded.decode_only).then(|| {
+                    // An array's element is already a reference: `*item` is passed as `item`, not reborrowed.
+                    let reference = value.strip_prefix('*').map_or_else(|| format!("&{value}"), str::to_string);
+                    format!("encode_{}({reference}, &mut bytes[{at}..{}]);", coded.ident, plus(at, coded.size))
+                })
             }
             Type::Name(_) => {
                 let named_key = named(ty)?;
                 if named_key == key(GUID.0, GUID.1) {
-                    return Some(format!("put_guid(bytes, {at}, &{value});"));
+                    return Some(format!("put_guid(bytes, {at}, {});", value.strip_prefix('*').map_or_else(|| format!("&{value}"), str::to_string)));
                 }
                 if Generator::is_large_integer(&named_key) {
                     return Some(format!("put_i64(bytes, {at}, {value});"));
@@ -350,7 +355,11 @@ impl<'g, 'a> Writer<'g, 'a> {
                     },
                     RecordKind::Struct | RecordKind::Union => {
                         let coded = self.codec_of(&named_key)?;
-                        (!coded.decode_only).then(|| format!("encode_{}(&{value}, &mut bytes[{at}..{}]);", coded.ident, plus(at, coded.size)))
+                        (!coded.decode_only).then(|| {
+                    // An array's element is already a reference: `*item` is passed as `item`, not reborrowed.
+                    let reference = value.strip_prefix('*').map_or_else(|| format!("&{value}"), str::to_string);
+                    format!("encode_{}({reference}, &mut bytes[{at}..{}]);", coded.ident, plus(at, coded.size))
+                })
                     }
                     RecordKind::Delegate => None,
                 }
@@ -396,11 +405,16 @@ impl<'g, 'a> Writer<'g, 'a> {
         }
     }
 
-    fn object_kinds(&self, interface_key: &Key) -> (Vec<usize>, Option<String>) {
+    /// The kinds an interface pointer may be, and the path of its `Ref` enum when there are several; an error for an
+    /// interface no kind of the set is (one left out to another API), which the trait does not carry either.
+    fn object_kinds(&self, interface_key: &Key) -> Result<(Vec<usize>, Option<String>), String> {
         let kinds = self.g.kinds_deriving(interface_key);
+        if kinds.is_empty() || !self.g.interface_api.contains_key(interface_key) {
+            return Err(format!("no object kind of the set is an {}", interface_key.1));
+        }
         let single = kinds.len() == 1 && self.g.kind_of.get(interface_key) == kinds.first();
         let enum_path = (!single).then(|| self.g.enum_path(interface_key, "Ref", NOWHERE));
-        (kinds, enum_path)
+        Ok((kinds, enum_path))
     }
 
     fn glue_of(&self, method: &Method, place: &str) -> Result<Glued, String> {
@@ -503,7 +517,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                 if interface_key == key(UNKNOWN.0, UNKNOWN.1) {
                     return Ok(Part::UnknownIn { optional: param.is_optional });
                 }
-                let (kinds, enum_path) = self.object_kinds(&interface_key);
+                let (kinds, enum_path) = self.object_kinds(&interface_key)?;
                 if kinds.is_empty() {
                     return Err(format!("no kind is an {}", interface_key.1));
                 }
@@ -521,7 +535,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                 return Err("an array out".to_string());
             }
             if let Some(interface_key) = named(inner).filter(|k| self.is_object(k)) {
-                let (kinds, enum_path) = self.object_kinds(&interface_key);
+                let (kinds, enum_path) = self.object_kinds(&interface_key)?;
                 if kinds.len() != 1 || enum_path.is_some() {
                     return Err("an array of objects of several kinds".to_string());
                 }

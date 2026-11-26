@@ -112,7 +112,7 @@ fn main() -> ExitCode {
                 eprintln!("api-crate-generator: no API named {name}; known: {}", api::names().join(", "));
                 return ExitCode::FAILURE;
             };
-            match emit::generate(&index, api, std::path::Path::new(out)) {
+            match emit::generate(&index, api, std::path::Path::new(out), api::writes_glue(name)) {
                 Ok(report) => {
                     println!("{report}");
                     ExitCode::SUCCESS
