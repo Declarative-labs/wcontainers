@@ -714,6 +714,54 @@ where
     );
 }
 
+/// Checks that where a space maps one page of another twice, a guest's store through either view is what a load
+/// through the other finds, right after it and after a system call between them.
+pub fn two_views_of_one_page_show_each_store<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let views = [(DATA, MAPPED), (MAPPED, DATA)];
+    let calls = [None, Some((REQUEST.number, RETURNED))];
+    for ((stored_at, loaded_from), call) in views
+        .into_iter()
+        .flat_map(|view| calls.map(|call| (view, call)))
+    {
+        let (block, block_table) = create_memory(&executor);
+        let (viewing, mut viewing_table) = create_memory(&executor);
+        write_bytes(&block, DATA, &pattern(FIRST_PATTERN, length(&page(DATA))));
+        for view in [DATA, MAPPED] {
+            assert_eq!(
+                viewing_table.map_from(page(view), &block_table, DATA),
+                Ok(())
+            );
+            assert_eq!(
+                viewing_table.set_permissions(page(view), DATA_PERMISSIONS),
+                Ok(())
+            );
+        }
+        let guest = arm64::build_store_then_load(CODE, stored_at, loaded_from, STORED, call);
+        place(&viewing, &mut viewing_table, &guest);
+        let returned = call.map(|(_, returned)| returned);
+        let mut handler = Recorder::new(returned, None::<(&mut PageTableOf<Chip>, _)>);
+        let stopped = execute(&mut executor, guest.start.clone(), &viewing, &mut handler);
+        assert!(
+            handler.memory_faults.is_empty(),
+            "the handler was given memory faults: {:?}",
+            handler.memory_faults
+        );
+        assert_eq!(
+            stopped, guest.finished,
+            "the state after a store at {stored_at:#x} and a load at {loaded_from:#x}, a system call between: {}",
+            call.is_some()
+        );
+        assert_eq!(
+            read_bytes(&block, DATA..DATA + WORD),
+            STORED.to_le_bytes(),
+            "the bytes the guest's store left in the mapped page"
+        );
+    }
+}
+
 /// Checks that an unmapped page reads as zeros, not shared any more, while the other space keeps its bytes.
 pub fn unmap_from_zeroes_this_side_only<Chip: Executor>(executor: Chip) {
     let (first, first_table) = create_memory(&executor);
@@ -1346,6 +1394,11 @@ macro_rules! tests {
         #[test]
         fn map_from_shares_the_bytes_both_ways() {
             $crate::map_from_shares_the_bytes_both_ways($executor);
+        }
+
+        #[test]
+        fn two_views_of_one_page_show_each_store() {
+            $crate::two_views_of_one_page_show_each_store($executor);
         }
 
         #[test]
