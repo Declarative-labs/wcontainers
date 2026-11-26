@@ -552,7 +552,8 @@ ac3w/tip-de137e0e1/final.log, reports and the whole set's linter output beside i
   of structures with a count (RSSetViewports, RSSetScissorRects, DiscardView1, ClearView's rectangles: structures copied
   as C lays them out, passed in aligned words); fixed arrays by `CountConst` in and out (ClearRenderTargetView,
   ClearUnorderedAccessViewFloat and Uint, OMSetBlendState, ClearView, OMGetBlendState); bytes in with a count (the seven
-  Create*Shader, SetPrivateData of the four interfaces, the video extensions; copied once, as decided); arrays out with a
+  Create*Shader, SetPrivateData of the four interfaces, the video context's DecoderBeginFrame, DecoderBeginFrame1,
+  DecryptionBlt, Configure- and QueryAuthenticatedChannel and the HDR metadata setters; copied once, as decided); arrays out with a
   count by value, of values and of objects (the 30 *Get{ConstantBuffers,Samplers,ShaderResources,UnorderedAccessViews}
   and *GetConstantBuffers1, SOGetTargets, OMGetRenderTargets, OMGetRenderTargetsAndUnorderedAccessViews, IAGetVertexBuffers,
   VideoProcessorGetStreamPalette, ReclaimResources, ReclaimResources1, CreateSurface); arrays of values out counted by
@@ -574,9 +575,10 @@ ac3w/tip-de137e0e1/final.log, reports and the whole set's linter output beside i
   successes per seed. Control: the serving glue's element limit removed at 4 places: AddressSanitizer report, status 101.
 - **The conformance suite through both glues** (`conformance_through_glues`, the suite run on `served(implementation)`:
   the calling glue over the serving glue's exports): Direct3D 11 65 kinds, 843 of 847 calls made, 0 panics; DXGI 16
-  kinds, 211 of 211; on the recorder and the hostile implementation, default and AddressSanitizer: 8 of 8 runs status 0, 0
-  reports (d3dcommon has no exports, so no `served`: its kinds are made by Direct3D 11's methods). The direct runs as
-  before: 10 of 10 default, 10 of 10 AddressSanitizer.
+  kinds, 211 of 211; on the recorder and the hostile implementation of the whole set and the slice's hostile one: 5 of 5
+  runs status 0 by default and 5 of 5 under AddressSanitizer, 0 reports (d3dcommon has no exports, so no `served`: its
+  kinds are made by Direct3D 11's methods). The runs on the implementations directly: 9 of 9 default, 9 of 9
+  AddressSanitizer.
 - **conformance_untested_method 643 -> 65** (whole set). Measured first (two experiments on a copy of the tip's output):
   moving every call of DXGI's suite out of its closure into a named function left DXGI's 197 findings at 197; writing the
   calls as `Trait::method(this, ..)` instead of `<<A as Top>::Kind as Trait>::method(this, ..)` took them to 27. So the
