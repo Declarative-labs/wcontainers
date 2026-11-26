@@ -110,6 +110,8 @@ impl FloatOperation {
 pub enum Precision {
     Single,
     Double,
+    /// IEEE 754 binary16, which AVX512-FP16 computes in.
+    Half,
 }
 
 /// Whether the operation works on every lane or on the lowest alone, leaving the others as they were.
@@ -135,6 +137,7 @@ impl Precision {
         match self {
             Self::Single => u32::BITS,
             Self::Double => u64::BITS,
+            Self::Half => u16::BITS,
         }
     }
 
@@ -143,6 +146,7 @@ impl Precision {
         match self {
             Self::Single => f32::MANTISSA_DIGITS,
             Self::Double => f64::MANTISSA_DIGITS,
+            Self::Half => 11,
         }
     }
 
@@ -155,6 +159,7 @@ impl Precision {
         match self {
             Self::Single => f32::MIN_EXP - 1,
             Self::Double => f64::MIN_EXP - 1,
+            Self::Half => -14,
         }
     }
 
@@ -162,6 +167,7 @@ impl Precision {
         match self {
             Self::Single => f32::MAX_EXP - 1,
             Self::Double => f64::MAX_EXP - 1,
+            Self::Half => 15,
         }
     }
 
@@ -240,7 +246,10 @@ impl Operand {
         let all_ones = (1 << precision.to_exponent_bits()) - 1;
         let class = match (biased, fraction) {
             (0, 0) => Class::Zero,
-            (0, _) if denormals_are_zeros => Class::Zero,
+            // AVX512-FP16 does not read a half's denormal as zero.
+            (0, _) if denormals_are_zeros && (precision != Precision::Half || is_active(Bug::HalfDenormalsAreZeros)) => {
+                Class::Zero
+            }
             (0, _) => Class::Finite {
                 significand: u128::from(fraction),
                 exponent: 1 - precision.to_bias() - fraction_bits,
@@ -760,8 +769,10 @@ pub(crate) fn round(exact: Exact, precision: Precision, rounding: Rounding, mxcs
     };
     // Tininess after rounding: the value rounded to the precision with no bound on the exponent lies below 2^minimum.
     let (unbounded, inexact_unbounded) = to_quantum(top - (digits - 1));
-    // An unmasked overflow or underflow reports inexact where the result with no bound on the exponent is inexact.
+    // An unmasked overflow or underflow reports inexact where the result with no bound on the exponent is inexact;
+    // an underflow of AVX512-FP16 where the result it would write is.
     let unbounded_inexact = if inexact_unbounded { INEXACT } else { 0 };
+    let half = precision == Precision::Half;
     let rounded_top = top + i32::from(unbounded >> digits != 0);
     let tiny = if is_active(Bug::DoubleTininessBeforeRounding) && double { top < minimum } else { rounded_top < minimum };
     let quantum = (top - (digits - 1)).max(minimum - (digits - 1));
@@ -794,8 +805,11 @@ pub(crate) fn round(exact: Exact, precision: Precision, rounding: Rounding, mxcs
     let mut flags = if inexact { INEXACT } else { 0 };
     if tiny {
         if !masked(UNDERFLOW) {
-            flags = UNDERFLOW | unbounded_inexact;
-        } else if mxcsr & FLUSH_TO_ZERO != 0 && !is_active(Bug::FlushToZeroIgnored) {
+            flags = UNDERFLOW | if half && !is_active(Bug::HalfUnderflowInexactUnbounded) { flags } else { unbounded_inexact };
+        } else if mxcsr & FLUSH_TO_ZERO != 0
+            && (!half || is_active(Bug::HalfFlushesToZero))
+            && !is_active(Bug::FlushToZeroIgnored)
+        {
             return (sign, UNDERFLOW | INEXACT);
         } else if inexact || (is_active(Bug::MaskedUnderflowOnExactTiny) && double) {
             flags |= UNDERFLOW;

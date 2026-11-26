@@ -51,6 +51,11 @@ const DOUBLE_VALUES: [u64; 16] = [
     0xBFF8_0000_0000_0000, 0x3CA0_0000_0000_0000, 0x3CA8_0000_0000_0000, 0x7FEF_FFFF_FFFF_FFFF,
     0x7FF0_0000_0000_0000, 0xFFF0_0000_0000_0000, 0x7FF8_0000_0001_2345, 0xFFF0_0000_0001_2345,
 ];
+/// The half-precision critical values, in the same order.
+const HALF_VALUES: [u64; 16] = [
+    0x0000, 0x8000, 0x0001, 0x03FF, 0x0400, 0x8400, 0x3C00, 0x3C01, 0xBE00, 0x1000, 0x1200, 0x7BFF, 0x7C00, 0xFC00,
+    0x7E45, 0xFC45,
+];
 
 /// What a vector operand's critical values are made of.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -206,6 +211,7 @@ pub fn rotate_floats(precision: Precision, every_rotation: bool) -> Vec<u128> {
     let values: &[u64] = match precision {
         Precision::Single => &SINGLE_VALUES,
         Precision::Double => &DOUBLE_VALUES,
+        Precision::Half => &HALF_VALUES,
     };
     let lane = to_float_lane(precision);
     let lanes = (u128::BITS / lane.to_bits()) as usize;
@@ -221,6 +227,7 @@ pub const fn to_float_lane(precision: Precision) -> Lane {
     match precision {
         Precision::Single => Lane::Doubleword,
         Precision::Double => Lane::Quadword,
+        Precision::Half => Lane::Word,
     }
 }
 

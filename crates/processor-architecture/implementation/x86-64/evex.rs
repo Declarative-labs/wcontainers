@@ -128,7 +128,7 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
     use FloatOperation::{Add, Divide, Maximum, Minimum, Multiply, SquareRoot, Subtract};
     use Immediate::{Any, With, Without};
     use IntegerOperation as I;
-    use Precision::{Double, Single};
+    use Precision::{Double, Half, Single};
     const fn float(operation: FloatOperation, precision: Precision, arrangement: Arrangement) -> EvexOperation {
         EvexOperation::Float { operation, precision, arrangement }
     }
@@ -353,6 +353,82 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vfmsubadd213pd, Any, fused(F::AlternatingAddSubtract, O::Order213, Double, Packed)),
         (Mnemonic::Vfmsubadd231ps, Any, fused(F::AlternatingAddSubtract, O::Order231, Single, Packed)),
         (Mnemonic::Vfmsubadd231pd, Any, fused(F::AlternatingAddSubtract, O::Order231, Double, Packed)),
+        // AVX512-FP16.
+        (Mnemonic::Vaddph, Any, float(Add, Half, Packed)),
+        (Mnemonic::Vaddsh, Any, float(Add, Half, Scalar)),
+        (Mnemonic::Vsubph, Any, float(Subtract, Half, Packed)),
+        (Mnemonic::Vsubsh, Any, float(Subtract, Half, Scalar)),
+        (Mnemonic::Vmulph, Any, float(Multiply, Half, Packed)),
+        (Mnemonic::Vmulsh, Any, float(Multiply, Half, Scalar)),
+        (Mnemonic::Vdivph, Any, float(Divide, Half, Packed)),
+        (Mnemonic::Vdivsh, Any, float(Divide, Half, Scalar)),
+        (Mnemonic::Vsqrtph, Any, float(SquareRoot, Half, Packed)),
+        (Mnemonic::Vsqrtsh, Any, float(SquareRoot, Half, Scalar)),
+        (Mnemonic::Vminph, Any, float(Minimum, Half, Packed)),
+        (Mnemonic::Vminsh, Any, float(Minimum, Half, Scalar)),
+        (Mnemonic::Vmaxph, Any, float(Maximum, Half, Packed)),
+        (Mnemonic::Vmaxsh, Any, float(Maximum, Half, Scalar)),
+        (Mnemonic::Vcmpph, Any, EvexOperation::Compare { precision: Half, arrangement: Packed }),
+        (Mnemonic::Vcmpsh, Any, EvexOperation::Compare { precision: Half, arrangement: Scalar }),
+        (Mnemonic::Vcomish, Any, EvexOperation::OrderedCompare { precision: Half, signaling: true }),
+        (Mnemonic::Vucomish, Any, EvexOperation::OrderedCompare { precision: Half, signaling: false }),
+        (Mnemonic::Vfmadd132ph, Any, fused(F::MultiplyAdd, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmadd132sh, Any, fused(F::MultiplyAdd, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfmadd213ph, Any, fused(F::MultiplyAdd, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmadd213sh, Any, fused(F::MultiplyAdd, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfmadd231ph, Any, fused(F::MultiplyAdd, O::Order231, Half, Packed)),
+        (Mnemonic::Vfmadd231sh, Any, fused(F::MultiplyAdd, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfmsub132ph, Any, fused(F::MultiplySubtract, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmsub132sh, Any, fused(F::MultiplySubtract, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfmsub213ph, Any, fused(F::MultiplySubtract, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmsub213sh, Any, fused(F::MultiplySubtract, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfmsub231ph, Any, fused(F::MultiplySubtract, O::Order231, Half, Packed)),
+        (Mnemonic::Vfmsub231sh, Any, fused(F::MultiplySubtract, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfnmadd132ph, Any, fused(F::NegatedMultiplyAdd, O::Order132, Half, Packed)),
+        (Mnemonic::Vfnmadd132sh, Any, fused(F::NegatedMultiplyAdd, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfnmadd213ph, Any, fused(F::NegatedMultiplyAdd, O::Order213, Half, Packed)),
+        (Mnemonic::Vfnmadd213sh, Any, fused(F::NegatedMultiplyAdd, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfnmadd231ph, Any, fused(F::NegatedMultiplyAdd, O::Order231, Half, Packed)),
+        (Mnemonic::Vfnmadd231sh, Any, fused(F::NegatedMultiplyAdd, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfnmsub132ph, Any, fused(F::NegatedMultiplySubtract, O::Order132, Half, Packed)),
+        (Mnemonic::Vfnmsub132sh, Any, fused(F::NegatedMultiplySubtract, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfnmsub213ph, Any, fused(F::NegatedMultiplySubtract, O::Order213, Half, Packed)),
+        (Mnemonic::Vfnmsub213sh, Any, fused(F::NegatedMultiplySubtract, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfnmsub231ph, Any, fused(F::NegatedMultiplySubtract, O::Order231, Half, Packed)),
+        (Mnemonic::Vfnmsub231sh, Any, fused(F::NegatedMultiplySubtract, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfmaddsub132ph, Any, fused(F::AlternatingSubtractAdd, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmaddsub213ph, Any, fused(F::AlternatingSubtractAdd, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmaddsub231ph, Any, fused(F::AlternatingSubtractAdd, O::Order231, Half, Packed)),
+        (Mnemonic::Vfmsubadd132ph, Any, fused(F::AlternatingAddSubtract, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmsubadd213ph, Any, fused(F::AlternatingAddSubtract, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmsubadd231ph, Any, fused(F::AlternatingAddSubtract, O::Order231, Half, Packed)),
+        (Mnemonic::Vcvtph2psx, Any, convert(N::Float(Half), N::Float(Single), false)),
+        (Mnemonic::Vcvtph2pd, Any, convert(N::Float(Half), N::Float(Double), false)),
+        (Mnemonic::Vcvtps2phx, Any, convert(N::Float(Single), N::Float(Half), false)),
+        (Mnemonic::Vcvtpd2ph, Any, convert(N::Float(Double), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2dq, Any, convert(N::Float(Half), N::Signed(4), false)),
+        (Mnemonic::Vcvttph2dq, Any, convert(N::Float(Half), N::Signed(4), true)),
+        (Mnemonic::Vcvtdq2ph, Any, convert(N::Signed(4), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2udq, Any, convert(N::Float(Half), N::Unsigned(4), false)),
+        (Mnemonic::Vcvttph2udq, Any, convert(N::Float(Half), N::Unsigned(4), true)),
+        (Mnemonic::Vcvtudq2ph, Any, convert(N::Unsigned(4), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2qq, Any, convert(N::Float(Half), N::Signed(8), false)),
+        (Mnemonic::Vcvttph2qq, Any, convert(N::Float(Half), N::Signed(8), true)),
+        (Mnemonic::Vcvtqq2ph, Any, convert(N::Signed(8), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2uqq, Any, convert(N::Float(Half), N::Unsigned(8), false)),
+        (Mnemonic::Vcvttph2uqq, Any, convert(N::Float(Half), N::Unsigned(8), true)),
+        (Mnemonic::Vcvtuqq2ph, Any, convert(N::Unsigned(8), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2w, Any, convert(N::Float(Half), N::Signed(2), false)),
+        (Mnemonic::Vcvttph2w, Any, convert(N::Float(Half), N::Signed(2), true)),
+        (Mnemonic::Vcvtw2ph, Any, convert(N::Signed(2), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2uw, Any, convert(N::Float(Half), N::Unsigned(2), false)),
+        (Mnemonic::Vcvttph2uw, Any, convert(N::Float(Half), N::Unsigned(2), true)),
+        (Mnemonic::Vcvtuw2ph, Any, convert(N::Unsigned(2), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2ps, Any, convert(N::Float(Half), N::Float(Single), false)),
+        (Mnemonic::Vcvtsh2ss, Any, scalar(N::Float(Half), N::Float(Single))),
+        (Mnemonic::Vcvtsh2sd, Any, scalar(N::Float(Half), N::Float(Double))),
+        (Mnemonic::Vcvtss2sh, Any, scalar(N::Float(Single), N::Float(Half))),
+        (Mnemonic::Vcvtsd2sh, Any, scalar(N::Float(Double), N::Float(Half))),
     ]
 };
 
@@ -418,6 +494,26 @@ impl EvexForm {
         match self.operation {
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes(),
             _ => self.elements() * self.source_element_bytes(),
+        }
+    }
+
+    /// Whether an operand the form reads is a half.
+    pub const fn reads_half(&self) -> bool {
+        match self.operation {
+            EvexOperation::Convert(conversion) => matches!(conversion.from, Number::Float(Precision::Half)),
+            _ => self.writes_half(),
+        }
+    }
+
+    /// Whether the form computes or writes halves.
+    pub const fn writes_half(&self) -> bool {
+        match self.operation {
+            EvexOperation::Float { precision, .. }
+            | EvexOperation::Fused { precision, .. }
+            | EvexOperation::Compare { precision, .. }
+            | EvexOperation::OrderedCompare { precision, .. } => matches!(precision, Precision::Half),
+            EvexOperation::Convert(conversion) => matches!(conversion.to, Number::Float(Precision::Half)),
+            EvexOperation::Integer { .. } | EvexOperation::ToBfloat16 { .. } => false,
         }
     }
 

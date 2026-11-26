@@ -309,6 +309,8 @@ pub fn generate_fused_data(data: EvexFusedData) -> Vec<OperandValue> {
     let sign = 1u64 << (precision.to_bits() - 1);
     let normal = |exponent: i32, fraction: u64| (((exponent + bias) as u64) << fraction_bits) | fraction;
     let one = normal(0, 0);
+    // An addend far below the product's last unit: 2^(-digits - 5), or the smallest subnormal where that is below it.
+    let tiny = if bias - digits - 5 > 0 { normal(-digits - 5, 0) } else { 1 };
     let (low, high) = (digits / 2, digits - digits / 2);
     let largest = normal(bias, (1 << fraction_bits) - 1);
     let infinity = precision.to_default_nan() & !sign & !precision.to_quiet_bit();
@@ -316,7 +318,7 @@ pub fn generate_fused_data(data: EvexFusedData) -> Vec<OperandValue> {
     let edges: Vec<[u64; 3]> = vec![
         [normal(0, 1), normal(-1, (1 << fraction_bits) - 1), one | sign],
         [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), 0],
-        [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), normal(-digits - 5, 0)],
+        [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), tiny],
         [largest, normal(1, 0), 0],
         [largest, normal(1, 0), largest | sign],
         [largest, one, largest],
@@ -526,7 +528,8 @@ fn list_source_values(operation: EvexOperation) -> Vec<u64> {
             match to {
                 Number::Signed(bytes) | Number::Unsigned(bytes) => {
                     let bits = 8 * bytes as i32;
-                    for exponent in [bits - 1, bits] {
+                    let largest = (1i32 << (precision.to_bits() as i32 - precision.to_significand_bits() as i32 - 1)) - 1;
+                    for exponent in [bits - 1, bits].into_iter().filter(|exponent| *exponent <= largest) {
                         values.extend([
                             float_bits(precision, exponent, 0, false),
                             float_bits(precision, exponent - 1, all_fraction, false),
@@ -543,6 +546,7 @@ fn list_source_values(operation: EvexOperation) -> Vec<u64> {
                         float_bits(precision, -2, 0, true),
                     ]);
                 }
+                Number::Float(Precision::Half) => values.extend(list_edges_into_half(precision)),
                 Number::Float(narrower) if narrower.to_bits() < precision.to_bits() => {
                     values.extend(crate::float::generate_conversion_edges(LegacyConversion::DoubleToSingle, precision));
                 }
@@ -550,15 +554,50 @@ fn list_source_values(operation: EvexOperation) -> Vec<u64> {
             }
             values
         }
-        EvexOperation::Convert(Conversion { from: Number::Signed(bytes) | Number::Unsigned(bytes), .. }) => {
+        EvexOperation::Convert(Conversion { from: Number::Signed(bytes) | Number::Unsigned(bytes), to, .. }) => {
             let mask = if bytes == 8 { u64::MAX } else { (1 << (8 * bytes)) - 1 };
             let signed_maximum = mask >> 1;
-            [0, 1, 2, mask, signed_maximum, signed_maximum + 1, (1 << 24) + 1, (1 << 24) + 3, (1 << 53) + 1, (1 << 53) + 3, ((1 << 24) + 1u64).wrapping_neg(), 0x5AA5_C33C_0FF0_9669]
+            let mut values = [0, 1, 2, mask, signed_maximum, signed_maximum + 1, (1 << 24) + 1, (1 << 24) + 3, (1 << 53) + 1, (1 << 53) + 3, ((1 << 24) + 1u64).wrapping_neg(), 0x5AA5_C33C_0FF0_9669]
                 .map(|value| value & mask)
-                .to_vec()
+                .to_vec();
+            if to == Number::Float(Precision::Half) {
+                // A half's ties at its significand's edge, the largest half, and the integers that round past it.
+                values.extend([(1 << 11) + 1, (1 << 11) + 3, 65504, 65519, 65520, (1u64 << 11).wrapping_neg() - 1].map(|value| value & mask));
+            }
+            values
         }
         _ => unreachable!("only conversions"),
     }
+}
+
+/// A wider precision's values at a half's own edges: those that round to the largest half or past it, to the
+/// smallest normal and subnormal half or below, at a tie and past it, a tie at one, and a signaling NaN whose payload
+/// lies below the bits a half keeps.
+fn list_edges_into_half(precision: Precision) -> Vec<u64> {
+    let fraction_bits = precision.to_significand_bits() as i32 - 1;
+    let bias = (1i32 << (precision.to_bits() as i32 - fraction_bits - 2)) - 1;
+    let sign = 1u64 << (precision.to_bits() - 1);
+    let normal = |exponent: i32, fraction: u64| (((exponent + bias) as u64) << fraction_bits) | fraction;
+    // The fraction bit just below the last one a half keeps, and those below it.
+    let below_half = |extra: i32| 1u64 << (fraction_bits - 10 - extra);
+    let all = (1u64 << fraction_bits) - 1;
+    vec![
+        normal(15, all & !(below_half(0) - 1)),
+        normal(15, all & !(below_half(1) - 1)),
+        normal(15, (all & !(below_half(0) - 1)) | below_half(2)),
+        normal(16, 0),
+        normal(-14, 0),
+        normal(-15, all),
+        normal(-24, 0),
+        normal(-25, 0),
+        normal(-25, 1),
+        normal(-26, 0),
+        normal(0, below_half(1)),
+        normal(0, below_half(1) | 1),
+        sign | normal(0, below_half(1) | 1),
+        sign | normal(-25, 1),
+        precision.to_default_nan() & !sign & !precision.to_quiet_bit() | 1,
+    ]
 }
 
 /// The data of a conversion: the source's critical values rotated across its elements with MXCSR's critical

@@ -47,6 +47,8 @@ pub enum Origin {
     Avx512Integer,
     /// The sync onto the owner's expectations, for RDRAND and RDSEED.
     Expectations,
+    /// The second EVEX pass: AVX512-FP16 and the rest of AVX-512's second half, and the small sets left.
+    EvexRest,
 }
 
 /// The forms a bug shows on.
@@ -1020,6 +1022,15 @@ pub enum Bug {
     RandomLeavesStatusFlags,
     /// RDRAND and RDSEED clear CF, as if the random source had no value ready.
     RandomClearsCarry,
+    // The second EVEX pass.
+    /// DAZ reads a half's denormal as zero.
+    HalfDenormalsAreZeros,
+    /// FTZ flushes a tiny half to zero.
+    HalfFlushesToZero,
+    /// An unmasked underflow to a half reports inexact as SSE does, from the result with no bound on the exponent.
+    HalfUnderflowInexactUnbounded,
+    /// An integer that overflows a half is not reported inexact unless the overflow is masked.
+    IntegerToHalfOverflowExact,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1486,6 +1497,10 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CompareIgnoresWritemask, "compares and tests into masks", Family::EvexInteger(EvexIntegerForm::writes_mask), Avx512Integer),
     row(Bug::RandomLeavesStatusFlags, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
     row(Bug::RandomClearsCarry, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
+    row(Bug::HalfDenormalsAreZeros, "AVX512-FP16", Family::Evex(EvexForm::reads_half), Origin::EvexRest),
+    row(Bug::HalfFlushesToZero, "AVX512-FP16", Family::Evex(EvexForm::writes_half), Origin::EvexRest),
+    row(Bug::HalfUnderflowInexactUnbounded, "AVX512-FP16", Family::Evex(EvexForm::writes_half), Origin::EvexRest),
+    row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),
 ];
 
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];

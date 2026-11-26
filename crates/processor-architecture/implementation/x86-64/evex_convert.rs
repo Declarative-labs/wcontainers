@@ -3,7 +3,7 @@
 //! volume 2 gives them, and the conversions to bfloat16.
 
 use crate::float::{
-    Class, DENORMAL, DENORMALS_ARE_ZEROS, Exact, INEXACT, INVALID, LaneOutcome, Operand, Precision, Rounding,
+    Class, DENORMAL, DENORMALS_ARE_ZEROS, Exact, INEXACT, INVALID, LaneOutcome, OVERFLOW, Operand, Precision, Rounding,
     read_rounding, round, round_to_integer,
 };
 use crate::planted::{Bug, is_active};
@@ -80,7 +80,11 @@ impl Conversion {
                     return done(0, 0);
                 }
                 let exact = Exact { negative, significand: u128::from(magnitude), exponent: 0, sticky: false };
-                let (bits, after) = round(exact, to, rounding, mxcsr);
+                let (bits, mut after) = round(exact, to, rounding, mxcsr);
+                // An integer that overflows a half is reported inexact as well, as the chip shows.
+                if to == Precision::Half && after & OVERFLOW != 0 && !is_active(Bug::IntegerToHalfOverflowExact) {
+                    after |= INEXACT;
+                }
                 LaneOutcome { bits, before: 0, after }
             }
             (Number::Float(from), Number::Signed(bytes) | Number::Unsigned(bytes)) => {
