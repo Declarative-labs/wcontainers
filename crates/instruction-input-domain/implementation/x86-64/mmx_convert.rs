@@ -90,6 +90,7 @@ pub fn generate_sources(set: ConvertSet) -> Vec<OperandValue> {
         }
         (_, Precision::Single) => (u32::BITS, read_bits(ValueSet::SingleFloat)),
         (_, Precision::Double) => (u64::BITS, read_bits(ValueSet::DoubleFloat)),
+        (_, Precision::Half) => unreachable!("no conversion that names an MMX register reads halves"),
     };
     lanes.extend(classes);
     let count = lanes.len();
