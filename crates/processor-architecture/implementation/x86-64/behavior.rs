@@ -10,6 +10,7 @@ use crate::integer::{Operation, find_integer_form};
 use crate::branch::find_branch_form;
 use crate::float::find_float_form;
 use crate::vector::find_vector_form;
+use crate::avx512_integer::{EvexIntegerPlace, find_evex_integer_form};
 use crate::opmask::{OpmaskPlace, find_opmask_form};
 use crate::{
     CpuidTable, FORBIDDEN_FORMS, Instruction, PRIVILEGED_FORMS, PreciseInstruction, XEON_PLATINUM_8488C_UNDER_KVM,
@@ -241,7 +242,7 @@ impl PreciseInstruction {
             Self::Vector(instruction) | Self::Float(instruction) => instruction,
             Self::Privileged(instruction) | Self::Branch(instruction) => instruction,
             Self::Integer { instruction, .. } | Self::Undefined(instruction) => instruction,
-            Self::Opmask { instruction, .. } => instruction,
+            Self::Opmask { instruction, .. } | Self::EvexInteger { instruction, .. } => instruction,
         }
     }
 }
@@ -267,6 +268,13 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         return take(&ACROSS_FAULT, form.place == OpmaskPlace::Store && form.bits > u8::BITS)
             .iter()
             .map(|&across_fault| PreciseInstruction::Opmask { instruction, across_fault })
+            .collect();
+    }
+    if let Some(form) = find_evex_integer_form(instruction) {
+        // An aligned store lies on one page.
+        return take(&ACROSS_FAULT, form.place == EvexIntegerPlace::Store && form.to_alignment().is_none())
+            .iter()
+            .map(|&across_fault| PreciseInstruction::EvexInteger { instruction, across_fault })
             .collect();
     }
     match instruction {

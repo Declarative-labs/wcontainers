@@ -22,6 +22,7 @@ use crate::{
     PreciseInstruction, Processor, ProcessorExpectation, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
 };
 
+mod avx512_integer;
 mod opmask;
 
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
@@ -185,6 +186,9 @@ fn apply(
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
         PreciseInstruction::Opmask { instruction, across_fault } => {
             opmask::execute_opmask(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::EvexInteger { instruction, across_fault } => {
+            avx512_integer::execute_evex_integer(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS

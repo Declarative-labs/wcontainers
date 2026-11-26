@@ -27,6 +27,7 @@ use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
+use wcontainers_processor_architecture_x86_64::avx512_integer::find_evex_integer_form;
 use wcontainers_processor_architecture_x86_64::opmask::find_opmask_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
@@ -35,6 +36,7 @@ use wcontainers_processor_architecture_x86_64::{
 };
 
 pub mod branch;
+pub mod avx512_integer;
 pub mod float;
 pub mod integer;
 pub mod opmask;
@@ -154,6 +156,16 @@ pub enum OperandType {
     OpmaskEncoding(usize),
     /// The value of the opmask register of the form's operand of that index, `bits` of it read.
     OpmaskValue { operand: usize, bits: u32 },
+    /// The vector registers an EVEX form names, which of its `codes` encodes it, and, for a form without a memory
+    /// operand, how its bytes lie.
+    EvexIntegerEncoding { codes: usize, in_memory: bool },
+    /// The writemask, merging and, where `zeroing`, zeroing.
+    Writemask { zeroing: bool },
+    /// Whether an EVEX form's memory operand is one lane broadcast.
+    LaneBroadcast,
+    /// The value of a ZMM register that has a role in the form (the first source's is `Implicit(1)`), or of the
+    /// memory its last source reads.
+    ZmmValue(Role, avx512_integer::ZmmValues),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -268,6 +280,10 @@ pub enum OperandValue {
     AddressSize(AddressSize),
     SampleEncoding,
     OpmaskEncoding(opmask::OpmaskEncoding),
+    EvexIntegerEncoding(avx512_integer::EvexIntegerEncoding),
+    Writemask(avx512_integer::Writemask),
+    LaneBroadcast(bool),
+    Zmm([u128; 4]),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -299,6 +315,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_opmask_form(instruction) {
             return opmask::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_evex_integer_form(instruction) {
+            return avx512_integer::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -465,6 +484,10 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
             OperandType::OpmaskEncoding(_) => opmask::generate_encodings(),
             OperandType::OpmaskValue { bits, .. } => opmask::generate_values(bits),
+            OperandType::EvexIntegerEncoding { codes, in_memory } => avx512_integer::generate_encodings(codes, in_memory),
+            OperandType::Writemask { zeroing } => avx512_integer::generate_maskings(zeroing),
+            OperandType::LaneBroadcast => [false, true].map(OperandValue::LaneBroadcast).to_vec(),
+            OperandType::ZmmValue(_, values) => avx512_integer::generate_zmm_values(values),
         };
         values.into_iter()
     }
@@ -504,6 +527,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_opmask_form(instruction) {
             return opmask::build_state(form, &typed);
+        }
+        if let Some(form) = find_evex_integer_form(instruction) {
+            return avx512_integer::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -671,6 +697,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_branch_form(instruction).is_some()
         || find_privileged_codes(instruction).is_some()
         || find_opmask_form(instruction).is_some()
+        || find_evex_integer_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

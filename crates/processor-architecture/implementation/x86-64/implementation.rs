@@ -27,6 +27,7 @@ mod behavior;
 pub mod branch;
 mod cpuid;
 mod cpuid_recording;
+pub mod avx512_integer;
 mod exception;
 mod flags;
 pub mod float;
@@ -135,6 +136,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
         .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
         .chain(opmask::OPMASK_FORMS.iter().map(|form| form.instruction))
+        .chain(avx512_integer::EVEX_INTEGER_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -332,6 +334,11 @@ pub enum PreciseInstruction {
     Undefined(Instruction),
     /// A form of [`opmask::OPMASK_FORMS`]; `across_fault` is read by KMOV's store alone.
     Opmask {
+        instruction: Instruction,
+        across_fault: StoreAcrossFault,
+    },
+    /// A form of [`avx512_integer::EVEX_INTEGER_FORMS`]; `across_fault` is read by the stores alone.
+    EvexInteger {
         instruction: Instruction,
         across_fault: StoreAcrossFault,
     },

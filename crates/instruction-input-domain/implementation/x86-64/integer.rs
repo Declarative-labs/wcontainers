@@ -226,6 +226,9 @@ pub enum ImmediateClass {
     Relative32,
     /// CMPcc's predicate: each of the eight, and two with bits above them set, which legacy SSE ignores.
     Predicate,
+    /// VPTERNLOG's truth table: each operand alone (0xF0, 0xCC, 0xAA), the exclusive or and the majority of the
+    /// three, none, all, and each single combination at the ends.
+    TernaryTable,
 }
 
 /// What each operand of a form is, from its first code.
@@ -448,6 +451,7 @@ pub fn generate_immediates(class: ImmediateClass) -> Vec<OperandValue> {
         ImmediateClass::Relative8 => &[0, 1, -1, 0x7F, -0x80],
         ImmediateClass::Relative32 => &[0, 1, -1, 0x7FFF_FFFF, i32::MIN as i64],
         ImmediateClass::Predicate => &[0, 1, 2, 3, 4, 5, 6, 7, 0x0D, 0xFF],
+        ImmediateClass::TernaryTable => &[0xF0, 0xCC, 0xAA, 0x96, 0xE8, 0x00, 0xFF, 0x01, 0x80],
     };
     values.iter().map(|&value| OperandValue::Immediate(value)).collect()
 }
