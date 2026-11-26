@@ -22,6 +22,8 @@ use crate::{
     PreciseInstruction, Processor, ProcessorExpectation, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
 };
 
+mod opmask;
+
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
 /// The legacy prefixes: segment overrides, operand and address size, LOCK, REPNE and REP.
 const LEGACY_PREFIXES: [u8; 11] = [0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3];
@@ -181,6 +183,9 @@ fn apply(
         PreciseInstruction::Vector(instruction) => execute_vector(instruction, processor, memory, decoded),
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
+        PreciseInstruction::Opmask { instruction, across_fault } => {
+            opmask::execute_opmask(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
                 .iter()

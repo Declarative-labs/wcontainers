@@ -10,6 +10,7 @@ use crate::integer::{
     to_accumulator, to_data, to_mask, to_result_flags, with_status,
 };
 use crate::vector::{Lane, LaneOperation, Signedness, VectorEncoding, find_vector_form, join, saturate, split, to_signed};
+use crate::opmask::{OpmaskOperation, find_opmask_form};
 use crate::{Flags, Instruction};
 
 /// Who planted a bug first.
@@ -29,6 +30,8 @@ pub enum Origin {
     Port,
     /// The sync that lists every form, for the behavior that raises #UD.
     WholeList,
+    /// The opmask forms and the foundation set's EVEX integer forms.
+    Avx512Integer,
 }
 
 /// The forms a bug shows on.
@@ -51,6 +54,8 @@ pub enum Family {
     /// Every form a chip may lack.
     Optional,
     Every,
+    /// The opmask forms whose operation the test accepts.
+    Opmask(fn(OpmaskOperation) -> bool),
 }
 
 /// One planted bug.
@@ -81,6 +86,7 @@ impl PlantedBug {
             Family::VexVector => find_vector_form(instruction).is_some_and(|form| form.encoding != VectorEncoding::Legacy),
             Family::Optional => crate::is_optional(instruction),
             Family::Every => true,
+            Family::Opmask(test) => find_opmask_form(instruction).is_some_and(|form| test(form.operation)),
         }
     }
 }
@@ -692,6 +698,15 @@ pub enum Bug {
     HaltInvalidOpcode,
     /// RDMSR completes at ring 3.
     ReadModelSpecificRegisterCompletes,
+    // The opmask forms and the EVEX integer forms.
+    /// KADD keeps the carry out of its width.
+    OpmaskAddKeepsCarry,
+    /// KSHIFTL and KSHIFTR take their count modulo the width.
+    OpmaskShiftCountModulo,
+    /// KORTEST sets CF where any bit is set.
+    OpmaskOrTestCarryOnAnyBit,
+    /// KUNPCK puts the first source's half low.
+    OpmaskUnpackHalvesSwapped,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -703,8 +718,8 @@ const fn integer(test: fn(Operation) -> bool) -> Family {
 }
 
 use Origin::{
-    FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck, ThirdPass,
-    WholeList,
+    Avx512Integer, FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck,
+    ThirdPass, WholeList,
 };
 
 /// Every planted bug of every pass and check, with its family.
@@ -1005,7 +1020,27 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::VexWideReadsSixteenBytes, "VEX lane operations", Family::VexVector, Port),
     row(Bug::VexFirstSourceIsDestination, "VEX lane operations", Family::VexVector, Port),
     row(Bug::UndefinedRaisesGeneralProtection, "forms a chip may lack", Family::Optional, WholeList),
+    row(Bug::OpmaskAddKeepsCarry, "KADD", Family::Opmask(|o| o == OpmaskOperation::Add), Avx512Integer),
+    row(Bug::OpmaskShiftCountModulo, "KSHIFTL, KSHIFTR", Family::Opmask(|o| matches!(o, OpmaskOperation::ShiftLeft | OpmaskOperation::ShiftRight)), Avx512Integer),
+    row(Bug::OpmaskOrTestCarryOnAnyBit, "KORTEST", Family::Opmask(|o| o == OpmaskOperation::OrTest), Avx512Integer),
+    row(Bug::OpmaskUnpackHalvesSwapped, "KUNPCK", Family::Opmask(|o| o == OpmaskOperation::Unpack), Avx512Integer),
 ];
+
+/// The opmask operation's result with the planted bug of its family.
+pub(crate) fn mutate_opmask(operation: OpmaskOperation, bits: u32, first: u64, second: u64, immediate: u8, result: u64) -> u64 {
+    let mask = crate::opmask::to_mask(bits);
+    match (active(), operation) {
+        (Some(Bug::OpmaskAddKeepsCarry), OpmaskOperation::Add) => (first & mask) + (second & mask),
+        (Some(Bug::OpmaskShiftCountModulo), OpmaskOperation::ShiftLeft | OpmaskOperation::ShiftRight) => {
+            operation.compute(bits, first, second, (u32::from(immediate) % bits) as u8)
+        }
+        (Some(Bug::OpmaskOrTestCarryOnAnyBit), OpmaskOperation::OrTest) => {
+            (result & !1) | u64::from((first | second) & mask != 0)
+        }
+        (Some(Bug::OpmaskUnpackHalvesSwapped), OpmaskOperation::Unpack) => operation.compute(bits, second, first, immediate),
+        _ => result,
+    }
+}
 
 #[cfg(feature = "planted-bugs")]
 static ACTIVE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);

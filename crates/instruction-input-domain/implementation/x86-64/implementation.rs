@@ -27,6 +27,7 @@ use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
+use wcontainers_processor_architecture_x86_64::opmask::find_opmask_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -36,6 +37,7 @@ use wcontainers_processor_architecture_x86_64::{
 pub mod branch;
 pub mod float;
 pub mod integer;
+pub mod opmask;
 pub mod vector;
 #[cfg(test)]
 mod tests;
@@ -148,6 +150,10 @@ pub enum OperandType {
     AddressSize,
     /// The sample encoding of a form not yet modeled, at its page's start with every register as the domain fills it.
     SampleEncoding,
+    /// The registers an opmask form names, this many, and how its bytes lie.
+    OpmaskEncoding(usize),
+    /// The value of the opmask register of the form's operand of that index, `bits` of it read.
+    OpmaskValue { operand: usize, bits: u32 },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -261,6 +267,7 @@ pub enum OperandValue {
     Mxcsr(u32),
     AddressSize(AddressSize),
     SampleEncoding,
+    OpmaskEncoding(opmask::OpmaskEncoding),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -289,6 +296,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_opmask_form(instruction) {
+            return opmask::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -453,6 +463,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::Immediate(class) => integer::generate_immediates(class),
             OperandType::AddressSize => [AddressSize::Bits64, AddressSize::Bits32].map(OperandValue::AddressSize).to_vec(),
             OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
+            OperandType::OpmaskEncoding(_) => opmask::generate_encodings(),
+            OperandType::OpmaskValue { bits, .. } => opmask::generate_values(bits),
         };
         values.into_iter()
     }
@@ -489,6 +501,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::build_state(form, &typed);
+        }
+        if let Some(form) = find_opmask_form(instruction) {
+            return opmask::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -655,6 +670,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()
         || find_privileged_codes(instruction).is_some()
+        || find_opmask_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

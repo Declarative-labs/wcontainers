@@ -10,6 +10,7 @@ use crate::integer::{Operation, find_integer_form};
 use crate::branch::find_branch_form;
 use crate::float::find_float_form;
 use crate::vector::find_vector_form;
+use crate::opmask::{OpmaskPlace, find_opmask_form};
 use crate::{
     CpuidTable, FORBIDDEN_FORMS, Instruction, PRIVILEGED_FORMS, PreciseInstruction, XEON_PLATINUM_8488C_UNDER_KVM,
     is_optional,
@@ -240,6 +241,7 @@ impl PreciseInstruction {
             Self::Vector(instruction) | Self::Float(instruction) => instruction,
             Self::Privileged(instruction) | Self::Branch(instruction) => instruction,
             Self::Integer { instruction, .. } | Self::Undefined(instruction) => instruction,
+            Self::Opmask { instruction, .. } => instruction,
         }
     }
 }
@@ -260,6 +262,13 @@ pub(crate) fn list_behaviors(instruction: Instruction) -> vec::IntoIter<PreciseI
 
 /// The behaviors of the form's model; none for a form not yet modeled.
 fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
+    if let Some(form) = find_opmask_form(instruction) {
+        // A store of one byte cannot fault part-way.
+        return take(&ACROSS_FAULT, form.place == OpmaskPlace::Store && form.bits > u8::BITS)
+            .iter()
+            .map(|&across_fault| PreciseInstruction::Opmask { instruction, across_fault })
+            .collect();
+    }
     match instruction {
         Instruction::PushGprv50 => ACROSS_FAULT
             .map(|across_fault| PreciseInstruction::PushGprv50 { across_fault })

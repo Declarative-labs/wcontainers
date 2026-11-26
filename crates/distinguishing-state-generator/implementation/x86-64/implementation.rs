@@ -45,6 +45,7 @@ use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
+use wcontainers_processor_architecture_x86_64::opmask::{OpmaskPlace, find_opmask_form};
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{DataAccess, Flags, Instruction, PagePermission, X86_64};
 
@@ -190,7 +191,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::Comparison
         | OperandType::CpuidLeaf
         | OperandType::CpuidSubleaf
-        | OperandType::CpuidUpperHalves => true,
+        | OperandType::CpuidUpperHalves
+        | OperandType::OpmaskValue { .. } => true,
         _ => false,
     }
 }
@@ -216,6 +218,10 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
             alignment: (form.memory_bytes() == 16).then_some(SSE_ALIGNMENT),
         });
     }
+    if let Some(form) = find_opmask_form(instruction) {
+        return matches!(form.place, OpmaskPlace::Load | OpmaskPlace::Store)
+            .then_some(AccessShape { write: form.place == OpmaskPlace::Store, alignment: None });
+    }
     find_vector_form(instruction).filter(|form| form.place != OperandPlace::Register).map(|form| AccessShape {
         write: false,
         alignment: form.requires_alignment().then_some(SSE_ALIGNMENT),
@@ -229,6 +235,9 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
     }
     if let Some(form) = find_float_form(instruction) {
         return form.memory_bytes();
+    }
+    if let Some(form) = find_opmask_form(instruction) {
+        return u64::from(form.bits / 8);
     }
     let size = operands.iter().flatten().find_map(|value| match value {
         OperandValue::OperandSize(size) => Some(*size),
@@ -246,6 +255,7 @@ fn decides_without_data(value: OperandValue, shape: Option<AccessShape>, width: 
     match value {
         OperandValue::Encoding(encoding) if relative => encoding.layout.faults_before_execution(),
         OperandValue::Encoding(encoding) => encoding.layout != CodeLayout::PageStart,
+        OperandValue::OpmaskEncoding(encoding) => encoding.layout != CodeLayout::PageStart,
         OperandValue::Access(access) => !is_plain(access) || shape.is_some_and(|shape| faults(access, shape, width)),
         _ => false,
     }
