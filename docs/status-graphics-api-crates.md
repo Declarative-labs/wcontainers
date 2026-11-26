@@ -606,6 +606,112 @@ Left of AC3: the linter's magic_literal by the repr(C) mirror; public_outside_in
 surface, a layout question once no narrowing is left); the 68 methods not glued (objects out counted by pointer, bytes
 out counted by pointer, strings by value, structures holding pointers).
 
+## AC3, repaired after the check of a197b550d: every case reached, counted at run time (2026-11-26)
+
+The check did not hold on "the hostile C caller calls all 643 entries": "absent 0" counted the cases written; under
+fuzzing 5 cases were never reached (ID3DBlob's two, ID3DDestructionNotifier's two, ID3D11Device5::CreateFence) and no test
+failed. Every bar below is MEASURED at a0a9206cb (pushed), x86-64 job gac7/20261126-2144xx, log
+wcontainers-scratch/graphics-api-crates/ac3x/final-a0a9206cb.log, unless it names another run.
+
+- **Reach counted at run time** (src/glue_c_caller.rs, harness/c-caller/c_caller.rs): each case counts its calls made with
+  `this` the object whose table it is in, each export its calls; the counts come back to Rust (`Counted::reached`). The
+  honest test and the fuzzing test fail naming every case or export never reached, fail if a case listed unreachable is
+  reached, and fail unless the cases never reached are exactly the listed ones. The "absent" counter is gone.
+- **Sweeps**: each run begins, per thread, by sweeps until two in a row hold no new interface: every held object is asked
+  for every interface by QueryInterface; each export and case that takes an interface id is called once per interface not
+  yet held; every case is called on an object held as its interface (one that makes objects up to 48 times until it hands
+  one out). Structures in are also passed as words of small values, which a description's checks let through.
+- **What the caller can hold, worked out by the generator** (`reach`): from the exports, the kinds each glued entry hands out
+  (objects out, the API's kinds for an interface by id, the bound kind for a bound object) and every interface each kind
+  answers (its chain and its faces), to a fixed point. The interfaces of the cases left must equal src/api.rs
+  `UNREACHABLE_IN_WHOLE` / `UNREACHABLE_IN_SLICE`, each with its reason, or the generator fails.
+- **The destruction notifier made reachable**: Direct3D 11's buffers and 1D, 2D and 3D textures answer
+  ID3DDestructionNotifier by QueryInterface (a face, src/api.rs). Which Direct3D 11 objects answer it on Windows is
+  INFERRED from Microsoft's description of the interface and not yet seen there (AC9). A program-visible change: our
+  resources now answer that id. CreateFence was reachable; the sweeps reach it.
+- **Unreachable, by name** (whole set, 2): ID3DBlob::GetBufferPointer and GetBufferSize: a program gets a blob from the shader
+  compiler (d3dcompiler_47.dll) or Direct3D 12's serializers, other APIs left out; no method or export of Direct3D 11, DXGI
+  or d3dcommon hands one out and no object of theirs answers it. Slice (7): the blob's two, the notifier's two (the
+  spike's faces), IDXGIAdapter's three (taken only into D3D11CreateDevice).
+
+| Bar at a0a9206cb | Result |
+|---|---|
+| C caller honest, whole set, default and ASan | status 0, 0; "C CALLER REACHED: cases 633 of 635, exports 8 of 8; never reached 2 = unreachable listed 2" |
+| C caller honest, slice, default and ASan | status 0, 0; cases 185 of 192, exports 2 of 2, never reached 7 = listed 7 |
+| C caller fuzzing 3 seeds (11, 12, 13) x 10M x set, ASan | 6 of 6 status 0, 0 reports, implementation objects alive 0; every run 633 of 635 (slice 185 of 192) |
+| Control a: CreateFence's case calls nothing | honest status 101 and fuzz 2M status 101, "NEVER REACHED 1: ID3D11Device5::CreateFence" |
+| Control b: the blob's line removed from src/api.rs | generator status 1, "C CALLER REACH: ... are {"ID3DBlob"}; src/api.rs lists {}" |
+| Control c: the sweeps removed | honest status 101, cases 424 of 635, NEVER REACHED 209 |
+
+- **A defect the sweeps found, fixed** (46cc80ed6): at ebf0983e9 the whole set's C caller fuzzing seed 13 aborted (status
+  134, "thread caused non-unwinding panic", job gac7c, gdb: `Vec::truncate` in `device_context_so_get_targets` dropping the
+  implementation's extra objects, two of whose `Drop`s panicked under a lie: a panic during cleanup aborts). The serving
+  glue now drops each object an array out does not hand over on its own, caught. Seeds 13 and 14 then status 0, 0 reports.
+
+**The rest of AC3 in this run:**
+- **repr(C) mirror** (src/glue.rs `mirror_type`): each record the byte forms carry has a `#[repr(C)]` mirror (packing as
+  `packed(N)`, a union as a `union`, a GUID as four 32-bit words), and every offset and size is `offset_of!` / `size_of` of
+  it. The mirror-check build (MIRROR_CHECK set, never the kept output) writes a test per direct crate comparing every
+  mirror offset and size with the generator's own numbers, which check-layout.sh compares with MinGW's headers: whole set
+  886 assertions (Direct3D 11 684, DXGI 202), slice 163, both status 0; control (fields written in reverse order) status
+  101, "left: 28, right: 0". No record of the set has a packing (0 `packed(` in the output), so packing is not exercised.
+  magic_literal (whole set) 7,869 -> 3,730.
+- **Text in glued** (11 methods: CreateClassInstance, GetClassInstance, OpenSharedResourceByName, BeginEventInt,
+  SetMarkerInt, BeginEvent, SetMarker, both info queues' AddMessage and AddApplicationMessage): the serving glue copies the
+  text once up to its first zero unit and refuses one with none within 65,536 units (`read_text`, COM's direct crate, two
+  marks); the calling glue passes a `&CStr` as it is and a `&[u16]` copied with a zero unit. GLUED 575 -> 586, NOT GLUED 68
+  -> 57. Left, each with its reason in the report: 6 objects out counted by pointer (*GetShader), 7 bytes or filters out
+  counted by pointer (GetPrivateData x2, the info queue's messages and filters), 3 text out whose room the metadata links to
+  no parameter (GetInstanceName, GetTypeName, CheckCounter; the trait layer maps them as text in, which is wrong and is to
+  be changed with them), 13 structures holding pointers, 7 void pointers (refused by kinds, by design), 1 object out of
+  several kinds (CreateQuery), 1 array out beside other outs (GetResourceTiling), the rest single forms.
+- **public_outside_interface narrowed** (src/visibility.rs): an item stays public only when another crate names it through
+  the crate's path or a `use` of it (whole paths, so `Tables::<V>::RESOURCE1` keeps the constant), a field only with its
+  structure, a method when any crate mentions it; every interface's table impl allows dead code. 5,486 -> 3,821 (whole
+  set; job gac7b q5 before the run): Direct3D 11's direct abi.rs 1,129, serve.rs 391, call.rs 200; DXGI's abi.rs 620,
+  serve.rs 167; the hostile and recorder crates' items (their tests' surface); COM's direct crate.
+- **Linter, whole set** (8,925 findings, was 14,719): public_outside_interface 3,821, magic_literal 3,730,
+  implementation_folder 300, conformance_not_run 227, literal_restates_constant 171, the rest below 133 each.
+- Kept at a0a9206cb: the three sets written twice IDENTICAL; check, clippy and clippy --all-targets status 0; generator 17
+  tests; whole set's 47 hostile tests and probes default and ASan; slice harness 75 of 75; the lie tests both sets default
+  and ASan; hostile-set fuzzing 3 seeds x 10M per set under ASan 6 of 6 status 0, 0 reports, 0 hangs; conformance on and
+  through both glues default and ASan, every run status 0 (Direct3D 11 65 kinds, 855 calls, 851 made, 0 panics); effects 4
+  of 4, 23 groups; every earlier control fails as before (the refusal-write control rerun with the new pattern: honest
+  status 101, job gac7m 21:5x).
+- **Costs at low load** (job gac7m/20261126-2150xx, a0a9206cb, ours and the spike's binaries one after the other on core
+  92, load 4.8 then 4.3; core 93 the same to 0.1 ns), ns, serving glue's added / pass-through:
+
+| Operation | Ours | Spike | Within a tenth |
+|---|---|---|---|
+| Draw | 21.0 / 41.8 | 23.8 / 37.7 | added 12% faster; pass-through 10.9% slower |
+| AddRef + Release | 24.8 / 37.4 | 24.7 / 37.4 | both within |
+| QueryInterface + Release | 68.1 / 80.8 | 80.8 / 93.6 | both 14 to 16% faster |
+| GetDevice + Release | 53.5 / 69.2 | 60.3 / 72.9 | added 11% faster; pass-through within |
+| Map + Unmap | 271.5 / 456.9 | 215.2 / 456.3 | pass-through within; added 26% slower (the shadow copy and its write-back) |
+| CreateBuffer + Release | 240.2 / 313.5 | 335.8 / 397.1 | both 21 to 28% faster |
+
+  run-harness.sh had no measure step though its usage named one; added (a0a9206cb).
+
+**The layout question for the orchestrator (one, for the owner):** may an API's `implementation/direct` crate export to
+the direct crates of the APIs built on it, and to the test crates of its set, the surface they call (its C tables, its
+serving entries and calling types, and COM's bookkeeping in `component-object-model/implementation/direct`), or must that
+surface live in a crate of a kind the layout names (and which)? Smallest example (DXGI's table, which a Direct3D 11 buffer
+answers IDXGIResource1 with):
+
+```rust
+// crates/directx-graphics-infrastructure/implementation/direct/abi.rs
+#[repr(C)]
+pub struct Resource1Table { pub unknown: UnknownTable, pub object_set_private_data: unsafe extern "system" fn(Raw, GuidAbi, u32, *const u8) -> i32, /* .. */ }
+// crates/direct3d-11/implementation/direct/serve.rs
+return Some(unsafe { Table::new(directx_graphics_infrastructure_direct::Tables::<V>::RESOURCE1) });
+```
+
+Turns on: public_outside_interface's 3,821 findings, all of this kind (no narrowing is left that keeps the set building).
+Build around: the findings stay reported and counted.
+
+Next (AC3): the 57 methods not glued (objects and bytes out counted by pointer first); then AC10 (OpenGL ES and EGL), which
+waits on nothing for its trait layer.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
