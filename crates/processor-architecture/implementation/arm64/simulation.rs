@@ -9,9 +9,11 @@ use wcontainers_processor_architecture::{
 
 use crate::branch::is_outside_lower_addresses;
 use crate::encoding::{IMM16, RD, RDVL_IMM6, RT};
+use crate::load_store::scalable_access::{simulate_scalable_access, to_scalable_access};
 use crate::memory::{read_bytes, read_permission};
 use crate::operand::RegisterThirtyOne;
 use crate::registers::write_register;
+use crate::sve::simulate_scalable;
 use crate::system_register::{simulate_system_register_move, to_undecided_registers};
 use crate::{
     AccessDirection, Arm64, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
@@ -104,6 +106,28 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                     );
                     Ok(())
                 }
+                Self::ScalableAccess {
+                    instruction,
+                    choices,
+                } => match to_scalable_access(instruction) {
+                    Some(access) => simulate_scalable_access(
+                        access,
+                        choices,
+                        processor,
+                        memory,
+                        word,
+                        mutation_hook,
+                    ),
+                    None => unreachable!("an SVE access behavior is listed only for an SVE access"),
+                },
+                Self::Structure {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
+                Self::TagAccess {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
                 Self::MrsCtrEl0 { cache_type } => {
                     write_register(
                         processor,
@@ -113,6 +137,15 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                     );
                     Ok(())
                 }
+                Self::Scalable {
+                    trapped: Some(code),
+                    ..
+                } => Err(Exception::SmeTrap(code)),
+                Self::Scalable {
+                    operation,
+                    trapped: None,
+                    ..
+                } => simulate_scalable(processor, word, operation),
                 Self::Unimplemented(instruction)
                     if instruction.is_executed_as_hint_without_feature()
                         && !crate::planted::is(508) =>
@@ -160,7 +193,11 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                 ..
             } => Instruction::Mrs,
             Self::SystemRegisterMove { .. } => Instruction::MsrRegister,
-            Self::Unimplemented(instruction) => instruction,
+            Self::Scalable { instruction, .. }
+            | Self::ScalableAccess { instruction, .. }
+            | Self::Unimplemented(instruction) => instruction,
+            Self::Structure { instruction, .. } => instruction.instruction(),
+            Self::TagAccess { instruction, .. } => instruction.instruction(),
             Self::MrsCtrEl0 { .. } | Self::LevelSpecific(_) => return false,
         };
         instruction.to_record().is_some_and(|record| {

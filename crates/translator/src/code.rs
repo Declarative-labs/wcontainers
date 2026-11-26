@@ -313,7 +313,7 @@ const _: () = assert!(TRANSLATOR_HOOKS.len() == F_TRAP as usize + 1);
 
 /// The function a meaning's hook calls.
 pub(crate) fn hook_function<G: Guest>(hook: G::Hook) -> u32 {
-    G::F_HOOKS + G::hook_index(hook) as u32
+    Layout::<G>::F_HOOKS + G::hook_index(hook) as u32
 }
 
 // Global indices: the runner's constants.
@@ -371,7 +371,7 @@ pub(crate) fn frame_bytes<G: Guest>(locals: &[ValType]) -> i64 {
             }
         })
         .sum();
-    (FRAME_FIXED_BYTES + size_of::<u64>() * G::PARAMETERS as usize + slots) as i64
+    (FRAME_FIXED_BYTES + size_of::<u64>() * Layout::<G>::PARAMETERS as usize + slots) as i64
 }
 
 /// Leave to the bottom loop when the depth in i64 local `depth` is past the budget, with `pc` at the
@@ -390,7 +390,7 @@ pub(crate) fn depth_check<G: Guest>(
         s.i64_const(entry as i64);
     });
     s.i32_const(UNWIND_DEEP)
-        .call(G::F_UNWIND)
+        .call(Layout::<G>::F_UNWIND)
         .unreachable()
         .end();
 }
@@ -706,12 +706,12 @@ fn module<G: Guest>(
     code_section.function(&unwinder());
     functions.function(T_DISPATCHER);
     code_section.function(&exact::<G>(how.2));
-    functions.function(G::T_SAVE);
+    functions.function(Layout::<G>::T_SAVE);
     code_section.function(&saver::<G>(how.2));
-    functions.function(G::T_PERMISSION);
+    functions.function(Layout::<G>::T_PERMISSION);
     code_section.function(&permission_checker());
     for (i, (_, function)) in crate::full::flags_word_functions::<G>().iter().enumerate() {
-        functions.function(G::T_FLAGS_WORD + i as u32);
+        functions.function(Layout::<G>::T_FLAGS_WORD + i as u32);
         code_section.function(function);
     }
     let others: Vec<wasm_encoder::Function> = units
@@ -841,7 +841,7 @@ fn none_emit<G: Guest>(
     let index: BTreeMap<u64, u32> = found
         .iter()
         .enumerate()
-        .map(|(i, &(offset, _))| (offset, G::F_FIRST_PIECE + i as u32))
+        .map(|(i, &(offset, _))| (offset, Layout::<G>::F_FIRST_PIECE + i as u32))
         .collect();
     found
         .iter()
@@ -856,7 +856,7 @@ fn none_emit<G: Guest>(
                 body: Vec::new(),
                 locals: Vec::new(),
                 sites: [0; SITES],
-                count: kept(code.progress).then_some(G::L_COUNT),
+                count: kept(code.progress).then_some(Layout::<G>::L_COUNT),
                 event: code.progress == ProgressCount::Kept
                     && progress_event::<G>(&decoded.instruction),
             };
@@ -1120,7 +1120,7 @@ pub(crate) fn permission_exact<G: Guest>(
         s.local_get(at)
             .i32_const(len as i32)
             .i32_const(this.into())
-            .call(G::F_PERMISSION)
+            .call(Layout::<G>::F_PERMISSION)
             .local_set(fault_at)
             .if_(BlockType::Empty);
         return;
@@ -1292,14 +1292,14 @@ pub(crate) fn types<G: Guest>(progress: ProgressCount) -> TypeSection {
         vec![ValType::I64; results::<G>(progress) as usize],
     );
     types.ty().function([ValType::I32], []);
-    debug_assert_eq!(types.len(), G::T_HOOKS);
+    debug_assert_eq!(types.len(), Layout::<G>::T_HOOKS);
     for hook in G::HOOKS {
         types
             .ty()
             .function(hook.params.iter().copied(), hook.results.iter().copied());
     }
     types.ty().function(
-        vec![ValType::I64; G::PASSED as usize + 1 + usize::from(kept(progress))],
+        vec![ValType::I64; Layout::<G>::PASSED as usize + 1 + usize::from(kept(progress))],
         [],
     ); // save
     types.ty().function(
@@ -1319,7 +1319,7 @@ pub(crate) fn imports<G: Guest>() -> ImportSection {
         imports.import(HOOKS, name, EntityType::Function(ty));
     }
     for (i, hook) in G::HOOKS.iter().enumerate() {
-        let ty = G::T_HOOKS + i as u32;
+        let ty = Layout::<G>::T_HOOKS + i as u32;
         imports.import(HOOKS, hook.name, EntityType::Function(ty));
     }
     imports.import(
@@ -1410,7 +1410,7 @@ pub(crate) fn push_results<G: Guest>(
     progress: ProgressCount,
 ) {
     for &bit in G::PASSED_OUT {
-        match G::passed(bit) {
+        match Layout::<G>::passed(bit) {
             Some(local) => {
                 s.local_get(local);
             }
@@ -1421,7 +1421,7 @@ pub(crate) fn push_results<G: Guest>(
         }
     }
     if kept(progress) {
-        s.local_get(G::L_COUNT);
+        s.local_get(Layout::<G>::L_COUNT);
     }
 }
 
@@ -1453,7 +1453,7 @@ pub(crate) fn save_passed<G: Guest>(
         slot.store_from(s, block, i as u32);
     }
     if kept(progress) {
-        store_count::<G>(s, block, G::L_COUNT);
+        store_count::<G>(s, block, Layout::<G>::L_COUNT);
     }
 }
 
@@ -1490,12 +1490,12 @@ pub(crate) fn kept(progress: ProgressCount) -> bool {
 
 /// How many parameters a piece has: [`Layout::PARAMETERS`], then the count when it is kept.
 pub(crate) fn parameters<G: Guest>(progress: ProgressCount) -> u32 {
-    G::PARAMETERS + u32::from(kept(progress))
+    Layout::<G>::PARAMETERS + u32::from(kept(progress))
 }
 
 /// How many results a piece has: [`Layout::RESULTS`], then the count when it is kept.
 pub(crate) fn results<G: Guest>(progress: ProgressCount) -> u32 {
-    G::RESULTS + u32::from(kept(progress))
+    Layout::<G>::RESULTS + u32::from(kept(progress))
 }
 
 /// Store the passed registers, and `pc` at the blob offset `offset` pushes, in the thread block, through the
@@ -1505,14 +1505,14 @@ pub(crate) fn save<G: Guest>(
     progress: ProgressCount,
     offset: impl FnOnce(&mut InstructionSink<'_>),
 ) {
-    for i in 0..G::PASSED {
+    for i in 0..Layout::<G>::PASSED {
         s.local_get(i);
     }
     offset(s);
     if kept(progress) {
-        s.local_get(G::L_COUNT);
+        s.local_get(Layout::<G>::L_COUNT);
     }
-    s.call(G::F_SAVE);
+    s.call(Layout::<G>::F_SAVE);
 }
 
 /// The function [`save`] calls. Parameters: the passed registers, pc as a blob offset, and the progress
@@ -1522,11 +1522,11 @@ fn saver<G: Guest>(progress: ProgressCount) -> wasm_encoder::Function {
     let mut s = f.instructions();
     save_passed::<G>(&mut s, BLOCK, ProgressCount::Absent);
     if kept(progress) {
-        store_count::<G>(&mut s, BLOCK, G::PASSED + 1);
+        store_count::<G>(&mut s, BLOCK, Layout::<G>::PASSED + 1);
     }
     set_pc::<G>(&mut s, BLOCK, |s| {
         BLOCK_LOAD_ADDRESS.push(s);
-        s.local_get(G::PASSED).i64_add();
+        s.local_get(Layout::<G>::PASSED).i64_add();
     });
     s.end();
     f
@@ -1564,7 +1564,9 @@ pub(crate) fn dispatcher<G: Guest>(progress: ProgressCount) -> wasm_encoder::Fun
     s.local_get(piece).ref_is_null().if_(BlockType::Empty);
     save_passed::<G>(&mut s, BLOCK, progress);
     crate::thread::misaligned_code::<G>(&mut s, target, F_TRAP, |s| {
-        s.i32_const(UNWIND_LEAVE).call(G::F_UNWIND).unreachable();
+        s.i32_const(UNWIND_LEAVE)
+            .call(Layout::<G>::F_UNWIND)
+            .unreachable();
     });
     s.local_get(target)
         .i32_const(0)
@@ -1572,7 +1574,7 @@ pub(crate) fn dispatcher<G: Guest>(progress: ProgressCount) -> wasm_encoder::Fun
         .i32_eqz()
         .if_(BlockType::Empty)
         .i32_const(UNWIND_LEAVE)
-        .call(G::F_UNWIND)
+        .call(Layout::<G>::F_UNWIND)
         .unreachable()
         .end()
         .br(1)
@@ -1608,7 +1610,7 @@ pub(crate) fn exact<G: Guest>(progress: ProgressCount) -> wasm_encoder::Function
         .i32_eqz()
         .if_(BlockType::Empty)
         .i32_const(UNWIND_LEAVE)
-        .call(G::F_UNWIND)
+        .call(Layout::<G>::F_UNWIND)
         .unreachable()
         .end();
     for i in 0..target {
@@ -1637,7 +1639,7 @@ pub(crate) fn stop_hook<G: Guest>(s: &mut InstructionSink<'_>, payload: u32) {
         .local_tee(payload)
         .if_(BlockType::Empty)
         .local_get(payload)
-        .call(G::F_UNWIND)
+        .call(Layout::<G>::F_UNWIND)
         .unreachable()
         .end();
 }
@@ -1646,7 +1648,7 @@ pub(crate) fn stop_hook<G: Guest>(s: &mut InstructionSink<'_>, payload: u32) {
 pub(crate) fn elements<G: Guest>(pieces: u32) -> ElementSection {
     let mut elements = ElementSection::new();
     let refs: Vec<ConstExpr> = (0..pieces)
-        .map(|i| ConstExpr::ref_func(G::F_FIRST_PIECE + i))
+        .map(|i| ConstExpr::ref_func(Layout::<G>::F_FIRST_PIECE + i))
         .collect();
     elements.active(
         Some(0),
@@ -1719,7 +1721,7 @@ impl<G: Guest> NoneEmitter<'_, G> {
     fn entry(&mut self) {
         let offset = self.offset;
         let progress = self.progress();
-        depth_check::<G>(&mut self.sink(), G::L_DEPTH, offset, progress);
+        depth_check::<G>(&mut self.sink(), Layout::<G>::L_DEPTH, offset, progress);
         self.sites[Reason::StackNearlyFull as usize] += 1;
         self.stop_check(0);
     }
@@ -1758,11 +1760,11 @@ impl<G: Guest> NoneEmitter<'_, G> {
     fn arguments(&mut self, ret: impl FnOnce(&mut InstructionSink<'_>), depth: i64) {
         let count = self.count;
         let mut s = self.sink();
-        for i in 0..G::PASSED {
+        for i in 0..Layout::<G>::PASSED {
             s.local_get(i);
         }
         ret(&mut s);
-        s.local_get(G::L_DEPTH);
+        s.local_get(Layout::<G>::L_DEPTH);
         if depth != 0 {
             s.i64_const(depth).i64_add();
         }
@@ -1789,7 +1791,7 @@ impl<G: Guest> NoneEmitter<'_, G> {
                 None
             }
         };
-        let function = direct.unwrap_or(G::F_DISPATCH);
+        let function = direct.unwrap_or(Layout::<G>::F_DISPATCH);
         if tail {
             self.sink().return_call(function);
         } else {
@@ -1800,7 +1802,7 @@ impl<G: Guest> NoneEmitter<'_, G> {
     fn leave(&mut self) {
         self.sink()
             .i32_const(UNWIND_LEAVE)
-            .call(G::F_UNWIND)
+            .call(Layout::<G>::F_UNWIND)
             .unreachable();
     }
 
@@ -1827,7 +1829,7 @@ pub(crate) fn bottom_return<G: Guest>(
     block: Fixed,
     progress: ProgressCount,
 ) {
-    s.local_get(G::L_RETURN)
+    s.local_get(Layout::<G>::L_RETURN)
         .i64_const(G::UNREACHABLE_RETURN | G::FLAGS_WANTED)
         .i64_eq()
         .if_(BlockType::Empty);
@@ -1845,17 +1847,17 @@ pub(crate) fn address(s: &mut InstructionSink<'_>, offset: u64) {
 /// With return addresses on the stack, move the stack pointer up past the one a return has read.
 pub(crate) fn pop_return_address<G: Guest>(s: &mut InstructionSink<'_>) {
     if let ReturnAddress::Stack { bytes } = G::RETURN_ADDRESS {
-        s.local_get(G::L_SP)
+        s.local_get(Layout::<G>::L_SP)
             .i64_const(bytes.into())
             .i64_add()
-            .local_set(G::L_SP);
+            .local_set(Layout::<G>::L_SP);
     }
 }
 
 /// Push whether the caller asks for the flags, as an i32 not zero when it does. A bit in the low word is
 /// read by wrapping; one above it by a compare.
 pub(crate) fn push_flags_wanted<G: Guest>(s: &mut InstructionSink<'_>) {
-    s.local_get(G::L_RETURN)
+    s.local_get(Layout::<G>::L_RETURN)
         .i64_const(G::FLAGS_WANTED)
         .i64_and();
     if G::FLAGS_WANTED as u64 <= u64::from(u32::MAX) {
@@ -1867,7 +1869,7 @@ pub(crate) fn push_flags_wanted<G: Guest>(s: &mut InstructionSink<'_>) {
 
 /// Push the return address the caller expects, without the flags-wanted bit.
 pub(crate) fn push_expected_return<G: Guest>(s: &mut InstructionSink<'_>) {
-    s.local_get(G::L_RETURN);
+    s.local_get(Layout::<G>::L_RETURN);
     if G::FLAGS_WANTED != 0 {
         s.i64_const(!G::FLAGS_WANTED).i64_and();
     }
@@ -1898,7 +1900,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
             None => {
                 s.i64_const(0);
             }
-            Some(bit) => match G::passed(bit) {
+            Some(bit) => match Layout::<G>::passed(bit) {
                 Some(local) => {
                     s.local_get(local);
                 }
@@ -1915,7 +1917,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
             None => {
                 self.sink().drop();
             }
-            Some(bit) => match G::passed(bit) {
+            Some(bit) => match Layout::<G>::passed(bit) {
                 Some(local) => {
                     self.sink().local_set(local);
                 }
@@ -1999,7 +2001,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         s.local_get(fault_at)
             .i32_const(i32::from(access == Access::Write))
             .call(F_MEMORY_FAULT)
-            .call(G::F_UNWIND)
+            .call(Layout::<G>::F_UNWIND)
             .unreachable()
             .end()
             .end();
@@ -2039,7 +2041,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         self.count_event();
         self.arguments(
             |s| {
-                s.local_get(G::L_RETURN);
+                s.local_get(Layout::<G>::L_RETURN);
             },
             0,
         );
@@ -2073,7 +2075,7 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         }
         // A register passed out but not in is also in the thread block, where it lives here.
         for &bit in G::PASSED_OUT.iter().rev() {
-            match G::passed(bit) {
+            match Layout::<G>::passed(bit) {
                 Some(local) => s.local_set(local),
                 None => s.drop(),
             };
@@ -2100,7 +2102,9 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         });
         bottom_return::<G>(&mut s, BLOCK, progress);
         save_passed::<G>(&mut s, BLOCK, progress);
-        s.i32_const(UNWIND_GO_TO).call(G::F_UNWIND).unreachable();
+        s.i32_const(UNWIND_GO_TO)
+            .call(Layout::<G>::F_UNWIND)
+            .unreachable();
     }
 
     fn syscall(&mut self) {

@@ -1,5 +1,7 @@
-//! A small wasmtime runner: one guest thread, its memory, the hooks, and a stand-in for the kernel that
-//! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
+//! A small wasmtime runner: one guest thread, its memory, the hooks, and a stand-in for the kernel.
+//!
+//! The stand-in answers `write`, `writev`, `exit`, `exit_group`, `brk`, and `mmap` and `munmap` of private
+//! anonymous memory.
 
 use crate::guest::GuestTest;
 use crate::state_memory::StateMemory;
@@ -35,7 +37,7 @@ pub const PERMISSIONS_AT: u32 = 4096;
 pub enum Syscalls {
     /// Stop the thread at every system call, before it runs.
     Stop,
-    /// Answer the stand-in's five calls; every other number returns "not implemented".
+    /// Answer the stand-in's calls; every other number returns "not implemented".
     StandIn,
 }
 
@@ -220,8 +222,11 @@ pub struct Host<G: GuestTest> {
     /// The lookup table's next free slot.
     next_slot: u32,
     state: Option<StateMemory>,
-    /// The program break the stand-in reports: the page after the highest blob.
+    /// The program break: where it starts, the page after the highest blob, and where it is now.
+    break_start: u64,
     program_break: u64,
+    /// Which pages are mapped: given permissions (none too) by the machine's set-up, `mmap` or `brk`.
+    mapped: Vec<bool>,
     engine: Engine,
     thread: Option<Instance>,
     memory: Option<Memory>,
@@ -429,7 +434,9 @@ impl<G: GuestTest> Machine<G> {
                 slots_at: 0,
                 next_slot: contract::EXACT_SLOT as u32 + 1,
                 state: None,
+                break_start: u64::MIN,
                 program_break: 0,
+                mapped: vec![false; permission_pages as usize],
                 engine: engine.clone(),
                 thread: None,
                 memory: None,
@@ -677,6 +684,7 @@ impl<G: GuestTest> Machine<G> {
         host.code_ranges
             .push(load_address + code.start..load_address + code.end);
         let end = (load_address + bytes.len() as u64).next_multiple_of(PAGE_SIZE);
+        host.break_start = host.break_start.max(end);
         host.program_break = host.program_break.max(end);
     }
 
@@ -887,6 +895,7 @@ fn set_permissions<G: GuestTest>(host: &mut Host<G>, range: Range<u64>, permissi
     let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
     for page in pages.clone() {
         host.permissions[page as usize] = permissions;
+        host.mapped[page as usize] = true;
     }
     let state = host.state.as_ref().unwrap();
     // Each byte also says what the page after it allows, so rewrite the one before the range too.
@@ -1860,7 +1869,7 @@ fn file<G: GuestTest>(host: &mut Host<G>, fd: u64) -> Option<&mut Vec<u8>> {
 fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequest) -> i64 {
     // The error numbers, the vector limit and `iovec` are the same on every 64 bit architecture Linux has, so
     // the host's are the guest's.
-    use linux_raw_sys::errno::{EBADF, EFAULT, EINVAL, ENOSYS, EPERM};
+    use linux_raw_sys::errno::{EBADF, EFAULT, EINVAL, EPERM};
     use linux_raw_sys::general::{UIO_MAXIOV, iovec};
     let error = |errno: u32| -i64::from(errno);
     let [a0, a1, a2, ..] = call.arguments;
@@ -1949,9 +1958,9 @@ fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequ
             raise_stop_flag(caller);
             0
         }
-        // brk: this stand-in never moves the break, and answers with the current one as Linux does when it
-        // cannot.
-        n if n == numbers.brk => caller.data().program_break as i64,
+        n if n == numbers.brk => move_break(caller, a0) as i64,
+        n if n == numbers.mmap => map(caller, call),
+        n if n == numbers.munmap => unmap(caller, a0, a1),
         number => {
             if let Some(set) = &numbers.set_base
                 && number == set.number
@@ -1964,9 +1973,224 @@ fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequ
                 state.write(BLOCK_AT as usize + at, &a1.to_le_bytes());
                 return 0;
             }
-            let reason = Reason::SystemCallNotImplemented.number();
-            slow_path(caller.data_mut(), reason, number, Duration::ZERO);
-            error(ENOSYS)
+            answer_not_implemented(caller.data_mut(), number)
         }
     }
+}
+
+/// What a call that succeeds with no value of its own gives.
+///
+/// https://man7.org/linux/man-pages/man2/syscall.2.html
+const DONE: i64 = 0;
+
+/// Counts a call the stand-in does not have, or a form of one it does not answer, and answers ENOSYS.
+fn answer_not_implemented<G: GuestTest>(host: &mut Host<G>, number: u64) -> i64 {
+    let reason = Reason::SystemCallNotImplemented.number();
+    slow_path(host, reason, number, Duration::ZERO);
+    -i64::from(linux_raw_sys::errno::ENOSYS)
+}
+
+/// Pages Linux keeps free below a stack, the default of its `stack_guard_gap` parameter.
+///
+/// New mappings are placed below the highest mapped run of pages, the stack, and this gap.
+/// https://www.kernel.org/doc/html/latest/admin-guide/kernel-parameters.html
+pub const STACK_GUARD_GAP_PAGES: u64 = 256;
+
+/// Tells whether code a translation in use was made from lies on these pages.
+///
+/// The stand-in neither maps nor unmaps such pages: their pieces would carry on running.
+fn holds_code<G: GuestTest>(host: &Host<G>, pages: &Range<u64>) -> bool {
+    let bytes = pages.start * PAGE_SIZE..pages.end * PAGE_SIZE;
+    let touches = |read: &[Range<u64>]| {
+        read.iter()
+            .any(|r| r.start < bytes.end && bytes.start < r.end)
+    };
+    host.loads.iter().any(|l| !l.dropped && touches(&l.read))
+        || host.run_time_loads.iter().any(|(read, _)| touches(read))
+}
+
+/// Drops the instruction pieces made one at a time for addresses on these pages.
+fn forget_exact_pieces<G: GuestTest>(host: &mut Host<G>, pages: &Range<u64>) {
+    host.exact_pieces.retain(|&address, _| {
+        let last = address.saturating_add(G::MAX_LENGTH - 1);
+        !pages.contains(&(address / PAGE_SIZE)) && !pages.contains(&(last / PAGE_SIZE))
+    });
+}
+
+/// Gives pages of memory as new anonymous memory: zero, allowing `permissions`.
+fn map_pages<G: GuestTest>(
+    caller: &mut Caller<'_, Host<G>>,
+    pages: Range<u64>,
+    permissions: Permissions,
+) {
+    let bytes = pages.start * PAGE_SIZE..pages.end * PAGE_SIZE;
+    let memory = caller.data().memory.unwrap();
+    memory.data_mut(&mut *caller)[bytes.start as usize..bytes.end as usize].fill(u8::MIN);
+    forget_exact_pieces(caller.data_mut(), &pages);
+    set_permissions(caller.data_mut(), bytes, permissions);
+}
+
+/// Takes pages out of the mapped ones, those of memory among them.
+fn unmap_pages<G: GuestTest>(host: &mut Host<G>, pages: Range<u64>) {
+    let pages = pages.start..pages.end.min(host.mapped.len() as u64);
+    if pages.is_empty() {
+        return;
+    }
+    forget_exact_pieces(host, &pages);
+    set_permissions(
+        host,
+        pages.start * PAGE_SIZE..pages.end * PAGE_SIZE,
+        Permissions::empty(),
+    );
+    host.mapped[pages.start as usize..pages.end as usize].fill(false);
+}
+
+/// Finds where a new mapping of `count` pages goes, from the top down as Linux places one.
+///
+/// It takes the highest free pages below the highest mapped run and its guard gap, never the first page.
+fn free_pages<G: GuestTest>(host: &Host<G>, count: u64) -> Option<Range<u64>> {
+    let mapped = &host.mapped;
+    let mut end = match mapped.iter().rposition(|&m| m) {
+        Some(highest) => {
+            let bottom = mapped[..highest]
+                .iter()
+                .rposition(|&m| !m)
+                .map_or(usize::MIN, |p| p + 1);
+            (bottom as u64).checked_sub(STACK_GUARD_GAP_PAGES)?
+        }
+        None => mapped.len() as u64,
+    };
+    loop {
+        let start = end.checked_sub(count).filter(|&start| start > 0)?;
+        match (start..end).rev().find(|&page| mapped[page as usize]) {
+            None => return Some(start..end),
+            Some(taken) => end = taken,
+        }
+    }
+}
+
+/// Moves the program break to `wanted` as Linux's `brk` does, and gives the break as it then is.
+///
+/// It moves when `wanted` is not below where the break started and the pages it gains, and the one after
+/// them, are free.
+/// https://man7.org/linux/man-pages/man2/brk.2.html
+fn move_break<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, wanted: u64) -> u64 {
+    let host = caller.data();
+    let now = host.program_break;
+    if wanted < host.break_start {
+        return now;
+    }
+    let (end, wanted_end) = (now.div_ceil(PAGE_SIZE), wanted.div_ceil(PAGE_SIZE));
+    if wanted_end > end {
+        let free = wanted_end < host.mapped.len() as u64
+            && !host.mapped[end as usize..=wanted_end as usize].contains(&true);
+        if !free {
+            return now;
+        }
+        map_pages(
+            caller,
+            end..wanted_end,
+            Permissions::READ | Permissions::WRITE,
+        );
+    } else if wanted_end < end {
+        if holds_code(host, &(wanted_end..end)) {
+            answer_not_implemented(caller.data_mut(), G::STAND_IN.brk);
+            return now;
+        }
+        unmap_pages(caller.data_mut(), wanted_end..end);
+    }
+    caller.data_mut().program_break = wanted;
+    wanted
+}
+
+/// Answers Linux's `mmap` of private anonymous memory.
+///
+/// The memory goes where the call says (`MAP_FIXED`, and `MAP_FIXED_NOREPLACE` where nothing is) or where
+/// [`free_pages`] finds room. Shared memory, files, memory that grows down and pages holding code are not
+/// answered.
+/// https://man7.org/linux/man-pages/man2/mmap.2.html
+fn map<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequest) -> i64 {
+    // The flags and protections are the same on ARM64 and x86-64, so the host's are the guest's.
+    use linux_raw_sys::errno::{EEXIST, EINVAL, ENOMEM};
+    use linux_raw_sys::general::{
+        MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_PRIVATE, MAP_TYPE,
+        PROT_EXEC, PROT_READ, PROT_WRITE,
+    };
+    let error = |errno: u32| -i64::from(errno);
+    let [address, length, protection, flags, _, offset] = call.arguments;
+    let has = |bits: u32| flags & u64::from(bits) != 0;
+    if !offset.is_multiple_of(PAGE_SIZE) {
+        return error(EINVAL);
+    }
+    if flags & u64::from(MAP_TYPE) != u64::from(MAP_PRIVATE)
+        || !has(MAP_ANONYMOUS)
+        || has(MAP_GROWSDOWN)
+    {
+        return answer_not_implemented(caller.data_mut(), call.number.0);
+    }
+    if length == 0 {
+        return error(EINVAL);
+    }
+    let Some(count) = length.checked_next_multiple_of(PAGE_SIZE) else {
+        return error(ENOMEM);
+    };
+    let count = count / PAGE_SIZE;
+    let host = caller.data();
+    let pages = if has(MAP_FIXED | MAP_FIXED_NOREPLACE) {
+        if !address.is_multiple_of(PAGE_SIZE) {
+            return error(EINVAL);
+        }
+        let first = address / PAGE_SIZE;
+        let pages = first..first.saturating_add(count);
+        if pages.end > host.mapped.len() as u64 {
+            return error(ENOMEM);
+        }
+        if has(MAP_FIXED_NOREPLACE)
+            && host.mapped[pages.start as usize..pages.end as usize].contains(&true)
+        {
+            return error(EEXIST);
+        }
+        pages
+    } else {
+        let Some(pages) = free_pages(host, count) else {
+            return error(ENOMEM);
+        };
+        pages
+    };
+    if holds_code(host, &pages) {
+        return answer_not_implemented(caller.data_mut(), call.number.0);
+    }
+    // Linux on both gives a page that may be written leave to read it too.
+    let mut permissions = Permissions::empty();
+    if protection & u64::from(PROT_READ | PROT_WRITE) != 0 {
+        permissions |= Permissions::READ;
+    }
+    if protection & u64::from(PROT_WRITE) != 0 {
+        permissions |= Permissions::WRITE;
+    }
+    if protection & u64::from(PROT_EXEC) != 0 {
+        permissions |= Permissions::EXECUTE;
+    }
+    let at = pages.start * PAGE_SIZE;
+    map_pages(caller, pages, permissions);
+    at as i64
+}
+
+/// Answers Linux's `munmap`: the pages of a page aligned range are no longer mapped, mapped or not before.
+///
+/// https://man7.org/linux/man-pages/man2/munmap.2.html
+fn unmap<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, address: u64, length: u64) -> i64 {
+    use linux_raw_sys::errno::EINVAL;
+    let end = length
+        .checked_next_multiple_of(PAGE_SIZE)
+        .and_then(|length| address.checked_add(length));
+    let Some(end) = end.filter(|_| address.is_multiple_of(PAGE_SIZE) && length != 0) else {
+        return -i64::from(EINVAL);
+    };
+    let pages = address / PAGE_SIZE..end / PAGE_SIZE;
+    if holds_code(caller.data(), &pages) {
+        return answer_not_implemented(caller.data_mut(), G::STAND_IN.munmap);
+    }
+    unmap_pages(caller.data_mut(), pages);
+    DONE
 }

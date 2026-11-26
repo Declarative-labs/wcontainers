@@ -3,7 +3,9 @@
 use std::mem::offset_of;
 
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_processor_architecture_arm64::{GENERAL_PURPOSE_REGISTERS, VECTOR_REGISTERS};
+use wcontainers_processor_architecture_arm64::{
+    GENERAL_PURPOSE_REGISTERS, PREDICATE_REGISTERS, VECTOR_REGISTERS,
+};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// Bytes of one general register.
@@ -31,7 +33,17 @@ pub(crate) struct Registers {
     /// Unused: it puts `vector` where the alignment of its registers puts it.
     pub(crate) alignment: u64,
     pub(crate) vector: [u128; VECTOR_REGISTERS],
+    /// P0 to P15, then FFR, each the two bytes of a 128-bit vector length's predicate.
+    pub(crate) predicate: [u16; PREDICATE_REGISTERS + 1],
+    /// Unused: it makes the registers a whole number of vector registers long.
+    pub(crate) predicate_alignment: [u16; PREDICATE_ALIGNMENT],
 }
+
+/// Predicates after the registers' last that make them a whole number of vector registers long.
+const PREDICATE_ALIGNMENT: usize = 7;
+
+/// FFR's place among the predicates, in units of one predicate.
+pub(crate) const FIRST_FAULT_PLACE: usize = PREDICATE_REGISTERS;
 
 /// One state in guest memory: its registers before and after, and where the handler goes next.
 #[repr(C)]
@@ -43,8 +55,9 @@ pub(crate) struct Slot {
     pub(crate) next: u64,
     /// An [`Ending`], which the handler writes.
     pub(crate) ending: u64,
-    /// Unused: it puts `before` where the alignment of its vector registers puts it.
-    pub(crate) alignment: u64,
+    /// Not zero where the chip has SVE, so that the handler loads and saves the predicates and FFR; it also puts
+    /// `before` where the alignment of its vector registers puts it.
+    pub(crate) scalable_vectors: u64,
     pub(crate) before: Registers,
     pub(crate) after: Registers,
 }
@@ -78,5 +91,6 @@ const _: () = {
     assert!(
         offset_of!(Registers, fault_address) == offset_of!(Registers, syndrome) + REGISTER_BYTES
     );
+    assert!(size_of::<Registers>().is_multiple_of(size_of::<u128>()));
     assert!(size_of::<Slot>() as u64 <= PAGE_SIZE);
 };
