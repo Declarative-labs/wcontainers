@@ -239,7 +239,10 @@ fn renamed_blake3(folder: &Path) -> PathBuf {
         .collect();
     inner.sort_unstable();
     inner.dedup();
-    assert!(!inner.is_empty(), "Mesa's BLAKE3 defines its inner functions");
+    assert!(
+        !inner.is_empty(),
+        "Mesa's BLAKE3 defines its inner functions"
+    );
     let renames: String = inner
         .iter()
         .map(|name| format!("{name} {RENAMED_PREFIX}{name}\n"))
