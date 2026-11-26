@@ -27,7 +27,7 @@ use wcontainers_processor_architecture_x86_64::float::{
 use wcontainers_processor_architecture_x86_64::integer::OperandPlace;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::vector::{Lane, join};
-use wcontainers_processor_architecture_x86_64::{DataAccess, InstructionFetch, MXCSR_DEFAULT, PagePermission, Processor, X86_64, ZERO_PROCESSOR};
+use wcontainers_processor_architecture_x86_64::{DataAccess, Instruction, InstructionFetch, MXCSR_DEFAULT, PagePermission, Processor, X86_64, ZERO_PROCESSOR};
 
 use crate::float::{FloatOperands, MxcsrSet};
 use crate::integer::{CodeLayout, ImmediateClass, encode_at_code_address, lay_out, place_memory_operand, to_padding};
@@ -73,13 +73,19 @@ pub enum AvxDataSet {
     SingleToHalf,
     /// The masked loads and stores: the mask and the value.
     Mask(Lane),
+    /// VDPPS, VDPPD: two sources, the immediate and MXCSR.
+    Dot(Precision),
+    /// VPCMPESTRI to VPCMPISTRM: two strings, the lengths in RAX and RDX (the third vector's quadwords) and the
+    /// immediate.
+    Strings { explicit: bool, quadword_lengths: bool },
 }
 
 impl AvxDataSet {
     /// How many sources a value holds.
     const fn count(self) -> usize {
         match self {
-            Self::Compare { .. } | Self::Mask(_) => 2,
+            Self::Compare { .. } | Self::Mask(_) | Self::Dot(_) => 2,
+            Self::Strings { .. } => 3,
             Self::Fused { .. } => 3,
             Self::Round { scalar, .. } => 1 + scalar as usize,
             Self::ToInteger { .. } | Self::HalfToSingle | Self::SingleToHalf => 1,
@@ -123,7 +129,8 @@ fn to_lane_bits(form: &AvxForm) -> u32 {
         AvxOperation::Float { precision, .. }
         | AvxOperation::Compare { precision, .. }
         | AvxOperation::RoundToIntegral { precision, .. }
-        | AvxOperation::Fused { precision, .. } => precision.to_bits(),
+        | AvxOperation::Fused { precision, .. }
+        | AvxOperation::DotProduct(precision) => precision.to_bits(),
         AvxOperation::ConvertWidening(Conversion::IntegerToFloat) | AvxOperation::PermuteDoublewords => u32::BITS,
         AvxOperation::HalfToSingle | AvxOperation::SingleToHalf => u32::BITS,
         AvxOperation::MultipleSumsOfDifferences | AvxOperation::GaloisMultiply | AvxOperation::GaloisAffine { .. } => u8::BITS,
@@ -279,6 +286,23 @@ pub fn list_operand_types(form: &AvxForm) -> Vec<OperandType> {
             types.push(data(AvxDataSet::SingleToHalf));
             (None, None)
         }
+        AvxOperation::DotProduct(precision) => {
+            types.push(data(AvxDataSet::Dot(precision)));
+            (None, None)
+        }
+        AvxOperation::StringCompare { explicit, quadword_lengths, .. } => {
+            types.push(data(AvxDataSet::Strings { explicit, quadword_lengths }));
+            (None, None)
+        }
+        AvxOperation::MaskedByteStore => {
+            types.extend([
+                OperandType::AccessPlacement(Splits::Allowed),
+                OperandType::DataPagePermission(crate::DataPage::Lower),
+                OperandType::DataPagePermission(crate::DataPage::Upper),
+                data(AvxDataSet::Mask(Lane::Byte)),
+            ]);
+            (None, None)
+        }
     };
     let has_immediate = form.code.op_code().op_kinds().contains(&Kind::imm8);
     if has_immediate && let Some(class) = immediate {
@@ -299,6 +323,8 @@ pub fn generate_data(set: AvxDataSet) -> Vec<OperandValue> {
         AvxDataSet::HalfToSingle => generate_half_widenings(),
         AvxDataSet::SingleToHalf => generate_half_narrowings(),
         AvxDataSet::Mask(lane) => generate_masks(lane),
+        AvxDataSet::Dot(precision) => generate_dots(precision),
+        AvxDataSet::Strings { explicit, quadword_lengths } => generate_strings(explicit, quadword_lengths),
     };
     values.into_iter().map(OperandValue::AvxData).collect()
 }
@@ -587,6 +613,100 @@ fn generate_masks(lane: Lane) -> Vec<AvxData> {
     masks.into_iter().map(|mask| AvxData { vectors: [mask, value, 0], mxcsr: MXCSR_DEFAULT, immediate: 0 }).collect()
 }
 
+/// Every ordered pair of critical values under the immediate that sums every product into every lane, the first
+/// pairs under immediates that select other lanes, and the pairs that overflow, underflow or cancel, each in every
+/// lane, under every MXCSR value.
+fn generate_dots(precision: Precision) -> Vec<AvxData> {
+    let lane = to_float_lane(precision);
+    let lanes = (u128::BITS / lane.to_bits()) as usize;
+    let all: u8 = if lanes == 4 { 0xFF } else { 0x33 };
+    let floats = list_floats(precision);
+    let pairs: Vec<(u64, u64)> = floats.iter().flat_map(|&first| floats.iter().map(move |&second| (first, second))).collect();
+    let firsts: Vec<u64> = pairs.iter().map(|pair| pair.0).collect();
+    let seconds: Vec<u64> = pairs.iter().map(|pair| pair.1).collect();
+    let packed: Vec<(u128, u128)> = pack(lane, &firsts, lanes).into_iter().zip(pack(lane, &seconds, lanes)).collect();
+    let mut data: Vec<AvxData> = packed.iter().map(|&(a, b)| AvxData { vectors: [a, b, 0], mxcsr: MXCSR_DEFAULT, immediate: all }).collect();
+    for immediate in [0x00, 0x31, 0x5A, 0xC3, 0xF0, 0x0F, 0x9E, 0x67, 0x12, 0x21] {
+        data.extend(packed.iter().take(16).map(|&(a, b)| AvxData { vectors: [a, b, 0], mxcsr: MXCSR_DEFAULT, immediate }));
+    }
+    let digits = precision.to_significand_bits() as i32;
+    let bias = (1i32 << (precision.to_bits() - precision.to_significand_bits() - 1)) - 1;
+    let largest = make_float(precision, false, bias, (1 << (digits - 1)) - 1);
+    let one = make_float(precision, false, 0, 0);
+    let special = [
+        (largest, make_float(precision, false, 1, 0)),
+        (largest, one),
+        (make_float(precision, false, 1 - bias, 0), make_float(precision, false, -1, 1)),
+        (make_float(precision, false, 0, 1), make_float(precision, false, 0, 1)),
+        (1, one),
+    ];
+    for (a, b) in special {
+        for mxcsr in list_mxcsr_values() {
+            data.push(AvxData { vectors: [fill_lanes(lane, a), fill_lanes(lane, b), 0], mxcsr, immediate: all });
+        }
+    }
+    // Products that cancel: a and b, then a and minus b.
+    let alternating = join(lane, (0..lanes).map(|index| if index % 2 == 0 { one } else { one | (1 << (precision.to_bits() - 1)) }));
+    for mxcsr in list_mxcsr_values() {
+        data.push(AvxData { vectors: [fill_lanes(lane, one), alternating, 0], mxcsr, immediate: all });
+    }
+    data
+}
+
+/// String pairs that match each aggregation in part (characters in common, ranges that hold some, equal prefixes, a
+/// substring), with elements whose sign decides a range, nulls that end a string early, and an empty string; each
+/// under every immediate with the lengths their nulls give, then under each pair of lengths below, at, beyond and
+/// past the element count both ways, with eight immediates.
+fn generate_strings(explicit: bool, quadword_lengths: bool) -> Vec<AvxData> {
+    let bytes = |text: &[u8]| -> u128 {
+        let mut all = [0u8; 16];
+        all[..text.len()].copy_from_slice(text);
+        u128::from_le_bytes(all)
+    };
+    let pairs: [(u128, u128); 8] = [
+        (bytes(b"ABCDEFGHIJKLMNOP"), bytes(b"ABCDEFGHIJKLMNOP")),
+        (bytes(b"ab"), bytes(b"xxabyyabzzzzzzab")),
+        (bytes(b"09AZ"), bytes(b"a5B\x7f0Z9!~@[`{/:")),
+        (bytes(&[0x80, 0xFF, 0x01, 0x7F, 0x41, 0x41]), bytes(&[0x90, 0x00, 0x7F, 0x80, 0x41, 0x20, 0xFF, 0x01])),
+        (bytes(b"ABCDEFGHIJKLMNOP"), bytes(b"ABCDEFG\0IJKLMNOP")),
+        (0, 0),
+        (bytes(&[0x00, 0x80, 0xFF, 0x7F, 0x34, 0x12]), bytes(&[0x01, 0x80, 0x34, 0x12, 0xFF, 0x7F, 0x00, 0x80])),
+        (bytes(b"CDE"), bytes(b"ABCDECDEFGCDECDX")),
+    ];
+    let lengths = |first: u64, second: u64| u128::from(first) | (u128::from(second) << 64);
+    let natural = |(a, b): (u128, u128)| {
+        let length = |value: u128| value.to_le_bytes().iter().position(|&byte| byte == 0).unwrap_or(16) as u64;
+        lengths(length(a), length(b))
+    };
+    let mut data = Vec::new();
+    for immediate in 0..0x80 {
+        for &pair in &pairs {
+            data.push(AvxData { vectors: [pair.0, pair.1, natural(pair)], mxcsr: MXCSR_DEFAULT, immediate });
+        }
+    }
+    if explicit {
+        let wide = if quadword_lengths { 1 << 32 } else { 0 };
+        let combinations = [
+            lengths(16, 16),
+            lengths(3, 10),
+            lengths(0, 0),
+            lengths(20, -5i64 as u64),
+            lengths(-20i64 as u64, 7),
+            lengths(wide | 3, 2),
+            lengths(8, wide | 9),
+            lengths(i64::MIN as u64, 17),
+        ];
+        for combination in combinations {
+            for immediate in [0x00, 0x0C, 0x08, 0x04, 0x30, 0x14, 0x48, 0x71] {
+                for &pair in &pairs {
+                    data.push(AvxData { vectors: [pair.0, pair.1, combination], mxcsr: MXCSR_DEFAULT, immediate });
+                }
+            }
+        }
+    }
+    data
+}
+
 /// The VEX.vvvv register of the register form whose ModRM.reg and ModRM.rm registers are the pair.
 const fn to_vvvv(registers: [usize; 2]) -> usize {
     match registers {
@@ -606,6 +726,28 @@ const fn to_is4(registers: [usize; 2]) -> usize {
 enum Encodable {
     Register(Register),
     Memory(MemoryOperand),
+    /// VMASKMOVDQU's RDI, which the encoding does not name.
+    Implicit,
+}
+
+/// The address of VMASKMOVDQU's store at its placement around the data pages, whose bytes and permissions it adds.
+fn place_at_rdi(placement: crate::AccessPlacement, lower: PagePermission, upper: PagePermission, mutations: &mut Vec<MemoryDelta<'static, X86_64>>) -> u64 {
+    use crate::{AccessPlacement, LOWER_DATA_ADDRESS, UPPER_DATA_ADDRESS, to_data_byte};
+    const BYTES: u64 = 16;
+    let pages: Vec<u8> = (LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES).map(to_data_byte).collect();
+    mutations.extend([
+        MemoryDelta::ValueAssignment { start: LOWER_DATA_ADDRESS, bytes: Cow::Owned(pages) },
+        MemoryDelta::PermissionAssignment { addresses: LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS, permission: lower },
+        MemoryDelta::PermissionAssignment { addresses: UPPER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES, permission: upper },
+    ]);
+    match placement {
+        AccessPlacement::LowerPageStart => LOWER_DATA_ADDRESS,
+        AccessPlacement::Misaligned => LOWER_DATA_ADDRESS + 1,
+        AccessPlacement::EndsAtBoundary => UPPER_DATA_ADDRESS - BYTES,
+        AccessPlacement::StraddlesBoundary => UPPER_DATA_ADDRESS - BYTES / 2,
+        AccessPlacement::UpperPageStart => UPPER_DATA_ADDRESS,
+        AccessPlacement::NonCanonical => 1 << 63,
+    }
 }
 
 /// Builds the state of an AVX form from one value of each of its operand types.
@@ -620,6 +762,7 @@ pub fn build_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> 
     let (mut registers, mut access, mut layout) = ([0, 0], None, CodeLayout::PageStart);
     let mut values: Vec<u128> = Vec::new();
     let mut immediate = None;
+    let (mut placement, mut lower, mut upper) = (None, PagePermission::Unmapped, PagePermission::Unmapped);
     for (operand_type, operand) in operands {
         match (operand_type, *operand) {
             (OperandType::Encoding(_), OperandValue::Encoding(encoding)) => {
@@ -644,8 +787,24 @@ pub fn build_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> 
             (OperandType::Immediate(_), OperandValue::Immediate(value)) => immediate = Some(value as u8),
             (OperandType::Mxcsr(_), OperandValue::Mxcsr(mxcsr)) => processor.mxcsr = mxcsr,
             (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
+            (OperandType::AccessPlacement(_), OperandValue::AccessPlacement(chosen)) => placement = Some(chosen),
+            (OperandType::DataPagePermission(crate::DataPage::Lower), OperandValue::PagePermission(permission)) => lower = permission,
+            (OperandType::DataPagePermission(crate::DataPage::Upper), OperandValue::PagePermission(permission)) => upper = permission,
             (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
         }
+    }
+    let mut placed_mutations = Vec::new();
+    if let AvxOperation::StringCompare { .. } = form.operation {
+        // The lengths in RAX and RDX, registers 0 and 2.
+        let lengths = values.pop().expect("the lengths");
+        processor.general_purpose_registers[0] = lengths as u64;
+        processor.general_purpose_registers[2] = (lengths >> 64) as u64;
+    }
+    if form.operation == AvxOperation::MaskedByteStore {
+        // The value comes first, the mask second; RDI, register 7, holds the address.
+        values.swap(0, 1);
+        let placement = placement.expect("a placement");
+        processor.general_purpose_registers[7] = place_at_rdi(placement, lower, upper, &mut placed_mutations);
     }
     if form.operation == AvxOperation::LoadMxcsr {
         values[0] &= u128::from(u32::MAX);
@@ -671,6 +830,10 @@ pub fn build_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> 
             Kind::xmm_reg | Kind::ymm_reg | Kind::r32_reg | Kind::r64_reg => Some(registers[0]),
             Kind::xmm_vvvv | Kind::ymm_vvvv => Some(vvvv),
             Kind::xmm_is4 | Kind::ymm_is4 => Some(is4),
+            Kind::seg_rDI => {
+                encodables.push(Encodable::Implicit);
+                continue;
+            }
             _ if access.is_some() => None,
             _ => Some(registers[1]),
         };
@@ -702,7 +865,7 @@ pub fn build_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> 
             }
         }
     }
-    let mut memory_mutations = Vec::new();
+    let mut memory_mutations = placed_mutations;
     let memory_operand: Option<MemoryOperand> = access.map(|access| {
         let (operand, address) = place_memory_operand(access, memory_bytes, &mut processor, &mut memory_mutations);
         if let Some([low, high]) = memory_value {
@@ -726,8 +889,10 @@ pub fn build_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> 
             }
         }
     }
+    encodables.retain(|encodable| !matches!(encodable, Encodable::Implicit));
     let encoded = encode(form.code, &encodables, immediate);
-    let (code_page, start, bytes) = lay_out(layout, &encode_at_code_address(&encoded), to_padding(memory_operand));
+    let code = if is_vex_w_set(form.instruction) { encode_with_vex_w(&encoded) } else { encode_at_code_address(&encoded) };
+    let (code_page, start, bytes) = lay_out(layout, &code, to_padding(memory_operand));
     processor.instruction_pointer = start;
     let executable = PagePermission::Mapped { data_access: DataAccess::ReadOnly, instruction_fetch: InstructionFetch::Allowed };
     let mut all = vec![
@@ -738,11 +903,29 @@ pub fn build_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> 
     ExecutionState { processor, memory_mutations: all }
 }
 
+/// Whether the form is the VEX.W1 encoding of a code that ignores VEX.W, which iced-x86 encodes W0 by default.
+fn is_vex_w_set(instruction: Instruction) -> bool {
+    matches!(instruction, Instruction::Vpcmpistri64XmmdqXmmdqImmb | Instruction::Vpcmpistri64XmmdqMemdqImmb)
+}
+
+/// The instruction's bytes at the code address with VEX.W set.
+fn encode_with_vex_w(instruction: &Encoded) -> Vec<u8> {
+    let mut encoder = iced_x86::Encoder::new(64);
+    encoder.set_vex_wig(1);
+    encoder
+        .encode(instruction, CODE_ADDRESS)
+        .unwrap_or_else(|error| panic!("{:?} encodes: {error}", instruction.code()));
+    encoder.take_buffer()
+}
+
 /// The instruction with its operands in order and the immediate last.
 fn encode(code: Code, operands: &[Encodable], immediate: Option<u8>) -> Encoded {
     use Encodable::{Memory as M, Register as R};
     let imm = immediate.map(u32::from);
     let encoded = match (operands, imm) {
+        ([R(a), R(b)], None) if code == Code::VEX_Vmaskmovdqu_rDI_xmm_xmm => {
+            Encoded::with_vmaskmovdqu(64, *a, *b, Register::None)
+        }
         ([], None) => Ok(Encoded::with(code)),
         ([R(a), R(b)], None) => Encoded::with2(code, *a, *b),
         ([R(a), M(b)], None) => Encoded::with2(code, *a, *b),

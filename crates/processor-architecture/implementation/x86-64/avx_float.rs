@@ -278,6 +278,53 @@ fn add_exactly(first_negative: bool, first: u128, first_exponent: i32, second_ne
     Some(Exact { negative, significand: large - small - u128::from(small_sticky), exponent: common, sticky: small_sticky })
 }
 
+/// One half of VDPPS or VDPPD: the selected products, their sums in pairs and the sum of those, each step under
+/// MXCSR in the order they are computed, the first step with an unmasked exception raising #XM with the flags of
+/// the steps so far; `flags` the flags of the halves before.
+pub(crate) fn dot_half(first: u128, second: u128, precision: Precision, immediate: u8, mxcsr: u32, flags: u32) -> Result<(u128, u32), u32> {
+    use super::FloatOperation::{Add, Multiply};
+    let lanes = (u128::BITS / precision.to_bits()) as usize;
+    let (a, b) = (split_lanes(first, precision), split_lanes(second, precision));
+    let mut flags = flags;
+    let mut step = |outcome: LaneOutcome| -> Result<u64, u32> {
+        if is_unmasked(outcome.before, mxcsr) {
+            return Err(flags | outcome.before);
+        }
+        flags |= outcome.before;
+        if is_unmasked(outcome.after, mxcsr) {
+            return Err(flags | outcome.after);
+        }
+        flags |= outcome.after;
+        Ok(outcome.bits)
+    };
+    let mut products = Vec::new();
+    for lane in 0..lanes {
+        products.push(if immediate >> (4 + lane) & 1 != 0 { step(Multiply.compute(a[lane], b[lane], precision, mxcsr, 0))? } else { 0 });
+    }
+    // The steps' exceptions are those of the pair sums and their sum; each lane's sum takes its operands in an order
+    // of its own, which decides only the NaN it gives: for singles its partner's product before its own and its own
+    // pair's sum before the other's, for doubles its own product first.
+    let add = |first: u64, second: u64| Add.compute(first, second, precision, mxcsr, 0);
+    if lanes == 4 {
+        let low = step(add(products[0], products[1]))?;
+        let high = step(add(products[2], products[3]))?;
+        step(add(low, high))?;
+    } else {
+        step(add(products[0], products[1]))?;
+    }
+    let sum_of = |lane: usize| -> u64 {
+        if lanes == 4 {
+            let pair = |lane: usize| add(products[lane ^ 1], products[lane]).bits;
+            add(pair(lane), pair(lane ^ 2)).bits
+        } else {
+            add(products[lane], products[lane ^ 1]).bits
+        }
+    };
+    let bits = precision.to_bits();
+    let result = (0..lanes).fold(0u128, |all, lane| if immediate >> lane & 1 != 0 { all | (u128::from(sum_of(lane)) << (lane as u32 * bits)) } else { all });
+    Ok((result, flags))
+}
+
 /// One half of VROUNDPS to VROUNDSD: each lane (or the lowest, the first source's others kept) rounded to an
 /// integral value in the mode the immediate's bits 1 to 0 name, or MXCSR's where its bit 2 is set; its bit 3
 /// suppresses inexact. Only invalid (for a signaling NaN) and inexact are signaled.

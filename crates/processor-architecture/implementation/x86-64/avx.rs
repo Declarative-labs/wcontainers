@@ -115,6 +115,15 @@ pub enum AvxOperation {
     /// VGF2P8AFFINEQB, VGF2P8AFFINEINVQB: each byte of the first source (with `inverse` its inverse in GF(2^8)
     /// first) through the bit matrix of the second source's quadword holding it, XOR the immediate.
     GaloisAffine { inverse: bool },
+    /// VDPPS, VDPPD: in each half, the products of the lanes the immediate's high nibble selects (zero for the
+    /// others), summed in pairs and then the pair sums, each step rounded, into the lanes its low nibble selects.
+    DotProduct(Precision),
+    /// VPCMPESTRI to VPCMPISTRM: the strings of the two sources compared as the immediate says, their lengths in
+    /// RAX and RDX (`explicit`, as wide as `quadword_lengths` says) or up to their first null element; the result
+    /// an index in ECX (`index`) or a mask in XMM0, with CF, ZF, SF and OF.
+    StringCompare { explicit: bool, index: bool, quadword_lengths: bool },
+    /// VMASKMOVDQU: the bytes of the first source whose byte of the second has its top bit set, stored at RDI.
+    MaskedByteStore,
 }
 
 /// Which way VPSLLVD to VPSRAVD shift.
@@ -192,6 +201,7 @@ impl AvxOperation {
             Self::Test
                 | Self::TestSigns(_)
                 | Self::Fused { .. }
+                | Self::StringCompare { .. }
                 | Self::Float { operation: FloatOperation::OrderedCompare { .. }, .. }
                 | Self::LoadMxcsr
         )
@@ -201,7 +211,10 @@ impl AvxOperation {
     pub const fn writes_flags(self) -> bool {
         matches!(
             self,
-            Self::Test | Self::TestSigns(_) | Self::Float { operation: FloatOperation::OrderedCompare { .. }, .. }
+            Self::Test
+                | Self::TestSigns(_)
+                | Self::Float { operation: FloatOperation::OrderedCompare { .. }, .. }
+                | Self::StringCompare { .. }
         )
     }
 
@@ -220,6 +233,7 @@ impl AvxOperation {
                 | Self::HalfToSingle
                 | Self::SingleToHalf
                 | Self::StoreMxcsr
+                | Self::DotProduct(_)
         )
     }
 }
@@ -353,6 +367,61 @@ fn compute_lanes(form: &AvxForm, sources: &[Wide], immediate: u8) -> Option<Wide
         _ => return None,
     };
     Some(result)
+}
+
+/// What PCMPxSTRx finds: the result bits (one per element), the element count, and whether each string is
+/// shorter than the count.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StringMatch {
+    pub result: u16,
+    pub elements: u32,
+    pub first_short: bool,
+    pub second_short: bool,
+}
+
+/// Compares two strings as PCMPxSTRx's immediate says: bits 1 to 0 the elements (unsigned or signed bytes or
+/// words), bits 3 to 2 the aggregation (equal any, ranges, equal each, equal ordered), bits 5 to 4 the polarity;
+/// `lengths` the explicit lengths, or `None` for strings that end at their first null element.
+pub fn compare_strings(first: u128, second: u128, lengths: Option<(i64, i64)>, immediate: u8) -> StringMatch {
+    let lane = if immediate & 1 != 0 { Lane::Word } else { Lane::Byte };
+    let signed = immediate & 2 != 0;
+    let elements = u128::BITS / lane.to_bits();
+    let read = |value: u128| -> Vec<i64> {
+        split(lane, value).into_iter().map(|element| if signed { to_signed(element, lane.to_bits()) } else { element as i64 }).collect()
+    };
+    let (a, b) = (read(first), read(second));
+    let count = elements as usize;
+    let length = |explicit: Option<i64>, values: &[i64]| -> usize {
+        match explicit {
+            Some(length) => length.unsigned_abs().min(elements as u64) as usize,
+            None => values.iter().position(|&value| value == 0).unwrap_or(count),
+        }
+    };
+    let (first_length, second_length) = (length(lengths.map(|pair| pair.0), &a), length(lengths.map(|pair| pair.1), &b));
+    let (valid_first, valid_second) = (|index: usize| index < first_length, |index: usize| index < second_length);
+    let matched = |j: usize| -> bool {
+        match (immediate >> 2) & 3 {
+            0 => (0..count).any(|i| valid_first(i) && valid_second(j) && a[i] == b[j]),
+            1 => (0..count / 2).any(|k| {
+                valid_first(2 * k) && valid_first(2 * k + 1) && valid_second(j) && a[2 * k] <= b[j] && b[j] <= a[2 * k + 1]
+            }),
+            2 => match (valid_first(j), valid_second(j)) {
+                (false, false) => true,
+                (true, true) => a[j] == b[j],
+                _ => false,
+            },
+            _ => (0..count - j).all(|k| !valid_first(k) || (valid_second(j + k) && a[k] == b[j + k])),
+        }
+    };
+    let found = (0..count).fold(0u16, |bits, j| bits | (u16::from(matched(j)) << j));
+    let all = if count == 16 { u16::MAX } else { (1 << count) - 1 };
+    let valid_mask = if second_length >= 16 { u16::MAX } else { (1u16 << second_length) - 1 };
+    let result = match (immediate >> 4) & 3 {
+        1 => !found & all,
+        3 => (found ^ valid_mask) & all,
+        _ => found,
+    };
+    StringMatch { result, elements, first_short: first_length < count, second_short: second_length < count }
 }
 
 /// The value in every lane of 128 bits.
@@ -515,7 +584,7 @@ pub(crate) fn list_avx_behaviors(instruction: Instruction) -> Vec<PreciseInstruc
         return Vec::new();
     };
     // An aligned store or one of a single byte never lies across a page boundary.
-    let splits = form.writes_memory() && !form.aligned && form.memory_bytes > 1;
+    let splits = (form.writes_memory() && !form.aligned && form.memory_bytes > 1) || form.operation == AvxOperation::MaskedByteStore;
     let stores: &[StoreAcrossFault] = if splits { &STORES } else { &STORES[..1] };
     let fused = matches!(form.operation, AvxOperation::Fused { .. });
     let orders: &[FusedNanOrder] = if fused { &NAN_ORDERS } else { &NAN_ORDERS[..1] };
@@ -555,7 +624,8 @@ use AvxOperation::{
     Extend, ExtractHalf, ExtractLane, Float, Fused, GaloisAffine, GaloisMultiply, HalfToSingle, Halves, InsertHalf,
     InsertLane, IntegerToScalar, LoadMxcsr, MaskedLoad, MaskedStore, MultipleSumsOfDifferences, PermuteDoublewords,
     PermuteHalves, PermuteQuadwords, PermuteVariable, RoundToIntegral, ScalarToInteger, ShiftByCount, ShiftByImmediate,
-    ShiftEach, Signs, SingleToHalf, StoreMxcsr, Test, TestSigns, ZeroAll, ZeroUpper,
+    ShiftEach, Signs, SingleToHalf, StoreMxcsr, Test, TestSigns, ZeroAll, ZeroUpper, DotProduct, StringCompare,
+    MaskedByteStore,
 };
 use Conversion::{DoubleToSingle, FloatToInteger, IntegerToFloat, SingleToDouble};
 use FloatOperation::{

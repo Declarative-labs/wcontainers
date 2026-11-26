@@ -80,8 +80,8 @@ pub const FIRST_SLICE: [Instruction; 4] = [
 /// size, 32 bits first: SWAPGS and SYSRET for CPL other than 0, SYSEXIT for CPL other than 0 (Linux sets
 /// IA32_SYSENTER_CS, so that check comes second), CLI and STI for CPL above IOPL, which Linux leaves 0; CLTS, HLT,
 /// INVD, WBINVD, RDMSR and WRMSR for CPL other than 0, and RDPMC for CPL other than 0 with CR4.PCE clear, as
-/// Linux leaves it for a program that has not mapped a performance counter.
-pub const PRIVILEGED_FORMS: [(Instruction, &[Code]); 13] = [
+/// Linux leaves it for a program that has not mapped a performance counter; XSETBV for CPL other than 0.
+pub const PRIVILEGED_FORMS: [(Instruction, &[Code]); 14] = [
     (Instruction::Swapgs, &[Code::Swapgs]),
     (Instruction::Sysexit, &[Code::Sysexitd, Code::Sysexitq]),
     (Instruction::Sysret, &[Code::Sysretd]),
@@ -95,6 +95,7 @@ pub const PRIVILEGED_FORMS: [(Instruction, &[Code]); 13] = [
     (Instruction::Rdmsr, &[Code::Rdmsr]),
     (Instruction::Wrmsr, &[Code::Wrmsr]),
     (Instruction::Rdpmc, &[Code::Rdpmc]),
+    (Instruction::Xsetbv, &[Code::Xsetbv]),
 ];
 
 /// The CPUID features every x86-64 chip has: long mode, and the x87, CMOV, MMX, FXSAVE, SSE and SSE2 that AMD's

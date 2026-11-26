@@ -9,10 +9,11 @@ use iced_x86::{Instruction as Decoded, OpKind, Register};
 use wcontainers_processor_architecture::MemoryDelta;
 
 use super::{Memory, MemoryOperand, check_access, check_canonical, expect_code, find_fault, locate, read_register, store, write_register};
-use crate::avx::{AvxBehavior, AvxForm, AvxOperation, FusedSign, Wide, compute_integer};
+use crate::avx::{AvxBehavior, AvxForm, AvxOperation, FusedSign, Wide, compare_strings, compute_integer};
+use crate::vector::{Lane, join};
 use crate::behavior::StoreAcrossFault;
 use crate::float::{
-    Arrangement, Conversion, FloatForm, FloatOperation, FusedLanes, ORDER_FLAGS, Precision, compare_half, convert_integer,
+    Arrangement, Conversion, FloatForm, FloatOperation, FusedLanes, ORDER_FLAGS, Precision, compare_half, convert_integer, dot_half,
     convert_to_integer, fuse_half, join_halves, narrow_to_halves, round_half, widen_halves,
 };
 use crate::memory::read_bytes;
@@ -53,7 +54,7 @@ pub(super) fn execute_avx(
             processor.upper_vector_halves = [0; VECTOR_REGISTERS];
             return Ok(());
         }
-        AvxOperation::MaskedLoad(_) | AvxOperation::MaskedStore(_) => {
+        AvxOperation::MaskedLoad(_) | AvxOperation::MaskedStore(_) | AvxOperation::MaskedByteStore => {
             return execute_masked(form, behavior, processor, memory, decoded, on_memory_mutated);
         }
         _ => {}
@@ -64,6 +65,39 @@ pub(super) fn execute_avx(
     let mut sources = Vec::new();
     for &index in &operands[first_source..] {
         sources.push(read_source(form, processor, memory, decoded, index)?);
+    }
+    if let AvxOperation::StringCompare { explicit, index, quadword_lengths } = form.operation {
+        let registers = &processor.general_purpose_registers;
+        let to_length = |value: u64| if quadword_lengths { value as i64 } else { i64::from(value as u32 as i32) };
+        // RAX and RDX are registers 0 and 2.
+        let lengths = explicit.then(|| (to_length(registers[0]), to_length(registers[2])));
+        let found = compare_strings(sources[0].bits[0], sources[1].bits[0], lengths, immediate);
+        let status = [
+            (found.result != 0, Flags::CARRY),
+            (found.second_short, Flags::ZERO),
+            (found.first_short, Flags::SIGN),
+            (found.result & 1 != 0, Flags::OVERFLOW),
+        ];
+        processor.flags = status.iter().filter(|(set, _)| *set).fold(processor.flags.difference(Flags::STATUS), |flags, (_, flag)| flags | *flag);
+        if index {
+            let position = match found.result {
+                0 => found.elements,
+                result if immediate & 0x40 != 0 => u16::BITS - 1 - result.leading_zeros(),
+                result => result.trailing_zeros(),
+            };
+            // ECX, whose write clears RCX's upper half.
+            processor.general_purpose_registers[1] = u64::from(position);
+        } else {
+            let lane = if found.elements == 8 { Lane::Word } else { Lane::Byte };
+            let mask = if immediate & 0x40 != 0 {
+                join(lane, (0..found.elements).map(|element| if found.result >> element & 1 != 0 { u64::MAX } else { 0 }))
+            } else {
+                u128::from(found.result)
+            };
+            processor.vector_registers[0] = mask;
+            processor.upper_vector_halves[0] = 0;
+        }
+        return Ok(());
     }
     if form.operation == AvxOperation::LoadMxcsr {
         let value = sources[0].bits[0] as u32;
@@ -260,6 +294,14 @@ fn compute_float(
             return Ok(([joined, 0], flags));
         }
         AvxOperation::StoreMxcsr => return Ok(([u128::from(mxcsr), 0], 0)),
+        AvxOperation::DotProduct(precision) => {
+            let low = dot_half(first[0], second[0], precision, immediate, mxcsr, 0)?;
+            if !form.wide {
+                return Ok(([low.0, 0], low.1));
+            }
+            let high = dot_half(first[1], second[1], precision, immediate, mxcsr, low.1)?;
+            return Ok(([low.0, high.0], high.1));
+        }
         operation => panic!("{operation:?} is computed elsewhere"),
     };
     let (bits, flags) = join_halves(&results, mxcsr)?;
@@ -280,25 +322,30 @@ fn execute_masked(
     decoded: &Decoded,
     mut on_memory_mutated: impl FnMut(MemoryDelta<'_, X86_64>),
 ) -> Result<(), Exception> {
-    let (AvxOperation::MaskedLoad(lane) | AvxOperation::MaskedStore(lane)) = form.operation else {
-        panic!("{:?} is no masked form", form.operation);
+    let lane = match form.operation {
+        AvxOperation::MaskedLoad(lane) | AvxOperation::MaskedStore(lane) => lane,
+        AvxOperation::MaskedByteStore => Lane::Byte,
+        operation => panic!("{operation:?} is no masked form"),
     };
     let read_vector = |register: Register| {
         let number = register.number();
         [processor.vector_registers[number], processor.upper_vector_halves[number]]
     };
-    let mask = read_vector(decoded.op1_register());
+    let bytewise = form.operation == AvxOperation::MaskedByteStore;
+    let (mask_register, value_register) = if bytewise { (decoded.op2_register(), decoded.op1_register()) } else { (decoded.op1_register(), decoded.op2_register()) };
+    let mask = read_vector(mask_register);
     let bytes = u64::from(lane.to_bits() / u8::BITS);
     let halves = if form.wide { 2 } else { 1 };
     let per_half = (16 / bytes) as usize;
-    let lane_mask = if bytes == 8 { u128::from(u64::MAX) } else { u128::from(u32::MAX) };
+    let lane_mask = (1u128 << lane.to_bits()) - 1;
     let enabled: Vec<usize> = (0..halves * per_half)
         .filter(|&index| {
             let value = (mask[index / per_half] >> (lane.to_bits() as usize * (index % per_half))) & lane_mask;
             value >> (lane.to_bits() - 1) != 0
         })
         .collect();
-    let operand = locate(processor, decoded);
+    // VMASKMOVDQU stores at RDI, register 7.
+    let operand = if bytewise { MemoryOperand { address: processor.general_purpose_registers[7], stack: false } } else { locate(processor, decoded) };
     let at = |index: usize| MemoryOperand { address: operand.address.wrapping_add(bytes * index as u64), stack: operand.stack };
     let access = if matches!(form.operation, AvxOperation::MaskedLoad(_)) { Access::Read } else { Access::Write };
     let check = |index: usize| -> Result<(), Exception> {
@@ -308,11 +355,25 @@ fn execute_masked(
             Some((address, page_present)) => Err(Exception::PageFault { access, page_present, address }),
         }
     };
-    let checked: Vec<usize> = if is_active(Bug::MaskedAccessChecksEveryLane) { (0..halves * per_half).collect() } else { enabled.clone() };
+    // VMASKMOVDQU checks its high quadword and then its low one whatever its mask, as this chip does.
+    let checked: Vec<usize> = if bytewise {
+        (8..16).chain(0..8).collect()
+    } else if is_active(Bug::MaskedAccessChecksEveryLane) {
+        (0..halves * per_half).collect()
+    } else {
+        enabled.clone()
+    };
+    // VMASKMOVDQU's access is two quadwords, which AC checks for alignment whatever the mask selects.
+    if bytewise {
+        check_canonical(operand, 1)?;
+        if processor.flags.contains(Flags::ALIGNMENT_CHECK) && !operand.address.is_multiple_of(8) {
+            return Err(Exception::AlignmentCheck);
+        }
+    }
     let mut faulting = checked.iter().map(|&index| (index, check(index))).find(|(_, result)| result.is_err());
     // A store's page fault is reported at its first selected byte when that byte's page refuses it, else at its last
     // selected byte, as this chip reports it.
-    if access == Access::Write && let Some((index, Err(Exception::PageFault { page_present, .. }))) = faulting {
+    if access == Access::Write && !bytewise && let Some((index, Err(Exception::PageFault { page_present, .. }))) = faulting {
         let (lowest, highest) = (checked[0], checked[checked.len() - 1]);
         let first = at(lowest).address;
         let address = if find_fault(memory, first, 1, access).is_some() { first } else { at(highest).address.wrapping_add(bytes - 1) };
@@ -333,8 +394,11 @@ fn execute_masked(
         processor.upper_vector_halves[number] = result[1];
         return Ok(());
     }
-    let value = read_vector(decoded.op2_register());
+    let value = read_vector(value_register);
     let written: Vec<usize> = match faulting {
+        Some((index, _)) if behavior.across_fault == StoreAcrossFault::WritesBytesBelowFault && bytewise => {
+            enabled.iter().copied().filter(|&byte| byte / 8 != index / 8 && index < 8).collect()
+        }
         Some((index, _)) if behavior.across_fault == StoreAcrossFault::WritesBytesBelowFault => {
             enabled.iter().copied().filter(|&below| below < index).collect()
         }
