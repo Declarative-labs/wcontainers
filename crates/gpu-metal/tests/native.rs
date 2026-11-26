@@ -2123,3 +2123,888 @@ fn prepare_returns_before_metal_compiles_and_the_first_draw_waits_for_it() {
     assert_eq!(read_texture(&mut b, &drawn, DRAWN_SIDE, RGBA8_BYTES), red);
     assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
 }
+
+// The second check's hostile cases: three for each feature of the pass before, each refused before Metal or taken
+// whole, with nothing written outside what it names.
+
+/// The usages of the depth textures the hostile cases copy: drawn into, sampled and copied both ways.
+const DEPTH_USAGE: TextureUsage = TextureUsage::RENDER
+    .union(TextureUsage::SAMPLE)
+    .union(TextureUsage::COPY_SRC)
+    .union(TextureUsage::COPY_DST);
+
+/// The byte the hostile cases fill a buffer with before a copy or a program writes it, so that a byte changed shows.
+const CANARY: u8 = 0xa5;
+
+/// The bytes of one 32-bit word.
+const WORD: u32 = u32::BITS / u8::BITS;
+
+/// Returns whether the device still works, which a refused call ends.
+fn works(b: &mut MetalGpu<DirectMetal>) -> bool {
+    b.status() == wcontainers_gpu::DeviceStatus::Ok
+}
+
+/// Makes a 2D texture `side` square of `layers` layers and `levels` levels, or the error that refuses it.
+fn square<B: Gpu>(
+    b: &mut B,
+    format: Format,
+    side: u32,
+    (layers, levels): (u32, u32),
+    usage: TextureUsage,
+    reinterpret: bool,
+) -> Result<B::Texture, GpuError> {
+    b.create_texture(&TextureDesc {
+        dimension: TextureDimension::D2,
+        format,
+        width: side,
+        height: side,
+        depth_or_layers: layers,
+        mip_levels: levels,
+        samples: 1,
+        usage,
+        cube: false,
+        reinterpret,
+    })
+}
+
+/// Returns the description of a view of one level and one layer in `format`.
+fn one_view(format: Format, layer: u32) -> TextureViewDesc {
+    TextureViewDesc {
+        format,
+        dimension: ViewDimension::D2,
+        base_mip: 0,
+        mip_count: 1,
+        base_layer: layer,
+        layer_count: 1,
+        stencil: format == Format::Stencil8,
+    }
+}
+
+/// Returns the region of a texture's first layer at `level`, from `(x, y)`.
+fn at<B: Gpu>(texture: &B::Texture, level: u32, x: u32, y: u32) -> TextureRegion<'_, B> {
+    TextureRegion {
+        texture,
+        mip: level,
+        layer: 0,
+        origin: Origin { x, y, z: 0 },
+        stencil: false,
+    }
+}
+
+/// Parses and validates a module with `capabilities`, which `ShaderModule::from_wgsl` validates without.
+fn module_with(
+    source: &str,
+    entry: &str,
+    stage: ShaderStage,
+    capabilities: naga::valid::Capabilities,
+) -> ShaderModule {
+    use std::hash::{Hash, Hasher};
+    let module = naga::front::wgsl::parse_str(source).expect("parses");
+    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
+        .validate(&module)
+        .expect("validates");
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (source, entry).hash(&mut hasher);
+    let mut key = [0; 32];
+    for (n, byte) in key.iter_mut().enumerate() {
+        *byte = hasher.finish().to_le_bytes()[n % 8];
+        n.hash(&mut hasher);
+    }
+    ShaderModule {
+        module,
+        info,
+        entry_point: entry.into(),
+        stage,
+        key,
+    }
+}
+
+/// Fills a buffer with the canary byte.
+fn fill_canary<B: Gpu>(b: &mut B, buffer: &B::Buffer, size: u64) {
+    let bytes = vec![CANARY; usize::try_from(size).expect("a test's size fits")];
+    b.write_buffer(buffer, 0, &bytes, WriteMode::Ordered);
+}
+
+/// Returns the bytes of a buffer, after the work so far.
+fn read_bytes<B: Gpu>(b: &mut B, buffer: &B::Buffer, size: u64) -> Vec<u8> {
+    read_words(b, buffer, size)
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect()
+}
+
+#[test]
+fn a_depth_copy_whose_layer_spacing_overflows_is_refused() {
+    // Rows nearly 2^32 bytes apart and 2^32 - 1 rows to a layer: the second layer starts past 2^64.
+    for copy_in in [true, false] {
+        let mut b = device();
+        let texture = square(
+            &mut b,
+            Format::Depth24Plus,
+            DRAWN_SIDE,
+            (2, 1),
+            DEPTH_USAGE,
+            false,
+        )
+        .expect("create_texture");
+        let words = storage(&mut b, u64::from(DRAWN_BYTES));
+        let side = wcontainers_gpu::CopyBufferTexture {
+            buffer: &words,
+            offset: 0,
+            row_pitch: u32::MAX - (WORD - 1),
+            rows_per_layer: u32::MAX,
+        };
+        let extent = Extent {
+            width: DRAWN_SIDE,
+            height: DRAWN_SIDE,
+            depth_or_layers: 2,
+        };
+        if copy_in {
+            b.copy_buffer_to_texture(&side, &whole(&texture), extent);
+        } else {
+            b.copy_texture_to_buffer(&whole(&texture), &side, extent);
+        }
+        assert!(!works(&mut b), "copy in {copy_in}: taken");
+    }
+}
+
+#[test]
+fn a_depth_copy_out_keeps_the_gaps_between_rows_and_layers() {
+    let mut b = device();
+    let texture = square(
+        &mut b,
+        Format::Depth24PlusStencil8,
+        DRAWN_SIDE,
+        (2, 1),
+        DEPTH_USAGE,
+        false,
+    )
+    .expect("create_texture");
+    let quarter = 0.25f32;
+    for layer in 0..2 {
+        let view = b
+            .create_view(&texture, &one_view(Format::Depth24PlusStencil8, layer))
+            .expect("create_view");
+        b.begin_pass(&PassDesc {
+            colors: Default::default(),
+            depth: Some(DepthAttachment {
+                view: &view,
+                depth: Some(AspectOps {
+                    load: LoadOp::Clear(quarter.to_bits()),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+                stencil: Some(AspectOps {
+                    load: LoadOp::Clear(u8::MAX),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+            }),
+            empty: None,
+            occlusion: None,
+        });
+        b.end_pass();
+    }
+    // Rows of four words six words apart, five rows to a layer (one spare), from word 3, and spare words after.
+    let (first, pitch, rows, after) = (3u32, 6u32, 5u32, 8u32);
+    let words = first + pitch * rows * 2 + after;
+    let size = u64::from(words * WORD);
+    let out = storage(&mut b, size);
+    fill_canary(&mut b, &out, size);
+    let side = wcontainers_gpu::CopyBufferTexture {
+        buffer: &out,
+        offset: u64::from(first * WORD),
+        row_pitch: pitch * WORD,
+        rows_per_layer: rows,
+    };
+    let extent = Extent {
+        width: DRAWN_SIDE,
+        height: DRAWN_SIDE,
+        depth_or_layers: 2,
+    };
+    b.copy_texture_to_buffer(&whole(&texture), &side, extent);
+    assert!(works(&mut b), "a copy within its buffer refused");
+    let got = read_words(&mut b, &out, size);
+    let wanted = host_word(quarter.to_bits());
+    let canary = u32::from_le_bytes([CANARY; 4]);
+    let mut texels = 0;
+    for (n, word) in got.iter().enumerate() {
+        let inside = (n as u32).checked_sub(first).is_some_and(|rel| {
+            let (layer, rest) = (rel / (pitch * rows), rel % (pitch * rows));
+            layer < 2 && rest / pitch < DRAWN_SIDE && rest % pitch < DRAWN_SIDE
+        });
+        if inside {
+            assert_eq!(*word, wanted, "texel word {n}");
+            texels += 1;
+        } else {
+            assert_eq!(*word, canary, "gap word {n} changed");
+        }
+    }
+    assert_eq!(texels, DRAWN_SIDE * DRAWN_SIDE * 2);
+    assert!(works(&mut b));
+}
+
+#[test]
+fn depth_copies_at_the_edges_of_levels_and_buffers_are_refused_or_taken_whole() {
+    let one = Extent {
+        width: 1,
+        height: 1,
+        depth_or_layers: 1,
+    };
+    // Level, origin, extent, offset, refused: past level 1's two by two, from past level 0's side, of no width, and
+    // the last word of the buffer exactly.
+    let buffer_bytes = DRAWN_BYTES;
+    let cases = [
+        (
+            1,
+            (0, 0),
+            Extent {
+                width: 3,
+                height: 2,
+                depth_or_layers: 1,
+            },
+            0,
+            true,
+        ),
+        (0, (DRAWN_SIDE, 0), one, 0, true),
+        (0, (0, 0), Extent { width: 0, ..one }, 0, true),
+        (1, (1, 1), one, buffer_bytes - WORD, false),
+    ];
+    for (n, (level, (x, y), extent, offset, refused)) in cases.into_iter().enumerate() {
+        for copy_in in [true, false] {
+            let mut b = device();
+            let texture = square(
+                &mut b,
+                Format::Depth24Plus,
+                DRAWN_SIDE,
+                (1, 3),
+                DEPTH_USAGE,
+                false,
+            )
+            .expect("create_texture");
+            let words = storage(&mut b, u64::from(buffer_bytes));
+            fill_canary(&mut b, &words, u64::from(buffer_bytes));
+            let side = wcontainers_gpu::CopyBufferTexture {
+                buffer: &words,
+                offset: u64::from(offset),
+                row_pitch: DRAWN_ROW_BYTES,
+                rows_per_layer: DRAWN_SIDE,
+            };
+            let region = at(&texture, level, x, y);
+            if copy_in {
+                b.copy_buffer_to_texture(&side, &region, extent);
+            } else {
+                b.copy_texture_to_buffer(&region, &side, extent);
+            }
+            assert_eq!(!works(&mut b), refused, "case {n}, copy in {copy_in}");
+            if !refused && !copy_in {
+                // Only the last word changed.
+                let got = read_bytes(&mut b, &words, u64::from(buffer_bytes));
+                let last = (buffer_bytes - WORD) as usize;
+                assert!(got[..last].iter().all(|byte| *byte == CANARY), "case {n}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_bgra4_texture_made_to_be_drawn_into_or_stored_to_is_refused() {
+    for usage in [TextureUsage::RENDER, TextureUsage::STORAGE] {
+        let mut b = device();
+        let made = square(
+            &mut b,
+            Format::Bgra4Unorm,
+            DRAWN_SIDE,
+            (1, 1),
+            usage | TextureUsage::SAMPLE,
+            false,
+        );
+        assert!(made.is_err(), "{usage:?}: made");
+        assert!(works(&mut b));
+    }
+}
+
+#[test]
+fn a_bgra4_view_of_a_drawn_texture_and_a_pass_into_a_view_of_a_bgra4_texture_are_refused() {
+    let mut b = device();
+    let drawn = square(
+        &mut b,
+        Format::B5g6r5Unorm,
+        DRAWN_SIDE,
+        (1, 1),
+        TextureUsage::RENDER | TextureUsage::SAMPLE,
+        true,
+    )
+    .expect("create_texture");
+    assert!(
+        b.create_view(&drawn, &one_view(Format::Bgra4Unorm, 0))
+            .is_err(),
+        "a swizzled view of a texture drawn into"
+    );
+    let sampled = square(
+        &mut b,
+        Format::Bgra4Unorm,
+        DRAWN_SIDE,
+        (1, 1),
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+        true,
+    )
+    .expect("create_texture");
+    let other = b
+        .create_view(&sampled, &one_view(Format::B5g6r5Unorm, 0))
+        .expect("a view of a sampled texture in another 16-bit format");
+    assert!(works(&mut b));
+    b.begin_pass(&color_pass(&other, [0; 4]));
+    b.end_pass();
+    assert!(
+        !works(&mut b),
+        "a pass into a texture not made to be drawn into"
+    );
+}
+
+#[test]
+fn copies_between_bgra4_and_another_format_and_its_mipmaps_are_refused() {
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
+    let mut b = device();
+    let bgra4 = square(&mut b, Format::Bgra4Unorm, DRAWN_SIDE, (1, 1), usage, false)
+        .expect("create_texture");
+    let other = square(
+        &mut b,
+        Format::B5g6r5Unorm,
+        DRAWN_SIDE,
+        (1, 1),
+        usage,
+        false,
+    )
+    .expect("create_texture");
+    let extent = Extent {
+        width: DRAWN_SIDE,
+        height: DRAWN_SIDE,
+        depth_or_layers: 1,
+    };
+    b.copy_texture(&whole(&bgra4), &whole(&other), extent);
+    b.submit();
+    assert!(!works(&mut b), "a copy between two formats");
+    let mut b = device();
+    let levels = 3;
+    let desc = TextureDesc {
+        dimension: TextureDimension::D2,
+        format: Format::Bgra4Unorm,
+        width: DRAWN_SIDE,
+        height: DRAWN_SIDE,
+        depth_or_layers: 1,
+        mip_levels: levels,
+        samples: 1,
+        usage,
+        cube: false,
+        reinterpret: false,
+    };
+    let mipped = b.create_texture(&desc).expect("create_texture");
+    let made = b.generate_mips(&mipped, &desc, Format::Bgra4Unorm, 0..levels, 0..1);
+    assert!(made.is_err() || !works(&mut b), "mipmaps drawn into bgra4");
+}
+
+/// Returns a depth block that keeps fragments whose stored depth lies from `low` to `high`, as bits.
+fn bounded(low: u32, high: u32) -> DepthStencilDesc {
+    DepthStencilDesc {
+        depth_compare: Some(CompareFn::Always),
+        depth_bounds: Some([low, high]),
+        ..no_tests()
+    }
+}
+
+#[test]
+fn depth_bounds_at_the_edges_of_zero_to_one_are_taken_and_just_past_them_refused() {
+    let mut b = device();
+    let tiny = f32::from_bits(1);
+    let above_one = f32::from_bits(1.0f32.to_bits() + 1);
+    for (low, high, taken) in [
+        (-0.0f32, 0.0f32, true),
+        (tiny, tiny, true),
+        (1.0, 1.0, true),
+        (0.5, 0.5, true),
+        (0.0, above_one, false),
+        (-tiny, 0.5, false),
+    ] {
+        let made = b.create_depth_stencil(&bounded(low.to_bits(), high.to_bits()));
+        assert_eq!(made.is_ok(), taken, "[{low:e}, {high:e}]");
+        let Ok(depth_stencil) = made else { continue };
+        let mut drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+        drawing.depth_stencil = depth_stencil;
+        let red = program(&mut b, "covering", "red");
+        let depth = square(
+            &mut b,
+            Format::Depth32Float,
+            DRAWN_SIDE,
+            (1, 1),
+            DEPTH_USAGE,
+            false,
+        )
+        .expect("create_texture");
+        let depth_view = view(&mut b, &depth, Format::Depth32Float, false);
+        let (_color, color_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+        let mut pass = color_pass(&color_view, [0; 4]);
+        pass.depth = Some(DepthAttachment {
+            view: &depth_view,
+            depth: Some(AspectOps {
+                load: LoadOp::Clear(0.5f32.to_bits()),
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        });
+        b.begin_pass(&pass);
+        draw(
+            &mut b, &red, &drawing, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4],
+        );
+        b.end_pass();
+        b.submit();
+        assert!(works(&mut b), "[{low:e}, {high:e}] drawn");
+    }
+}
+
+#[test]
+fn depth_bounds_in_a_pass_without_depth_are_left_unset_or_refused() {
+    // Stencil only: the bounds have nothing to test, so the draw draws. The combined format with no depth aspect named:
+    // the pass holds no depth, which the pipeline was made with, so the draw is refused before Metal.
+    for (format, drawn) in [
+        (Format::Stencil8, true),
+        (Format::Depth24PlusStencil8, false),
+    ] {
+        let mut b = device();
+        let depth_stencil = b
+            .create_depth_stencil(&DepthStencilDesc {
+                depth_compare: None,
+                ..bounded(0.25f32.to_bits(), 0.75f32.to_bits())
+            })
+            .expect("create_depth_stencil");
+        let mut drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+        drawing.depth_stencil = depth_stencil;
+        let red = program(&mut b, "covering", "red");
+        let texture =
+            square(&mut b, format, DRAWN_SIDE, (1, 1), DEPTH_USAGE, false).expect("create_texture");
+        let attached = b
+            .create_view(&texture, &one_view(format, 0))
+            .expect("create_view");
+        let (_color, color_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+        let mut pass = color_pass(&color_view, [0; 4]);
+        pass.depth = Some(DepthAttachment {
+            view: &attached,
+            depth: None,
+            stencil: Some(AspectOps {
+                load: LoadOp::Clear(0),
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+        });
+        b.begin_pass(&pass);
+        draw(
+            &mut b, &red, &drawing, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4],
+        );
+        b.end_pass();
+        b.submit();
+        assert_eq!(works(&mut b), drawn, "{format:?}");
+    }
+}
+
+#[test]
+fn depth_bounds_of_nan_payloads_and_infinities_are_refused() {
+    let mut b = device();
+    let (half, one) = (0.5f32.to_bits(), 1.0f32.to_bits());
+    // A NaN with the sign bit and a payload, a NaN payload above, and the infinities.
+    let signed_nan = f32::NAN.to_bits() | 1 << 31 | 1;
+    let payload_nan = f32::INFINITY.to_bits() | 1;
+    for (low, high) in [
+        (signed_nan, half),
+        (0, payload_nan),
+        (f32::NEG_INFINITY.to_bits(), one),
+        (0, f32::INFINITY.to_bits()),
+    ] {
+        assert!(
+            b.create_depth_stencil(&bounded(low, high)).is_err(),
+            "[{low:#x}, {high:#x}] made"
+        );
+    }
+    assert!(works(&mut b));
+}
+
+/// A vertex program that writes words at wild indices of a storage binding: one before it, one at 2^30, and one
+/// counted down from the last `u32`.
+const WILD_WRITES: &str = "
+@group(0) @binding(0) var<storage, read_write> words: array<u32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    words[i32(i) - 1] = 0x11111111u + i;
+    words[1u << 30u] = 0x22222222u;
+    words[0xffffffffu - i] = 0x33333333u;
+    var p = array(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    return vec4<f32>(p[i % 3u], 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// The offset of the storage bindings the wild writes go through, past the buffer's start so writes before it show.
+const BOUND_AT: u64 = 256;
+
+/// The bytes of the buffers the wild writes are bound within.
+const WILD_BYTES: u64 = 1024;
+
+/// Returns the bytes of `got` outside `bound` bytes from `BOUND_AT` that are not the canary.
+fn changed_outside(got: &[u8], bound: u64) -> usize {
+    let inside = BOUND_AT as usize..(BOUND_AT + bound) as usize;
+    got.iter()
+        .enumerate()
+        .filter(|(n, byte)| !inside.contains(n) && **byte != CANARY)
+        .count()
+}
+
+#[test]
+fn vertex_storage_writes_at_wild_indices_stay_in_their_word() {
+    let mut b = device();
+    let module = |entry, stage| {
+        module_with(
+            WILD_WRITES,
+            entry,
+            stage,
+            naga::valid::Capabilities::empty(),
+        )
+    };
+    let vertex = b
+        .create_shader(&module("vs", ShaderStage::Vertex))
+        .expect("create_shader");
+    let fragment = b
+        .create_shader(&module("fs", ShaderStage::Fragment))
+        .expect("create_shader");
+    let wild = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .expect("create_program");
+    let words = storage(&mut b, WILD_BYTES);
+    fill_canary(&mut b, &words, WILD_BYTES);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::StorageBuffer {
+                range: wcontainers_gpu::BufferRange {
+                    buffer: &words,
+                    offset: BOUND_AT,
+                    size: u64::from(WORD),
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    let drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    let (_color, color_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+    b.begin_pass(&color_pass(&color_view, [0; 4]));
+    draw(
+        &mut b,
+        &wild,
+        &drawing,
+        Some(&set),
+        DRAWN_SIDE,
+        3,
+        [0; 2],
+        [0.0; 4],
+    );
+    b.end_pass();
+    let got = read_bytes(&mut b, &words, WILD_BYTES);
+    assert!(works(&mut b));
+    assert_eq!(changed_outside(&got, u64::from(WORD)), 0);
+}
+
+#[test]
+fn sixteen_bit_storage_of_an_odd_number_of_halves_stays_inside_its_binding() {
+    const HALVES: &str = "
+enable f16;
+@group(0) @binding(0) var<storage, read_write> halves: array<f16>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    halves[id.x] = f16(1.0) + f16(id.x);
+}
+";
+    let mut b = device();
+    let compute = b
+        .create_shader(&module_with(
+            HALVES,
+            "main",
+            ShaderStage::Compute,
+            naga::valid::Capabilities::SHADER_FLOAT16,
+        ))
+        .expect("create_shader");
+    let program = b
+        .create_program(&Program::Compute(&compute))
+        .expect("create_program");
+    let halves = storage(&mut b, WILD_BYTES);
+    // Three halves, then one.
+    for bound in [6u64, 2] {
+        fill_canary(&mut b, &halves, WILD_BYTES);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 0,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::StorageBuffer {
+                    range: wcontainers_gpu::BufferRange {
+                        buffer: &halves,
+                        offset: BOUND_AT,
+                        size: bound,
+                    },
+                    writable: true,
+                },
+            }])
+            .expect("create_binding_set");
+        b.dispatch(&wcontainers_gpu::DispatchCall {
+            program: &program,
+            bindings: [Some(&set), None, None, None],
+            immediates: &[],
+            groups: wcontainers_gpu::DispatchGroups::Direct([2, 1, 1]),
+        })
+        .expect("dispatch");
+        let got = read_bytes(&mut b, &halves, WILD_BYTES);
+        assert!(works(&mut b), "{bound} bytes");
+        assert_eq!(changed_outside(&got, bound), 0, "{bound} bytes");
+    }
+}
+
+#[test]
+fn wild_fractional_viewports_draw_and_keep_the_device() {
+    let side = DRAWN_SIDE as f32;
+    // Far outside the target, of negative width, empty, of the smallest width, wider than the target by far, and of
+    // the largest height.
+    for (n, (x, y, width, height)) in [
+        (1e30, 0.5, side, side),
+        (0.25, 0.25, -side, side),
+        (0.5, 0.5, 0.0, 0.0),
+        (0.0, 0.0, f32::from_bits(1), side),
+        (-1e30, -1e30, 3e30, 3e30),
+        (0.5, 0.5, side, f32::MAX),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut b = device();
+        let red = program(&mut b, "covering", "red");
+        let drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+        let (_color, color_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+        b.begin_pass(&color_pass(&color_view, [0; 4]));
+        b.draw(&DrawCall {
+            program: &red,
+            blend: &drawing.blend,
+            depth_stencil: &drawing.depth_stencil,
+            raster: &drawing.raster,
+            vertex_layout: &drawing.layout,
+            bindings: [None; 4],
+            vertex_buffers: &[],
+            index: None,
+            topology: Topology::TriangleList,
+            restart: false,
+            viewports: &[Viewport {
+                x: f32::to_bits(x),
+                y: f32::to_bits(y),
+                width: width.to_bits(),
+                height: height.to_bits(),
+                min_depth: 0,
+                max_depth: 1.0f32.to_bits(),
+            }],
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices {
+                first: 0,
+                count: 3,
+                first_instance: 0,
+                instances: 1,
+            },
+        });
+        b.end_pass();
+        b.submit();
+        assert!(works(&mut b), "viewport {n}");
+    }
+}
+
+/// Returns nanoseconds since 1970, which makes the programs of one run differ from those Metal has cached.
+fn salt() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_nanos() as u64
+}
+
+/// Returns the targets of one color attachment of `color` and an optional depth attachment.
+fn targets_of(color: Format, depth: Option<Format>, samples: u32) -> wcontainers_gpu::TargetLayout {
+    let mut colors = [None; MAX_COLOR_TARGETS];
+    colors[0] = Some(color);
+    wcontainers_gpu::TargetLayout {
+        colors,
+        depth_stencil: depth,
+        samples,
+    }
+}
+
+/// Prepares `program` with `states` for `targets`, drawn as lists.
+fn prepare_for(
+    b: &mut MetalGpu<DirectMetal>,
+    program: &<MetalGpu<DirectMetal> as Gpu>::Program,
+    drawing: &States<MetalGpu<DirectMetal>>,
+    targets: wcontainers_gpu::TargetLayout,
+) {
+    b.prepare(&wcontainers_gpu::PrepareDesc {
+        program,
+        blend: &drawing.blend,
+        depth_stencil: &drawing.depth_stencil,
+        raster: &drawing.raster,
+        vertex_layout: &drawing.layout,
+        targets,
+        topology: Topology::TriangleList,
+        layouts: Default::default(),
+    });
+}
+
+#[test]
+fn a_device_dropped_while_its_prepares_build_leaves_the_next_device_drawing() {
+    let base = salt();
+    {
+        let mut b = device();
+        let drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+        // Many more than Metal builds at once.
+        let programs: Vec<_> = (0..64)
+            .map(|k| fresh_program(&mut b, base.wrapping_add(k)))
+            .collect();
+        for program in &programs {
+            prepare_for(
+                &mut b,
+                program,
+                &drawing,
+                targets_of(Format::Rgba8Unorm, None, 1),
+            );
+        }
+        assert!(works(&mut b));
+    }
+    let mut b = device();
+    let red = program(&mut b, "covering", "red");
+    let drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    let (color, color_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+    b.begin_pass(&color_pass(&color_view, [0; 4]));
+    draw(
+        &mut b, &red, &drawing, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4],
+    );
+    b.end_pass();
+    let reds = [255, 0, 0, 255].repeat((DRAWN_SIDE * DRAWN_SIDE) as usize);
+    assert_eq!(read_texture(&mut b, &color, DRAWN_SIDE, RGBA8_BYTES), reds);
+    assert!(works(&mut b));
+}
+
+#[test]
+fn prepares_of_combinations_metal_refuses_keep_the_device() {
+    let mut b = device();
+    let fresh = fresh_program(&mut b, salt());
+    let drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    let empty = b
+        .create_shader(
+            &ShaderModule::from_wgsl(
+                "@compute @workgroup_size(1) fn main() {}",
+                "main",
+                ShaderStage::Compute,
+            )
+            .expect("parses"),
+        )
+        .expect("create_shader");
+    let compute = b
+        .create_program(&Program::Compute(&empty))
+        .expect("create_program");
+    for (name, program, targets) in [
+        (
+            "bgra4 color",
+            &fresh,
+            targets_of(Format::Bgra4Unorm, None, 1),
+        ),
+        (
+            "three samples",
+            &fresh,
+            targets_of(Format::Rgba8Unorm, None, 3),
+        ),
+        (
+            "depth as color",
+            &fresh,
+            targets_of(Format::Depth32Float, None, 1),
+        ),
+        (
+            "color as depth",
+            &fresh,
+            targets_of(Format::Rgba8Unorm, Some(Format::Rgba8Unorm), 1),
+        ),
+        ("compute", &compute, targets_of(Format::Rgba8Unorm, None, 1)),
+        (
+            "no samples",
+            &fresh,
+            targets_of(Format::Rgba8Unorm, None, 0),
+        ),
+    ] {
+        prepare_for(&mut b, program, &drawing, targets);
+        assert!(works(&mut b), "{name}");
+    }
+    let (color, color_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+    b.begin_pass(&color_pass(&color_view, [0; 4]));
+    draw(
+        &mut b, &fresh, &drawing, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4],
+    );
+    b.end_pass();
+    let reds = [255, 0, 0, 255].repeat((DRAWN_SIDE * DRAWN_SIDE) as usize);
+    assert_eq!(read_texture(&mut b, &color, DRAWN_SIDE, RGBA8_BYTES), reds);
+    assert!(works(&mut b));
+}
+
+#[test]
+fn repeated_and_crossed_prepares_all_draw_without_a_miss() {
+    let mut b = device();
+    let base = salt();
+    let programs: Vec<_> = (0..3)
+        .map(|k| fresh_program(&mut b, base.wrapping_add(k)))
+        .collect();
+    let drawing = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    let formats = [
+        Format::Rgba8Unorm,
+        Format::Bgra8Unorm,
+        Format::Rgba16Float,
+        Format::R8Unorm,
+        Format::Rg8Unorm,
+        Format::Rgba8UnormSrgb,
+        Format::R16Float,
+        Format::Rg16Float,
+        Format::Rgba32Float,
+        Format::R32Float,
+    ];
+    // One combination a hundred times, then every program for every format.
+    for _ in 0..100 {
+        prepare_for(
+            &mut b,
+            &programs[0],
+            &drawing,
+            targets_of(formats[0], None, 1),
+        );
+    }
+    for program in &programs {
+        for format in formats {
+            prepare_for(&mut b, program, &drawing, targets_of(format, None, 1));
+        }
+    }
+    let before = b.slow_paths().counts[SlowPath::PipelineMiss as usize];
+    for program in programs.iter().rev() {
+        for format in formats.iter().rev() {
+            let (_color, color_view) = target(&mut b, *format, DRAWN_SIDE);
+            b.begin_pass(&color_pass(&color_view, [0; 4]));
+            draw(
+                &mut b, program, &drawing, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4],
+            );
+            b.end_pass();
+        }
+    }
+    b.submit();
+    let after = b.slow_paths().counts[SlowPath::PipelineMiss as usize];
+    assert_eq!(after, before, "a draw missed its prepared pipeline");
+    assert!(works(&mut b));
+}

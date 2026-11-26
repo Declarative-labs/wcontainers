@@ -22,10 +22,10 @@ use std::rc::Rc;
 use wcontainers_gpu::{
     AdapterInfo, BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, BufferDesc, Caps,
     CopyBufferTexture, DepthStencilDesc, DeviceStatus, DispatchCall, DispatchGroups, DrawCall,
-    Extent, FORMAT_FACTS, Features, Format, FormatKind, Gpu, GpuError, Helpers, Limits, LossReason,
-    Object, PassDesc, Program, QueryKind, RasterDesc, ReadSource, ReadState, SamplerDesc,
-    ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, VertexLayoutDesc, ViewDimension, WriteMode,
+    Extent, FORMAT_FACTS, Features, Format, FormatKind, FormatUse, Gpu, GpuError, Helpers, Limits,
+    LossReason, Object, PassDesc, Program, QueryKind, RasterDesc, ReadSource, ReadState,
+    SamplerDesc, ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, VertexLayoutDesc, ViewDimension, WriteMode,
 };
 use wcontainers_metal::{
     BlitCommand, BlitOption, CommandBufferStatus, ComputeCommand, DepthStencilDescriptor, Metal,
@@ -714,6 +714,19 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             .ok_or(GpuError::Invalid(
                 "texture format this implementation does not hold",
             ))?;
+        // A usage its format lacks, as the reference refuses it (found by the check: a `Bgra4Unorm` texture made to be
+        // drawn into or stored to, which would take Metal's bit order).
+        let uses = self.caps.formats.uses[desc.format as usize];
+        if (desc.usage.contains(TextureUsage::RENDER)
+            && !uses.intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL))
+            || (desc.usage.contains(TextureUsage::SAMPLE) && !uses.contains(FormatUse::SAMPLE))
+            || (desc.usage.contains(TextureUsage::STORAGE)
+                && !uses.intersects(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE))
+        {
+            return Err(GpuError::Invalid(
+                "a texture usage its format does not take",
+            ));
+        }
         let (texture_type, depth, array_length) =
             match (desc.dimension, desc.samples > 1, desc.cube) {
                 (TextureDimension::D3, _, _) => (TextureType::Type3D, desc.depth_or_layers, 1),
