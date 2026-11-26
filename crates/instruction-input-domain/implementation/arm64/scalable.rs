@@ -91,7 +91,7 @@ pub(crate) fn list_scalable_operand_types(
             ]),
             ScalableOperand::PredicateSource(number) => types.extend([
                 OperandType::PredicateNumber(number),
-                OperandType::PredicateValue(number),
+                OperandType::ScalablePredicateValue(number),
             ]),
             ScalableOperand::EveryValue(fields) => types.push(OperandType::EveryValue(fields)),
             ScalableOperand::BytePosition(fields) => types.push(OperandType::BytePosition(fields)),
@@ -155,7 +155,7 @@ fn list_access_operand_types(access: ScalableAccess) -> Vec<OperandType> {
     if access.predicate_register {
         types.push(OperandType::PredicateNumber(PT));
         if stores {
-            types.push(OperandType::PredicateValue(PT));
+            types.push(OperandType::ScalablePredicateValue(PT));
         }
     } else if access.kind != AccessKind::Prefetch {
         types.push(OperandType::ScalableVectorNumber {
@@ -181,7 +181,7 @@ fn list_access_operand_types(access: ScalableAccess) -> Vec<OperandType> {
     if access.predicated {
         types.extend([
             OperandType::PredicateNumber(PG),
-            OperandType::PredicateValue(PG),
+            OperandType::ScalablePredicateValue(PG),
         ]);
     }
     types.push(OperandType::RegisterNumber(RN));

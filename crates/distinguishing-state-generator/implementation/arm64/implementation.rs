@@ -234,7 +234,7 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::VectorRegisterNumber(_)
         | OperandType::ScalableVectorNumber { .. }
         | OperandType::PredicateNumber(_) => Group::Register,
-        OperandType::PredicateValue(_) => Group::Predicate,
+        OperandType::ScalablePredicateValue(_) => Group::Predicate,
         OperandType::AccessPlacement
         | OperandType::AddressTag
         | OperandType::DataPagePermission(_)
@@ -663,7 +663,7 @@ impl Cut {
                 Group::Predicate => {
                     facts.partial_predicate =
                         self.types.iter().enumerate().any(|(index, operand_type)| {
-                            matches!(operand_type, OperandType::PredicateValue(_))
+                            matches!(operand_type, OperandType::ScalablePredicateValue(_))
                                 && facts.held & (1 << index) != 0
                                 && self.values[index][chosen[index]]
                                     != OperandValue::Bits(u64::from(u16::MAX))

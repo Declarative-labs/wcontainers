@@ -230,7 +230,7 @@ pub enum OperandType {
     /// The P register an SVE operand names.
     PredicateNumber(Field),
     /// The value of the P register the field names.
-    PredicateValue(Field),
+    ScalablePredicateValue(Field),
     /// An immediate split over fields, the most significant first, which takes every value it can hold.
     EveryValue(&'static [Field]),
     /// A byte position in a Z register, split over fields, the most significant first.
@@ -565,7 +565,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 scalable::to_scalable_vector_values(values)
             }
             OperandType::PredicateNumber(_) => [0, 1].map(OperandValue::RegisterNumber).to_vec(),
-            OperandType::PredicateValue(_) => scalable::to_predicate_values(),
+            OperandType::ScalablePredicateValue(_) => scalable::to_predicate_values(),
             OperandType::EveryValue(fields) => {
                 let width: u32 = fields.iter().map(|field| field.width).sum();
                 (0..1 << width).map(OperandValue::Bits).collect()
@@ -706,7 +706,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     };
                     scalable_values.push((field, offset, value));
                 }
-                OperandType::PredicateValue(field) => {
+                OperandType::ScalablePredicateValue(field) => {
                     let OperandValue::Bits(value) = operand else {
                         reject_mismatch(operand_type, operand)
                     };

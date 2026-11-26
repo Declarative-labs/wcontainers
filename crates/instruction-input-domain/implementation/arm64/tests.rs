@@ -103,7 +103,7 @@ fn read_operand(
                 }
             }
         }
-        OperandType::PredicateValue(field) => Some(OperandValue::Bits(u64::from(
+        OperandType::ScalablePredicateValue(field) => Some(OperandValue::Bits(u64::from(
             state.processor.predicate_registers[field.read(word) as usize],
         ))),
         OperandType::FloatingPointValue { field, precision }
@@ -434,9 +434,9 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 {
                     continue;
                 }
-                if let Some(OperandType::PredicateValue(field)) = operand_types.get(index)
+                if let Some(OperandType::ScalablePredicateValue(field)) = operand_types.get(index)
                     && operand_types[index + 1..].iter().any(|later| {
-                        matches!(later, OperandType::PredicateValue(other) if other.read(word) == field.read(word))
+                        matches!(later, OperandType::ScalablePredicateValue(other) if other.read(word) == field.read(word))
                     })
                 {
                     continue;
