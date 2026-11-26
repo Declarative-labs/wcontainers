@@ -47,10 +47,10 @@ pub struct Recorder {
 }
 
 /// What a recording back end is made from.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RecorderConfig {
-    /// What it declares; the default holds every feature it records and every format it holds.
-    pub caps: Caps,
+    /// What it declares; none declares every feature it records and every format it holds.
+    pub caps: Option<Caps>,
 }
 
 #[cfg(test)]

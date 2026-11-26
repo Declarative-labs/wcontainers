@@ -16,41 +16,41 @@ use crate::platform::Platform;
 
 /// What GL holds now, for the values blocks and draws set.
 #[derive(Clone, Debug, PartialEq)]
-pub struct GlValues {
+pub(crate) struct GlValues {
     /// Per colour target: blending, its equation and factors, and the write mask.
-    pub targets: [GlTarget; MAX_COLOR_TARGETS],
-    pub alpha_to_coverage: bool,
-    pub depth_test: bool,
-    pub depth_func: u32,
-    pub depth_mask: bool,
-    pub stencil_test: bool,
+    pub(crate) targets: [GlTarget; MAX_COLOR_TARGETS],
+    pub(crate) alpha_to_coverage: bool,
+    pub(crate) depth_test: bool,
+    pub(crate) depth_func: u32,
+    pub(crate) depth_mask: bool,
+    pub(crate) stencil_test: bool,
     /// Per face (front, back): compare, reference, read mask.
-    pub stencil_func: [(u32, u8, u8); 2],
+    pub(crate) stencil_func: [(u32, u8, u8); 2],
     /// Per face: fail, depth fail, pass.
-    pub stencil_op: [[u32; 3]; 2],
-    pub stencil_write_mask: u8,
-    pub cull: Option<u32>,
-    pub front_face: u32,
+    pub(crate) stencil_op: [[u32; 3]; 2],
+    pub(crate) stencil_write_mask: u8,
+    pub(crate) cull: Option<u32>,
+    pub(crate) front_face: u32,
     /// Slope factor, constant units and clamp, when the offset is on.
-    pub polygon_offset: Option<(f32, f32, f32)>,
+    pub(crate) polygon_offset: Option<(f32, f32, f32)>,
     /// Whether the line offset is on (WEBGL_polygon_mode).
-    pub line_offset: bool,
-    pub fill_lines: bool,
-    pub depth_clamp: bool,
+    pub(crate) line_offset: bool,
+    pub(crate) fill_lines: bool,
+    pub(crate) depth_clamp: bool,
     /// How many clip distances are enabled, from distance 0.
-    pub clip_distances: u8,
-    pub scissor_test: bool,
-    pub viewport: [i32; 4],
-    pub depth_range: [f32; 2],
-    pub scissor: [i32; 4],
-    pub blend_color: [f32; 4],
-    pub clip_depth: u32,
-    pub provoking: u32,
+    pub(crate) clip_distances: u8,
+    pub(crate) scissor_test: bool,
+    pub(crate) viewport: [i32; 4],
+    pub(crate) depth_range: [f32; 2],
+    pub(crate) scissor: [i32; 4],
+    pub(crate) blend_color: [f32; 4],
+    pub(crate) clip_depth: u32,
+    pub(crate) provoking: u32,
 }
 
 impl GlValues {
     /// GL's initial values, with the viewport and scissor unknown so the first draw sets them.
-    pub fn initial(clip_depth: u32) -> GlValues {
+    pub(crate) fn initial(clip_depth: u32) -> GlValues {
         GlValues {
             targets: [GlTarget::OFF; MAX_COLOR_TARGETS],
             alpha_to_coverage: false,
@@ -101,16 +101,16 @@ fn enable(gl: &glow::Context, cap: u32, on: bool) {
 
 /// One colour target's blending and write mask.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GlTarget {
-    pub on: bool,
-    pub equation: [u32; 2],
-    pub func: [u32; 4],
-    pub mask: [bool; 4],
+pub(crate) struct GlTarget {
+    pub(crate) on: bool,
+    pub(crate) equation: [u32; 2],
+    pub(crate) func: [u32; 4],
+    pub(crate) mask: [bool; 4],
 }
 
 impl GlTarget {
     /// GL's initial values: no blending, every channel written.
-    pub const OFF: GlTarget = GlTarget {
+    pub(crate) const OFF: GlTarget = GlTarget {
         on: false,
         equation: [glow::FUNC_ADD; 2],
         func: [glow::ONE, glow::ZERO, glow::ONE, glow::ZERO],
@@ -189,7 +189,7 @@ fn all_targets<T: PartialEq + Copy>(
 }
 
 /// Sets every target to `t` by GL's calls for all targets, only where they differ.
-pub fn uniform(gl: &glow::Context, v: &mut GlValues, t: &GlTarget) {
+pub(crate) fn uniform(gl: &glow::Context, v: &mut GlValues, t: &GlTarget) {
     all_targets(v, t.on, |x| &mut x.on, |on| enable(gl, glow::BLEND, on));
     if t.on {
         // SAFETY: a plain GL state call on the current context.
@@ -218,7 +218,7 @@ pub fn uniform(gl: &glow::Context, v: &mut GlValues, t: &GlTarget) {
 
 /// Applies `b`, leaving unwritten the channels of `unwritten`, [`format::CHANNELS`] bits a target
 /// from the first, each from red.
-pub fn blend(
+pub(crate) fn blend(
     gl: &glow::Context,
     v: &mut GlValues,
     b: &GlBlend,
@@ -298,7 +298,12 @@ impl GlDepthStencil {
 
 /// The depth and stencil block, with the draw's stencil reference (one for both faces, as WebGL
 /// requires).
-pub fn depth_stencil(gl: &glow::Context, v: &mut GlValues, d: &GlDepthStencil, reference: u8) {
+pub(crate) fn depth_stencil(
+    gl: &glow::Context,
+    v: &mut GlValues,
+    d: &GlDepthStencil,
+    reference: u8,
+) {
     set_if!(v.depth_test, d.depth_func.is_some(), |on| enable(
         gl,
         glow::DEPTH_TEST,
@@ -388,7 +393,7 @@ impl GlRaster {
     }
 }
 
-pub fn raster(gl: &glow::Context, v: &mut GlValues, r: &GlRaster, platform: &Platform) {
+pub(crate) fn raster(gl: &glow::Context, v: &mut GlValues, r: &GlRaster, platform: &Platform) {
     if v.cull != r.cull {
         match r.cull {
             Some(face) => {
@@ -516,7 +521,7 @@ impl GlLayout {
 
 /// The state of a draw of the back end's own into the viewport `rect`: no blending, tests or culling.
 /// The caller opens the write masks and the scissor.
-pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platform: &Platform) {
+pub(crate) fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platform: &Platform) {
     all_targets(v, false, |t| &mut t.on, |on| enable(gl, glow::BLEND, on));
     set_if!(v.fill_lines, false, |_| platform.polygon_mode(glow::FILL));
     clip_distances(gl, v, 0);
@@ -541,7 +546,7 @@ pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platform: &Pl
 
 /// Enables clip distances 0 to `n` and no others: GL leaves a distance a program does not write
 /// undefined while it is enabled.
-pub fn clip_distances(gl: &glow::Context, v: &mut GlValues, n: u8) {
+pub(crate) fn clip_distances(gl: &glow::Context, v: &mut GlValues, n: u8) {
     let held = v.clip_distances;
     for i in n.min(held)..n.max(held) {
         enable(gl, glow::CLIP_DISTANCE0 + u32::from(i), i < n);
@@ -550,7 +555,7 @@ pub fn clip_distances(gl: &glow::Context, v: &mut GlValues, n: u8) {
 }
 
 /// Opens every channel of every target's write mask.
-pub fn open_masks(gl: &glow::Context, v: &mut GlValues) {
+pub(crate) fn open_masks(gl: &glow::Context, v: &mut GlValues) {
     // SAFETY: a plain GL state call.
     all_targets(
         v,
@@ -560,7 +565,7 @@ pub fn open_masks(gl: &glow::Context, v: &mut GlValues) {
     );
 }
 
-pub fn mode(t: Topology) -> u32 {
+pub(crate) fn mode(t: Topology) -> u32 {
     match t {
         Topology::PointList => glow::POINTS,
         Topology::LineList => glow::LINES,
@@ -572,7 +577,7 @@ pub fn mode(t: Topology) -> u32 {
     }
 }
 
-pub fn compare(f: CompareFn) -> u32 {
+pub(crate) fn compare(f: CompareFn) -> u32 {
     match f {
         CompareFn::Never => glow::NEVER,
         CompareFn::Less => glow::LESS,
@@ -609,7 +614,7 @@ fn op(o: BlendOp) -> u32 {
 }
 
 /// Whether a factor reads the fragment's second output (dual-source blending).
-pub fn second_source(f: BlendFactor) -> bool {
+pub(crate) fn second_source(f: BlendFactor) -> bool {
     matches!(
         f,
         BlendFactor::Src1
@@ -621,7 +626,7 @@ pub fn second_source(f: BlendFactor) -> bool {
 
 /// GL's blend factor; the second-source ones are WEBGL_blend_func_extended's, which `create_blend`
 /// asked for.
-pub fn factor(f: BlendFactor) -> u32 {
+pub(crate) fn factor(f: BlendFactor) -> u32 {
     match f {
         BlendFactor::Zero => glow::ZERO,
         BlendFactor::One => glow::ONE,
@@ -648,7 +653,7 @@ pub fn factor(f: BlendFactor) -> u32 {
 /// How a vertex program turns an attribute GL ES cannot read as stored into its value
 /// ([`crate::shader::convert_inputs`]): 0 for none, 1 for BGRA bytes swapped, 2 for a word of
 /// 10-10-10-2 integers, 3 for a word of 11-11-10 floats.
-pub fn conversion(f: VertexFormat) -> u32 {
+pub(crate) fn conversion(f: VertexFormat) -> u32 {
     match f {
         VertexFormat::Bgra8Unorm | VertexFormat::Bgrx8Unorm => 1,
         VertexFormat::Uint10_10_10_2 => 2,

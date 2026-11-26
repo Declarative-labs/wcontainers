@@ -39,7 +39,7 @@ const PATTERN_BLOCK: u64 = 64 * 1024;
 
 /// GPU storage a renamed buffer or texture gives up.
 #[derive(Clone)]
-pub enum Spare {
+pub(crate) enum Spare {
     Buffer(wgpu::Buffer),
     Texture(wgpu::Texture),
 }
@@ -48,7 +48,7 @@ pub enum Spare {
 ///
 /// A buffer's key finds only buffers, and a texture's only textures.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpareKey {
+pub(crate) enum SpareKey {
     /// Size and usage.
     Buffer(u64, u32),
     /// Size, levels, samples, dimension, format and usage; the view formats follow the format.
@@ -99,7 +99,7 @@ impl Spare {
 /// Each buffer or texture counts the storage its renames made; destroying it destroys as much of
 /// the pool's storage of its key, so the pool holds no more than its live objects made.
 #[derive(Default)]
-pub struct Pool {
+pub(crate) struct Pool {
     /// Storage still used by the work of the serial it was retired in.
     retired: Vec<(u64, Spare)>,
     /// Storage free to reuse, by key.
@@ -112,7 +112,7 @@ pub struct Pool {
 impl Pool {
     /// Frees storage whose work has completed, destroying what is owed; answers how much it
     /// destroyed.
-    pub fn reclaim(&mut self, completed: u64) -> u64 {
+    pub(crate) fn reclaim(&mut self, completed: u64) -> u64 {
         let (free, owed) = (&mut self.free, &mut self.owed);
         let mut dropped = 0;
         self.retired.retain(|(serial, b)| {
@@ -166,10 +166,10 @@ const ARENA_SLICES_AT_LEAST: u64 = 4;
 /// buffer written often, each in a slice of its own. A `Discard` of such a buffer while recorded work
 /// uses it moves it to a free slice, so bind groups keep naming the arena and draws give the slice's
 /// offset as a dynamic offset.
-pub struct Arena {
+pub(crate) struct Arena {
     /// The storage number buffers living in it carry.
-    pub id: u64,
-    pub raw: wgpu::Buffer,
+    pub(crate) id: u64,
+    pub(crate) raw: wgpu::Buffer,
     /// The end of the slices handed out so far.
     top: u64,
     /// Free slices by size.
@@ -206,7 +206,7 @@ impl Arena {
     }
 
     /// Frees the slices given up before a submit.
-    pub fn submitted(&mut self) {
+    pub(crate) fn submitted(&mut self) {
         for (size, at) in self.retired.drain(..) {
             self.free.entry(size).or_default().push(at);
         }
@@ -214,7 +214,7 @@ impl Arena {
 }
 
 /// The usages of the arena's buffer, which are also those of every buffer placed in it.
-pub fn arena_usage() -> wgpu::BufferUsages {
+pub(crate) fn arena_usage() -> wgpu::BufferUsages {
     wgpu::BufferUsages::UNIFORM
         | wgpu::BufferUsages::COPY_DST
         | wgpu::BufferUsages::COPY_SRC
@@ -308,14 +308,14 @@ const RING_ALIGN: u64 = 256;
 /// The staging ring: one buffer staged bytes are queued into and copied from in command order,
 /// taken again from its start after each submit (queued writes land after submitted work).
 #[derive(Debug)]
-pub struct Ring {
+pub(crate) struct Ring {
     buffer: wgpu::Buffer,
     used: u64,
 }
 
 impl Ring {
     /// Starts again from the beginning, the submit having taken every region.
-    pub fn submitted(&mut self) {
+    pub(crate) fn submitted(&mut self) {
         self.used = 0;
     }
 

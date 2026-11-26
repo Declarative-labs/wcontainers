@@ -715,10 +715,10 @@ fn moved<'a>(region: &TextureRegion<'a, WebGpu>, x: u32) -> TextureRegion<'a, We
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Piece {
     /// Its vertices, or its indices in an indexed draw.
-    pub range: std::ops::Range<u32>,
-    pub instance: u32,
+    pub(crate) range: std::ops::Range<u32>,
+    pub(crate) instance: u32,
     /// A strip's odd triangle, whose facing the strip reverses and a draw of its own does not.
-    pub odd: bool,
+    pub(crate) odd: bool,
 }
 
 /// The vertices each primitive of `topology` takes.

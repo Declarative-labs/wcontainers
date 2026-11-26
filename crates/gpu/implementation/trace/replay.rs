@@ -1,6 +1,6 @@
-//! A recorded call stream (src/trace.rs: a real program's frames through a front) replayed in the
+//! A recorded call stream (a real program's frames through a front, recorded by `Traced`) replayed in the
 //! browser on the WebGL 2 or the WebGPU back end, frame by frame, for browser/replay.mjs
-//! (replay.html), which times them.
+//! (replay.html in the WebGL 2 back end's browser folder), which times them.
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
@@ -9,8 +9,8 @@ use wcontainers_gpu::{
     caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
     resource::*, shader::*, slow::*, state::*, *,
 };
+use wcontainers_gpu_trace::{Frame, Replay};
 use wcontainers_gpu_webgl::Gl;
-use wcontainers_gpu_webgl::trace::{Frame, Replay};
 use wcontainers_gpu_webgpu::{WebGpu, block_on};
 
 #[wasm_bindgen]

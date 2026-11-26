@@ -5,17 +5,17 @@ use wcontainers_gpu::{caps::FormatUse, format::FORMAT_FACTS, format::Format};
 
 /// A format's GL sized internal format and the format and type its texels are written in.
 #[derive(Clone, Copy, Debug)]
-pub struct GlFormat {
-    pub internal: u32,
-    pub format: u32,
-    pub ty: u32,
+pub(crate) struct GlFormat {
+    pub(crate) internal: u32,
+    pub(crate) format: u32,
+    pub(crate) ty: u32,
     /// What GLES 3.0's own table (texture-filterable, colour-renderable) and the extensions give.
-    pub class: Class,
+    pub(crate) class: Class,
 }
 
 /// Which row of GLES 3.0's format table a format is in, which decides its uses with the extensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Class {
+pub(crate) enum Class {
     /// Normalised fixed point: filterable, and renderable and blendable where `render` is set (signed
     /// ones with EXT_render_snorm).
     Norm {
@@ -38,7 +38,7 @@ pub enum Class {
 }
 
 /// The GL storage of `format`, or None when GL ES 3.0 does not hold it as it is.
-pub fn gl_format(format: Format) -> Option<GlFormat> {
+pub(crate) fn gl_format(format: Format) -> Option<GlFormat> {
     use Class::*;
     use Format as F;
     let f = |internal, format, ty, class| {
@@ -133,18 +133,18 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
 }
 
 /// Whether `format` is signed normalised, whose smallest value a draw reads as the one above it.
-pub fn signed_normalised(format: Format) -> bool {
+pub(crate) fn signed_normalised(format: Format) -> bool {
     gl_format(format).is_some_and(|g| g.class == Class::Norm { render: false })
 }
 
 /// Whether `format` holds 16-bit or 32-bit floats, whose NaN payloads and denormals a copy keeps.
-pub fn float_bits(format: Format) -> bool {
+pub(crate) fn float_bits(format: Format) -> bool {
     gl_format(format).is_some_and(|g| matches!(g.class, Class::Half | Class::Single))
 }
 
 /// Whether the interface's bytes of `format` hold blue first, where GL stores red first
 /// ([`wcontainers_gpu::slow::SlowPath::FormatConverted`] on the way in and out).
-pub fn swapped(format: Format) -> bool {
+pub(crate) fn swapped(format: Format) -> bool {
     matches!(
         format,
         Format::Bgra8Unorm | Format::Bgra8UnormSrgb | Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb
@@ -152,12 +152,12 @@ pub fn swapped(format: Format) -> bool {
 }
 
 /// The channels of RGBA storage, red, green, blue and alpha.
-pub const CHANNELS: usize = 4;
+pub(crate) const CHANNELS: usize = 4;
 
 /// The channels of its RGBA storage that `format` lacks, a bit each from red: a missing alpha held
 /// as one (BGRX), missing colour held as zero (8-bit alpha). Host writes and clears write them,
 /// draws leave them, and passes never discard them.
-pub fn unwritten(format: Format) -> u8 {
+pub(crate) fn unwritten(format: Format) -> u8 {
     let held_in_rgba = matches!(
         format,
         Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb | Format::A8Unorm
@@ -171,7 +171,7 @@ pub fn unwritten(format: Format) -> u8 {
 }
 
 /// A clear colour as a target of `format` keeps it.
-pub fn clear_value(format: Format, mut value: [u32; 4]) -> [u32; 4] {
+pub(crate) fn clear_value(format: Format, mut value: [u32; 4]) -> [u32; 4] {
     let missing = unwritten(format);
     for (c, v) in value.iter_mut().enumerate() {
         if missing & (1 << c) != 0 {
@@ -182,20 +182,20 @@ pub fn clear_value(format: Format, mut value: [u32; 4]) -> [u32; 4] {
 }
 
 /// The format GL stores texels of `format` as where the host widens them: 8-bit alpha as RGBA.
-pub fn widened(format: Format) -> Option<Format> {
+pub(crate) fn widened(format: Format) -> Option<Format> {
     (format == Format::A8Unorm).then_some(Format::Rgba8Unorm)
 }
 
 /// The bit widths of a 16-bit packed format's blue, green, red and alpha fields, from its lowest
 /// bits up, as Direct3D packs them (zero for a missing alpha).
-pub type Fields = [u32; CHANNELS];
+pub(crate) type Fields = [u32; CHANNELS];
 
 const B5G6R5_FIELDS: Fields = [5, 6, 5, 0];
 const B5G5R5A1_FIELDS: Fields = [5, 5, 5, 1];
 const B4G4R4A4_FIELDS: Fields = [4, 4, 4, 4];
 
 /// The fields of a 16-bit packed format.
-pub fn packed_fields(format: Format) -> Option<Fields> {
+pub(crate) fn packed_fields(format: Format) -> Option<Fields> {
     match format {
         Format::B5g6r5Unorm => Some(B5G6R5_FIELDS),
         Format::Bgr5a1Unorm => Some(B5G5R5A1_FIELDS),
@@ -205,7 +205,7 @@ pub fn packed_fields(format: Format) -> Option<Fields> {
 }
 
 /// Whether host bytes of `format` are converted before GL takes them ([`stored_texels`]).
-pub fn converts_writes(format: Format) -> bool {
+pub(crate) fn converts_writes(format: Format) -> bool {
     swapped(format)
         || unwritten(format) != 0
         || packed_fields(format).is_some_and(|[.., alpha]| alpha > 0)
@@ -214,7 +214,7 @@ pub fn converts_writes(format: Format) -> bool {
 /// Appends the texels GL stores for `texels`, whole texels of `format` that [`converts_writes`]:
 /// red and blue swapped (BGRX's alpha one), 8-bit alpha as (0, 0, 0, a), and a 16-bit packed
 /// format's alpha moved from its highest bits to its lowest, where GL packs it.
-pub fn stored_texels(format: Format, texels: &[u8], out: &mut Vec<u8>) {
+pub(crate) fn stored_texels(format: Format, texels: &[u8], out: &mut Vec<u8>) {
     if format == Format::A8Unorm {
         return out.extend(texels.iter().flat_map(|&a| [0, 0, 0, a]));
     }
@@ -235,7 +235,7 @@ pub fn stored_texels(format: Format, texels: &[u8], out: &mut Vec<u8>) {
 }
 
 /// Swaps red and blue in each 4-byte texel of `texels`.
-pub fn swap_red_blue(texels: &mut [u8]) {
+pub(crate) fn swap_red_blue(texels: &mut [u8]) {
     for t in texels.as_chunks_mut::<4>().0 {
         t.swap(0, 2);
     }
@@ -243,16 +243,16 @@ pub fn swap_red_blue(texels: &mut [u8]) {
 
 /// The extensions that change what formats can do.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct FormatExtensions {
-    pub color_buffer_float: bool,
-    pub float_linear: bool,
-    pub float_blend: bool,
-    pub norm16: bool,
-    pub render_snorm: bool,
+pub(crate) struct FormatExtensions {
+    pub(crate) color_buffer_float: bool,
+    pub(crate) float_linear: bool,
+    pub(crate) float_blend: bool,
+    pub(crate) norm16: bool,
+    pub(crate) render_snorm: bool,
 }
 
 impl FormatExtensions {
-    pub fn found(ext: &std::collections::BTreeSet<&'static str>) -> FormatExtensions {
+    pub(crate) fn found(ext: &std::collections::BTreeSet<&'static str>) -> FormatExtensions {
         FormatExtensions {
             color_buffer_float: ext.contains("EXT_color_buffer_float"),
             float_linear: ext.contains("OES_texture_float_linear"),
@@ -265,7 +265,7 @@ impl FormatExtensions {
 
 /// The unsigned integer twin of a float format GL does not read back (16-bit floats, and the packed
 /// R11G11B10 in one 32-bit word), whose bits a draw copies into it so they can be read back.
-pub fn bits_twin(format: Format) -> Option<Format> {
+pub(crate) fn bits_twin(format: Format) -> Option<Format> {
     Some(match format {
         Format::R16Float => Format::R16Uint,
         Format::Rg16Float => Format::Rg16Uint,
@@ -276,7 +276,7 @@ pub fn bits_twin(format: Format) -> Option<Format> {
 }
 
 /// What `format` can be used for on a context with `ext`.
-pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
+pub(crate) fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     // Block-compressed formats are sampled natively or decoded, and read back from the host copy.
     if crate::host::decoded(format).is_some() {
         return FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
@@ -337,39 +337,39 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
 /// 16-bit packed format's fields ([`packed_fields`]; 8 bits keep every narrower value apart, so the
 /// packing is exact).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ReadAs {
-    pub format: u32,
-    pub ty: u32,
-    pub comp_read: usize,
-    pub comp_kept: usize,
-    pub n: usize,
-    pub first: usize,
-    pub swap: bool,
-    pub fields: Option<Fields>,
+pub(crate) struct ReadAs {
+    pub(crate) format: u32,
+    pub(crate) ty: u32,
+    pub(crate) comp_read: usize,
+    pub(crate) comp_kept: usize,
+    pub(crate) n: usize,
+    pub(crate) first: usize,
+    pub(crate) swap: bool,
+    pub(crate) fields: Option<Fields>,
 }
 
 impl ReadAs {
-    pub fn texel_read(self) -> usize {
+    pub(crate) fn texel_read(self) -> usize {
         4 * self.comp_read
     }
 
-    pub fn texel_kept(self) -> usize {
+    pub(crate) fn texel_kept(self) -> usize {
         self.n * self.comp_kept
     }
 
     /// Whether `readPixels`' bytes differ from the texels' own.
-    pub fn repacks(self) -> bool {
+    pub(crate) fn repacks(self) -> bool {
         self.texel_read() != self.texel_kept() || self.swap
     }
 
     /// Whether the host converts the values read, not only keeps part of each texel's bytes
     /// ([`wcontainers_gpu::slow::SlowPath::FormatConverted`]).
-    pub fn converts(self) -> bool {
+    pub(crate) fn converts(self) -> bool {
         self.swap || self.fields.is_some()
     }
 
     /// Keeps each texel's stored bytes of `read`, texels as `readPixels` wrote them, in `kept`.
-    pub fn repack(self, read: &[u8], kept: &mut [u8]) {
+    pub(crate) fn repack(self, read: &[u8], kept: &mut [u8]) {
         let (r, k) = (self.texel_read(), self.texel_kept());
         if let Some(fields) = self.fields {
             // Each byte rounded to the nearest step of its field, blue's field lowest.
@@ -411,7 +411,7 @@ impl ReadAs {
 /// EXT_color_buffer_float; 16-bit normalised ones as RGBA shorts with EXT_texture_norm16), or None
 /// where it cannot: formats that are not colour-renderable, packed floats, 16-bit floats, and signed
 /// normalised ones, whose -128 `readPixels` returns as -127 even with EXT_render_snorm.
-pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
+pub(crate) fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
     let gl = gl_format(format)?;
     // GLES 3.0 reads 10-10-10-2 surfaces in their own packing as well.
     if gl.ty == UNSIGNED_INT_2_10_10_10_REV {

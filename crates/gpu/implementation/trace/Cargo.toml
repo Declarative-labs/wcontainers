@@ -1,0 +1,47 @@
+[package]
+name = "wcontainers-gpu-trace"
+description = "The recording back end of the wcontainers graphics interface that wraps another: every call saved as a stream, which replays on any back end."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[[test]]
+name = "recorded"
+path = "recorded.rs"
+
+# A recorded stream replayed in the browser on the WebGL 2 and WebGPU back ends, which times its frames.
+[[example]]
+name = "replay"
+path = "replay.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+wcontainers-gpu = { path = "../.." }
+naga = { workspace = true, features = ["serialize", "deserialize"] }
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+wcontainers-gpu-conformance = { path = "../../conformance" }
+wcontainers-gpu-recording = { path = "../recording" }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+wasm-bindgen = "=0.2.130"
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement", "console"] }
+wcontainers-gpu-webgl = { path = "../webgl" }
+wcontainers-gpu-webgpu = { path = "../webgpu" }
+wgpu = { version = "30.0.2", default-features = false, features = ["webgpu"] }
+
+[lints]
+workspace = true

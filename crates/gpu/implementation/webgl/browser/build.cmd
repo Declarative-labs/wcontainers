@@ -11,5 +11,5 @@ cargo build -j 3 -p wcontainers-gpu-webgl --example browser --target wasm32-unkn
 C:\wc\tools\wasm-bindgen-0.2.130-x86_64-pc-windows-msvc\wasm-bindgen.exe --target web --out-dir "%CARGO_TARGET_DIR%\webgl-pkg" "%CARGO_TARGET_DIR%\wasm32-unknown-unknown\debug\examples\browser.wasm" || exit /b 1
 cargo build -j 3 --release -p wcontainers-gpu-webgl --example draw-cost --target wasm32-unknown-unknown || exit /b 1
 C:\wc\tools\wasm-bindgen-0.2.130-x86_64-pc-windows-msvc\wasm-bindgen.exe --target web --out-dir "%CARGO_TARGET_DIR%\webgl-cost-pkg" "%CARGO_TARGET_DIR%\wasm32-unknown-unknown\release\examples\draw_cost.wasm" || exit /b 1
-cargo build -j 3 --release -p wcontainers-gpu-webgl --features trace --example replay --target wasm32-unknown-unknown || exit /b 1
+cargo build -j 3 --release -p wcontainers-gpu-trace --example replay --target wasm32-unknown-unknown || exit /b 1
 C:\wc\tools\wasm-bindgen-0.2.130-x86_64-pc-windows-msvc\wasm-bindgen.exe --target web --out-dir "%CARGO_TARGET_DIR%\webgl-replay-pkg" "%CARGO_TARGET_DIR%\wasm32-unknown-unknown\release\examples\replay.wasm" || exit /b 1

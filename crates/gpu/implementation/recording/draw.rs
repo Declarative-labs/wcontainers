@@ -15,10 +15,10 @@ use wcontainers_gpu::{caps::*, draw::*, format::*, resource::*, shader::*, state
 /// One value a vertex passes on.
 #[derive(Clone, Debug)]
 pub(crate) struct Varying {
-    pub location: u32,
-    pub interpolation: Interpolation,
-    pub kind: ScalarKind,
-    pub numbers: Vec<f64>,
+    pub(crate) location: u32,
+    pub(crate) interpolation: Interpolation,
+    pub(crate) kind: ScalarKind,
+    pub(crate) numbers: Vec<f64>,
 }
 
 /// A vertex in clip space, its values split by how they are interpolated.
@@ -57,10 +57,10 @@ impl Target {
 
 /// The resources a draw's binding sets name.
 pub(crate) struct Bindings<'a> {
-    pub rec: &'a Recorder,
-    pub sets: &'a [Option<Entries>; MAX_BINDING_SETS],
+    pub(crate) rec: &'a Recorder,
+    pub(crate) sets: &'a [Option<Entries>; MAX_BINDING_SETS],
     /// The draw's writes into storage buffers, applied when it ends.
-    pub writes: &'a RefCell<Vec<StorageWrite>>,
+    pub(crate) writes: &'a RefCell<Vec<StorageWrite>>,
 }
 
 impl Bindings<'_> {
@@ -83,7 +83,7 @@ impl Bindings<'_> {
 
 impl Bindings<'_> {
     /// The bytes of the buffer range bound at (group, binding).
-    pub fn buffer(&self, group: u32, binding: u32) -> Result<&[u8], Error> {
+    pub(crate) fn buffer(&self, group: u32, binding: u32) -> Result<&[u8], Error> {
         let Bound::Buffer {
             buffer,
             offset,
@@ -101,7 +101,7 @@ impl Bindings<'_> {
     }
 
     /// Samples the texture at `image` with the sampler at `sampler`; `compare` is a depth reference.
-    pub fn sample(
+    pub(crate) fn sample(
         &self,
         image: (u32, u32),
         sampler: (u32, u32),
@@ -121,7 +121,7 @@ impl Bindings<'_> {
     }
 
     /// Loads one texel, or one sample of a multisampled texel.
-    pub fn load(
+    pub(crate) fn load(
         &self,
         image: (u32, u32),
         coord: [i64; 3],
@@ -163,7 +163,7 @@ impl Bindings<'_> {
     }
 
     /// The size of a level of the texture.
-    pub fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error> {
+    pub(crate) fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error> {
         let v = self.rec.view(self.texture(image)?)?;
         let t = self.rec.texture(v.texture)?;
         let (w, h, d) = level_size(&t.desc, v.desc.base_mip + level as u32);
@@ -644,13 +644,13 @@ fn clip(polygon: Vec<ClipVertex>, distance: impl Fn(&[f64; 4]) -> f64) -> Vec<Cl
 }
 
 pub(crate) struct DrawState {
-    pub vertex: std::rc::Rc<ShaderModule>,
+    pub(crate) vertex: std::rc::Rc<ShaderModule>,
     fragment: Option<std::rc::Rc<ShaderModule>>,
     blend: BlendDesc,
     depth_stencil: DepthStencilDesc,
-    pub raster: RasterDesc,
+    pub(crate) raster: RasterDesc,
     layout: VertexLayoutDesc,
-    pub sets: [Option<Entries>; MAX_BINDING_SETS],
+    pub(crate) sets: [Option<Entries>; MAX_BINDING_SETS],
     viewport: [f64; 6],
     scissor: Option<ScissorRect>,
 }

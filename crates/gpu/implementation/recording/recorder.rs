@@ -24,29 +24,29 @@ pub struct Id(pub(crate) u32);
     dead_code,
     reason = "only the recorder's own tests read what a frame showed"
 )]
-pub struct Frame {
-    pub window: u32,
-    pub format: Format,
-    pub width: u32,
-    pub height: u32,
+pub(crate) struct Frame {
+    pub(crate) window: u32,
+    pub(crate) format: Format,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     /// Rows of texels in `format`, top row first, tightly packed.
-    pub bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
 }
 
 pub(crate) struct BufferObj {
-    pub bytes: Vec<u8>,
-    pub usage: BufferUsage,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) usage: BufferUsage,
 }
 
 pub(crate) struct TextureObj {
-    pub desc: TextureDesc,
+    pub(crate) desc: TextureDesc,
     /// One per mip level and layer (index mip * layers + layer); a 3D level holds all its slices.
-    pub subresources: Vec<Vec<u8>>,
+    pub(crate) subresources: Vec<Vec<u8>>,
 }
 
 pub(crate) struct ViewObj {
-    pub texture: Id,
-    pub desc: TextureViewDesc,
+    pub(crate) texture: Id,
+    pub(crate) desc: TextureViewDesc,
 }
 
 /// A resource bound in a binding set.
@@ -65,8 +65,8 @@ pub(crate) enum Bound {
 }
 
 pub(crate) struct ProgramObj {
-    pub vertex: Rc<ShaderModule>,
-    pub fragment: Option<Rc<ShaderModule>>,
+    pub(crate) vertex: Rc<ShaderModule>,
+    pub(crate) fragment: Option<Rc<ShaderModule>>,
 }
 
 /// A binding set's entries: binding number, the stages named, and what is bound.
@@ -99,9 +99,9 @@ pub(crate) enum Obj {
 }
 
 pub(crate) struct SurfaceObj {
-    pub window: u32,
-    pub config: Option<(Format, u32, u32)>,
-    pub current: Option<(Id, Id)>,
+    pub(crate) window: u32,
+    pub(crate) config: Option<(Format, u32, u32)>,
+    pub(crate) current: Option<(Id, Id)>,
 }
 
 /// A depth-stencil attachment: its view and what the pass does with each aspect.
@@ -109,32 +109,32 @@ pub(crate) type DepthOps = (Id, Option<AspectOps<u32>>, Option<AspectOps<u8>>);
 
 /// The open pass: its attachments, as (view, 3D slice).
 pub(crate) struct Pass {
-    pub colors: [Option<(Id, u32, StoreOp)>; MAX_COLOR_TARGETS],
+    pub(crate) colors: [Option<(Id, u32, StoreOp)>; MAX_COLOR_TARGETS],
     /// Multisampled attachments and the views they resolve into when the pass ends.
-    pub resolves: Vec<(Id, Id)>,
-    pub depth: Option<DepthOps>,
-    pub width: u32,
-    pub height: u32,
-    pub samples: u32,
-    pub occlusion: Option<Id>,
+    pub(crate) resolves: Vec<(Id, Id)>,
+    pub(crate) depth: Option<DepthOps>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) samples: u32,
+    pub(crate) occlusion: Option<Id>,
     /// The running occlusion query and whether any sample passed.
-    pub query: Option<(u32, u64)>,
+    pub(crate) query: Option<(u32, u64)>,
     /// The query indices begun in this pass.
-    pub begun: Vec<u32>,
+    pub(crate) begun: Vec<u32>,
     /// Buffers the pass's draws bound as writable storage, and those they used any other way.
-    pub written: Vec<Id>,
-    pub other: Vec<Id>,
+    pub(crate) written: Vec<Id>,
+    pub(crate) other: Vec<Id>,
 }
 
 /// A range of bytes of a buffer (`sub` 0), or of one subresource of a texture as held (whole texels),
 /// and the submit the use belongs to.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Touched {
-    pub object: Id,
-    pub sub: usize,
-    pub start: u64,
-    pub end: u64,
-    pub submit: u64,
+    pub(crate) object: Id,
+    pub(crate) sub: usize,
+    pub(crate) start: u64,
+    pub(crate) end: u64,
+    pub(crate) submit: u64,
 }
 
 /// Bytes the recording back end fills discarded and uninitialised-by-`DontCare` attachments with, so a
@@ -147,24 +147,12 @@ impl core::fmt::Debug for Recorder {
     }
 }
 
-impl Default for Recorder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for RecorderConfig {
-    fn default() -> Self {
-        RecorderConfig { caps: full_caps() }
-    }
-}
-
 impl StandaloneGpu for Recorder {
     type Config = RecorderConfig;
     type NewError = core::convert::Infallible;
 
     fn new(config: RecorderConfig) -> Result<Self, Self::NewError> {
-        Ok(Recorder::from_caps(config.caps))
+        Ok(Recorder::from_caps(config.caps.unwrap_or_else(full_caps)))
     }
 }
 
@@ -262,7 +250,8 @@ fn full_caps() -> Caps {
 }
 
 impl Recorder {
-    pub fn new() -> Self {
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
         Self::from_caps(full_caps())
     }
 
@@ -285,17 +274,19 @@ impl Recorder {
         }
     }
 
+    #[cfg(test)]
     /// A recording back end whose capabilities `change` alters (a feature or a format's uses taken
     /// away), so a test drives the route a helper takes on back ends without them.
-    pub fn with_caps(change: impl FnOnce(&mut Caps)) -> Self {
+    pub(crate) fn with_caps(change: impl FnOnce(&mut Caps)) -> Self {
         let mut r = Self::new();
         change(&mut r.caps);
         r
     }
 
+    #[cfg(test)]
     /// The bytes every live buffer and texture holds, by object, and the frames shown: what two
     /// recordings of one stream must agree on.
-    pub fn contents(&self) -> (Vec<Option<Vec<u8>>>, Vec<Vec<u8>>) {
+    pub(crate) fn contents(&self) -> (Vec<Option<Vec<u8>>>, Vec<Vec<u8>>) {
         let objects = self
             .objects
             .iter()
@@ -311,9 +302,10 @@ impl Recorder {
         )
     }
 
+    #[cfg(test)]
     /// A live texture's bytes as held: its subresources in order, a multisampled one's samples as
     /// consecutive planes.
-    pub fn texture_bytes(&self, texture: Id) -> Option<Vec<u8>> {
+    pub(crate) fn texture_bytes(&self, texture: Id) -> Option<Vec<u8>> {
         self.texture(texture).ok().map(|t| t.subresources.concat())
     }
 

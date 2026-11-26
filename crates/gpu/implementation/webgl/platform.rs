@@ -448,24 +448,25 @@ mod native {
             .initialize(display)
             .map_err(|e| format!("eglInitialize: {e}"))?;
         // EGL sorts deeper colour buffers first, so the RGBA8 one surfaces present into is picked out.
-        let attributes = [
-            egl::SURFACE_TYPE,
-            egl::PBUFFER_BIT | egl::WINDOW_BIT,
-            egl::RENDERABLE_TYPE,
-            egl::OPENGL_ES3_BIT,
-            egl::NONE,
-        ];
-        let mut configs = Vec::with_capacity(
+        // A display with no windows (Mesa's surfaceless platform, on machines without one) has only
+        // off-screen configurations: then one of those, and no surface is made on a host window.
+        let rgba8 = |surfaces| -> Result<Option<egl::Config>, String> {
+            let attributes = [
+                egl::SURFACE_TYPE,
+                surfaces,
+                egl::RENDERABLE_TYPE,
+                egl::OPENGL_ES3_BIT,
+                egl::NONE,
+            ];
+            let mut configs = Vec::with_capacity(
+                instance
+                    .matching_config_count(display, &attributes)
+                    .map_err(|e| format!("eglChooseConfig: {e}"))?,
+            );
             instance
-                .matching_config_count(display, &attributes)
-                .map_err(|e| format!("eglChooseConfig: {e}"))?,
-        );
-        instance
-            .choose_config(display, &attributes, &mut configs)
-            .map_err(|e| format!("eglChooseConfig: {e}"))?;
-        let config = configs
-            .into_iter()
-            .find(|c| {
+                .choose_config(display, &attributes, &mut configs)
+                .map_err(|e| format!("eglChooseConfig: {e}"))?;
+            Ok(configs.into_iter().find(|c| {
                 let get = |a| instance.get_config_attrib(display, *c, a).unwrap_or(-1);
                 [
                     egl::RED_SIZE,
@@ -476,8 +477,13 @@ mod native {
                 .into_iter()
                 .all(|a| get(a) == 8)
                     && get(egl::SAMPLES) == 0
-            })
-            .ok_or("ANGLE has no RGBA8 OpenGL ES 3 configuration")?;
+            }))
+        };
+        let config = match rgba8(egl::PBUFFER_BIT | egl::WINDOW_BIT)? {
+            Some(config) => config,
+            None => rgba8(egl::PBUFFER_BIT)?
+                .ok_or("the EGL library has no RGBA8 OpenGL ES 3 configuration")?,
+        };
         // OpenGL ES is EGL's bound API from the start; EGL 1.1 adds the swap interval.
         let context = instance
             .create_context(

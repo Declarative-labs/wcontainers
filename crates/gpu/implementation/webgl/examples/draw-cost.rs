@@ -32,7 +32,8 @@ struct Draw { at: vec4<f32>, colour: vec4<f32> }
 
 /// Distinct uniform ranges, one binding set each.
 const SETS: u32 = 1024;
-const SIZE: u32 = 256;
+/// The side of the square target every draw covers, in texels.
+const TARGET_SIDE: u32 = 256;
 
 /// What a frame draws with, made once.
 struct Scene<B: Gpu> {
@@ -51,7 +52,15 @@ impl<B: Gpu> Scene<B> {
         let program = kit::program(b, QUAD, "vs", "fs");
         let f = Format::Rgba8Unorm;
         let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
-        let t = kit::texture(b, TextureDimension::D2, f, [SIZE, SIZE, 1], 1, usage, false);
+        let t = kit::texture(
+            b,
+            TextureDimension::D2,
+            f,
+            [TARGET_SIDE, TARGET_SIDE, 1],
+            1,
+            usage,
+            false,
+        );
         let target = kit::target(b, &t, f, 0, 0);
         let stride = b.caps().limits.min_uniform_offset_alignment.max(32);
         let buffer = b
@@ -103,7 +112,12 @@ impl<B: Gpu> Scene<B> {
             target,
             sets,
             indices,
-            viewport: [kit::viewport(0.0, 0.0, SIZE as f32, SIZE as f32)],
+            viewport: [kit::viewport(
+                0.0,
+                0.0,
+                TARGET_SIDE as f32,
+                TARGET_SIDE as f32,
+            )],
         }
     }
 

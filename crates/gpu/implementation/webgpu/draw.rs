@@ -56,23 +56,23 @@ pub struct Counters {
 
 /// An immutable block, made once per distinct value.
 #[derive(Debug)]
-pub struct Block<D> {
-    pub id: u64,
-    pub desc: D,
+pub(crate) struct Block<D> {
+    pub(crate) id: u64,
+    pub(crate) desc: D,
     /// How many creations gave it out and were not destroyed yet.
     holders: Cell<u32>,
 }
 
 /// The blocks made so far, by value, so equal blocks are one block and one pipeline key.
 #[derive(Default)]
-pub struct BlockTables {
-    pub blends: BlockTable<BlendDesc>,
-    pub depth_stencils: BlockTable<DepthStencilDesc>,
-    pub rasters: BlockTable<RasterDesc>,
-    pub vertex_layouts: BlockTable<VertexLayoutDesc>,
+pub(crate) struct BlockTables {
+    pub(crate) blends: BlockTable<BlendDesc>,
+    pub(crate) depth_stencils: BlockTable<DepthStencilDesc>,
+    pub(crate) rasters: BlockTable<RasterDesc>,
+    pub(crate) vertex_layouts: BlockTable<VertexLayoutDesc>,
 }
 
-pub struct BlockTable<D>(HashMap<D, Weak<Block<D>>>);
+pub(crate) struct BlockTable<D>(HashMap<D, Weak<Block<D>>>);
 
 impl<D> Default for BlockTable<D> {
     fn default() -> Self {
@@ -82,7 +82,7 @@ impl<D> Default for BlockTable<D> {
 
 impl<D: Hash + Eq + Copy> BlockTable<D> {
     /// The block equal to `desc`, made with `id` if none is alive; says whether it was made.
-    pub fn get(&mut self, desc: &D, id: u64) -> (Rc<Block<D>>, bool) {
+    pub(crate) fn get(&mut self, desc: &D, id: u64) -> (Rc<Block<D>>, bool) {
         if let Some(b) = self.0.get(desc).and_then(Weak::upgrade) {
             b.holders.set(b.holders.get() + 1);
             return (b, false);
@@ -97,7 +97,7 @@ impl<D: Hash + Eq + Copy> BlockTable<D> {
     }
 
     /// Notes one destroy of `b`; once every creation is destroyed, forgets it and answers its id.
-    pub fn release(&mut self, b: &Block<D>) -> Option<u64> {
+    pub(crate) fn release(&mut self, b: &Block<D>) -> Option<u64> {
         let n = b.holders.get().saturating_sub(1);
         b.holders.set(n);
         if n > 0 {
@@ -109,19 +109,19 @@ impl<D: Hash + Eq + Copy> BlockTable<D> {
 }
 
 /// The most dynamic offsets one bind group takes: the uniform buffer slots of one set (plan 6.4).
-pub const MAX_GROUP_DYNAMIC: usize = 16;
+pub(crate) const MAX_GROUP_DYNAMIC: usize = 16;
 
 /// A binding set: its resources, its layout key, and its bind group for each group layout.
 #[derive(Debug)]
-pub struct SetObj {
-    pub key: BindingLayoutKey,
+pub(crate) struct SetObj {
+    pub(crate) key: BindingLayoutKey,
     entries: Vec<(u32, SetRes)>,
     groups: RefCell<Vec<Rc<SetGroup>>>,
 }
 
 /// A set's bind group for one group layout, and where the set's dynamic offsets come from.
 #[derive(Debug)]
-pub struct SetGroup {
+pub(crate) struct SetGroup {
     layout: u64,
     /// The bind epoch at which `group` was last known to be the set's.
     epoch: Cell<u64>,
@@ -229,7 +229,7 @@ impl SetObj {
 }
 
 #[derive(Debug)]
-pub struct GroupObj {
+pub(crate) struct GroupObj {
     id: u64,
     raw: wgpu::BindGroup,
     key: GroupKey,
@@ -237,14 +237,14 @@ pub struct GroupObj {
     used: Cell<u64>,
 }
 
-pub struct GroupLayout {
+pub(crate) struct GroupLayout {
     id: u64,
     raw: wgpu::BindGroupLayout,
     entries: Vec<wgpu::BindGroupLayoutEntry>,
 }
 
 /// A program's pipeline layout for one combination of layout keys.
-pub struct ProgramLayout {
+pub(crate) struct ProgramLayout {
     raw: wgpu::PipelineLayout,
     groups: [Option<Rc<GroupLayout>>; MAX_BINDING_SETS],
     /// The bytes of immediates the program declares; a draw sets no more than these.
@@ -253,7 +253,7 @@ pub struct ProgramLayout {
 
 /// Everything a render pipeline is built from (plan section 4.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PipelineKey {
+pub(crate) struct PipelineKey {
     program: u64,
     blend: u64,
     depth_stencil: u64,
@@ -274,7 +274,7 @@ pub struct PipelineKey {
 type SetKey = Vec<(u32, u8, u64, u64, u64)>;
 
 #[derive(Default)]
-pub struct Caches {
+pub(crate) struct Caches {
     sets: HashMap<SetKey, Weak<SetObj>>,
     /// How many binding sets were alive at the last pruning.
     sets_alive: usize,
@@ -297,7 +297,7 @@ pub struct Caches {
 
 impl Caches {
     /// Forgets the layouts and pipelines made with program or block `id`, destroyed.
-    pub fn forget(&mut self, id: u64) {
+    pub(crate) fn forget(&mut self, id: u64) {
         self.layouts.retain(|k, _| k.0 != id);
         self.computes.retain(|k, _| k.0 != id);
         self.pipelines.retain(|k, _| {
@@ -313,7 +313,7 @@ impl Caches {
     }
 
     /// How many pipelines and program layouts are held.
-    pub fn held(&self) -> (usize, usize) {
+    pub(crate) fn held(&self) -> (usize, usize) {
         (
             self.pipelines.len() + self.computes.len(),
             self.layouts.len(),
@@ -321,7 +321,7 @@ impl Caches {
     }
 
     /// Forgets binding sets and bind groups nothing holds any more.
-    pub fn prune(&mut self) {
+    pub(crate) fn prune(&mut self) {
         prune(&mut self.sets, &mut self.sets_alive);
         if self.groups.len() > 2 * self.groups_alive.max(PRUNE_LEAST) {
             let now = self.group_prunings;
@@ -375,23 +375,23 @@ struct DepthRaw {
 }
 
 /// The open pass, and what it last set, so a draw sets only what changed.
-pub struct Pass {
-    pub rp: wgpu::RenderPass<'static>,
-    pub occlusion: bool,
+pub(crate) struct Pass {
+    pub(crate) rp: wgpu::RenderPass<'static>,
+    pub(crate) occlusion: bool,
     /// The interface index of the running occlusion query.
-    pub query_running: Option<u32>,
+    pub(crate) query_running: Option<u32>,
     targets: TargetLayout,
     own_target: bool,
     width: u32,
     height: u32,
     colors: Vec<Option<ColorRaw>>,
     depth: Option<DepthRaw>,
-    pub occlusion_set: Option<crate::QuerySet>,
+    pub(crate) occlusion_set: Option<crate::QuerySet>,
     /// The page of the query set this part counts in (0: the set's own).
-    pub page: usize,
+    pub(crate) page: usize,
     last: Last,
     /// The textures it draws or resolves into, which a write may not rename while it is open.
-    pub attached: Vec<crate::Texture>,
+    pub(crate) attached: Vec<crate::Texture>,
     /// Its targets of 16-bit packed formats, rounded to their bits whenever a part of it ends.
     packed: Vec<crate::fill::PackedTarget>,
     /// The colour slots drawing into a packed format, a bit each.

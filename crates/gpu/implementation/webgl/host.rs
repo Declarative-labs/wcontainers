@@ -11,7 +11,7 @@ use wcontainers_gpu::{
 /// Whether textures of `format` keep a host copy: GL cannot read them back, and GPU writes never
 /// reach them (they are not renderable) or, for signed normalised formats with EXT_render_snorm,
 /// are read back into the host copy by draws before it is read.
-pub fn kept(format: Format) -> bool {
+pub(crate) fn kept(format: Format) -> bool {
     use Format as F;
     matches!(
         format,
@@ -31,7 +31,7 @@ fn holds_minimum(format: Format, texels: &[u8]) -> bool {
 
 /// Whether the texels a host write takes from `data` (the region of [`HostCopy::write`], padding
 /// between rows and slices left out) hold a signed normalised minimum.
-pub fn write_holds_minimum(
+pub(crate) fn write_holds_minimum(
     desc: &TextureDesc,
     mip: u32,
     origin: [u32; 3],
@@ -50,21 +50,26 @@ pub fn write_holds_minimum(
 }
 
 /// Whether a host write of `extent` at `origin` of level `mip` covers every texel of the level.
-pub fn covers_level(desc: &TextureDesc, mip: u32, origin: [u32; 3], extent: [u32; 3]) -> bool {
+pub(crate) fn covers_level(
+    desc: &TextureDesc,
+    mip: u32,
+    origin: [u32; 3],
+    extent: [u32; 3],
+) -> bool {
     let (row, rows, slices) = shape(desc, mip);
     let b = HostCopy::blocks(desc, mip, origin, extent);
     origin == [0; 3] && (b.row, b.rows, b.slices) == (row, rows, slices)
 }
 
 /// How many slices (layers, or depth slices in 3D) level `mip` has.
-pub fn slices(desc: &TextureDesc, mip: u32) -> u32 {
+pub(crate) fn slices(desc: &TextureDesc, mip: u32) -> u32 {
     shape(desc, mip).2 as u32
 }
 
 /// Every level of a texture, each its slices (layers, or depth slices in 3D) of tightly packed rows
 /// of blocks.
 #[derive(Debug)]
-pub struct HostCopy {
+pub(crate) struct HostCopy {
     bytes: RefCell<Vec<u8>>,
     /// Where each level starts.
     levels: Vec<usize>,
@@ -94,7 +99,7 @@ struct Blocks {
 }
 
 impl HostCopy {
-    pub fn new(desc: &TextureDesc) -> HostCopy {
+    pub(crate) fn new(desc: &TextureDesc) -> HostCopy {
         let mut levels = Vec::with_capacity(desc.mip_levels as usize);
         let mut size = 0;
         for mip in 0..desc.mip_levels {
@@ -127,7 +132,7 @@ impl HostCopy {
     /// Writes a region from `data`, `row_pitch` bytes between rows of blocks and `rows_per_layer`
     /// rows between slices. `origin` and `extent` are in texels, with slices in the third place.
     #[allow(clippy::too_many_arguments)]
-    pub fn write(
+    pub(crate) fn write(
         &self,
         desc: &TextureDesc,
         mip: u32,
@@ -155,7 +160,7 @@ impl HostCopy {
 
     /// Whether any texel of the signed normalised `format` holds its smallest value.
     /// Whether level `mip` holds a signed normalised minimum.
-    pub fn holds_minimum(&self, format: Format, mip: u32) -> bool {
+    pub(crate) fn holds_minimum(&self, format: Format, mip: u32) -> bool {
         let bytes = self.bytes.borrow();
         let end = self
             .levels
@@ -166,14 +171,14 @@ impl HostCopy {
     }
 
     /// Takes every byte of `other`, a host copy of the same shape.
-    pub fn copy_from(&self, other: &HostCopy) {
+    pub(crate) fn copy_from(&self, other: &HostCopy) {
         self.bytes
             .borrow_mut()
             .copy_from_slice(&other.bytes.borrow());
     }
 
     /// Reads a region into `dst` as tightly packed rows of blocks; returns the bytes written.
-    pub fn read(
+    pub(crate) fn read(
         &self,
         desc: &TextureDesc,
         mip: u32,
@@ -202,7 +207,7 @@ impl HostCopy {
 
 /// A block-compressed format's GL format with the WebGL extension that holds it, and the format it is
 /// stored in decoded without that extension.
-pub fn compressed(format: Format) -> Option<(u32, &'static str, Format)> {
+pub(crate) fn compressed(format: Format) -> Option<(u32, &'static str, Format)> {
     use Format as F;
     const S3TC: &str = "WEBGL_compressed_texture_s3tc";
     const S3TC_SRGB: &str = "WEBGL_compressed_texture_s3tc_srgb";
@@ -230,7 +235,7 @@ pub fn compressed(format: Format) -> Option<(u32, &'static str, Format)> {
 
 /// The format textures of `format` are stored in decoded, where they are: block-compressed ones
 /// without their WebGL extension ([`compressed`]), and the two-pixel ones as one RGBA texel a pixel.
-pub fn decoded(format: Format) -> Option<Format> {
+pub(crate) fn decoded(format: Format) -> Option<Format> {
     match format {
         Format::Rgbg8Unorm | Format::Grgb8Unorm => Some(Format::Rgba8Unorm),
         _ => compressed(format).map(|(_, _, decoded)| decoded),
@@ -239,7 +244,7 @@ pub fn decoded(format: Format) -> Option<Format> {
 
 /// Decodes tightly packed blocks of `format`, `blocks_wide` to a row, into texels of the format
 /// [`decoded`] names, tightly packed rows as many texels high per row of blocks as a block is.
-pub fn decode(format: Format, blocks: &[u8], blocks_wide: usize) -> Vec<u8> {
+pub(crate) fn decode(format: Format, blocks: &[u8], blocks_wide: usize) -> Vec<u8> {
     use Format as F;
     let (bw, bh, block_bytes) = FORMAT_FACTS[format as usize].block;
     let (bw, bh, block_bytes) = (bw as usize, bh as usize, block_bytes as usize);

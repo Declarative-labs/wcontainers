@@ -2,8 +2,8 @@
 //! buffers in whole 4-byte words, so the words a range only partly covers are merged by a small
 //! compute program (slow path `UnalignedBufferEdge`).
 
-use wcontainers_gpu::Gpu;
 use wcontainers_gpu::slow::SlowPath;
+use wcontainers_gpu::{Gpu, STORAGE_WORD};
 
 use crate::{GROUP, Stream, WebGpu, with_group};
 
@@ -38,11 +38,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 
 /// Where and how much a native buffer copy may move.
 const ALIGN: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
-/// The bytes of a word the program reads and writes.
-const WORD: u64 = wcontainers_gpu::STORAGE_WORD;
 
 /// The program, made at its first use.
-pub struct EdgeProgram {
+pub(crate) struct EdgeProgram {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
 }
@@ -115,9 +113,10 @@ impl WebGpu {
         let align = u64::from(limits.min_storage_buffer_offset_alignment);
         // A piece's window adds up to `align` bytes before it and a word after it, and one more
         // word may need one more workgroup.
-        let piece = ((u64::from(limits.max_compute_workgroups_per_dimension) - 1) * GROUP * WORD)
-            .min(limits.max_storage_buffer_binding_size - align - WORD)
-            & !(WORD - 1);
+        let piece =
+            ((u64::from(limits.max_compute_workgroups_per_dimension) - 1) * GROUP * STORAGE_WORD)
+                .min(limits.max_storage_buffer_binding_size - align - STORAGE_WORD)
+                & !(STORAGE_WORD - 1);
         let mut done = 0;
         while done < size {
             let n = (size - done).min(piece);
@@ -141,18 +140,18 @@ impl WebGpu {
         let align = u64::from(self.caps.limits.min_storage_offset_alignment);
         // Each buffer is bound from the aligned offset below the range to the word after it.
         let window = |at: u64| {
-            let start = at & !(WORD - 1) & !(align - 1);
-            (start, (at + size).next_multiple_of(WORD) - start)
+            let start = at & !(STORAGE_WORD - 1) & !(align - 1);
+            (start, (at + size).next_multiple_of(STORAGE_WORD) - start)
         };
         let (dst_start, dst_len) = window(dst_at);
         let (src_start, src_len) = window(src_at);
-        let first_word = (dst_at & !(WORD - 1)) - dst_start;
+        let first_word = (dst_at & !(STORAGE_WORD - 1)) - dst_start;
         let params: Vec<u8> = [
             src_at - src_start,
             dst_at - dst_start,
             size,
-            first_word / WORD,
-            (dst_len - first_word) / WORD,
+            first_word / STORAGE_WORD,
+            (dst_len - first_word) / STORAGE_WORD,
             0,
             0,
             0,
@@ -160,7 +159,7 @@ impl WebGpu {
         .iter()
         .flat_map(|v| (*v as u32).to_le_bytes())
         .collect();
-        let words = (dst_len - first_word) / WORD;
+        let words = (dst_len - first_word) / STORAGE_WORD;
         let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: params.len() as u64,

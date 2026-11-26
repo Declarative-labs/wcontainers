@@ -243,6 +243,17 @@ fn depth_test<B: Gpu>(b: &mut B, compare: Option<CompareFn>, write: bool) -> B::
     .expect("create_depth_stencil")
 }
 
+/// The provoking vertex a test that draws no flat value asks for: Direct3D's first where the back end
+/// has it, else the last, which every back end with either has (WebGL 2 without
+/// `ANGLE_provoking_vertex`, OpenGL ES).
+fn any_provoking<B: Gpu>(b: &B) -> ProvokingVertex {
+    if b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST) {
+        ProvokingVertex::First
+    } else {
+        ProvokingVertex::Last
+    }
+}
+
 fn raster<B: Gpu>(b: &mut B, cull: CullMode) -> B::Raster {
     b.create_raster(&RasterDesc {
         fill: FillMode::Solid,
@@ -254,7 +265,7 @@ fn raster<B: Gpu>(b: &mut B, cull: CullMode) -> B::Raster {
         depth_clip: true,
         scissor: false,
         line_width: 1.0f32.to_bits(),
-        provoking: ProvokingVertex::First,
+        provoking: any_provoking(b),
         depth_minus_one: false,
         sample_mask: !0,
     })
@@ -1010,17 +1021,30 @@ pub fn textured_draw_with_depth_and_blending<B: Gpu>(mut b: B) {
     ok(&mut b);
 }
 
-/// The window every back end given to [`tests!`] can present into: the value is made with it.
+/// The window a back end given to [`tests!`] presents into where its host gave it one.
 const PRESENT_WINDOW: u32 = 1;
 
-/// A surface of the host's window takes cleared frames one after another, and the device keeps working.
+/// A surface of the host's window takes cleared frames one after another, and the device keeps working;
+/// a back end built alone whose host named no window answers an error instead, and keeps working too.
 ///
-/// What the host then shows is read by each implementation's own test, since only the host can see its
-/// window.
+/// The interface has no call that gives a back end a window: a host names its windows to the
+/// implementation itself, so on a machine without a display (the build machines) no value given to
+/// [`tests!`] has one. What the host then shows is read by each implementation's own test, since only
+/// the host can see its window.
 pub fn presents_cleared_frames<B: Gpu>(mut b: B) {
     needs(&b, Format::Rgba8Unorm, FormatUse::PRESENT);
-    let window = PRESENT_WINDOW;
-    let surface = b.create_surface(window).expect("create_surface");
+    let surface = match b.create_surface(PRESENT_WINDOW) {
+        Ok(surface) => surface,
+        Err(_) => {
+            assert_eq!(
+                b.status(),
+                DeviceStatus::Ok,
+                "a window refused loses no device"
+            );
+            ok(&mut b);
+            return;
+        }
+    };
     b.configure_surface(&surface, Format::Rgba8Unorm, 4, 4, true)
         .expect("configure_surface");
     for value in [[0.2, 0.4, 0.6, 1.0], [1.0, 0.0, 0.2, 1.0]] {
@@ -1652,7 +1676,7 @@ pub fn the_scissor_bounds_the_draw<B: Gpu>(mut b: B) {
     let rs = b
         .create_raster(&RasterDesc {
             scissor: true,
-            ..raster_desc(ProvokingVertex::First)
+            ..raster_desc(any_provoking(&b))
         })
         .expect("create_raster");
     let vl = positions(&mut b);
@@ -1706,7 +1730,7 @@ pub fn a_scissor_past_the_target_is_clipped_to_it<B: Gpu>(mut b: B) {
     let rs = b
         .create_raster(&RasterDesc {
             scissor: true,
-            ..raster_desc(ProvokingVertex::First)
+            ..raster_desc(any_provoking(&b))
         })
         .expect("create_raster");
     let vl = positions(&mut b);
@@ -2945,7 +2969,7 @@ fn samples_of<B: Gpu>(b: &mut B, ms: &B::TextureView, n: u32) -> Vec<u8> {
     let bl = blend(b, opaque());
     let ds = depth_test(b, None, false);
     let rs = b
-        .create_raster(&raster_desc(ProvokingVertex::First))
+        .create_raster(&raster_desc(any_provoking(b)))
         .expect("create_raster");
     let vl = positions(b);
     let vp = viewport(n, n);
@@ -3010,7 +3034,7 @@ fn cover_rows<B: Gpu>(b: &mut B, ms: &B::TextureView, resolve: Option<&B::Textur
     let bl = blend(b, opaque());
     let ds = depth_test(b, None, false);
     let rs = b
-        .create_raster(&raster_desc(ProvokingVertex::First))
+        .create_raster(&raster_desc(any_provoking(b)))
         .expect("create_raster");
     let vl = positions(b);
     let vp = viewport(4, 4);
@@ -3147,7 +3171,7 @@ pub fn programs_run_per_sample_and_read_samples<B: Gpu>(mut b: B) {
     let bl = blend(&mut b, opaque());
     let ds = depth_test(&mut b, None, false);
     let rs = b
-        .create_raster(&raster_desc(ProvokingVertex::First))
+        .create_raster(&raster_desc(any_provoking(&b)))
         .expect("create_raster");
     let vl = positions(&mut b);
     let vp = viewport(N, N);
@@ -3191,7 +3215,7 @@ pub fn occlusion_queries_answer_whether_samples_passed<B: Gpu>(mut b: B) {
     let bl = blend(&mut b, opaque());
     let ds = depth_test(&mut b, None, false);
     let rs = b
-        .create_raster(&raster_desc(ProvokingVertex::First))
+        .create_raster(&raster_desc(any_provoking(&b)))
         .expect("create_raster");
     let vl = positions(&mut b);
     let vp = viewport(N, N);
@@ -3476,11 +3500,7 @@ pub fn fill_modes_draw_edges_or_corners<B: Gpu>(mut b: B) {
             depth_clip: true,
             scissor: false,
             line_width: 1.0f32.to_bits(),
-            provoking: if b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST) {
-                ProvokingVertex::First
-            } else {
-                ProvokingVertex::Last
-            },
+            provoking: any_provoking(&b),
             depth_minus_one: false,
             sample_mask: !0,
         };
@@ -4969,8 +4989,9 @@ pub fn fans_cover_their_triangles<B: Gpu>(mut b: B) {
     let p = program(&mut b, CONSTANT, "vs", "fs");
     let bl = blend(&mut b, opaque());
     let ds = depth_test(&mut b, None, false);
+    let provoking = any_provoking(&b);
     let rs = b
-        .create_raster(&raster_desc(ProvokingVertex::First))
+        .create_raster(&raster_desc(provoking))
         .expect("create_raster");
     let vl = positions(&mut b);
     let vp = viewport(N, N);
@@ -5009,7 +5030,7 @@ pub fn fans_cover_their_triangles<B: Gpu>(mut b: B) {
         ),
         FanOrLoop::TriangleFan,
         IndexSource::Sequential { first: 0, count: 4 },
-        ProvokingVertex::First,
+        provoking,
         0,
         1,
     );

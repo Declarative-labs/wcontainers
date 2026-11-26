@@ -4,7 +4,7 @@ rem and the quads again on depth24plus-stencil8, through the WebGPU back end nat
 rem Direct3D 12 and on Vulkan) and in Chrome on
 rem WebGPU (the back end built for WebAssembly), compares every picture with real Direct3D 11's at
 rem tolerance 0, and checks that the quads with a changed blend factor or depth function differ from
-rem it both ways, and runs the shared suite in Chrome (suite.mjs). Exits 1 if any check fails.
+rem it both ways. Exits 1 if any check fails.
 rem   check.cmd <name>   writes C:\wc\out\<name>-webgpu
 setlocal
 set BIN=%CARGO_TARGET_DIR%\debug
@@ -22,10 +22,8 @@ rem A launch of Chrome now and then gets no WebGPU adapter; the page scripts the
 rem and are launched again, up to LAUNCHES times in all (:chrome).
 set NO_ADAPTER=3
 set LAUNCHES=3
-call :chrome crates\gpu-webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-factor depth-function
-cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite -- --list --format terse > "%OUT%\suite-list.txt" || set FAILED=1
-call :chrome crates\gpu-webgpu\web\suite.mjs "%OUT%\pkg" "%OUT%\suite-chrome.txt" "%OUT%\suite-list.txt"
-call :chrome crates\gpu-webgpu\web\plain.mjs "%OUT%\pkg"
+call :chrome crates\gpu\implementation\webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-factor depth-function
+call :chrome crates\gpu\implementation\webgpu\web\plain.mjs "%OUT%\pkg"
 for %%s in (triangle quads instanced) do (
     for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do call :same %%r-%%s.png %%s.png
 )

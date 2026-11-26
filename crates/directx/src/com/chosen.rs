@@ -135,7 +135,7 @@ mod webgl {
 
     use wcontainers_direct3d_11::WARNING_PREFIX;
 
-    pub type Chosen = wcontainers_gpu_webgl::WebGl;
+    pub type Chosen = wcontainers_gpu_webgl::Gl;
 
     /// The environment variable naming WebGL extensions taken as missing.
     pub const FEATURES_OFF: &str = "WEBGL_OFF";

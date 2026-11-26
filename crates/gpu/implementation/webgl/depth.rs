@@ -9,14 +9,14 @@ use glow::HasContext;
 
 /// The program for one kind of source texture, and its uniforms.
 #[derive(Debug)]
-pub struct DepthRead {
-    pub program: glow::Program,
+pub(crate) struct DepthRead {
+    pub(crate) program: glow::Program,
     /// The region's origin x and y, and its layer; the level is the texture's base level, which the
     /// draw sets to the region's.
-    pub at: glow::UniformLocation,
+    pub(crate) at: glow::UniformLocation,
     /// What a depth of 1 is stored as (65535, 16777215), or 0 to keep a float's bits; None for
     /// stencil.
-    pub scale: Option<glow::UniformLocation>,
+    pub(crate) scale: Option<glow::UniformLocation>,
 }
 
 /// A triangle covering the target, from the vertex number alone.
@@ -28,7 +28,7 @@ void main() {
 
 /// The direction from a cube's centre to the centre of texel `t` of face `at.z` (GL's face order
 /// and texel axes), for programs sampling a cube `src` towards a texel.
-pub const TOWARDS: &str = "vec3 towards(ivec2 t) {
+pub(crate) const TOWARDS: &str = "vec3 towards(ivec2 t) {
     vec2 c = (vec2(t) + 0.5) / float(textureSize(src, 0).x) * 2.0 - 1.0;
     switch (at.z) {
         case 0: return vec3(1.0, -c.y, -c.x);
@@ -43,7 +43,7 @@ pub const TOWARDS: &str = "vec3 towards(ivec2 t) {
 
 /// The shape of a source texture: 2D, 2D array (`at.z` the layer) or cube (`at.z` the face).
 #[derive(Clone, Copy, Debug)]
-pub enum Shape {
+pub(crate) enum Shape {
     D2,
     Array,
     Cube,
@@ -109,7 +109,7 @@ void main() {
 ";
 
 /// Builds the program for sources of `shape`, of depth or of stencil. Err holds GL's log.
-pub fn build(gl: &glow::Context, shape: Shape, stencil: bool) -> Result<DepthRead, String> {
+pub(crate) fn build(gl: &glow::Context, shape: Shape, stencil: bool) -> Result<DepthRead, String> {
     let program = link(gl, &fragment(shape, stencil))?;
     // SAFETY: plain queries of a linked program.
     unsafe {
@@ -123,12 +123,12 @@ pub fn build(gl: &glow::Context, shape: Shape, stencil: bool) -> Result<DepthRea
 
 /// The program writing stencil from an `r8uint` texture, and its uniforms.
 #[derive(Debug)]
-pub struct StencilWrite {
-    pub program: glow::Program,
+pub(crate) struct StencilWrite {
+    pub(crate) program: glow::Program,
     /// As [`DepthRead::at`]: the source's offset from the fragment, and its layer.
-    pub at: glow::UniformLocation,
+    pub(crate) at: glow::UniformLocation,
     /// The bit drawn: fragments whose source value lacks it are discarded; 0 discards none.
-    pub bit: glow::UniformLocation,
+    pub(crate) bit: glow::UniformLocation,
 }
 
 /// Keeps the fragments whose source texel holds `bit`, for draws that set that stencil bit.
@@ -154,7 +154,7 @@ void main() {{
 }
 
 /// Builds the stencil write program for 2D (`array` false) or 2D array sources. Err holds GL's log.
-pub fn build_stencil_write(gl: &glow::Context, array: bool) -> Result<StencilWrite, String> {
+pub(crate) fn build_stencil_write(gl: &glow::Context, array: bool) -> Result<StencilWrite, String> {
     let program = link(gl, &stencil_write(array))?;
     // SAFETY: plain queries of a linked program.
     unsafe {
@@ -176,7 +176,9 @@ void main() {
 ";
 
 /// Builds the 24-bit depth probe's program and its uniform `z`. Err holds GL's log.
-pub fn build_probe(gl: &glow::Context) -> Result<(glow::Program, glow::UniformLocation), String> {
+pub(crate) fn build_probe(
+    gl: &glow::Context,
+) -> Result<(glow::Program, glow::UniformLocation), String> {
     let program = link_with(gl, PROBE, ONE)?;
     // SAFETY: a plain query of a linked program.
     let z = unsafe { gl.get_uniform_location(program, "z") };
@@ -184,12 +186,12 @@ pub fn build_probe(gl: &glow::Context) -> Result<(glow::Program, glow::UniformLo
 }
 
 /// Builds the program the stencil bit draws use. Err holds GL's log.
-pub fn build_bits(gl: &glow::Context) -> Result<glow::Program, String> {
+pub(crate) fn build_bits(gl: &glow::Context) -> Result<glow::Program, String> {
     link(gl, ONE)
 }
 
 /// Links the full-screen vertex program with `fragment`. Err holds GL's log.
-pub fn link(gl: &glow::Context, fragment: &str) -> Result<glow::Program, String> {
+pub(crate) fn link(gl: &glow::Context, fragment: &str) -> Result<glow::Program, String> {
     link_with(gl, VERTEX, fragment)
 }
 
@@ -225,7 +227,7 @@ fn link_with(gl: &glow::Context, vertex: &str, fragment: &str) -> Result<glow::P
 
 /// What the stored depth of `format` is read as: the scale of [`DepthRead::scale`] and the bytes each
 /// texel keeps (Direct3D's: 16-bit unorm, 24-bit unorm in the low bits of a 32-bit word, 32-bit float).
-pub fn stored(format: wcontainers_gpu::format::Format) -> Option<(u32, usize)> {
+pub(crate) fn stored(format: wcontainers_gpu::format::Format) -> Option<(u32, usize)> {
     use wcontainers_gpu::format::Format as F;
     match format {
         F::Depth16Unorm => Some((65535, 2)),

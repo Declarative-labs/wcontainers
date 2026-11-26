@@ -22,8 +22,6 @@ mod state;
 pub mod glsl {
     pub use crate::shader::{GlslSettings, ShaderText, needs, write};
 }
-#[cfg(feature = "trace")]
-pub mod trace;
 
 use glow::HasContext;
 use shader::{ProgramObj, ShaderObj, Slot};
@@ -323,13 +321,6 @@ impl Applied {
     }
 }
 
-/// The back end fronts build on: [`Gl`], or with the `record` feature [`Gl`] recording every call
-/// into a stream file ([`trace::Traced`]).
-#[cfg(not(feature = "record"))]
-pub type WebGl = Gl;
-#[cfg(feature = "record")]
-pub type WebGl = trace::Traced<Gl>;
-
 /// The start of the line the back end prints on standard error at each power of two frames
 /// presented: the frames, then every slow path taken as `name=count`, so any program's log gives
 /// what a frame costs between two reports.
@@ -337,7 +328,7 @@ pub const FRAME_REPORT: &str = "webgl: frames=";
 
 /// What a WebGL 2 back end is made from natively: ANGLE's folder and the extensions to leave unused.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GlConfig {
     pub angle: std::path::PathBuf,
     pub off: Vec<String>,
@@ -345,7 +336,7 @@ pub struct GlConfig {
 
 /// What a WebGL 2 back end is made from in a browser: a canvas's context and extensions left unused.
 #[cfg(target_arch = "wasm32")]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GlConfig {
     pub context: web_sys::WebGl2RenderingContext,
     pub off: Vec<String>,

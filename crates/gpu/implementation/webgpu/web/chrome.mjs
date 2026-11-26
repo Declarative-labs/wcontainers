@@ -1,5 +1,5 @@
 // The rig's pinned Chrome and a local server for this directory's pages and wasm-bindgen's output,
-// shared by draw.mjs, suite.mjs and plain.mjs. Uses the rig's page-driver packages (tools/graphics-rig/browser,
+// shared by draw.mjs and plain.mjs. Uses the rig's page-driver packages (tools/graphics-rig/browser,
 // installed by its install.ps1).
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';

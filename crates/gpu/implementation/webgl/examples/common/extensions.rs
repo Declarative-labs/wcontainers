@@ -3,7 +3,7 @@
 //! distances; and points sized by the program, which WebGL 2 has without one. Each draws where the back end declares the feature; `absent_features_are_refused`
 //! checks the refusal where it does not.
 
-use super::Host;
+use crate::host;
 use crate::kit::{self, Kit};
 use wcontainers_gpu::{
     caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
@@ -142,8 +142,8 @@ struct Sources {
 /// Two targets with a blend and write mask each (OES_draw_buffers_indexed): target 0 adds, target 1
 /// writes red and alpha only. A block the same for both follows, and the per-target one again, so
 /// both changes between GL's calls for all targets and for one are seen.
-pub fn independent_blends_per_target<H: Host>() {
-    let mut b = H::make();
+pub fn independent_blends_per_target() {
+    let mut b = host::make();
     if !b.caps().features.contains(Features::INDEPENDENT_BLEND) {
         return super::not_run(Features::INDEPENDENT_BLEND);
     }
@@ -184,7 +184,7 @@ pub fn independent_blends_per_target<H: Host>() {
     ];
     for (i, (load, blend, want0, want1)) in rounds.into_iter().enumerate() {
         let load = load.map_or(LoadOp::Load, LoadOp::Clear);
-        b.begin_pass(&pass::<H::Backend>(&[&v0, &v1], load));
+        b.begin_pass(&pass::<host::Backend>(&[&v0, &v1], load));
         b.draw(&DrawCall {
             blend,
             ..kit::call(&k, &p, None, &whole, Topology::TriangleList, 3)
@@ -202,8 +202,8 @@ pub fn independent_blends_per_target<H: Host>() {
 /// destination times the second source, alpha as source plus destination times one minus the second
 /// source's alpha. With two colour targets the draw loses the device, as GL blends a second source
 /// into one target only.
-pub fn second_source_blends<H: Host>() {
-    let mut b = H::make();
+pub fn second_source_blends() {
+    let mut b = host::make();
     if !b.caps().features.contains(Features::DUAL_SOURCE_BLEND) {
         return super::not_run(Features::DUAL_SOURCE_BLEND);
     }
@@ -231,7 +231,10 @@ pub fn second_source_blends<H: Host>() {
     );
     let (t, v) = rgba(&mut b, 4, 4);
     let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
-    b.begin_pass(&pass::<H::Backend>(&[&v], LoadOp::Clear(clear([102; 4]))));
+    b.begin_pass(&pass::<host::Backend>(
+        &[&v],
+        LoadOp::Clear(clear([102; 4])),
+    ));
     b.draw(&DrawCall {
         blend: &blend,
         ..kit::call(&k, &p, None, &whole, Topology::TriangleList, 3)
@@ -242,7 +245,7 @@ pub fn second_source_blends<H: Host>() {
     // 102 + 102 * 0.5, 51 + 102 * 0, 204 + 102 * 1 (saturated), 255 + 102 * 0.
     assert!(near(&got, [153, 51, 255, 255]), "{:?}", &got[..4]);
     let (_, w) = rgba(&mut b, 4, 4);
-    b.begin_pass(&pass::<H::Backend>(&[&v, &w], LoadOp::Clear([0; 4])));
+    b.begin_pass(&pass::<host::Backend>(&[&v, &w], LoadOp::Clear([0; 4])));
     b.draw(&DrawCall {
         blend: &blend,
         ..kit::call(&k, &p, None, &whole, Topology::TriangleList, 3)
@@ -319,8 +322,8 @@ fn stored_depth<B: Gpu>(
 
 /// Depth clamped instead of clipped (EXT_depth_clamp), to the viewport's depth range: a triangle
 /// past each end of the range of 0.25 to 0.75 stores that end; clipped, it stores nothing.
-pub fn depth_clamped_to_the_viewport_range<H: Host>() {
-    let mut b = H::make();
+pub fn depth_clamped_to_the_viewport_range() {
+    let mut b = host::make();
     if !b.caps().features.contains(Features::DEPTH_CLAMP) {
         return super::not_run(Features::DEPTH_CLAMP);
     }
@@ -340,8 +343,8 @@ pub fn depth_clamped_to_the_viewport_range<H: Host>() {
 /// A constant depth bias clamped (EXT_polygon_offset_clamp): a million units at depth 0.5 of a
 /// `depth32float` texture (2^-24 each, so 0.0596) clamped to 0.01, then minus a million clamped to
 /// -0.01; without a clamp the whole bias.
-pub fn depth_bias_clamped<H: Host>() {
-    let mut b = H::make();
+pub fn depth_bias_clamped() {
+    let mut b = host::make();
     if !b.caps().features.contains(Features::DEPTH_BIAS_CLAMP) {
         return super::not_run(Features::DEPTH_BIAS_CLAMP);
     }
@@ -380,8 +383,8 @@ const TRIANGLE: &str = "
 
 /// Polygon edges (WEBGL_polygon_mode): a triangle filled with lines leaves its inside clear, and
 /// every pixel it draws lies on an edge, within a pixel; the same triangle filled covers its inside.
-pub fn polygons_filled_with_lines<H: Host>() {
-    let mut b = H::make();
+pub fn polygons_filled_with_lines() {
+    let mut b = host::make();
     if !b.caps().features.contains(Features::POLYGON_MODE) {
         return super::not_run(Features::POLYGON_MODE);
     }
@@ -443,8 +446,8 @@ const MIRROR: &str = "
 }
 ";
 
-pub fn mirror_once_addressing<H: Host>() {
-    let mut b = H::make();
+pub fn mirror_once_addressing() {
+    let mut b = host::make();
     if !b.caps().features.contains(Features::MIRROR_ONCE) {
         return super::not_run(Features::MIRROR_ONCE);
     }
@@ -577,12 +580,12 @@ struct Out {
 /// User clip distances (WEBGL_clip_cull_distance) keep the quarter where both are positive, and a
 /// later program without them is not clipped; cull distances drop the whole triangle where every
 /// vertex's is negative.
-pub fn clip_and_cull_distances<H: Host>() {
-    let mut b = H::make();
+pub fn clip_and_cull_distances() {
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let (t, v) = rgba(&mut b, 8, 8);
     let whole = [kit::viewport(0.0, 0.0, 8.0, 8.0)];
-    let draw = |b: &mut H::Backend, p: &<H::Backend as Gpu>::Program, count| {
+    let draw = |b: &mut host::Backend, p: &<host::Backend as Gpu>::Program, count| {
         b.begin_pass(&kit::pass(&v, [0; 4], None));
         b.draw(&kit::call(
             &k,
@@ -663,8 +666,8 @@ struct Out {
 
 /// Points sized by the vertex program (`gl_PointSize`): a point of size 6 centred on a pixel corner
 /// covers the 6 by 6 pixels around it; one whose program writes no size covers one pixel.
-pub fn points_sized_by_the_program<H: Host>() {
-    let mut b = H::make();
+pub fn points_sized_by_the_program() {
+    let mut b = host::make();
     if !b.caps().features.contains(Features::POINT_SIZE) {
         return super::not_run(Features::POINT_SIZE);
     }
@@ -720,9 +723,9 @@ pub fn points_sized_by_the_program<H: Host>() {
 /// Draws and clears that break the interface's rules lose the device instead of drawing something
 /// else: no viewport, two viewports, front and back stencil references that differ without
 /// `STENCIL_PER_FACE`, and a buffer clear whose pattern is not 1, 2, 4, 8 or 16 bytes long.
-pub fn broken_rules_lose_the_device<H: Host>() {
+pub fn broken_rules_lose_the_device() {
     for case in 0..4 {
-        let mut b = H::make();
+        let mut b = host::make();
         if case == 3 {
             let buffer = super::buffer(&mut b, BufferUsage::VERTEX, &[0; 24]);
             b.clear_buffer(&buffer, 0, 24, &[1, 2, 3]);
@@ -750,8 +753,8 @@ pub fn broken_rules_lose_the_device<H: Host>() {
 
 /// A stage reading more uniform buffers than the limit is refused when it is made, with the rule,
 /// and one reading as many as the limit is made and draws (GL would refuse to link past it).
-pub fn stages_past_the_uniform_buffer_limit_are_refused<H: Host>() {
-    let mut b = H::make();
+pub fn stages_past_the_uniform_buffer_limit_are_refused() {
+    let mut b = host::make();
     let limit = b.caps().limits.uniform_buffers_per_stage;
     let wgsl = |n: u32| {
         let mut s = String::from(

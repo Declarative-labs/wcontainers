@@ -1,5 +1,5 @@
-//! The scenes of `webgl-scenes` and the shared back-end suite, built for WebAssembly and run on canvases'
-//! WebGL 2 contexts by browser/run.mjs (scenes, page.html) and browser/suite.mjs (the suite,
+//! The scenes of `webgl-scenes` and the back end's own checks, built for WebAssembly and run on canvases'
+//! WebGL 2 contexts by browser/run.mjs (scenes, page.html) and browser/suite.mjs (the checks,
 //! suite.html); and the comparisons with the WebGPU back end on Chrome's WebGPU, by
 //! browser/against.mjs (against.html).
 #![cfg(target_arch = "wasm32")]
@@ -94,87 +94,44 @@ thread_local! {
     static OFF: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-/// The suite's host in the browser: each device on a new canvas.
-struct Chrome;
+/// The checks' host in the browser: each device on a new canvas.
+mod host {
+    use super::{OFF, make_context, shown_texels};
+    use wcontainers_gpu_webgl::Gl;
 
-impl checks::Host for Chrome {
-    type Backend = Gl;
+    pub type Backend = Gl;
 
-    fn make() -> Gl {
+    pub fn make() -> Gl {
         OFF.with_borrow(|off| {
             let off: Vec<&str> = off.split_whitespace().collect();
             Gl::on_canvas(make_context(), &off)
         })
     }
 
-    fn window(_: &mut Gl) -> u32 {
+    pub fn window(_: &mut Gl) -> u32 {
         0
     }
 
-    fn shown(_: &mut Gl, _: u32) -> Vec<u8> {
+    pub fn shown(_: &mut Gl, _: u32) -> Vec<u8> {
         shown_texels()
     }
 }
 
-/// Every suite test, then every check of examples/common/checks.rs, by name.
+/// Every check of examples/common/checks.rs, by name. The shared suite runs only from
+/// conformance_run.rs.
 macro_rules! suite {
-    ($($test:ident),* $(,)?; $($check:ident),* $(,)?) => {
+    ($($check:ident),* $(,)?) => {
         const SUITE: &[(&str, fn())] = &[
-            $((stringify!($test), || wcontainers_gpu_conformance::$test(<Chrome as checks::Host>::make())),)*
-            ("present_shows_the_frame", checks::present_shows_the_frame::<Chrome>),
+            ("present_shows_the_frame", checks::present_shows_the_frame),
             $((stringify!($check), || {
                 let (seed, cases) = SAMPLING.get();
-                checks::seeded(checks::$check::<Chrome>, seed, cases)
+                checks::seeded(checks::$check, seed, cases)
             }),)*
         ];
     };
 }
 
 suite!(
-    buffer_writes_land_in_order_and_read_back,
-    texture_writes_land_and_read_back,
-    copies_move_bytes_exactly,
-    clears_fill_exactly,
-    triangle_covers_the_pixels_whose_centres_it_holds,
-    textured_draw_with_depth_and_blending,
-    edges_through_pixel_centres_follow_the_top_left_rule,
-    strips_take_flat_values_from_the_provoking_vertex,
-    depth_writes_off_leave_the_depth,
-    a_fragment_covering_no_sample_writes_nothing,
-    srgb_targets_convert_colour_but_not_alpha,
-    generate_mips_averages_in_the_values_format,
-    values_are_interpolated_with_perspective,
-    the_scissor_bounds_the_draw,
-    a_scissor_past_the_target_is_clipped_to_it,
-    clear_rects_clear_each_rectangle_clipped_to_the_view,
-    copies_between_depth_stencil_textures_move_both_aspects,
-    stencil_operations_and_tests,
-    near_clipping_and_the_viewport_depth_range,
-    linear_filtering_and_address_modes,
-    instances_start_at_the_first_instance,
-    indexed_strips_restart_and_add_the_base_vertex,
-    a_stream_of_stride_zero_reads_its_first_element,
-    comparison_samplers_compare_with_the_stored_depth,
-    fragments_write_storage_buffers,
-    multisampled_targets_cover_their_samples_and_resolve,
-    resolves_average_in_the_format_named,
-    programs_run_per_sample_and_read_samples,
-    occlusion_queries_answer_whether_samples_passed,
-    fill_modes_draw_edges_or_corners,
-    values_pass_between_programs_by_location,
-    vertices_pulled_from_storage_match_the_fetched_ones,
-    constants_read_through_a_texture_lie_256_rows_to_a_texture_row,
-    missing_components_read_their_defaults,
-    typed_buffers_through_storage_read_their_views_place_and_length,
-    typed_buffers_through_a_texture_lie_2048_elements_to_a_row,
-    captures_write_location_outputs_packed_in_draw_order,
-    a_copy_within_one_subresource_moves_the_region,
-    a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
-    the_occlusion_counter_counts_every_sample_that_passes,
-    every_vertex_format_reads_its_element,
-    a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
-    an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows,
-    presents_cleared_frames;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
     depth_and_stencil_read_back,

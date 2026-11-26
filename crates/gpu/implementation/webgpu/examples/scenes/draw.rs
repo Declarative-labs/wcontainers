@@ -78,21 +78,6 @@ pub async fn device(backends: wgpu::Backends) -> Result<(WebGpu, String)> {
     device_on(&instance(backends)).await
 }
 
-/// The Vulkan loader's variables that name the only driver manifests it loads.
-/// https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md#table-of-debug-environment-variables
-const VULKAN_DRIVER_VARIABLES: [&str; 2] = ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"];
-
-/// The start of the manifest name of lavapipe, Mesa's Vulkan driver that draws on the CPU.
-/// https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.3.1/src/gallium/targets/lavapipe/meson.build
-const LAVAPIPE_MANIFEST: &str = "lvp_icd";
-
-/// Tells whether the run names lavapipe as its Vulkan driver, as the build machines without a GPU do.
-fn lavapipe_named() -> bool {
-    VULKAN_DRIVER_VARIABLES
-        .iter()
-        .any(|name| std::env::var(name).is_ok_and(|files| files.contains(LAVAPIPE_MANIFEST)))
-}
-
 /// A wgpu instance on `backends`.
 pub fn instance(backends: wgpu::Backends) -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -120,11 +105,15 @@ pub async fn device_without(
         .await
         .context("no adapter")?;
     let info = adapter.get_info();
-    anyhow::ensure!(
-        info.device_type != wgpu::DeviceType::Cpu || lavapipe_named(),
-        "the adapter is the software {}, not a GPU",
-        info.name
-    );
+    // A CPU adapter only where the back end built alone takes it (lavapipe named as the only Vulkan
+    // driver, as on the build machines): it says why not.
+    if info.device_type == wgpu::DeviceType::Cpu {
+        <WebGpu as wcontainers_gpu::StandaloneGpu>::new(wcontainers_gpu_webgpu::WebGpuConfig {
+            backends: wgpu::Backends::from(info.backend),
+            lavapipe: true,
+        })
+        .map_err(|e| anyhow!(e))?;
+    }
     let mut desc = WebGpu::device_descriptor(&adapter);
     desc.required_features.remove(features);
     let (device, queue) = adapter.request_device(&desc).await?;

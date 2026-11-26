@@ -19,7 +19,7 @@ fn format_at(i: usize) -> Format {
         .expect("every index below FORMAT_COUNT is a format")
 }
 
-pub fn caps(
+pub(crate) fn caps(
     gl: &glow::Context,
     platform: &crate::platform::Platform,
     ext: &BTreeSet<&'static str>,

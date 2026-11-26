@@ -8,8 +8,8 @@
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
 //! (`vertex_formats`, vertices.rs), checks query sets past 4096 and the query ring (`query_sets`,
 //! queries.rs), checks sRGB views of storage textures (`srgb_views`, views.rs), float clears' bits (`float_clears`, clears.rs), checks subgroups, the primitive index and fine derivatives (`program_features`, features.rs),
-//! measures instance data fetched in the program (`pulled_costs`,
-//! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
+//! and measures instance data fetched in the program (`pulled_costs`, pulled.rs). The shared suite
+//! runs only from conformance_run.rs.
 
 #![forbid(unsafe_code)]
 
@@ -97,15 +97,7 @@ mod pulled;
 #[cfg(target_arch = "wasm32")]
 mod queries;
 
-#[cfg(target_arch = "wasm32")]
-#[macro_use]
-mod names;
-
 // JSPI exports and imports, which wasm-bindgen still marks experimental.
-#[cfg(target_arch = "wasm32")]
-#[allow(deprecated)]
-mod suite;
-
 #[cfg(target_arch = "wasm32")]
 #[allow(deprecated)]
 mod web {

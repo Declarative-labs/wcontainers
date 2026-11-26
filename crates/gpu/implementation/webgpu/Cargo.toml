@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+path = "implementation.rs"
+
 [dependencies]
 wcontainers-gpu = { path = "../.." }
 wcontainers-byte-sink = { path = "../../../byte-sink" }

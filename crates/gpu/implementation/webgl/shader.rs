@@ -6,11 +6,11 @@ use std::rc::Rc;
 use wcontainers_gpu::{caps::Features, error::GpuError, shader::ShaderModule, shader::ShaderStage};
 
 /// A (set, binding) pair: where a program reads a resource.
-pub type Slot = (u32, u32);
+pub(crate) type Slot = (u32, u32);
 
 /// A part of the immediates a program reads as a plain uniform (WebGL 2 has no immediates): its
 /// GLSL name, its offset in the immediates and its type.
-pub type Immediate = (String, u32, glsl::GlslUniformType);
+pub(crate) type Immediate = (String, u32, glsl::GlslUniformType);
 
 /// A compiled shader. Shaders of equal text share one, so their programs share one GL program.
 #[derive(Debug)]
@@ -59,7 +59,7 @@ pub struct Combined {
 }
 
 /// A vertex shader and an optional fragment shader.
-pub type Pair = (Rc<ShaderObj>, Option<Rc<ShaderObj>>);
+pub(crate) type Pair = (Rc<ShaderObj>, Option<Rc<ShaderObj>>);
 
 /// A program and how its resources reach GL. Linking runs from creation; what the link decides is
 /// read at the first draw, so links overlap other work.
@@ -118,20 +118,20 @@ pub struct GlslSettings {
 }
 
 /// Clip and cull distances together: what WEBGL_clip_cull_distance guarantees, Direct3D's limit.
-pub const CLIP_AND_CULL_DISTANCES: u32 = 8;
+pub(crate) const CLIP_AND_CULL_DISTANCES: u32 = 8;
 
 /// The directive of NV_shader_noperspective_interpolation.
-pub const NOPERSPECTIVE_EXTENSION: &str = "GL_NV_shader_noperspective_interpolation";
+pub(crate) const NOPERSPECTIVE_EXTENSION: &str = "GL_NV_shader_noperspective_interpolation";
 
 /// The directive of OES_shader_multisample_interpolation, which gives the `sample` qualifier.
-pub const SAMPLE_QUALIFIER_EXTENSION: &str = "GL_OES_shader_multisample_interpolation";
+pub(crate) const SAMPLE_QUALIFIER_EXTENSION: &str = "GL_OES_shader_multisample_interpolation";
 
 /// The combined samplers whose units take a sampler's level-zero twin, each with the name whose
 /// slots it binds (see [`gathers_at_level_zero`]).
-pub type LevelZero = Vec<(String, String)>;
+pub(crate) type LevelZero = Vec<(String, String)>;
 
 /// Writes `module` as GLSL ES 3.00.
-pub fn write_glsl(
+pub(crate) fn write_glsl(
     module: &ShaderModule,
     settings: GlslSettings,
 ) -> Result<(String, glsl::ReflectionInfo, LevelZero), String> {
@@ -1623,7 +1623,7 @@ fn arguments(module: &ShaderModule) -> impl Iterator<Item = naga::Binding> + '_ 
 
 /// How many uniform blocks the GLSL of `module`'s entry point declares: one per uniform buffer it
 /// reads.
-pub fn uniform_blocks(module: &ShaderModule) -> u32 {
+pub(crate) fn uniform_blocks(module: &ShaderModule) -> u32 {
     let m = &module.module;
     let Some(i) = m
         .entry_points
@@ -1798,7 +1798,7 @@ fn sizes_from_uniforms(source: String, names: &[&str]) -> String {
 
 /// Starts compiling GLSL of `stage`. The compile status is read when its program links, so compiles
 /// can overlap.
-pub fn start_compile(
+pub(crate) fn start_compile(
     gl: &glow::Context,
     stage: ShaderStage,
     source: &str,
@@ -1868,7 +1868,7 @@ impl Capture {
 /// shader, so no fragment output meets the framebuffer), or for a vertex layout whose attributes in
 /// `convert` GL ES cannot read as stored (see [`convert_inputs`]). The new program captures as
 /// `program` does unless `capture` names how.
-pub fn relink(
+pub(crate) fn relink(
     gl: &glow::Context,
     id: u64,
     program: &ProgramObj,
@@ -1945,7 +1945,7 @@ fn started(id: u64, raw: glow::Program, stages: Pair, pair: (u64, u64)) -> Progr
 
 /// Starts linking a vertex and an optional fragment shader. A fragment-less program gets an empty
 /// fragment shader, since GLES links none without one.
-pub fn link(
+pub(crate) fn link(
     gl: &glow::Context,
     id: u64,
     vertex: &Rc<ShaderObj>,
@@ -1970,7 +1970,7 @@ pub fn link(
 
 /// Reads a started link, waiting for it, then points each combined sampler at a unit and each uniform
 /// block at a binding point. Leaves the program in use. On failure the error carries GL's logs.
-pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String> {
+pub(crate) fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String> {
     let Some((vertex, fragment)) = program.shaders.borrow_mut().take() else {
         return Err("the link already failed".into());
     };
@@ -2051,7 +2051,7 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
 
 /// Sets the uniforms standing for the program's immediates from `bytes`, unless they hold them
 /// already. Bytes past the end of `bytes` read as zero, as GL's uniforms start. The program is in use.
-pub fn set_immediates(gl: &glow::Context, linked: &Linked, bytes: &[u8]) {
+pub(crate) fn set_immediates(gl: &glow::Context, linked: &Linked, bytes: &[u8]) {
     use glsl::{GlslScalarKind as Kind, GlslUniformType as Ty};
     let mut held = linked.held.borrow_mut();
     if linked.immediates.is_empty() || *held == bytes {
@@ -2142,7 +2142,7 @@ pub fn set_immediates(gl: &glow::Context, linked: &Linked, bytes: &[u8]) {
 /// program reads at the start of `main`: per location, two bits of `convert` (see
 /// [`crate::state::conversion`]). Attributes the program does not read stay as they are. None when
 /// the source has no `main` as naga writes it.
-pub fn convert_inputs(source: &str, convert: u32) -> Option<String> {
+pub(crate) fn convert_inputs(source: &str, convert: u32) -> Option<String> {
     const SMALL_FLOAT: &str = "float _wc_small_float(uint b, uint m) {
     uint e = b >> m;
     uint f = b & ((1u << m) - 1u);

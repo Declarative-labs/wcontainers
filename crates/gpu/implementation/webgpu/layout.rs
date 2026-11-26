@@ -10,19 +10,22 @@ use wgpu::{BindGroupLayoutEntry, BindingType, ShaderStages};
 const FIRST_TEXTURE_BINDING: u32 = 32;
 
 /// The bit of a layout key that stands for texture `binding`, if it has one.
-pub fn texture_bit(binding: u32) -> Option<u32> {
+pub(crate) fn texture_bit(binding: u32) -> Option<u32> {
     binding
         .checked_sub(FIRST_TEXTURE_BINDING)
         .filter(|bit| *bit < u128::BITS)
 }
 
 /// The entries of each bind group, sorted by binding, or a rule the program broke.
-pub type GroupEntries = [Vec<BindGroupLayoutEntry>; MAX_BINDING_SETS];
+pub(crate) type GroupEntries = [Vec<BindGroupLayoutEntry>; MAX_BINDING_SETS];
 
 /// The texture bits, per set, of the textures an entry point samples through a sampler: the only
 /// textures whose layout depends on the bound view, since a texture only loaded from is
 /// `unfilterable-float` whatever is bound.
-pub fn paired(module: &naga::Module, info: &naga::valid::FunctionInfo) -> [u128; MAX_BINDING_SETS] {
+pub(crate) fn paired(
+    module: &naga::Module,
+    info: &naga::valid::FunctionInfo,
+) -> [u128; MAX_BINDING_SETS] {
     let mut sets = [0; MAX_BINDING_SETS];
     for k in info.sampling_set.iter() {
         if let Some(b) = &module.global_variables[k.image].binding
@@ -37,7 +40,7 @@ pub fn paired(module: &naga::Module, info: &naga::valid::FunctionInfo) -> [u128;
 
 /// Reads every global the stages' entry points use and gives each its binding type. Uniform buffers
 /// get dynamic offsets in set and binding order, up to `max_dynamic`.
-pub fn derive(
+pub(crate) fn derive(
     stages: &[&ShaderObj],
     keys: &[BindingLayoutKey; MAX_BINDING_SETS],
     max_dynamic: u32,

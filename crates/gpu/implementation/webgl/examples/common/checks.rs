@@ -8,25 +8,17 @@ use wcontainers_gpu::{
     resource::*, shader::*, slow::*, state::*, *,
 };
 
-/// What these checks need of the host that runs them: a device, a window to present into, and the
-/// texels the window shows.
-///
-/// It was the shared suite's host before the suite became the interface's conformance crate, which
-/// takes one value per test; these checks still make two devices and read a window.
-pub trait Host {
-    type Backend: Gpu;
-    /// A new device.
-    fn make() -> Self::Backend;
-    /// A window to present into, as the host's graphics hook names it.
-    fn window(backend: &mut Self::Backend) -> u32;
-    /// The texels last shown in `window`, rows top first, tightly packed in the surface's format.
-    fn shown(backend: &mut Self::Backend, window: u32) -> Vec<u8>;
-}
+/// What these checks need of the host that runs them is the module `host` of the crate including
+/// this file: `Backend`, the device type; `make()`, a new device; `window(&mut b)`, a window to present
+/// into as the host's graphics hook names it; and `shown(&mut b, window)`, the texels last shown in it,
+/// rows top first, tightly packed in the surface's format. These checks make two devices and read a
+/// window, which the conformance suite, taking one value per test, does not.
+use crate::host;
 
 /// What is drawn into the surface's current texture is what the host shows, frame after frame.
-pub fn present_shows_the_frame<H: Host>() {
-    let mut b = H::make();
-    let window = H::window(&mut b);
+pub fn present_shows_the_frame() {
+    let mut b = host::make();
+    let window = host::window(&mut b);
     let surface = b.create_surface(window).expect("create_surface");
     b.configure_surface(&surface, Format::Rgba8Unorm, 4, 4, true)
         .expect("configure_surface");
@@ -51,7 +43,7 @@ pub fn present_shows_the_frame<H: Host>() {
         });
         b.end_pass();
         b.present(&surface).expect("present");
-        assert_eq!(H::shown(&mut b, window), texel.repeat(16), "{value:?}");
+        assert_eq!(host::shown(&mut b, window), texel.repeat(16), "{value:?}");
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -203,8 +195,8 @@ fn expected(
 /// (`INSTANCE_STEP_RATE`). WebGL 2 draws with no bases: the streams are bound at an offset
 /// (`BaseVertexRebind`) and the program adds the hidden uniforms `naga_vs_base_vertex` and
 /// `naga_vs_first_instance`.
-pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
-    let mut b = H::make();
+pub fn vertex_and_instance_numbers_include_the_bases() {
+    let mut b = host::make();
     let vs = b
         .create_shader(&module("vs", ShaderStage::Vertex))
         .expect("create_shader");
@@ -218,7 +210,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
         })
         .expect("create_program");
     assert!(b.caps().features.contains(Features::INSTANCE_STEP_RATE));
-    let layout_with_rate = |b: &mut H::Backend, rate| {
+    let layout_with_rate = |b: &mut host::Backend, rate| {
         let mut layout = VertexLayoutDesc {
             streams: [None; MAX_VERTEX_STREAMS],
             attributes: [None; MAX_VERTEX_STREAMS],
@@ -504,11 +496,11 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
 
 /// A `Discard` write of part of a buffer gives it fresh storage: a read back recorded before it sees the
 /// old bytes, and `NoOverwrite` writes above the part land beside it.
-pub fn discard_then_no_overwrite_writes<H: Host>() {
-    let mut b = H::make();
+pub fn discard_then_no_overwrite_writes() {
+    let mut b = host::make();
     let old: Vec<u8> = (0..=255).collect();
     let buffer = buffer(&mut b, BufferUsage::VERTEX, &old);
-    let read = |b: &mut H::Backend| {
+    let read = |b: &mut host::Backend| {
         b.read_back(&ReadSource::Buffer {
             buffer: &buffer,
             offset: 0,
@@ -539,8 +531,8 @@ pub fn discard_then_no_overwrite_writes<H: Host>() {
 /// Depth and stencil read back as stored (`DepthReadByDraw` on WebGL 2): a pass clears a 4 by 4 target
 /// to depth 0.25 and stencil 0x5a, then `clear_rects` sets the middle 2 by 2 to 1 and 0xc3, all read
 /// back exactly. Formats the back end cannot read back (no `COPY_OUT`) are left out.
-pub fn depth_and_stencil_read_back<H: Host>() {
-    let mut b = H::make();
+pub fn depth_and_stencil_read_back() {
+    let mut b = host::make();
     let formats = [
         Format::Depth16Unorm,
         Format::Depth24Plus,
@@ -617,7 +609,7 @@ pub fn depth_and_stencil_read_back<H: Host>() {
             }],
         )
         .expect("clear_rects");
-        let read = |b: &mut H::Backend, stencil: bool, bytes: usize| {
+        let read = |b: &mut host::Backend, stencil: bool, bytes: usize| {
             let mut got = vec![0u8; 16 * bytes];
             b.read_back_now(
                 &ReadSource::Texture {
@@ -690,9 +682,9 @@ const STENCIL_FETCH: &str = "
 /// The stencil of a depth-stencil texture, sampled through a stencil view and read back, twice (the
 /// second time after the stencil changed): every pixel holds its own value, so each bit is seen set
 /// and clear. Each host runs it with and without WEBGL_stencil_texturing; the answers must not differ.
-pub fn stencil_sampled_and_read_back<H: Host>() {
+pub fn stencil_sampled_and_read_back() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, STENCIL_FETCH, "vs", "fs");
     let out = kit::texture(
@@ -816,9 +808,9 @@ fn pattern(len: usize, seed: u32) -> Vec<u8> {
 /// loading them). Signed normalised pairs hold the smallest value (-128, -32768) in every fifth
 /// component, which samples as the value above it. A pair whose formats the back end lacks is
 /// skipped, and says so.
-pub fn copies_within_a_typeless_group<H: Host>() {
+pub fn copies_within_a_typeless_group() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let pairs = [
         (Format::Rgba8Unorm, Format::Rgba8Uint),
         (Format::Rgba8Uint, Format::Rgba8Unorm),
@@ -896,7 +888,7 @@ pub fn copies_within_a_typeless_group<H: Host>() {
             continue;
         }
         let texel = FORMAT_FACTS[from as usize].block.2 as usize;
-        let make = |b: &mut H::Backend, format| {
+        let make = |b: &mut host::Backend, format| {
             kit::texture(b, TextureDimension::D2, format, [4, 4, 2], 1, usage, false)
         };
         let src = make(&mut b, from);
@@ -961,9 +953,9 @@ pub fn copies_within_a_typeless_group<H: Host>() {
 /// Copies between 8-bit sRGB and plain normalised formats keep every byte: a texture holding every
 /// byte value in every component is copied whole into the other format and read back. On WebGL 2 a
 /// draw decodes and encodes on the GPU, so the hardware's sRGB conversion must give back each byte.
-pub fn srgb_copies_keep_every_byte<H: Host>() {
+pub fn srgb_copies_keep_every_byte() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let pairs = [
         (Format::Rgba8Unorm, Format::Rgba8UnormSrgb),
         (Format::Rgba8UnormSrgb, Format::Rgba8Unorm),
@@ -1124,9 +1116,9 @@ fn smallest_width(format: Format) -> Option<usize> {
 /// format that renders, or into the host copy, `HostCopyReadBack`); the smallest value written by
 /// the host after a draw is kept. Texels drawn over after such a write cannot be told from the
 /// value above, so copying their bits loses the device as not built.
-pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
+pub fn signed_normalised_texels_drawn_then_copied() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let f = Format::Rgba8Snorm;
     if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
         return not_run_because(format!("{f:?} does not render here"));
@@ -1145,7 +1137,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
         height: 4,
         depth_or_layers: 1,
     };
-    let copied = |b: &mut H::Backend, to: Format| {
+    let copied = |b: &mut host::Backend, to: Format| {
         let u = kit::texture(b, TextureDimension::D2, to, [4, 4, 1], 1, usage, false);
         b.copy_texture(
             &layer_at(&t, 0, 0, 0, false),
@@ -1156,7 +1148,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
         b.destroy(Object::Texture(u));
         got
     };
-    let count = |b: &mut H::Backend, path| b.slow_paths().counts[path as usize];
+    let count = |b: &mut host::Backend, path| b.slow_paths().counts[path as usize];
     b.begin_pass(&kit::pass(&v, clear, None));
     b.end_pass();
     let gpu = count(&mut b, SlowPath::CopyThroughBuffer);
@@ -1216,9 +1208,9 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
 /// (bytes 00 80 across two 16-bit components do not), the padding between rows does not, and a
 /// texture drawn whole or written whole again, or whose minima were written over, holds none.
 /// Each case writes, draws a pass, copies into the signed integer twin and reads back.
-pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
+pub fn signed_normalised_minimum_judged_by_whole_components() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     if !b.caps().formats.uses[Format::Rgba8Snorm as usize].contains(FormatUse::RENDER) {
         return not_run_because("Rgba8Snorm does not render here".into());
     }
@@ -1339,7 +1331,7 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
         }
     }
     b.write_texture(
-        &level::<H::Backend>(&t, 1),
+        &level::<host::Backend>(&t, 1),
         size(2, 2),
         &[0x80; 16],
         8,
@@ -1347,7 +1339,7 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
         WriteMode::Ordered,
     );
     b.write_texture(
-        &level::<H::Backend>(&t, 0),
+        &level::<host::Backend>(&t, 0),
         size(4, 4),
         &[0x10; 64],
         16,
@@ -1369,8 +1361,8 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
         false,
     );
     b.copy_texture(
-        &level::<H::Backend>(&t, 0),
-        &level::<H::Backend>(&u, 0),
+        &level::<host::Backend>(&t, 0),
+        &level::<host::Backend>(&u, 0),
         size(4, 4),
     );
     let got = kit::read(&mut b, &u, 0, 0, [4, 4, 1], 4, false);
@@ -1389,9 +1381,9 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
 /// infinities and denormals included) through their bits drawn into the unsigned integer twin
 /// (`CopyThroughBuffer`): now, later, and into a buffer, from a region of a layer of a level.
 /// B5G6R5, which GL reads back as bytes, the same way (packed again on the host).
-pub fn half_floats_read_back_as_stored<H: Host>() {
+pub fn half_floats_read_back_as_stored() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (n, format) in [
         Format::R16Float,
@@ -1506,16 +1498,16 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
 
 /// Two devices on one thread, used in turn, each keep their own objects (natively each makes its
 /// own context current again), and the second keeps working after the first is dropped.
-pub fn two_devices_on_one_thread_keep_their_own_objects<H: Host>() {
+pub fn two_devices_on_one_thread_keep_their_own_objects() {
     use crate::kit;
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     let f = Format::Rgba8Unorm;
-    let mut a = H::make();
+    let mut a = host::make();
     let ta = kit::texture(&mut a, TextureDimension::D2, f, [2, 2, 1], 1, usage, false);
-    let mut b = H::make();
+    let mut b = host::make();
     let tb = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 1], 1, usage, false);
     let vb = kit::target(&mut b, &tb, f, 0, 0);
-    let write = |d: &mut H::Backend, t: &<H::Backend as Gpu>::Texture, v: u8| {
+    let write = |d: &mut host::Backend, t: &<host::Backend as Gpu>::Texture, v: u8| {
         d.write_texture(
             &layer_at(t, 0, 0, 0, false),
             Extent {
@@ -1568,9 +1560,9 @@ const COLOURS: &str = "
 
 /// Programs of shaders of equal text each draw, whichever of them was destroyed first, and draw
 /// again when made after the last was destroyed.
-pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
+pub fn programs_of_equal_shaders_draw_until_each_is_destroyed() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let k = kit::Kit::new(&mut b);
     let f = Format::Rgba8Unorm;
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
@@ -1586,7 +1578,7 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
     );
     let view = kit::target(&mut b, &t, f, 0, 0);
     let viewports = [kit::viewport(0.0, 0.0, side as f32, side as f32)];
-    let make = |b: &mut H::Backend, fs: &str| {
+    let make = |b: &mut host::Backend, fs: &str| {
         let module = |entry, stage| ShaderModule::from_wgsl(COLOURS, entry, stage).expect("WGSL");
         let v = b
             .create_shader(&module("vs", ShaderStage::Vertex))
@@ -1602,7 +1594,7 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
             .expect("create_program");
         (v, f, p)
     };
-    let draw = |b: &mut H::Backend, p: &<H::Backend as Gpu>::Program| {
+    let draw = |b: &mut host::Backend, p: &<host::Backend as Gpu>::Program| {
         b.begin_pass(&kit::pass(&view, [0; 4], None));
         b.draw(&kit::call(
             &k,
@@ -1615,7 +1607,7 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
         b.end_pass();
         kit::read(b, &t, 0, 0, [side, side, 1], 4, false)
     };
-    let destroy = |b: &mut H::Backend, (v, f, p)| {
+    let destroy = |b: &mut host::Backend, (v, f, p)| {
         b.destroy(Object::Program(p));
         b.destroy(Object::Shader(v));
         b.destroy(Object::Shader(f));
@@ -1763,9 +1755,9 @@ fn bits_expected(i: u32, s: [u32; 3], entry: &str) -> [u32; 4] {
 /// GLSL ES 3.00 lacks GLSL ES 3.10's bit functions, which naga writes for WGSL's bit operations;
 /// the back end defines them in the program. Every operation, scalar and vector, signed and
 /// unsigned, on seeded values and offsets and counts past the width, equals WGSL's definition.
-pub fn bit_operations_equal_their_definition<H: Host>() {
+pub fn bit_operations_equal_their_definition() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let seed = pattern(12, 0x5eed);
     let s: [u32; 3] =
@@ -1885,9 +1877,9 @@ fn footprint(b: (i32, i32), texel: impl Fn(i32, i32) -> u32) -> [u32; 4] {
 /// footprint instead. Every kind (2D with linear filtering and repeat addressing, with an offset,
 /// an integer 2D array with nearest filtering and clamping, a cube inside its faces, and a depth
 /// comparison) equals the footprint gathers define, on seeded texels.
-pub fn gathers_equal_their_footprints<H: Host>() {
+pub fn gathers_equal_their_footprints() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST;
     let region = |t| TextureRegion {
@@ -2016,7 +2008,7 @@ pub fn gathers_equal_their_footprints<H: Host>() {
         0,
         1,
     );
-    let sampler = |b: &mut H::Backend, filter, address, compare| {
+    let sampler = |b: &mut host::Backend, filter, address, compare| {
         b.create_sampler(&SamplerDesc {
             min: filter,
             mag: filter,
@@ -2152,9 +2144,9 @@ fn plain(uv: vec2<f32>, level: i32) -> f32 { return textureSampleLevel(td, neare
 /// samples, loads or gathers it plainly reads a float copy of its variable. Every read equals the
 /// texel the interface defines, with the comparison in the same program, and the plain reads in a
 /// function, in a branch and with a constant offset.
-pub fn depth_textures_compared_and_read_plainly<H: Host>() {
+pub fn depth_textures_compared_and_read_plainly() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let side = 4;
     let depths: Vec<u8> = (0..side * side)
@@ -2197,7 +2189,7 @@ pub fn depth_textures_compared_and_read_plainly<H: Host>() {
         0,
         1,
     );
-    let sampler = |b: &mut H::Backend, compare| {
+    let sampler = |b: &mut host::Backend, compare| {
         b.create_sampler(&SamplerDesc {
             min: Filter::Nearest,
             mag: Filter::Nearest,
@@ -2310,9 +2302,9 @@ struct V {
 
 /// Linear (`noperspective`) values, which GLSL ES 3.00 lacks, interpolate in window space: at the
 /// centre and at the centroid, in a triangle drawn whole and one clipped at the far plane.
-pub fn linear_values_interpolate_in_window_space<H: Host>() {
+pub fn linear_values_interpolate_in_window_space() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let f = Format::Rgba32Float;
     if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
@@ -2465,9 +2457,9 @@ struct O { @location(0) c: vec4<f32>, @builtin(sample_mask) m: u32 }
 /// OES_sample_variables and OES_shader_multisample_interpolation in Chrome): into four samples,
 /// each run sees its own number, only its own bit of the coverage, and the value interpolated at
 /// its own place; a program writing the sample mask writes only the samples it names.
-pub fn programs_run_per_sample_and_write_the_sample_mask<H: Host>() {
+pub fn programs_run_per_sample_and_write_the_sample_mask() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let f = Format::Rgba8Unorm;
     let samples = 4;
     if !b.caps().features.contains(Features::SAMPLE_SHADING) {
@@ -2596,9 +2588,9 @@ struct U { bits: vec4<u32> }
 }";
 
 /// Special float values reach the target with their bits by every route a program holds them.
-pub fn special_float_values_keep_their_bits<H: Host>() {
+pub fn special_float_values_keep_their_bits() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let f = Format::Rgba32Float;
     if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
@@ -2670,11 +2662,9 @@ pub fn special_float_values_keep_their_bits<H: Host>() {
 /// Copies within one float format are blits, taking no slow path, where the probe found blits keep
 /// every bit; else they take a counted route. The bits kept are checked by
 /// `copies_within_a_typeless_group`, on both routes (all.cmd runs it with `float_blits` off).
-pub fn copies_within_one_float_format_take_the_probed_route<
-    H: Host<Backend = wcontainers_gpu_webgl::Gl>,
->() {
+pub fn copies_within_one_float_format_take_the_probed_route() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for format in [Format::Rgba16Float, Format::R32Float] {
         let a = kit::texture(
@@ -2857,9 +2847,9 @@ fn read_packed<B: Gpu>(b: &mut B, texture: &B::Texture, format: Format, size: [u
 
 /// A face of a cube copied whole, and a region of another face, into 2D textures of another format
 /// of the group keep every byte.
-pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
+pub fn cube_faces_copied_between_typeless_formats() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let pairs = [
         (Format::R32Float, Format::R32Uint),
         (Format::Rgba32Uint, Format::Rgba32Float),
@@ -2959,9 +2949,9 @@ pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
 /// Copies between regions of one subresource that do not overlap (the interface allows them; GL
 /// refuses them as feedback loops), on every copy route: copyTexSubImage, the pixel pack buffer,
 /// the draw, the depth blit and the host copy; in a 2D texture, a layer of an array and a 3D slice.
-pub fn copies_within_one_subresource<H: Host>() {
+pub fn copies_within_one_subresource() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     let cases = [
         (Format::Rgba8Unorm, TextureDimension::D2, [8, 4, 1]),
@@ -3006,7 +2996,7 @@ pub fn copies_within_one_subresource<H: Host>() {
             size[1],
             WriteMode::Ordered,
         );
-        let read = |b: &mut H::Backend| {
+        let read = |b: &mut host::Backend| {
             if FORMAT_FACTS[format as usize].depth_stencil {
                 kit::read(b, &t, 0, 0, size, texel, false)
             } else {
@@ -3114,9 +3104,9 @@ fn layer_at<B: Gpu>(
 /// of two layers of a texture of every depth format (a 2D array, and faces 3 and 4 of a cube)
 /// written whole, then a part of each layer copied in from a buffer at an offset and a pitch of its
 /// own; the other aspect of a combined format stays.
-pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
+pub fn depth_and_stencil_written_read_back_as_written() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let formats = [
         Format::Depth16Unorm,
         Format::Depth24Plus,
@@ -3235,8 +3225,8 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
 
 /// Copies between a buffer used only as indices and one used only for other data, both ways: WebGL
 /// copies between GL buffers of one type only.
-pub fn copies_between_index_and_data_buffers<H: Host>() {
-    let mut b = H::make();
+pub fn copies_between_index_and_data_buffers() {
+    let mut b = host::make();
     let indices = pattern(64, 0x6c07_8965);
     let data = pattern(64, 0x2f6b_6f05);
     let index = buffer(&mut b, BufferUsage::INDEX, &indices);
@@ -3255,9 +3245,9 @@ pub fn copies_between_index_and_data_buffers<H: Host>() {
 /// Copies between a colour and a depth format of one typeless group (`r32float` and
 /// `depth32float`, `r16unorm` and `depth16unorm`) keep every value, both ways: a part of each layer
 /// of a two-layer texture is copied into the other format at another place and back.
-pub fn copies_between_depth_and_colour_formats<H: Host>() {
+pub fn copies_between_depth_and_colour_formats() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     let whole = Extent {
         width: 4,
@@ -3363,9 +3353,9 @@ const LEVEL_LOAD: &str = "
 /// `textureDimensions` do: each level of an `rgba8uint` texture holds its own number, and views
 /// starting at each level are loaded and sized at each of their levels, also by a program that only
 /// sizes the texture.
-pub fn loads_count_levels_from_the_view<H: Host>() {
+pub fn loads_count_levels_from_the_view() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, LEVEL_LOAD, "vs", "fs");
     let sizing = kit::program(&mut b, LEVEL_LOAD, "vs", "fs_size");
@@ -3482,10 +3472,10 @@ const LARGEST: &str = "
 /// and 32-bit indices, written by the host or copied on the GPU (`RestartRewrite`, counted only
 /// where a write may have put the value in the draw's range). 32-bit indices holding both 0 and
 /// the largest value lose the device as not built.
-pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
+pub fn lists_draw_the_largest_index_as_a_vertex() {
     use crate::kit::{self, Kit};
     let mut formats = vec![IndexFormat::U16, IndexFormat::U32];
-    let mut b = H::make();
+    let mut b = host::make();
     if b.caps().features.contains(Features::INDEX_U8) {
         formats.insert(0, IndexFormat::U8);
     }
@@ -3496,11 +3486,11 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
     let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
     let v = kit::target(&mut b, &t, f, 0, 0);
     let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
-    let covered = |b: &mut H::Backend| {
+    let covered = |b: &mut host::Backend| {
         let got = kit::read(b, &t, 0, 0, [4, 4, 1], 4, false);
         got.as_chunks::<4>().0.iter().filter(|p| p[0] == 1).count()
     };
-    let rewrites = |b: &mut H::Backend| b.slow_paths().counts[SlowPath::RestartRewrite as usize];
+    let rewrites = |b: &mut host::Backend| b.slow_paths().counts[SlowPath::RestartRewrite as usize];
     for format in formats {
         let width = INDEX_FORMATS[format as usize].size as usize;
         let largest = INDEX_FORMATS[format as usize].restart_value;
@@ -3519,7 +3509,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
         let both = BufferUsage::INDEX | BufferUsage::VERTEX;
         let copied = buffer(&mut b, both, &vec![0; indices.len()]);
         b.copy_buffer(&data, 0, &copied, 0, indices.len() as u64);
-        let draw = |b: &mut H::Backend, ib: &<H::Backend as Gpu>::Buffer, first: u32| {
+        let draw = |b: &mut host::Backend, ib: &<host::Backend as Gpu>::Buffer, first: u32| {
             b.begin_pass(&kit::pass(&v, [0; 4], None));
             b.draw(&DrawCall {
                 index: Some(IndexBinding {
@@ -3624,9 +3614,9 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
 
 /// Without `FRACTIONAL_VIEWPORT` a draw with a viewport at a fraction of a pixel breaks the
 /// interface's rule: the device is lost rather than the viewport rounded.
-pub fn fractional_viewports_are_refused<H: Host>() {
+pub fn fractional_viewports_are_refused() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     if b.caps().features.contains(Features::FRACTIONAL_VIEWPORT) {
         return;
     }
@@ -3663,9 +3653,9 @@ pub fn fractional_viewports_are_refused<H: Host>() {
 /// A viewport at the interface's bounds (with `m` the largest 2D texture: x at -2m, x + width at
 /// 2m - 1) draws; one past them, or with depths outside 0 to 1 or reversed, breaks the rule and
 /// loses the device rather than reaching GL, which would clamp it.
-pub fn viewports_past_their_bounds_are_refused<H: Host>() {
+pub fn viewports_past_their_bounds_are_refused() {
     use crate::kit::{self, Kit};
-    let m = H::make().caps().limits.max_texture_2d as f32;
+    let m = host::make().caps().limits.max_texture_2d as f32;
     let depths = |min: f32, max: f32| Viewport {
         min_depth: min.to_bits(),
         max_depth: max.to_bits(),
@@ -3683,7 +3673,7 @@ pub fn viewports_past_their_bounds_are_refused<H: Host>() {
         (depths(0.75, 0.25), false),
     ];
     for (vp, takes) in cases {
-        let mut b = H::make();
+        let mut b = host::make();
         let k = Kit::new(&mut b);
         let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
         let f = Format::R32Uint;
@@ -3726,9 +3716,9 @@ const TWO_LOADS: &str = "
 /// binding a view of one layer of an array, or of one face of a cube, is `Absent(TEXTURE_VIEWS)`; a
 /// draw reading one texture through two mip ranges breaks the interface's rule and loses the device;
 /// through one range twice, it draws.
-pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
+pub fn sampled_views_are_whole_textures_of_one_mip_range() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     assert!(!b.caps().features.contains(Features::TEXTURE_VIEWS));
     let f = Format::Rgba8Uint;
     let usage = TextureUsage::SAMPLE | TextureUsage::RENDER | TextureUsage::COPY_DST;
@@ -3811,7 +3801,7 @@ pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
     );
     let out_view = kit::target(&mut b, &out, f, 0, 0);
     let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
-    let level = |b: &mut H::Backend, mip| kit::view(b, &t, f, ViewDimension::D2, mip, 1, 0, 1);
+    let level = |b: &mut host::Backend, mip| kit::view(b, &t, f, ViewDimension::D2, mip, 1, 0, 1);
     let (level0, level0_again, level1) = (level(&mut b, 0), level(&mut b, 0), level(&mut b, 1));
     for (second, sum, lost) in [(&level0_again, 20, false), (&level1, 0, true)] {
         let set = b
@@ -3853,10 +3843,10 @@ pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
 
 /// A `bgra8unorm` surface presents its frame: cleared to two colours in turn, the window shows each
 /// (the hosts read the window's bytes, which are RGBA).
-pub fn bgra_surfaces_present<H: Host>() {
-    let mut b = H::make();
+pub fn bgra_surfaces_present() {
+    let mut b = host::make();
     assert!(b.caps().formats.uses[Format::Bgra8Unorm as usize].contains(FormatUse::PRESENT));
-    let window = H::window(&mut b);
+    let window = host::window(&mut b);
     let surface = b.create_surface(window).expect("create_surface");
     b.configure_surface(&surface, Format::Bgra8Unorm, 4, 4, true)
         .expect("configure_surface");
@@ -3881,7 +3871,7 @@ pub fn bgra_surfaces_present<H: Host>() {
         });
         b.end_pass();
         b.present(&surface).expect("present");
-        assert_eq!(H::shown(&mut b, window), texel.repeat(16), "{value:?}");
+        assert_eq!(host::shown(&mut b, window), texel.repeat(16), "{value:?}");
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -3901,10 +3891,10 @@ const LOAD_CORNER_FLOAT: &str = "
 /// clear to -1, 0, 1 and 64 steps loads back as those values. With or without it they sample and
 /// filter; without it they copy out from their host copy, with it not (`readPixels` returns -128
 /// as -127, and draws write texels the host copy lacks).
-pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
+pub fn signed_normalised_formats_follow_their_extension() {
     use crate::kit::{self, Kit};
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let has = b.caps().formats.uses[F::Rgba8Snorm as usize].contains(FormatUse::RENDER);
     let mut formats = vec![F::R8Snorm, F::Rg8Snorm, F::Rgba8Snorm];
     if b.caps().formats.uses[F::Rgba16Snorm as usize] != FormatUse::empty() {
@@ -4007,10 +3997,10 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
 /// The 16-bit normalised formats follow EXT_texture_norm16: with it, the unsigned ones sample,
 /// filter, render, blend and read back, as stored, now and later, and the signed ones sample and
 /// filter; without it, none has a use and making one is refused.
-pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
+pub fn sixteen_bit_normalised_formats_follow_their_extension() {
     use crate::kit;
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let has = b.caps().formats.uses[F::Rgba16Unorm as usize] != FormatUse::empty();
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for format in [F::R16Unorm, F::Rg16Unorm, F::Rgba16Unorm] {
@@ -4104,10 +4094,10 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
 /// and only the last two (the levels above written with texels of their own), in every such format
 /// that reads back. Where they differ, the first such texel is given with the box average of the four
 /// it comes from (sides of even length).
-pub fn generate_mipmap_equals_the_draws<H: Host>() {
+pub fn generate_mipmap_equals_the_draws() {
     use crate::kit;
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let usage = TextureUsage::SAMPLE
         | TextureUsage::RENDER
         | TextureUsage::COPY_SRC
@@ -4146,8 +4136,9 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                     1
                 });
             let levels = 4.min(largest.ilog2() + 1);
-            let made =
-                |b: &mut H::Backend| kit::texture(b, dimension, format, size, levels, usage, cube);
+            let made = |b: &mut host::Backend| {
+                kit::texture(b, dimension, format, size, levels, usage, cube)
+            };
             for first in [1, 2] {
                 let (native, drawn) = (made(&mut b), made(&mut b));
                 let layers = if dimension == TextureDimension::D3 {
@@ -4309,9 +4300,9 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
 /// With `TIMESTAMPS`, two timestamps around a draw read back in order (unless the GPU reports a
 /// disjoint stretch, which reading clears), and an occlusion set still counts beside them. Without
 /// it, timestamp sets, writes and the disjoint flag all answer `Absent(TIMESTAMPS)`.
-pub fn timestamps_and_their_disjoint_flag<H: Host>() {
+pub fn timestamps_and_their_disjoint_flag() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let absent = Err(GpuError::Absent(Features::TIMESTAMPS));
     if !b.caps().features.contains(Features::TIMESTAMPS) {
         assert_eq!(
@@ -4384,16 +4375,16 @@ const HALF: &str = "
 /// A whole copy between two four-sample `rgba8unorm` textures (`MultisampleCopyResolved` where
 /// programs cannot read samples) resolves to the same texels as its source, with some pixels on the
 /// diagonal partly covered; resolved at a pass's end and by `resolve`, alike.
-pub fn multisampled_copies_resolve_as_their_source<H: Host>() {
+pub fn multisampled_copies_resolve_as_their_source() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let f = Format::Rgba8Unorm;
     if !b.caps().formats.takes_samples(f, 4) {
         return;
     }
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, HALF, "vs", "fs");
-    let samples = |b: &mut H::Backend| {
+    let samples = |b: &mut host::Backend| {
         b.create_texture(&TextureDesc {
             dimension: TextureDimension::D2,
             format: f,
@@ -4488,9 +4479,9 @@ fn at_depth(z: f64, minus_one: bool) -> String {
 /// With `FRACTIONAL_DEPTH_BIAS`, a constant bias of 0.1 units on a `depth16unorm` depth 0.45 of a
 /// step above step 1000 takes it past the half step, so it stores 1001 where no bias stores 1000.
 /// Without it, a raster block with a fractional bias is refused as absent.
-pub fn fractional_depth_bias<H: Host>() {
+pub fn fractional_depth_bias() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     if !b.caps().features.contains(Features::FRACTIONAL_DEPTH_BIAS) {
         let desc = RasterDesc {
             fill: FillMode::Solid,
@@ -4556,16 +4547,16 @@ pub fn fractional_depth_bias<H: Host>() {
 /// The constant alpha blend factor drawn natively: white scaled by a constant alpha of 0.5 gives 128
 /// in every channel of an `rgba8unorm` target. A blend using the constant colour and the constant
 /// alpha together, which WebGL forbids, is refused as absent.
-pub fn constant_alpha_blends<H: Host>() {
+pub fn constant_alpha_blends() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     if !b.caps().features.contains(Features::BLEND_CONSTANT_ALPHA) {
         not_run(Features::BLEND_CONSTANT_ALPHA);
         return;
     }
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, HALF, "vs", "fs");
-    let both = |b: &mut H::Backend, colour: BlendFactor| {
+    let both = |b: &mut host::Backend, colour: BlendFactor| {
         let c = BlendComponent {
             src: BlendFactor::ConstantAlpha,
             dst: colour,
@@ -4716,9 +4707,9 @@ fn captured(v: u32) -> (Vec<u8>, Vec<u8>) {
 /// `capture_vertices` writes the location outputs of every vertex of a list draw: interleaved into one
 /// target, or one output per target, without drawing outside a pass and drawing inside one; a draw
 /// that leaves out the last part of a primitive captures whole primitives only.
-pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
+pub fn vertices_captured_with_and_without_rasterising() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
@@ -4817,9 +4808,9 @@ pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
 /// A buffer holding indices and vertex data written by `capture_vertices` reads the captured values
 /// both as indices and as a vertex stream (on WebGL 2 the index twin is refreshed first,
 /// `IndexTwinReadBack`).
-pub fn captured_indices_drawn_both_ways<H: Host>() {
+pub fn captured_indices_drawn_both_ways() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
@@ -4975,10 +4966,10 @@ const LOAD_CORNER: &str = "
 /// last level smaller than a block, then one block of level 0 written again, read back now and
 /// later. A solid BC1 block and an RGB9E5 texel load as their colour, whichever way the back end
 /// stores them (natively, or decoded: `BlockDecoded`).
-pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Host>() {
+pub fn block_compressed_and_shared_exponent_textures_read_back_as_written() {
     use crate::kit::{self, Kit};
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
     let out_format = F::Rgba8Unorm;
@@ -5214,10 +5205,10 @@ const LOAD_EACH: &str = "
 /// decoded (`BlockDecoded`), each must be the formula's value (bcdec_rs's float decoder) to the
 /// half float it is stored as. Natively compressed, the GPU decodes it as Direct3D on the same GPU
 /// does; that route's largest difference from the formula is printed, as a measurement.
-pub fn interpolated_bc4_and_bc5_values<H: Host>() {
+pub fn interpolated_bc4_and_bc5_values() {
     use crate::kit::{self, Kit};
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let out_format = F::Rgba32Float;
     if !b.caps().formats.uses[out_format as usize].contains(FormatUse::RENDER) {
         return;
@@ -5372,9 +5363,9 @@ const FRAGMENT_Z: &str = "
 
 /// The fragment's window z (WGSL's position z) and the depth stored are clip z mapped by the raster
 /// block's convention: 0.5 from zero to one, 0.75 from minus one to one.
-pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
+pub fn fragment_depth_follows_the_clip_convention() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let colour = Format::R32Float;
     let wanted = FormatUse::RENDER | FormatUse::COPY_OUT;
     if !b.caps().formats.uses[colour as usize].contains(wanted) {
@@ -5450,9 +5441,9 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
 /// vertices in an order that keeps the raster block's provoking vertex where it was, restarting at the
 /// largest index value, instance after instance, interleaved and separate, with and without drawing;
 /// per-instance streams read at their step rate.
-pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
+pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
@@ -5470,7 +5461,7 @@ pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
     let interleaved = |pairs: &[(u32, u32)]| -> Vec<u8> {
         words(&pairs.iter().flat_map(|&(v, i)| [v, i]).collect::<Vec<_>>())
     };
-    let index_buffer = |b: &mut H::Backend, bytes: &[u8]| buffer(b, BufferUsage::INDEX, bytes);
+    let index_buffer = |b: &mut host::Backend, bytes: &[u8]| buffer(b, BufferUsage::INDEX, bytes);
     let u16s = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|i| i.to_le_bytes()).collect() };
     struct Case {
         name: &'static str,
@@ -5770,9 +5761,9 @@ pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
 /// depth-stencil and raster blocks, samplers, compute programs, binding kinds and query kinds. The
 /// features an extension gives are refused only where the back end was made without it. A sampler
 /// past the anisotropy limit is invalid.
-pub fn absent_features_are_refused<H: Host>() {
+pub fn absent_features_are_refused() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let caps = b.caps().clone();
     // Plan 4.11's absent list for WebGL 2.
     let never = Features::COMPUTE
@@ -6184,7 +6175,7 @@ pub fn absent_features_are_refused<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     // Draws asking for what is absent break the interface's rules: each loses its device.
     for what in ["an indirect draw", "immediates past the limit"] {
-        let mut b = H::make();
+        let mut b = host::make();
         let k = kit::Kit::new(&mut b);
         let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
         let f = Format::R32Uint;
@@ -6222,10 +6213,10 @@ pub fn absent_features_are_refused<H: Host>() {
 /// (`HostCopyReadBack`), from a buffer and into one, each read back as the blocks moved. A solid
 /// BC1 block copied in from an `rg32uint` texture loads as its colour, so the GPU's form is written
 /// too.
-pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
+pub fn copies_into_and_out_of_host_kept_textures() {
     use crate::kit::{self, Kit};
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
@@ -6268,7 +6259,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
         let at = |layer: u32, bx: u32, by: u32| {
             layer as usize * layer_bytes + by as usize * row + bx as usize * block
         };
-        let new = |b: &mut H::Backend, bytes: &[u8]| {
+        let new = |b: &mut host::Backend, bytes: &[u8]| {
             let t = kit::texture(b, TextureDimension::D2, format, [8, 8, 2], 1, usage, false);
             b.write_texture(
                 &region!(&t, 0, 0, 0),
@@ -6280,7 +6271,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
             );
             t
         };
-        let read = |b: &mut H::Backend, t: &<H::Backend as Gpu>::Texture| {
+        let read = |b: &mut host::Backend, t: &<host::Backend as Gpu>::Texture| {
             let mut got = vec![0; layer_bytes * 2];
             b.read_back_now(
                 &ReadSource::Texture {
@@ -6484,10 +6475,10 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
 /// An sRGB view of a BC1 texture decodes its colours from sRGB, and follows writes made after the
 /// view: a grey block loads about 132 through the texture's own view and about 59 through the sRGB
 /// one (one step either way, for decoders expanding 5 bits differently), then a white block 255.
-pub fn srgb_views_of_block_compressed_textures<H: Host>() {
+pub fn srgb_views_of_block_compressed_textures() {
     use crate::kit::{self, Kit};
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let want = FormatUse::SAMPLE;
     if !b.caps().formats.uses[F::Bc1RgbaUnorm as usize].contains(want) {
         return;
@@ -6514,7 +6505,7 @@ pub fn srgb_views_of_block_compressed_textures<H: Host>() {
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
         false,
     );
-    let write = |b: &mut H::Backend, colour: u16| {
+    let write = |b: &mut host::Backend, colour: u16| {
         let c = colour.to_le_bytes();
         b.write_texture(
             &TextureRegion {
@@ -6535,7 +6526,7 @@ pub fn srgb_views_of_block_compressed_textures<H: Host>() {
             WriteMode::Ordered,
         );
     };
-    let load = |b: &mut H::Backend, format| {
+    let load = |b: &mut host::Backend, format| {
         let view = kit::view(b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
         let set = b
             .create_binding_set(&[BindingEntry {
@@ -6576,10 +6567,10 @@ pub fn srgb_views_of_block_compressed_textures<H: Host>() {
 /// bytes put red), cleared as a target, and copied into a vertex buffer and an index-only one and
 /// back (`HostCopyReadBack`). An `r8uint` texture, which `readPixels` reads wider than stored,
 /// copies into a buffer the same way.
-pub fn bgra_textures_keep_their_byte_order<H: Host>() {
+pub fn bgra_textures_keep_their_byte_order() {
     use crate::kit::{self, Kit};
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
     macro_rules! region {
@@ -6793,10 +6784,10 @@ struct Targets {
 /// through a buffer; loaded; drawn into with alpha 64 while blending by the destination's alpha
 /// (one); cleared with alpha 0; copied; and drawn in one pass with an RGBA target, which keeps the
 /// drawn alpha (per-target masks, OES_draw_buffers_indexed).
-pub fn bgrx_textures_hold_alpha_one<H: Host>() {
+pub fn bgrx_textures_hold_alpha_one() {
     use crate::kit::{self, Kit};
     use Format as F;
-    let mut b = H::make();
+    let mut b = host::make();
     let k = Kit::new(&mut b);
     let load = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
     let quarter = kit::program(&mut b, QUARTER_ALPHA, "vs", "fs");
@@ -7003,9 +6994,9 @@ pub fn bgrx_textures_hold_alpha_one<H: Host>() {
 /// cleared and then each layer (or slice) of level 2 is drawn from level 1 in turn, as the mip draws
 /// do, and after every level is sampled again: 2D arrays of odd and even size, a 2D texture of odd
 /// size and a 3D texture, each level read back after each step.
-pub fn levels_stay_as_written_while_others_are_read_and_drawn<H: Host>() {
+pub fn levels_stay_as_written_while_others_are_read_and_drawn() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let k = kit::Kit::new(&mut b);
     let f = Format::Rgba8Unorm;
     let usage = TextureUsage::SAMPLE
@@ -7076,7 +7067,7 @@ pub fn levels_stay_as_written_while_others_are_read_and_drawn<H: Host>() {
                 bytes
             })
             .collect();
-        let check = |b: &mut H::Backend, want: &[Vec<u8>], step: &str| {
+        let check = |b: &mut host::Backend, want: &[Vec<u8>], step: &str| {
             let mut failures = Vec::new();
             for mip in 0..levels {
                 let s = shape(mip);
@@ -7136,7 +7127,7 @@ pub fn levels_stay_as_written_while_others_are_read_and_drawn<H: Host>() {
         failures.extend(check(&mut b, &want, "sampling level 1"));
         // Level 2's first layer (slice) cleared, the source still bound as the mip draws leave it.
         let s2 = shape(2);
-        let level_target = |b: &mut H::Backend, layer| {
+        let level_target = |b: &mut host::Backend, layer| {
             if three_d {
                 kit::view(b, &t, f, ViewDimension::D3, 2, 1, 0, 1)
             } else {
@@ -7213,9 +7204,9 @@ pub fn levels_stay_as_written_while_others_are_read_and_drawn<H: Host>() {
 /// A pass without attachments rasterises: occlusion queries answer that a triangle covering it
 /// passed and one wholly outside it did not, at one sample and at four, and it leaves the device
 /// whole.
-pub fn passes_without_attachments_rasterise<H: Host>() {
+pub fn passes_without_attachments_rasterise() {
     use crate::kit;
-    let mut b = H::make();
+    let mut b = host::make();
     let k = kit::Kit::new(&mut b);
     // A triangle over the pass, or right of it.
     let wgsl = "
@@ -7322,9 +7313,9 @@ struct Out {
 /// Immediates reach both stages as plain uniforms, at the offsets the WGSL layout gives (`c` at 16,
 /// `m` at 32 with columns 16 apart, `d` at 80, `e` at 92), set again only when they change; bytes a
 /// draw does not give read zero. Each draw writes one texel of an `rgba32uint` target.
-pub fn immediates_reach_both_stages<H: Host>() {
+pub fn immediates_reach_both_stages() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     assert!(b.caps().limits.immediate_bytes >= 96);
     let modules = ["vs", "fs"].map(|entry| {
         let module = naga::front::wgsl::parse_str(IMMEDIATES).expect("the WGSL parses");
@@ -7456,9 +7447,9 @@ fn at(i: In, y: f32) -> Out {
 /// word, converted in a program variant: `VertexFormatConverted`) reach the program with Direct3D's
 /// meaning: red from the third byte; red in the low ten bits; red the low eleven bits as a float of
 /// five exponent and six mantissa bits (a normal, a denormal, zero, infinity), blue the top ten.
-pub fn packed_vertex_formats_are_converted<H: Host>() {
+pub fn packed_vertex_formats_are_converted() {
     use crate::kit::{self, Kit};
-    let mut b = H::make();
+    let mut b = host::make();
     let mut layout = VertexLayoutDesc {
         streams: [None; MAX_VERTEX_STREAMS],
         attributes: [None; MAX_VERTEX_STREAMS],

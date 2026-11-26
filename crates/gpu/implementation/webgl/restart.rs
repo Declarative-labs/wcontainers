@@ -20,12 +20,12 @@ fn slot(format: IndexFormat) -> usize {
 /// For 8, 16 and 32-bit indices, the byte ranges of a buffer that may hold the largest value.
 /// Indices lie at multiples of their width, so each width is tracked apart.
 #[derive(Debug, Default)]
-pub struct Maxima([RangeSet<u64>; 3]);
+pub(crate) struct Maxima([RangeSet<u64>; 3]);
 
 impl Maxima {
     /// `bytes` now lie at `at`. An index they touch may hold the largest value only if every byte
     /// they wrote into it is 0xff; the bytes of an index they cover in part are not known.
-    pub fn wrote(&mut self, at: u64, bytes: &[u8]) {
+    pub(crate) fn wrote(&mut self, at: u64, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -50,7 +50,7 @@ impl Maxima {
     }
 
     /// Bytes `range` were written with what the host does not know (by the GPU).
-    pub fn unknown(&mut self, range: Range<u64>) {
+    pub(crate) fn unknown(&mut self, range: Range<u64>) {
         if range.is_empty() {
             return;
         }
@@ -60,7 +60,7 @@ impl Maxima {
     }
 
     /// Bytes `range` hold no index of the largest value, of any width.
-    pub fn cleared(&mut self, range: Range<u64>) {
+    pub(crate) fn cleared(&mut self, range: Range<u64>) {
         for (set, w) in self.0.iter_mut().zip(WIDTHS) {
             let (start, end) = (range.start.next_multiple_of(w), range.end / w * w);
             if start < end {
@@ -70,12 +70,12 @@ impl Maxima {
     }
 
     /// Whether indices of `format` in bytes `range` may hold its largest value.
-    pub fn may_hold(&self, format: IndexFormat, range: Range<u64>) -> bool {
+    pub(crate) fn may_hold(&self, format: IndexFormat, range: Range<u64>) -> bool {
         !range.is_empty() && self.0[slot(format)].overlaps(&range)
     }
 
     /// Whether bytes `range` may hold the largest index value of any width.
-    pub fn any(&self, range: Range<u64>) -> bool {
+    pub(crate) fn any(&self, range: Range<u64>) -> bool {
         [IndexFormat::U8, IndexFormat::U16, IndexFormat::U32]
             .into_iter()
             .any(|f| self.may_hold(f, range.clone()))
@@ -84,7 +84,7 @@ impl Maxima {
 
 /// Indices of a draw that must not restart, rewritten so GL never meets its restart value.
 #[derive(Debug, PartialEq)]
-pub enum Rewrite {
+pub(crate) enum Rewrite {
     /// No index is the largest value: draw them as they are.
     Unneeded,
     /// 32-bit indices to draw instead, with the base vertex raised by the second value: 8 and 16-bit
@@ -95,7 +95,7 @@ pub enum Rewrite {
 }
 
 /// The rewrite `bytes`, indices of `format`, need to draw without restarting.
-pub fn rewrite(bytes: &[u8], format: IndexFormat) -> Rewrite {
+pub(crate) fn rewrite(bytes: &[u8], format: IndexFormat) -> Rewrite {
     let width = wcontainers_gpu::state::INDEX_FORMATS[format as usize].size as usize;
     let largest = wcontainers_gpu::state::INDEX_FORMATS[format as usize].restart_value;
     let values = || {

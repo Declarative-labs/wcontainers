@@ -7,7 +7,7 @@ use wcontainers_gpu::{state::ProvokingVertex, state::Topology};
 /// restarts the strip, fan or loop and drops an unfinished primitive). Odd strip triangles and fan
 /// triangles keep the provoking vertex where `provoking` puts it, as the interface's converted fans
 /// do; loops close when their piece ends.
-pub fn list_order(
+pub(crate) fn list_order(
     topology: Topology,
     provoking: ProvokingVertex,
     numbers: impl Iterator<Item = Option<u32>>,
@@ -54,7 +54,7 @@ pub fn list_order(
 }
 
 /// Runs of consecutive vertex numbers in `list`, as (first, count): one draw each.
-pub fn runs(list: &[u32]) -> impl Iterator<Item = (u32, u32)> + '_ {
+pub(crate) fn runs(list: &[u32]) -> impl Iterator<Item = (u32, u32)> + '_ {
     let mut at = 0;
     core::iter::from_fn(move || {
         let start = *list.get(at)?;

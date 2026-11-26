@@ -4531,11 +4531,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-gpu-trace"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "naga",
+ "postcard",
+ "serde",
+ "wasm-bindgen",
+ "wcontainers-gpu",
+ "wcontainers-gpu-conformance",
+ "wcontainers-gpu-recording",
+ "wcontainers-gpu-webgl",
+ "wcontainers-gpu-webgpu",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
 name = "wcontainers-gpu-webgl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "bcdec_rs",
+ "bytemuck",
  "getrandom 0.4.3",
  "glow 0.18.0",
  "half",
@@ -4544,7 +4563,6 @@ dependencies = [
  "khronos-egl",
  "naga",
  "pollster",
- "postcard",
  "rand 0.9.5",
  "rand_chacha",
  "rangemap",

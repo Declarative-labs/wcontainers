@@ -10,11 +10,11 @@ use naga::{
     RelationalFunction, SampleLevel, ScalarKind, Statement, TypeInner, UnaryOperator,
 };
 
-pub type Error = String;
+pub(crate) type Error = String;
 
 /// A value of the program.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Value {
+pub(crate) enum Value {
     F32(f32),
     I32(i32),
     U32(u32),
@@ -27,7 +27,7 @@ pub enum Value {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Pointer {
+pub(crate) struct Pointer {
     root: Root,
     path: Vec<u32>,
 }
@@ -39,7 +39,7 @@ enum Root {
 }
 
 impl Value {
-    pub fn f32(&self) -> Result<f32, Error> {
+    pub(crate) fn f32(&self) -> Result<f32, Error> {
         match *self {
             Value::F32(v) => Ok(v),
             _ => Err(format!("expected a float, found {self:?}")),
@@ -47,7 +47,7 @@ impl Value {
     }
 
     /// The value as an index or a count.
-    pub fn int(&self) -> Result<i64, Error> {
+    pub(crate) fn int(&self) -> Result<i64, Error> {
         match *self {
             Value::I32(v) => Ok(i64::from(v)),
             Value::U32(v) => Ok(i64::from(v)),
@@ -55,7 +55,7 @@ impl Value {
         }
     }
 
-    pub fn components(&self) -> Vec<Value> {
+    pub(crate) fn components(&self) -> Vec<Value> {
         match self {
             Value::Composite(c) => c.clone(),
             v => vec![v.clone()],
@@ -63,7 +63,7 @@ impl Value {
     }
 
     /// Numeric components as f64 (integers exact), for writing outputs.
-    pub fn numbers(&self) -> Result<Vec<f64>, Error> {
+    pub(crate) fn numbers(&self) -> Result<Vec<f64>, Error> {
         self.components()
             .iter()
             .map(|c| match *c {
@@ -79,7 +79,7 @@ impl Value {
 
 /// What a texture read asks for.
 #[derive(Clone, Copy, Debug)]
-pub enum Level {
+pub(crate) enum Level {
     /// Implicit (only exact where the view has one level).
     Auto,
     Exact(f32),
@@ -87,7 +87,7 @@ pub enum Level {
 }
 
 /// A program's write into a storage buffer: group, binding, byte offset in the bound range, bytes.
-pub type StorageWrite = (u32, u32, u32, Vec<u8>);
+pub(crate) type StorageWrite = (u32, u32, u32, Vec<u8>);
 
 /// Where a pointer into a buffer leads.
 enum Place {
@@ -171,7 +171,7 @@ fn invoke(
 }
 
 /// The zero value of a type.
-pub fn zero(module: &Module, ty: Handle<naga::Type>) -> Result<Value, Error> {
+pub(crate) fn zero(module: &Module, ty: Handle<naga::Type>) -> Result<Value, Error> {
     Ok(match module.types[ty].inner {
         TypeInner::Scalar(s) => scalar_zero(s.kind)?,
         TypeInner::Vector { size, scalar } => {

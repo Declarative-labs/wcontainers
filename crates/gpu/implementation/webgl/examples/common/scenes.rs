@@ -336,38 +336,9 @@ fn whole_view<B: Gpu>(b: &mut B, t: &B::Texture, format: Format) -> Result<B::Te
     .map_err(|e| format!("{e:?}"))
 }
 
-/// Plain numbers as they lie in memory: each in this machine's byte order, one after another.
-trait Plain {
-    fn put(&self, out: &mut Vec<u8>);
-}
-
-impl Plain for f32 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_ne_bytes());
-    }
-}
-
-impl Plain for u16 {
-    fn put(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.to_ne_bytes());
-    }
-}
-
-impl<T: Plain, const N: usize> Plain for [T; N] {
-    fn put(&self, out: &mut Vec<u8>) {
-        for x in self {
-            x.put(out);
-        }
-    }
-}
-
 /// The scene data's bytes, as they lie in memory (plain f32 and u16 arrays, with no padding).
-fn as_bytes(v: &[impl Plain]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(core::mem::size_of_val(v));
-    for x in v {
-        x.put(&mut out);
-    }
-    out
+fn as_bytes<T: bytemuck::Pod>(v: &[T]) -> Vec<u8> {
+    bytemuck::cast_slice(v).to_vec()
 }
 
 /// Draws `scene` with `change` applied and reads the target back.

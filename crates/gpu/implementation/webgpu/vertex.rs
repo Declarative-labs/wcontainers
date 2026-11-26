@@ -84,7 +84,7 @@ const PARAMS: usize = 32 + 32 * 16;
 
 /// One converted stream: its shadow element and how it is made.
 #[derive(Debug)]
-pub struct StreamPlan {
+pub(crate) struct StreamPlan {
     /// Bytes of a shadow element.
     size: u32,
     /// The source's stride; zero repeats one element.
@@ -94,12 +94,12 @@ pub struct StreamPlan {
     /// One a attribute, as the program's `vec4u` operations.
     ops: Vec<Operation>,
     /// The attributes as the pipeline reads them from the shadow.
-    pub attributes: Vec<wgpu::VertexAttribute>,
+    pub(crate) attributes: Vec<wgpu::VertexAttribute>,
 }
 
 impl StreamPlan {
     /// The shadow stream's stride.
-    pub fn stride(&self) -> u64 {
+    pub(crate) fn stride(&self) -> u64 {
         if self.src_stride == 0 {
             0
         } else {
@@ -109,7 +109,7 @@ impl StreamPlan {
 }
 
 /// The streams of one vertex layout that are read through shadows, by stream.
-pub type Plan = Rc<[Option<StreamPlan>]>;
+pub(crate) type Plan = Rc<[Option<StreamPlan>]>;
 
 /// What the program does with one attribute (`Operation::code`).
 #[derive(Clone, Copy, Debug)]
@@ -224,7 +224,7 @@ fn widened(f: VertexFormat) -> Option<Widened> {
 }
 
 /// The shadow streams of a layout, or None when WebGPU reads every stream as it is.
-pub fn plan(desc: &VertexLayoutDesc) -> Option<Plan> {
+pub(crate) fn plan(desc: &VertexLayoutDesc) -> Option<Plan> {
     let lacking = |s: usize| {
         desc.attributes
             .iter()
@@ -300,23 +300,23 @@ struct Shadow {
 
 /// The program, the plans of vertex layouts that need shadows, and the shadows made.
 #[derive(Default)]
-pub struct Vertices {
+pub(crate) struct Vertices {
     program: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
-    pub plans: HashMap<u64, Plan>,
+    pub(crate) plans: HashMap<u64, Plan>,
     /// By source buffer, offset, layout and stream.
     shadows: HashMap<(u64, u64, u64, usize), Shadow>,
 }
 
 impl Vertices {
     /// Drops the shadows of a destroyed buffer.
-    pub fn forget(&mut self, buffer: u64) {
+    pub(crate) fn forget(&mut self, buffer: u64) {
         if !self.shadows.is_empty() {
             self.shadows.retain(|k, _| k.0 != buffer);
         }
     }
 
     /// Drops the plan and shadows of a destroyed vertex layout.
-    pub fn forget_layout(&mut self, layout: u64) {
+    pub(crate) fn forget_layout(&mut self, layout: u64) {
         if self.plans.remove(&layout).is_some() {
             self.shadows.retain(|k, _| k.2 != layout);
         }
@@ -324,7 +324,7 @@ impl Vertices {
 }
 
 /// The shadow bound in place of a stream: its slot, a number no other buffer has, and the buffer.
-pub type Bound = (usize, u64, wgpu::Buffer);
+pub(crate) type Bound = (usize, u64, wgpu::Buffer);
 
 impl WebGpu {
     /// The shadows a draw reads in place of its streams, made where missing or stale, which splits

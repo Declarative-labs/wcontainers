@@ -9,7 +9,7 @@ use wcontainers_gpu::{
 use wgpu::TextureFormat as T;
 
 /// The other sRGB form of a format, which views of its textures may take.
-pub fn srgb_twin(format: T) -> Option<T> {
+pub(crate) fn srgb_twin(format: T) -> Option<T> {
     (format.remove_srgb_suffix() != format)
         .then(|| format.remove_srgb_suffix())
         .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()))
@@ -18,7 +18,7 @@ pub fn srgb_twin(format: T) -> Option<T> {
 /// The usages of a view of `texture` in `format`, whose usages on the device are `allowed`: the
 /// texture's, less the attachment and storage usages a view in its other sRGB form lacks, as
 /// WebGPU's `createView` takes them; None (the texture's) for a view in the texture's own format.
-pub fn view_usage(
+pub(crate) fn view_usage(
     texture: &wgpu::Texture,
     format: T,
     allowed: wgpu::TextureUsages,
@@ -29,7 +29,7 @@ pub fn view_usage(
 
 /// The wgpu format a texture of `format` is made in (converted formats in their wider one,
 /// packed.rs); None for formats WebGPU does not hold, which the back end declares without bits.
-pub fn texture_format(format: Format) -> Option<T> {
+pub(crate) fn texture_format(format: Format) -> Option<T> {
     use Format::*;
     Some(match format {
         R8Unorm => T::R8Unorm,
@@ -113,7 +113,7 @@ pub fn texture_format(format: Format) -> Option<T> {
 }
 
 /// The aspect a view reads: the stencil, the depth of a format with both, or all of it.
-pub fn aspect(stencil: bool, format: Format) -> wgpu::TextureAspect {
+pub(crate) fn aspect(stencil: bool, format: Format) -> wgpu::TextureAspect {
     match (stencil, FORMAT_FACTS[format as usize].kind) {
         (true, _) => wgpu::TextureAspect::StencilOnly,
         (false, wcontainers_gpu::format::FormatKind::DepthStencil) => {
@@ -123,7 +123,7 @@ pub fn aspect(stencil: bool, format: Format) -> wgpu::TextureAspect {
     }
 }
 
-pub fn view_dimension(d: ViewDimension) -> wgpu::TextureViewDimension {
+pub(crate) fn view_dimension(d: ViewDimension) -> wgpu::TextureViewDimension {
     match d {
         ViewDimension::D2 => wgpu::TextureViewDimension::D2,
         ViewDimension::D2Array => wgpu::TextureViewDimension::D2Array,
@@ -134,7 +134,7 @@ pub fn view_dimension(d: ViewDimension) -> wgpu::TextureViewDimension {
 }
 
 /// None for the formats WebGPU lacks, which the back end converts.
-pub fn vertex_format(f: VertexFormat) -> Option<wgpu::VertexFormat> {
+pub(crate) fn vertex_format(f: VertexFormat) -> Option<wgpu::VertexFormat> {
     use VertexFormat::*;
     use wgpu::VertexFormat as W;
     Some(match f {
@@ -185,7 +185,7 @@ pub fn vertex_format(f: VertexFormat) -> Option<wgpu::VertexFormat> {
 }
 
 /// None for the factors WebGPU lacks (the constant's alpha alone).
-pub fn blend_factor(f: BlendFactor) -> Option<wgpu::BlendFactor> {
+pub(crate) fn blend_factor(f: BlendFactor) -> Option<wgpu::BlendFactor> {
     use wgpu::BlendFactor as W;
     Some(match f {
         BlendFactor::Zero => W::Zero,
@@ -209,7 +209,7 @@ pub fn blend_factor(f: BlendFactor) -> Option<wgpu::BlendFactor> {
     })
 }
 
-pub fn blend_op(op: BlendOp) -> wgpu::BlendOperation {
+pub(crate) fn blend_op(op: BlendOp) -> wgpu::BlendOperation {
     match op {
         BlendOp::Add => wgpu::BlendOperation::Add,
         BlendOp::Subtract => wgpu::BlendOperation::Subtract,
@@ -219,11 +219,11 @@ pub fn blend_op(op: BlendOp) -> wgpu::BlendOperation {
     }
 }
 
-pub fn color_writes(w: ColorWrites) -> wgpu::ColorWrites {
+pub(crate) fn color_writes(w: ColorWrites) -> wgpu::ColorWrites {
     wgpu::ColorWrites::from_bits_truncate(u32::from(w.bits()))
 }
 
-pub fn compare(c: CompareFn) -> wgpu::CompareFunction {
+pub(crate) fn compare(c: CompareFn) -> wgpu::CompareFunction {
     use wgpu::CompareFunction as W;
     match c {
         CompareFn::Never => W::Never,
@@ -251,7 +251,7 @@ fn stencil_op(op: StencilOp) -> wgpu::StencilOperation {
     }
 }
 
-pub fn stencil_face(f: &StencilFace) -> wgpu::StencilFaceState {
+pub(crate) fn stencil_face(f: &StencilFace) -> wgpu::StencilFaceState {
     wgpu::StencilFaceState {
         compare: compare(f.compare),
         fail_op: stencil_op(f.fail),
@@ -260,7 +260,7 @@ pub fn stencil_face(f: &StencilFace) -> wgpu::StencilFaceState {
     }
 }
 
-pub fn cull(c: CullMode) -> Option<wgpu::Face> {
+pub(crate) fn cull(c: CullMode) -> Option<wgpu::Face> {
     match c {
         CullMode::None => None,
         CullMode::Front => Some(wgpu::Face::Front),
@@ -268,7 +268,7 @@ pub fn cull(c: CullMode) -> Option<wgpu::Face> {
     }
 }
 
-pub fn fill(f: FillMode) -> wgpu::PolygonMode {
+pub(crate) fn fill(f: FillMode) -> wgpu::PolygonMode {
     match f {
         FillMode::Solid => wgpu::PolygonMode::Fill,
         FillMode::Line => wgpu::PolygonMode::Line,
@@ -276,7 +276,7 @@ pub fn fill(f: FillMode) -> wgpu::PolygonMode {
     }
 }
 
-pub fn front_face(f: FrontFace) -> wgpu::FrontFace {
+pub(crate) fn front_face(f: FrontFace) -> wgpu::FrontFace {
     match f {
         FrontFace::CounterClockwise => wgpu::FrontFace::Ccw,
         FrontFace::Clockwise => wgpu::FrontFace::Cw,
@@ -284,7 +284,7 @@ pub fn front_face(f: FrontFace) -> wgpu::FrontFace {
 }
 
 /// None for fans and loops, which reach a back end only through `draw_fan_or_loop`.
-pub fn topology(t: Topology) -> Option<wgpu::PrimitiveTopology> {
+pub(crate) fn topology(t: Topology) -> Option<wgpu::PrimitiveTopology> {
     use wgpu::PrimitiveTopology as W;
     Some(match t {
         Topology::PointList => W::PointList,
@@ -297,7 +297,7 @@ pub fn topology(t: Topology) -> Option<wgpu::PrimitiveTopology> {
 }
 
 /// None for 8-bit indices, which fronts widen first.
-pub fn index_format(f: IndexFormat) -> Option<wgpu::IndexFormat> {
+pub(crate) fn index_format(f: IndexFormat) -> Option<wgpu::IndexFormat> {
     match f {
         IndexFormat::U8 => None,
         IndexFormat::U16 => Some(wgpu::IndexFormat::Uint16),
@@ -305,14 +305,14 @@ pub fn index_format(f: IndexFormat) -> Option<wgpu::IndexFormat> {
     }
 }
 
-pub fn filter(f: Filter) -> wgpu::FilterMode {
+pub(crate) fn filter(f: Filter) -> wgpu::FilterMode {
     match f {
         Filter::Nearest => wgpu::FilterMode::Nearest,
         Filter::Linear => wgpu::FilterMode::Linear,
     }
 }
 
-pub fn mip_filter(f: Filter) -> wgpu::MipmapFilterMode {
+pub(crate) fn mip_filter(f: Filter) -> wgpu::MipmapFilterMode {
     match f {
         Filter::Nearest => wgpu::MipmapFilterMode::Nearest,
         Filter::Linear => wgpu::MipmapFilterMode::Linear,
@@ -321,7 +321,7 @@ pub fn mip_filter(f: Filter) -> wgpu::MipmapFilterMode {
 
 /// None for the modes WebGPU lacks (mirror once, and border colours other than the clamp WebGPU
 /// gives), which fronts build in the program.
-pub fn address(a: AddressMode) -> Option<wgpu::AddressMode> {
+pub(crate) fn address(a: AddressMode) -> Option<wgpu::AddressMode> {
     Some(match a {
         AddressMode::Repeat => wgpu::AddressMode::Repeat,
         AddressMode::Mirror => wgpu::AddressMode::MirrorRepeat,

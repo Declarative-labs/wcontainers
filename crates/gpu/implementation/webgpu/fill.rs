@@ -57,7 +57,7 @@ const COVER_WGSL: &str = "
 
 /// How the source texels of a depth draw become depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum DepthSource {
+pub(crate) enum DepthSource {
     /// Read as a float: `r32float`, or a depth format's depth.
     Float,
     /// The bits of a 32-bit float in an `r32uint` texture.
@@ -72,7 +72,7 @@ pub enum DepthSource {
 
 impl DepthSource {
     /// How a copy into the depth of `dst` reads a source of `src`, a format of its typeless group.
-    pub fn of(src: Format, dst: Format) -> Option<DepthSource> {
+    pub(crate) fn of(src: Format, dst: Format) -> Option<DepthSource> {
         use Format::*;
         match (dst, src) {
             (
@@ -89,7 +89,7 @@ impl DepthSource {
     }
 
     /// Whether a texture of `format` may be the source of a depth draw, so it is made bindable.
-    pub fn readable(format: Format) -> bool {
+    pub(crate) fn readable(format: Format) -> bool {
         matches!(
             format,
             Format::R32Float
@@ -107,7 +107,7 @@ impl DepthSource {
 /// How a draw reading depth or stencil writes it into a colour texture (`DepthReadByDraw`): the
 /// bytes a copy of that aspect into a buffer holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum AspectRead {
+pub(crate) enum AspectRead {
     /// 16-bit unorm depth into `r16uint`.
     Unorm16,
     /// 24-bit unorm depth into the low bits of `r32uint`.
@@ -120,7 +120,7 @@ pub enum AspectRead {
 
 impl AspectRead {
     /// How the depth of `format`, or its stencil, is read, and the colour format it is drawn into.
-    pub fn of(format: Format, stencil: bool) -> Option<(AspectRead, Format)> {
+    pub(crate) fn of(format: Format, stencil: bool) -> Option<(AspectRead, Format)> {
         use Format::*;
         Some(match (stencil, format) {
             (true, Stencil8 | Depth24PlusStencil8 | Depth32FloatStencil8) => {
@@ -149,7 +149,7 @@ struct StencilProgram {
 
 /// The programs of these draws, made at their first use.
 #[derive(Default)]
-pub struct Fills {
+pub(crate) struct Fills {
     cover: Option<wgpu::ShaderModule>,
     no_fragment: Option<wgpu::ShaderModule>,
     clear_layout: Option<(wgpu::BindGroupLayout, wgpu::PipelineLayout)>,
@@ -170,11 +170,11 @@ pub struct Fills {
 /// One level and layer (or depth slice) of a texture of a 16-bit packed format a pass or resolve
 /// drew into, rounded to the format's bits when it ends (`PackedTargetQuantised`).
 pub(crate) struct PackedTarget {
-    pub format: Format,
-    pub texture: wgpu::Texture,
-    pub mip: u32,
+    pub(crate) format: Format,
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) mip: u32,
     /// The array layer, or the depth slice of a 3D texture.
-    pub z: u32,
+    pub(crate) z: u32,
 }
 
 /// A view of one level and layer of `texture` in `aspect`, in that aspect's own format.

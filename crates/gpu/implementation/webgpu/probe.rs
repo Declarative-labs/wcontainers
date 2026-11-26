@@ -60,7 +60,7 @@ impl Depth24 {
 }
 
 /// Draws the probe and waits for its answer.
-pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
+pub(crate) fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
     let texture = |format, usage| {
         device.create_texture(&wgpu::TextureDescriptor {
             label: None,

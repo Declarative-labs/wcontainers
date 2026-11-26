@@ -7,7 +7,7 @@ use wcontainers_gpu::{draw::*, error::*, format::*, resource::*, shader::*, stat
 
 /// A shader in the stream, compared by its content key, entry point and stage.
 #[derive(Clone)]
-pub struct Shader(pub Rc<ShaderModule>);
+pub(crate) struct Shader(pub(crate) Rc<ShaderModule>);
 
 impl PartialEq for Shader {
     fn eq(&self, other: &Self) -> bool {
@@ -24,10 +24,16 @@ impl core::fmt::Debug for Shader {
 
 /// A texture region: texture, level, layer, origin, stencil aspect.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Region(pub Id, pub u32, pub u32, pub Origin, pub bool);
+pub(crate) struct Region(
+    pub(crate) Id,
+    pub(crate) u32,
+    pub(crate) u32,
+    pub(crate) Origin,
+    pub(crate) bool,
+);
 
 impl Region {
-    pub fn of(r: &TextureRegion<'_, Recorder>) -> Region {
+    pub(crate) fn of(r: &TextureRegion<'_, Recorder>) -> Region {
         Region(*r.texture, r.mip, r.layer, r.origin, r.stencil)
     }
     #[cfg(test)]
@@ -44,10 +50,15 @@ impl Region {
 
 /// The buffer side of a copy: buffer, offset, row pitch, rows per layer.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BufferSide(pub Id, pub u64, pub u32, pub u32);
+pub(crate) struct BufferSide(
+    pub(crate) Id,
+    pub(crate) u64,
+    pub(crate) u32,
+    pub(crate) u32,
+);
 
 impl BufferSide {
-    pub fn of(c: &CopyBufferTexture<'_, Recorder>) -> BufferSide {
+    pub(crate) fn of(c: &CopyBufferTexture<'_, Recorder>) -> BufferSide {
         BufferSide(*c.buffer, c.offset, c.row_pitch, c.rows_per_layer)
     }
     #[cfg(test)]
@@ -63,7 +74,7 @@ impl BufferSide {
 
 /// What a binding entry binds.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Bind {
+pub(crate) enum Bind {
     Uniform(Id, u64, u64),
     Storage(Id, u64, u64, bool),
     Texture(Id),
@@ -76,21 +87,21 @@ pub enum Bind {
 /// A pass: colour attachments (view, slice, resolve, load, store), the depth attachment and its
 /// aspects' operations, the size of an empty pass, the occlusion set.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Pass {
-    pub colors: Vec<Option<ColorOps>>,
-    pub depth: Option<DepthOps>,
-    pub empty: Option<EmptyPass>,
-    pub occlusion: Option<Id>,
+pub(crate) struct Pass {
+    pub(crate) colors: Vec<Option<ColorOps>>,
+    pub(crate) depth: Option<DepthOps>,
+    pub(crate) empty: Option<EmptyPass>,
+    pub(crate) occlusion: Option<Id>,
 }
 
 /// A colour attachment: view, slice, resolve target, load, store.
-pub type ColorOps = (Id, u32, Option<Id>, LoadOp<[u32; 4]>, StoreOp);
+pub(crate) type ColorOps = (Id, u32, Option<Id>, LoadOp<[u32; 4]>, StoreOp);
 /// A depth-stencil attachment: view, and each aspect's operations.
-pub type DepthOps = (Id, Option<AspectOps<u32>>, Option<AspectOps<u8>>);
+pub(crate) type DepthOps = (Id, Option<AspectOps<u32>>, Option<AspectOps<u8>>);
 
 /// What a draw covers; indirect ones name their argument buffer and offset.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Range {
+pub(crate) enum Range {
     Vertices(u32, u32, u32, u32),
     Indexed(u32, u32, i32, u32, u32),
     Indirect(Id, u64),
@@ -99,33 +110,33 @@ pub enum Range {
 
 /// A draw with everything it names.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Draw {
-    pub blocks: [Id; 5],
-    pub bindings: [Option<Id>; MAX_BINDING_SETS],
-    pub vertex_buffers: Vec<Option<(Id, u64)>>,
-    pub index: Option<(Id, u64, IndexFormat)>,
-    pub topology: Topology,
-    pub restart: bool,
-    pub viewports: Vec<Viewport>,
-    pub scissors: Vec<ScissorRect>,
-    pub blend_constant: [u32; 4],
-    pub stencil_reference: [u8; 2],
-    pub immediates: Vec<u8>,
-    pub range: Range,
+pub(crate) struct Draw {
+    pub(crate) blocks: [Id; 5],
+    pub(crate) bindings: [Option<Id>; MAX_BINDING_SETS],
+    pub(crate) vertex_buffers: Vec<Option<(Id, u64)>>,
+    pub(crate) index: Option<(Id, u64, IndexFormat)>,
+    pub(crate) topology: Topology,
+    pub(crate) restart: bool,
+    pub(crate) viewports: Vec<Viewport>,
+    pub(crate) scissors: Vec<ScissorRect>,
+    pub(crate) blend_constant: [u32; 4],
+    pub(crate) stencil_reference: [u8; 2],
+    pub(crate) immediates: Vec<u8>,
+    pub(crate) range: Range,
 }
 
 /// A dispatch: program, binding sets, immediates, and its group counts or its argument buffer and
 /// offset.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Dispatch {
-    pub program: Id,
-    pub bindings: [Option<Id>; MAX_BINDING_SETS],
-    pub immediates: Vec<u8>,
-    pub groups: Result<[u32; 3], (Id, u64)>,
+pub(crate) struct Dispatch {
+    pub(crate) program: Id,
+    pub(crate) bindings: [Option<Id>; MAX_BINDING_SETS],
+    pub(crate) immediates: Vec<u8>,
+    pub(crate) groups: Result<[u32; 3], (Id, u64)>,
 }
 
 impl Dispatch {
-    pub fn of(c: &DispatchCall<'_, Recorder>) -> Dispatch {
+    pub(crate) fn of(c: &DispatchCall<'_, Recorder>) -> Dispatch {
         Dispatch {
             program: *c.program,
             bindings: c.bindings.map(|b| b.copied()),
@@ -140,7 +151,7 @@ impl Dispatch {
 
 /// The kinds of [`Object`], for [`Call::Destroy`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Kind {
+pub(crate) enum Kind {
     Buffer,
     Texture,
     TextureView,
@@ -161,7 +172,7 @@ type Made = Result<Id, GpuError>;
 
 /// One base call and its answer.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Call {
+pub(crate) enum Call {
     CreateBuffer(BufferDesc, Made),
     CreateTexture(TextureDesc, Made),
     CreateView(Id, TextureViewDesc, Made),
@@ -355,7 +366,7 @@ fn resource(b: &Bind) -> BindingResource<'_, Recorder> {
 }
 
 impl Pass {
-    pub fn of(p: &PassDesc<'_, Recorder>) -> Pass {
+    pub(crate) fn of(p: &PassDesc<'_, Recorder>) -> Pass {
         Pass {
             colors: p
                 .colors
@@ -373,7 +384,7 @@ impl Pass {
 }
 
 impl Draw {
-    pub fn of(c: &DrawCall<'_, Recorder>) -> Draw {
+    pub(crate) fn of(c: &DrawCall<'_, Recorder>) -> Draw {
         Draw {
             blocks: [
                 *c.program,

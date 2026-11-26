@@ -524,18 +524,39 @@ const MAX_ANISOTROPY: u16 = 16;
 /// `name=count`, so any program's log gives what a frame costs between two reports.
 pub const FRAME_REPORT: &str = "webgpu: frames=";
 
-/// What a WebGPU back end built alone is made from: which of wgpu's native APIs to open, and whether a
-/// software adapter is taken when no GPU is there.
+/// What a WebGPU back end built alone is made from: which of wgpu's native APIs to open, and whether
+/// lavapipe, Mesa's Vulkan driver that draws on the CPU, is taken when no GPU is there.
 ///
-/// wgpu ranks a GPU before a software adapter, so `software` matters only on a machine without one.
-/// A host that made its adapter and device itself (the browser, whose adapter answers only
-/// asynchronously) builds the back end from them instead.
-#[derive(Clone, Copy, Debug)]
+/// wgpu ranks a GPU before a CPU adapter, so `lavapipe` matters only on a machine without one (the
+/// build machines). Any other CPU adapter is refused, and lavapipe too unless the Vulkan loader is told
+/// to load only it ([`VULKAN_DRIVER_VARIABLES`] names its manifest). A host that made its adapter and
+/// device itself (the browser, whose adapter answers only asynchronously) builds the back end from them
+/// instead.
+#[derive(Debug)]
 pub struct WebGpuConfig {
     /// The native APIs wgpu may open.
     pub backends: wgpu::Backends,
-    /// A software adapter (lavapipe, WARP) is taken when it is the only one.
-    pub software: bool,
+    /// Lavapipe is taken when it is the only adapter and the loader's variables name it.
+    pub lavapipe: bool,
+}
+
+/// The Vulkan loader's variables that name the only driver manifests it loads.
+/// https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md#table-of-debug-environment-variables
+const VULKAN_DRIVER_VARIABLES: [&str; 2] = ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"];
+
+/// The start of the manifest name of lavapipe.
+/// https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.3.1/src/gallium/targets/lavapipe/meson.build
+const LAVAPIPE_MANIFEST: &str = "lvp_icd";
+
+/// The name lavapipe's adapter reports.
+/// https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.3.1/src/gallium/frontends/lavapipe/lvp_device.c
+const LAVAPIPE_DRIVER: &str = "llvmpipe";
+
+/// Tells whether the run names lavapipe as its only Vulkan driver, as the build machines do.
+fn lavapipe_named() -> bool {
+    VULKAN_DRIVER_VARIABLES
+        .iter()
+        .any(|name| std::env::var(name).is_ok_and(|files| files.contains(LAVAPIPE_MANIFEST)))
 }
 
 impl StandaloneGpu for WebGpu {
@@ -553,9 +574,13 @@ impl StandaloneGpu for WebGpu {
         }))?
         .map_err(|e| e.to_string())?;
         let info = adapter.get_info();
-        if info.device_type == wgpu::DeviceType::Cpu && !config.software {
+        let lavapipe = config.lavapipe
+            && info.backend == wgpu::Backend::Vulkan
+            && info.name.contains(LAVAPIPE_DRIVER)
+            && lavapipe_named();
+        if info.device_type == wgpu::DeviceType::Cpu && !lavapipe {
             return Err(format!(
-                "the adapter is the software {}, not a GPU",
+                "the adapter is the software {}, not a GPU (lavapipe is taken only where the Vulkan loader is told to load it alone)",
                 info.name
             ));
         }

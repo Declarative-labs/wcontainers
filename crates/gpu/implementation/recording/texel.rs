@@ -66,7 +66,7 @@ fn layout(format: Format) -> Option<(usize, usize, Num, bool)> {
 
 /// Whether the recording back end holds textures of `format`: the colour formats above, and depth and
 /// stencil formats.
-pub fn held(format: Format) -> bool {
+pub(crate) fn held(format: Format) -> bool {
     layout(format).is_some()
         || matches!(
             format,
@@ -81,7 +81,7 @@ pub fn held(format: Format) -> bool {
 
 /// Whether a colour format's values are clamped to zero to one (or minus one to one) when written,
 /// so blending clamps its inputs too.
-pub fn normalised(format: Format) -> bool {
+pub(crate) fn normalised(format: Format) -> bool {
     matches!(
         layout(format),
         Some((_, _, Num::Unorm | Num::Snorm | Num::Srgb, _))
@@ -89,7 +89,7 @@ pub fn normalised(format: Format) -> bool {
 }
 
 /// Whether a colour format holds integers, which are never blended.
-pub fn integer(format: Format) -> bool {
+pub(crate) fn integer(format: Format) -> bool {
     matches!(layout(format), Some((_, _, Num::Uint | Num::Sint, _)))
 }
 
@@ -111,7 +111,7 @@ fn linear_to_srgb(c: f64) -> f64 {
 
 /// Reads one colour texel. Missing channels read as 0, 0, 0, 1. sRGB formats convert red, green and
 /// blue; alpha is linear.
-pub fn decode(format: Format, bytes: &[u8]) -> [f64; 4] {
+pub(crate) fn decode(format: Format, bytes: &[u8]) -> [f64; 4] {
     let (n, size, num, swap) = layout(format).expect("decode of a format not held");
     let mut out = [0.0, 0.0, 0.0, 1.0];
     for (c, v) in out.iter_mut().enumerate().take(n) {
@@ -145,7 +145,7 @@ pub fn decode(format: Format, bytes: &[u8]) -> [f64; 4] {
 
 /// Writes one colour texel, converting as the APIs do: normalised values clamped and rounded to the
 /// nearest step (ties to even), floats rounded to the format's precision, integers kept in range.
-pub fn encode(format: Format, mut value: [f64; 4], bytes: &mut [u8]) {
+pub(crate) fn encode(format: Format, mut value: [f64; 4], bytes: &mut [u8]) {
     let (n, size, num, swap) = layout(format).expect("encode of a format not held");
     if swap {
         value.swap(0, 2);
@@ -177,7 +177,7 @@ pub fn encode(format: Format, mut value: [f64; 4], bytes: &mut [u8]) {
 }
 
 /// Reads the depth of a depth texel.
-pub fn decode_depth(format: Format, bytes: &[u8]) -> f64 {
+pub(crate) fn decode_depth(format: Format, bytes: &[u8]) -> f64 {
     let word =
         |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
     match format {
@@ -191,7 +191,7 @@ pub fn decode_depth(format: Format, bytes: &[u8]) -> f64 {
 }
 
 /// Writes the depth of a depth texel, leaving its stencil as it is.
-pub fn encode_depth(format: Format, depth: f64, bytes: &mut [u8]) {
+pub(crate) fn encode_depth(format: Format, depth: f64, bytes: &mut [u8]) {
     let depth = depth.clamp(0.0, 1.0);
     match format {
         Format::Depth16Unorm => {
@@ -210,7 +210,7 @@ pub fn encode_depth(format: Format, depth: f64, bytes: &mut [u8]) {
 }
 
 /// Where a texel's stencil byte is, for formats with stencil.
-pub fn stencil_byte(format: Format) -> Option<usize> {
+pub(crate) fn stencil_byte(format: Format) -> Option<usize> {
     match format {
         Format::Stencil8 => Some(0),
         Format::Depth24PlusStencil8 => Some(3),
@@ -222,7 +222,7 @@ pub fn stencil_byte(format: Format) -> Option<usize> {
 /// The typeless group of a format: the formats whose texels are the same bits seen differently
 /// (Direct3D's typeless groups, such as `R8G8B8A8_UNORM` and `R8G8B8A8_UINT`, or `R32_FLOAT` and
 /// `D32_FLOAT`), between which copies move texels.
-pub fn bits_group(format: Format) -> String {
+pub(crate) fn bits_group(format: Format) -> String {
     let name = format!("{format:?}");
     let name = match name.as_str() {
         "Depth32Float" => "R32Float",

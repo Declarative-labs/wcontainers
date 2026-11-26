@@ -616,7 +616,8 @@ mod tests {
     const INTER_STAGE_SLOTS_FOR_32_VALUES: u32 = 32;
 
     fn caps_with(inter_stage_slots: u32, vertex_attributes: u32, clamp: bool) -> Caps {
-        let mut caps = RecorderConfig::default().caps;
+        let Ok(recorder) = <Recorder as StandaloneGpu>::new(RecorderConfig { caps: None });
+        let mut caps = recorder.caps().clone();
         caps.limits.inter_stage_slots = inter_stage_slots;
         caps.limits.vertex_attributes = vertex_attributes;
         caps.features.set(Features::DEPTH_BIAS_CLAMP, clamp);
@@ -702,7 +703,7 @@ mod tests {
     fn each_slow_path_taken_is_warned_once_and_counted_every_time() {
         const FANS: u64 = 2;
         let mut backend =
-            <Recorder as StandaloneGpu>::new(RecorderConfig::default()).expect("a recorder");
+            <Recorder as StandaloneGpu>::new(RecorderConfig { caps: None }).expect("a recorder");
         assert!(slow_path_counts(&mut backend).is_empty());
         for _ in 0..FANS {
             backend.record_slow_path(SlowPath::FanConverted);

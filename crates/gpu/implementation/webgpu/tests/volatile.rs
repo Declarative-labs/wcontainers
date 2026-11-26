@@ -22,7 +22,7 @@ const MIB: f64 = (1u64 << 20) as f64;
 fn device() -> WebGpu {
     <WebGpu as StandaloneGpu>::new(WebGpuConfig {
         backends: wgpu::Backends::PRIMARY,
-        software: true,
+        lavapipe: true,
     })
     .expect("a WebGPU adapter")
 }

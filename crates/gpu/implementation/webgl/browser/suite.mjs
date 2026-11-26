@@ -1,4 +1,4 @@
-// Runs the shared back-end suite through the WebGL 2 back end in Chrome, one page per test:
+// Runs the back end's own checks (tests/suite.rs) through the WebGL 2 back end in Chrome, one page per test:
 //   node suite.mjs <pkg-dir> <out-file> <list-file> [<extensions to switch off>]
 // <pkg-dir> holds wasm-bindgen's output for examples/browser.rs; <list-file> is the native suite's
 // `--list --format terse` output, so a test the browser host lacks fails instead of going unrun.

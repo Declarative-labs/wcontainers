@@ -78,7 +78,7 @@ fn uvec(w: [u32; 4], f: impl Fn(u32) -> u64) -> String {
 /// The uniform `unit` of a program writing the unorm depth of `format`, stored in b bits: 2^-b and
 /// 2^-2b, whose products with a stored value v add up to v / (2^b - 1) rounded once (a division
 /// would round twice on GPUs whose divide is a reciprocal and a product). None for other formats.
-pub fn depth_unit(format: Format) -> Option<[f32; 2]> {
+pub(crate) fn depth_unit(format: Format) -> Option<[f32; 2]> {
     match bits(format)?.0 {
         Kind::Depth(b) => {
             let one = (1u64 << b) as f32;
@@ -95,7 +95,7 @@ pub fn depth_unit(format: Format) -> Option<[f32; 2]> {
 /// only where it holds no smallest value (-128 samples as -127 does); into one, never (a draw writes
 /// -127 for -1), so it is refused.
 /// Into a depth format the program writes depth only, from the uniform `unit` where it is unorm.
-pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
+pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
     let (from, wf) = bits(src)?;
     let (to, wt) = bits(dst)?;
     // R11G11B10 goes only into its 32-bit twin, as one word.
