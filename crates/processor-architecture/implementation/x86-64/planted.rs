@@ -1067,6 +1067,18 @@ pub enum Bug {
     MaskedQuadwordWritesEveryByte,
     /// The conversions that name an MMX register put the x87 state in MMX's use only once #XM cannot stop them.
     MmxConvertEntersMmxLast,
+    /// Of two NaNs of one kind the x87 arithmetic gives the one with the smaller significand.
+    X87NanSmallerSignificandWins,
+    /// The x87 arithmetic raises no DE for a denormal operand.
+    X87DenormalOperandIgnored,
+    /// FSUBR and FDIVR compute as FSUB and FDIV.
+    X87ReverseIgnored,
+    /// FLDPI to FLDLN2 load their constants cut to 64 bits whatever the rounding.
+    X87ConstantsTruncated,
+    /// The x87 arithmetic rounds to 64 bits whatever FCW's precision control holds.
+    X87PrecisionControlIgnored,
+    /// The x87 arithmetic and FST to memory find a result tiny where it lies below the smallest normal before rounding.
+    X87TinyBeforeRounding,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1554,6 +1566,24 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::ConvertFromMemoryEntersMmx, "CVTPI2PS, CVTPI2PD", Family::Forms(&[Instruction::Cvtpi2psXmmqMemq, Instruction::Cvtpi2pdXmmpdMemq]), Origin::Mandatory),
     row(Bug::MaskedQuadwordWritesEveryByte, "MASKMOVQ", Family::Forms(&[Instruction::MaskmovqMmxqMmxq]), Origin::Mandatory),
     row(Bug::MmxConvertEntersMmxLast, "CVTPI2PS to CVTTPD2PI, MASKMOVQ", Family::Forms(MMX_CONVERTS), Origin::Mandatory),
+    row(Bug::X87NanSmallerSignificandWins, "FADD to FDIVR", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87DenormalOperandIgnored, "FADD to FDIVR", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87ReverseIgnored, "FSUBR, FDIVR", Family::Forms(&[Instruction::FsubrSt0X87, Instruction::FdivrX87St0, Instruction::FsubrSt0Memmem32real, Instruction::FidivrSt0Memmem16int]), Origin::Mandatory),
+    row(Bug::X87ConstantsTruncated, "FLDPI to FLDLN2", Family::Forms(&[Instruction::Fldpi, Instruction::Fldl2e, Instruction::Fldl2t, Instruction::Fldlg2, Instruction::Fldln2]), Origin::Mandatory),
+    row(Bug::X87PrecisionControlIgnored, "FADD to FDIVR, FSQRT", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87TinyBeforeRounding, "FADD to FDIVR, FST", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+];
+
+const X87_ARITHMETIC_SAMPLE: &[Instruction] = &[
+    Instruction::FaddSt0X87,
+    Instruction::FsubX87St0,
+    Instruction::FmulpX87St0,
+    Instruction::FdivSt0Memm64real,
+    Instruction::FdivrSt0Memmem32real,
+    Instruction::FiaddSt0Memmem32int,
+    Instruction::FstMemmem32realSt0,
+    Instruction::FstpMemm64realSt0,
+    Instruction::Fsqrt,
 ];
 
 const MMX_CONVERTS: &[Instruction] = &[

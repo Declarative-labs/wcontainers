@@ -121,6 +121,7 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                         OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..)
                         | OperandType::X87Value(..)
                         | OperandType::X87Stack
+                        | OperandType::X87Case(_)
                             if in_part =>
                         {
                             values[index].len()
@@ -138,6 +139,7 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                                 OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..)
                                 | OperandType::X87Value(..)
                                 | OperandType::X87Stack
+                                | OperandType::X87Case(_)
                                     if in_part =>
                                 {
                                     value
@@ -232,7 +234,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::ZmmValue(..)
         | OperandType::StringData(_)
         | OperandType::PoppedFlags
-        | OperandType::ConvertSource(_) => true,
+        | OperandType::ConvertSource(_)
+        | OperandType::X87Case(_) => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }

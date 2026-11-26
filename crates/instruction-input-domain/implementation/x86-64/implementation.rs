@@ -63,6 +63,7 @@ pub mod string;
 pub mod system;
 pub mod vector;
 pub mod x87;
+pub mod x87_arithmetic;
 #[cfg(test)]
 mod tests;
 
@@ -247,6 +248,8 @@ pub enum OperandType {
     EnterOperands,
     /// The source lanes of a conversion between MMX and XMM registers, or MASKMOVQ's mask.
     ConvertSource(mmx_convert::ConvertSet),
+    /// FCW, FSW and the operands of an x87 arithmetic form together.
+    X87Case(x87_arithmetic::X87CaseSet),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -433,6 +436,7 @@ pub enum OperandValue {
     StringData { first: u64, second: u64 },
     SystemLayout(system::SystemLayout),
     EnterOperands { allocation: u16, level: u8 },
+    X87Case(x87_arithmetic::X87Case),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -734,6 +738,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::PoppedFlags => system::generate_popped(),
             OperandType::EnterOperands => system::generate_enter_operands(),
             OperandType::ConvertSource(set) => mmx_convert::generate_sources(set),
+            OperandType::X87Case(set) => x87_arithmetic::generate_cases(set),
         };
         values.into_iter()
     }

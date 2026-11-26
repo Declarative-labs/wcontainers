@@ -20,6 +20,7 @@ use wcontainers_processor_architecture_x86_64::{
 };
 
 use crate::integer::{CodeLayout, encode_at_code_address, lay_out, place_memory_operand, to_padding};
+use crate::x87_arithmetic::X87CaseSet;
 use crate::{CODE_ADDRESS, FlagSet, OperandType, OperandValue, Role, Splits, ValueSet};
 
 /// The value that marks a register empty, above the 80 bits a register holds.
@@ -207,6 +208,18 @@ const fn reads_indexed(operation: X87Operation) -> bool {
 
 /// The operand types of an x87 form, in the order the build reads them.
 pub fn list_operand_types(form: &X87Form) -> Vec<OperandType> {
+    if let Some(set) = to_case_set(form) {
+        let mut types = vec![if form.place == OperandPlace::Register {
+            OperandType::Encoding(0)
+        } else {
+            OperandType::Memory { splits: Splits::Allowed, offset: false }
+        }];
+        if list_slots(form.code).contains(&Slot::Indexed) {
+            types.push(OperandType::StackRegister);
+        }
+        types.extend([OperandType::X87Case(set), OperandType::Flags(FlagSet::Unread)]);
+        return types;
+    }
     let slots = list_slots(form.code);
     let mut types = vec![if form.place == OperandPlace::Register {
         OperandType::Encoding(0)
@@ -244,6 +257,20 @@ pub fn list_operand_types(form: &X87Form) -> Vec<OperandType> {
     types
 }
 
+/// The cases of a form whose inputs are cases of FCW, FSW and its operands together.
+fn to_case_set(form: &X87Form) -> Option<X87CaseSet> {
+    match form.operation {
+        X87Operation::Arithmetic { operation, source, .. } => {
+            Some(X87CaseSet::Arithmetic { operation, source, bytes: form.memory_bytes() })
+        }
+        X87Operation::StoreFloat { .. } => Some(X87CaseSet::Store { bytes: form.memory_bytes() }),
+        X87Operation::SquareRoot => Some(X87CaseSet::Unary { root: true }),
+        X87Operation::RoundToIntegral => Some(X87CaseSet::Unary { root: false }),
+        X87Operation::LoadRoundedConstant { .. } => Some(X87CaseSet::Constant),
+        _ => None,
+    }
+}
+
 /// Builds the state of an x87 form from one value of each of its operand types.
 pub fn build_state(form: &X87Form, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
     let mut processor = Processor {
@@ -255,6 +282,7 @@ pub fn build_state(form: &X87Form, operands: &[(OperandType, OperandValue)]) -> 
     };
     let (mut access, mut layout, mut index) = (None, CodeLayout::PageStart, form.to_implied_index());
     let (mut stack, mut top, mut indexed, mut memory_value) = (X87Stack::Initial, None, None, None);
+    let mut case = None;
     for (operand_type, operand) in operands {
         match (operand_type, *operand) {
             (OperandType::Encoding(_), OperandValue::Encoding(encoding)) => layout = encoding.layout,
@@ -269,10 +297,25 @@ pub fn build_state(form: &X87Form, operands: &[(OperandType, OperandValue)]) -> 
             (OperandType::X87Value(_, X87ValueSet::Memory), OperandValue::Vector(value)) => memory_value = Some(value),
             (OperandType::MemoryValue(_), OperandValue::Bits(value)) => memory_value = Some(u128::from(value)),
             (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
+            (OperandType::X87Case(_), OperandValue::X87Case(chosen)) => case = Some(chosen),
             (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
         }
     }
     processor.x87 = stack.to_x87();
+    if let Some(case) = case {
+        let x87 = &mut processor.x87;
+        (x87.control, x87.status, x87.tags) = (case.control, case.status, if case.full { 0xFF } else { 0 });
+        let indexed_first = list_slots(form.code).first() == Some(&Slot::Indexed);
+        if form.place != OperandPlace::Register {
+            memory_value = Some(case.source);
+        }
+        (top, indexed) = match (form.place == OperandPlace::Register, indexed_first) {
+            (false, _) => (Some(case.destination), None),
+            (true, true) => (Some(case.source), Some(case.destination)),
+            (true, false) if list_slots(form.code).contains(&Slot::Indexed) => (Some(case.destination), Some(case.source)),
+            (true, false) => (Some(case.destination), None),
+        };
+    }
     // ST(i)'s value comes last, so that ST(0) named twice holds it.
     for (slot, value) in [(0, top), (index, indexed)] {
         if let Some(value) = value {

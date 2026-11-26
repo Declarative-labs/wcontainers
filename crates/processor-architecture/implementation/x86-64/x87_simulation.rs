@@ -16,7 +16,7 @@ use crate::x87::{
     Rounding, STACK_FAULT, SUMMARY, Source as X87Source, X87Behavior, X87Operation, classify, compare_values,
     convert_integer, examine, find_x87_form, initialize, round_to_integer, widen,
 };
-use crate::{Access, Exception, Flags, Instruction, Processor, X87, X86_64};
+use crate::{Access, Exception, Flags, Instruction, Processor, X87, X86_64, x87_arithmetic};
 
 /// FSW's PE.
 const PRECISION: u16 = 1 << 5;
@@ -253,6 +253,94 @@ pub(super) fn execute_x87(
             let codes = examine(x87.read(0), x87.is_empty(0));
             x87.status = (x87.status & !(C0 | C2 | C3)) | codes;
             x87.set_code(C1, x87.read(0) & SIGN != 0);
+        }
+        X87Operation::Arithmetic { operation, source, reverse, pop } => {
+            let to_indexed = decoded.op_count() == 2 && decoded.op0_register() != Register::ST0;
+            let (destination, source_index) = if to_indexed { (index, 0) } else { (0, index) };
+            let (other, denormal_source) = match source {
+                X87Source::Register | X87Source::Zero => (x87.read(source_index), false),
+                X87Source::Single | X87Source::Double => {
+                    let raw = load(processor)? as u64;
+                    let (value, raised) = if source == X87Source::Single { widen(raw, 23, 8) } else { widen(raw, 52, 11) };
+                    // A signaling NaN in memory stays signaling, so that the arithmetic raises IE and picks NaNs by it.
+                    let value = if raised & INVALID != 0 { value & !(1 << 62) } else { value };
+                    (value, raised & DENORMAL != 0)
+                }
+                X87Source::Integer => {
+                    let raw = load(processor)? as u64;
+                    let unused = 64 - 8 * length as u32;
+                    (convert_integer(((raw << unused) as i64) >> unused), false)
+                }
+            };
+            let empty = x87.is_empty(destination) || source == X87Source::Register && x87.is_empty(source_index);
+            if empty {
+                if underflow(&mut x87) {
+                    x87.write(destination, INDEFINITE);
+                    if pop {
+                        x87.pop();
+                    }
+                }
+            } else {
+                let mine = x87.read(destination);
+                let reverse = reverse != is_active(Bug::X87ReverseIgnored);
+                let (first, second) = if reverse { (other, mine) } else { (mine, other) };
+                let outcome = x87_arithmetic::compute_with_source(operation, first, second, x87.control, denormal_source);
+                x87.raise(outcome.flags);
+                if let Some(value) = outcome.value {
+                    x87.write(destination, value);
+                    x87.set_code(C1, outcome.up);
+                    if pop {
+                        x87.pop();
+                    }
+                }
+            }
+        }
+        X87Operation::StoreFloat { pop } => {
+            let (fraction_bits, exponent_bits) = if length == 4 { (23, 8) } else { (52, 11) };
+            let indefinite = if length == 4 { 0xFFC0_0000 } else { 0xFFF8_0000_0000_0000 };
+            if x87.is_empty(0) {
+                if underflow(&mut x87) {
+                    stored = Some(indefinite);
+                }
+            } else {
+                let (bits, flags, up) = x87_arithmetic::store_float(x87.read(0), fraction_bits, exponent_bits, x87.control);
+                x87.raise(flags);
+                if let Some(bits) = bits {
+                    stored = Some(u128::from(bits));
+                    x87.set_code(C1, up);
+                }
+            }
+            if stored.is_some() && pop {
+                x87.pop();
+            }
+        }
+        X87Operation::LoadRoundedConstant { truncated, above_half } => {
+            let up = match Rounding::from_control(x87.control) {
+                Rounding::Nearest => above_half,
+                Rounding::Up => true,
+                Rounding::Down | Rounding::TowardZero => false,
+            };
+            let up = up && !is_active(Bug::X87ConstantsTruncated);
+            push(&mut x87, Some(truncated + u128::from(up)));
+        }
+        X87Operation::SquareRoot | X87Operation::RoundToIntegral => {
+            if x87.is_empty(0) {
+                if underflow(&mut x87) {
+                    x87.write(0, INDEFINITE);
+                }
+            } else {
+                let value = x87.read(0);
+                let outcome = if form.operation == X87Operation::SquareRoot {
+                    x87_arithmetic::square_root(value, x87.control)
+                } else {
+                    x87_arithmetic::round_integral(value, x87.control)
+                };
+                x87.raise(outcome.flags);
+                if let Some(result) = outcome.value {
+                    x87.write(0, result);
+                    x87.set_code(C1, outcome.up);
+                }
+            }
         }
     }
     if let (Some(value), Some(operand)) = (stored, operand) {
