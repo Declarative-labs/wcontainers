@@ -1123,6 +1123,10 @@ pub enum Bug {
     StackSlotsReadInOrder,
     /// The far CALL checks its target before it pushes.
     CallFarChecksTargetFirst,
+    /// VMCALL under KVM answers 0.
+    HypervisorCallAnswersZero,
+    /// WRPKRU takes a nonzero EDX.
+    WritePkruIgnoresEdx,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1635,6 +1639,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::SelectorPopReadsWholeSlot, "POP FS, POP GS", Family::Forms(&[Instruction::PopFs, Instruction::PopGs]), Origin::Mandatory),
     row(Bug::CompatibilityKeepsWholeStackPointer, "CALL far, JMP far, RET far, IRET", Family::Forms(&[Instruction::CallFarMemp2, Instruction::JmpFarMemp2, Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iretq]), Origin::Mandatory),
     row(Bug::StackSlotsReadInOrder, "RET far, IRET", Family::Forms(&[Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iret, Instruction::Iretd, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::WritePkruIgnoresEdx, "WRPKRU", Family::Forms(&[Instruction::Wrpkru]), Origin::Mandatory),
+    row(Bug::HypervisorCallAnswersZero, "VMCALL", Family::Forms(&[Instruction::Vmcall]), Origin::Mandatory),
     row(Bug::CallFarChecksTargetFirst, "CALL far", Family::Forms(&[Instruction::CallFarMemp2]), Origin::Mandatory),
     row(Bug::FarTargetUnchecked, "CALL far, JMP far, RET far, IRET", Family::Forms(&[Instruction::CallFarMemp2, Instruction::JmpFarMemp2, Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iretq]), Origin::Mandatory),
     row(Bug::RootParitySwapped, "RSQRTPS, RSQRTSS", Family::Forms(&[Instruction::RsqrtpsXmmpsXmmps, Instruction::RsqrtpsXmmpsMemps, Instruction::RsqrtssXmmssXmmss, Instruction::RsqrtssXmmssMemss]), Origin::Mandatory),

@@ -69,6 +69,7 @@ fn simulate(
         exception: expected.exception,
         data_segments: expected.data_segments,
         code_segment: expected.code_segment,
+        pkru: expected.pkru,
     };
     (processor, after.memory_mutations[start..].to_vec())
 }

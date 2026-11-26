@@ -92,6 +92,7 @@ mod on_chip {
             exception: expected.exception,
             data_segments: expected.data_segments,
             code_segment: expected.code_segment,
+            pkru: expected.pkru,
         }
     }
 

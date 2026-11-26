@@ -52,6 +52,14 @@ pub fn list_operand_types(form: &SystemForm) -> Vec<OperandType> {
             types.clear();
             types.extend([OperandType::Encoding(0), OperandType::SystemFlags]);
         }
+        SystemOperation::HypervisorCall => {
+            types.clear();
+            types.extend([OperandType::Encoding(0), OperandType::HypercallNumber, OperandType::Flags(FlagSet::Unread)]);
+        }
+        SystemOperation::ReadKeyRights | SystemOperation::WriteKeyRights => {
+            types.clear();
+            types.extend([OperandType::Encoding(0), OperandType::KeyRights, OperandType::Flags(FlagSet::Unread)]);
+        }
     }
     types
 }
@@ -93,6 +101,26 @@ pub fn generate_popped() -> Vec<OperandValue> {
     .to_vec()
 }
 
+/// PKRU and EAX, ECX and EDX for RDPKRU and WRPKRU: ECX and EDX zero, with bits above their 32, and each nonzero alone;
+/// PKRU Linux's, none, every key denied but 0, and a mix; EAX each of those.
+pub fn generate_key_rights() -> Vec<OperandValue> {
+    const ABOVE: u64 = 0xA5A5_A5A5_0000_0000;
+    let values = [0x5555_5554u32, 0, 0xFFFF_FFFC, 0x1234_5670];
+    let mut all = Vec::new();
+    for (index, &pkru) in values.iter().enumerate() {
+        let accumulator = ABOVE | u64::from(values[(index + 1) % values.len()]);
+        all.extend([(0, 0), (ABOVE, ABOVE), (1, 0), (0, 1), (u64::from(u32::MAX), 0)].map(|(counter, data)| {
+            OperandValue::KeyRights { pkru, accumulator, counter, data }
+        }));
+    }
+    all
+}
+
+/// The hypercall numbers VMCALL meets in RAX: none, KVM's first and its range mapping, and every bit.
+pub fn generate_hypercall_numbers() -> Vec<OperandValue> {
+    [0, 1, 12, u64::MAX].map(OperandValue::Bits).to_vec()
+}
+
 /// ENTER's frame size and nesting level: no frame, a frame of one element, of a page and of the most a frame takes,
 /// with no outer level, one, two, 33 (which is 1 modulo 32) and the last, 31.
 pub fn generate_enter_operands() -> Vec<OperandValue> {
@@ -121,6 +149,13 @@ pub fn build_state(form: &SystemForm, operands: &[(OperandType, OperandValue)]) 
             (OperandType::SystemFlags | OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
             (OperandType::PoppedFlags, OperandValue::Bits(value)) => popped = Some(value),
             (OperandType::EnterOperands, OperandValue::EnterOperands { allocation, level }) => enter = Some((allocation, level)),
+            (OperandType::HypercallNumber, OperandValue::Bits(number)) => processor.general_purpose_registers[0] = number,
+            (OperandType::KeyRights, OperandValue::KeyRights { pkru, accumulator, counter, data }) => {
+                processor.pkru = pkru;
+                processor.general_purpose_registers[0] = accumulator;
+                processor.general_purpose_registers[1] = counter;
+                processor.general_purpose_registers[2] = data;
+            }
             (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
         }
     }
@@ -128,7 +163,10 @@ pub fn build_state(form: &SystemForm, operands: &[(OperandType, OperandValue)]) 
     let narrow = size == Some(OperandSize::Bits16) || form.codes[0] == iced_x86::Code::Pushfw || form.codes[0] == iced_x86::Code::Popfw;
     let bytes = if narrow { 2 } else { 8 };
     let mut memory_mutations = Vec::new();
-    if form.operation != SystemOperation::SystemCall {
+    if !matches!(
+        form.operation,
+        SystemOperation::SystemCall | SystemOperation::HypervisorCall | SystemOperation::ReadKeyRights | SystemOperation::WriteKeyRights
+    ) {
         place(layout.placement, false, &mut memory_mutations);
     }
     let address = to_address(layout.placement, bytes, false);
@@ -153,6 +191,9 @@ pub fn build_state(form: &SystemForm, operands: &[(OperandType, OperandValue)]) 
         }
         SystemOperation::JumpIfCountZero => unreachable!("JCXZ has no state"),
         SystemOperation::SystemCall => encoded.extend([0x0F, 0x05]),
+        SystemOperation::HypervisorCall => encoded.extend([0x0F, 0x01, 0xC1]),
+        SystemOperation::ReadKeyRights => encoded.extend([0x0F, 0x01, 0xEE]),
+        SystemOperation::WriteKeyRights => encoded.extend([0x0F, 0x01, 0xEF]),
         SystemOperation::Enter => {
             let (allocation, level) = enter.expect("ENTER's operands");
             processor.general_purpose_registers[FRAME_POINTER] = FRAME_ADDRESS;

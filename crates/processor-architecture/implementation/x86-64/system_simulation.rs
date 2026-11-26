@@ -20,6 +20,8 @@ const NESTING_LEVELS: u8 = 32;
 const RETURN_ADDRESS: usize = 1;
 /// R11, which SYSCALL writes with RFLAGS.
 const SAVED_FLAGS: usize = 11;
+/// What KVM answers a hypercall from ring 3: -KVM_EPERM, which is -EPERM.
+const HYPERCALL_REFUSED: u64 = (-1i64) as u64;
 
 pub(super) fn execute_system(
     instruction: Instruction,
@@ -85,6 +87,25 @@ pub(super) fn execute_system(
             let always = if is_active(Bug::PushFlagsOmitsInterrupt) { 1 << 1 } else { ALWAYS_PUSHED };
             processor.general_purpose_registers[SAVED_FLAGS] = flags.bits() | always;
             return Err(Exception::SystemCall);
+        }
+        SystemOperation::ReadKeyRights | SystemOperation::WriteKeyRights => {
+            let registers = processor.general_purpose_registers;
+            let (accumulator, counter, data) = (registers[0] as u32, registers[1] as u32, registers[2] as u32);
+            let writes = form.operation == SystemOperation::WriteKeyRights;
+            let data_checked = writes && !is_active(Bug::WritePkruIgnoresEdx);
+            if counter != 0 || (data_checked && data != 0) {
+                return Err(Exception::GeneralProtection { error_code: 0 });
+            }
+            if writes {
+                processor.pkru = accumulator;
+            } else {
+                processor.general_purpose_registers[0] = u64::from(processor.pkru);
+                processor.general_purpose_registers[2] = 0;
+            }
+        }
+        SystemOperation::HypervisorCall => {
+            let answer = if is_active(Bug::HypervisorCallAnswersZero) { 0 } else { HYPERCALL_REFUSED };
+            processor.general_purpose_registers[0] = answer;
         }
         SystemOperation::JumpIfCountZero => {
             let target = decoded.near_branch_target();

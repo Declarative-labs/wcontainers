@@ -22,6 +22,13 @@ pub enum SystemOperation {
     Enter,
     /// SYSCALL: RCX and R11 written, then the kernel entered, which ends the program's instruction as an exception does.
     SystemCall,
+    /// VMCALL under KVM, which answers a hypercall from ring 3 with -KVM_EPERM, that is -1, in RAX and goes on past
+    /// it; outside a virtual machine VMCALL raises #UD, the form's other behavior.
+    HypervisorCall,
+    /// RDPKRU: #GP(0) unless ECX is 0, then EAX from PKRU and EDX cleared.
+    ReadKeyRights,
+    /// WRPKRU: #GP(0) unless ECX and EDX are 0, then PKRU from EAX.
+    WriteKeyRights,
     /// JCXZ: the jump taken where CX is zero. It needs the 16-bit address size, which 64-bit mode does not have (0x67
     /// makes 0xE3 JECXZ there), so no byte string encodes it and no state runs it.
     JumpIfCountZero,
@@ -89,4 +96,7 @@ pub static SYSTEM_FORMS: &[SystemForm] = &[
     system(Instruction::EnterImmwImmb, SystemOperation::Enter, &[Code::Enterw_imm16_imm8, Code::Enterq_imm16_imm8]),
     system(Instruction::JcxzRelbrb, SystemOperation::JumpIfCountZero, &[Code::Jcxz_rel8_16]),
     system(Instruction::Syscall, SystemOperation::SystemCall, &[Code::Syscall]),
+    system(Instruction::Vmcall, SystemOperation::HypervisorCall, &[Code::Vmcall]),
+    system(Instruction::Rdpkru, SystemOperation::ReadKeyRights, &[Code::Rdpkru]),
+    system(Instruction::Wrpkru, SystemOperation::WriteKeyRights, &[Code::Wrpkru]),
 ];

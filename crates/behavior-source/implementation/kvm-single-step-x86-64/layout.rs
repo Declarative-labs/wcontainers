@@ -131,8 +131,10 @@ pub const XSAVE_OPMASK: usize = 1088;
 pub const XSAVE_ZMM_HIGH_256: usize = 1152;
 /// ZMM16 to ZMM31, at the offset of subleaf 7.
 pub const XSAVE_HIGH_16_ZMM: usize = 1664;
-/// The legacy area, the header, the AVX area and AVX-512's three, which end on the image's alignment.
-pub const XSAVE_IMAGE_BYTES: usize = 2688;
+/// PKRU, at the offset of subleaf 9.
+pub const XSAVE_PKRU: usize = 2688;
+/// The legacy area, the header, the AVX area, AVX-512's three and PKRU's, to the image's alignment.
+pub const XSAVE_IMAGE_BYTES: usize = 2752;
 /// XCR0's bits: x87, SSE, AVX, then the opmask, ZMM_Hi256 and Hi16_ZMM components of AVX-512, then PKRU.
 pub const X87_COMPONENT: u64 = 1 << 0;
 pub const SSE_COMPONENT: u64 = 1 << 1;
@@ -146,7 +148,7 @@ pub const PKRU_COMPONENT: u64 = 1 << 9;
 /// a system call kvm-ioctls does not make.
 pub const EXTENDED_CONTROL_0: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
 /// The components the handler loads and saves: those the state holds.
-pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS;
+pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
 
 const _: () = assert!(SLOT + size_of::<Slot>() as u64 <= STACK_TOP - PAGE_BYTES);
 

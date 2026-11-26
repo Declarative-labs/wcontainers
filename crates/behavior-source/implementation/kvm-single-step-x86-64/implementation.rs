@@ -28,7 +28,8 @@ use std::time::{Duration, Instant};
 use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
 use kvm_bindings::{
-    KVM_MAX_CPUID_ENTRIES, Msrs, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
+    KVM_CAP_DISABLE_QUIRKS2, KVM_MAX_CPUID_ENTRIES, KVM_X86_QUIRK_FIX_HYPERCALL_INSN, Msrs, kvm_enable_cap, kvm_msr_entry,
+    kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
 };
 use kvm_ioctls::{Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 use wcontainers_behavior_source::BehaviorSource;
@@ -48,7 +49,7 @@ use crate::layout::{
     ACCESSED, ADDRESS_MASK, ARENA, AVX_COMPONENT, DESCRIPTOR_ENTRIES, DIRTY, ENTRIES, ENTRY_BYTES,
     EXTENDED_CONTROL_0, FAULT_STACK_TOP, FX_MXCSR, FX_VECTOR_REGISTERS, GLOBAL,
     GLOBAL_DESCRIPTOR_TABLE, HIGH_16_ZMM_COMPONENT, OPMASK_COMPONENT, SAVED_COMPONENTS, SSE_COMPONENT, XSAVE_AVX,
-    XSAVE_HEADER, XSAVE_HIGH_16_ZMM, XSAVE_IMAGE_BYTES, XSAVE_OPMASK, XSAVE_ZMM_HIGH_256, XsaveImage,
+    XSAVE_HEADER, XSAVE_HIGH_16_ZMM, XSAVE_IMAGE_BYTES, XSAVE_OPMASK, XSAVE_PKRU, XSAVE_ZMM_HIGH_256, XsaveImage, PKRU_COMPONENT,
     ZMM_HIGH_256_COMPONENT,
     HANDLER, HANDLER_BYTES, INTERRUPT_DESCRIPTOR_TABLE, KERNEL_CODE, KERNEL_DATA, KERNEL_DIRECTORY,
     KERNEL_DIRECTORY_POINTERS, KERNEL_ENTRY, KERNEL_PAGES, KERNEL_TABLE, LEVELS, MEMORY_BYTES, NO_EXECUTE,
@@ -307,6 +308,10 @@ impl SingleStepMachine {
         machine
             .set_tss_address(0xFFFB_D000)
             .map_err(|error| refused("placing KVM's real mode task state", error))?;
+        // KVM would rewrite a guest's VMMCALL into VMCALL in the guest's own code; without the quirk it raises #UD, as
+        // an Intel chip does.
+        let quirks = kvm_enable_cap { cap: KVM_CAP_DISABLE_QUIRKS2, args: [u64::from(KVM_X86_QUIRK_FIX_HYPERCALL_INSN), 0, 0, 0], ..kvm_enable_cap::default() };
+        machine.enable_cap(&quirks).map_err(|error| refused("disabling KVM's hypercall rewriting", error))?;
         let memory = PooledMemory(give_memory(&machine)?);
         let cpu = machine.create_vcpu(0).map_err(|error| refused("making a virtual CPU", error))?;
         let mut cpuid = kvm
@@ -996,6 +1001,7 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
     }
     // Every saved component is loaded from the image rather than put in its initial state, but an AVX-512 component
     // that holds zeros, whose initial state is the same.
+    image.bytes[XSAVE_PKRU..XSAVE_PKRU + size_of::<u32>()].copy_from_slice(&processor.pkru.to_le_bytes());
     image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&to_loaded_components(processor).to_le_bytes());
     Slot {
         before_xsave: image,
@@ -1023,7 +1029,8 @@ fn to_loaded_components(processor: &Processor) -> u64 {
 /// The bytes of the image up to the end of the last component the header names, AVX's at least.
 fn to_image_end(components: u64) -> usize {
     match components {
-        _ if components & HIGH_16_ZMM_COMPONENT != 0 => XSAVE_IMAGE_BYTES,
+        _ if components & PKRU_COMPONENT != 0 => XSAVE_PKRU + size_of::<u64>(),
+        _ if components & HIGH_16_ZMM_COMPONENT != 0 => XSAVE_PKRU,
         _ if components & ZMM_HIGH_256_COMPONENT != 0 => XSAVE_HIGH_16_ZMM,
         _ if components & OPMASK_COMPONENT != 0 => XSAVE_ZMM_HIGH_256,
         _ => XSAVE_AVX + VECTOR_REGISTERS * VECTOR_HALF_BYTES,
@@ -1097,9 +1104,10 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 ///
 /// # Errors
 ///
-/// For a MOV SS that loads SS (it steps two instructions), SYSENTER (it enters ring 0 at MSRs the source does not set
-/// as Linux does), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
-/// on the page says why: UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
+/// For a MOV SS that loads SS (it steps two instructions) and SYSENTER (it enters ring 0 at MSRs the source does not
+/// set as Linux does). VMCALL runs, which KVM answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk
+/// that rewrites it is off. Then for each instruction whose result under Linux differs from the source's guest, the table of settings
+/// on the page says why: UMWAIT and TPAUSE, XGETBV, the
 /// XSAVE family, INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
 /// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
@@ -1127,11 +1135,9 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         _ if loads_stack_segment => Some("it loads SS, which holds off the trap until after the next instruction"),
         // Linux sets IA32_SYSENTER_CS, so a 64-bit SYSENTER enters its kernel; the source leaves it 0, where it faults.
         Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
-        Mnemonic::Vmcall | Mnemonic::Vmmcall => Some("KVM answers it as a hypercall"),
         // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
         // IA32_TSC_AUX and the random source decide.
         Mnemonic::Umwait | Mnemonic::Tpause => Some("its result depends on the time, which is not in the state"),
-        Mnemonic::Rdpkru | Mnemonic::Wrpkru => Some("PKRU is not modeled, and Linux starts it at 0x55555554"),
         Mnemonic::Xgetbv => Some("XCR0 under Linux also enables AMX's tiles, and XINUSE is not in the state"),
         Mnemonic::Xsave
         | Mnemonic::Xsave64
@@ -1234,6 +1240,11 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         opmask_registers,
         exception,
         data_segments: after.data_segments.map(|selector| selector as u16),
+        pkru: if saved & PKRU_COMPONENT == 0 {
+            0
+        } else {
+            u32::from_le_bytes(after_x87[XSAVE_PKRU..XSAVE_PKRU + size_of::<u32>()].try_into().expect("four bytes"))
+        },
         code_segment: after.code_segment as u16,
     })
 }

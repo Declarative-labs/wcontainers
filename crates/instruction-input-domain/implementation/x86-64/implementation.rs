@@ -272,6 +272,10 @@ pub enum OperandType {
     CallStack,
     /// Where IRET's stack access of `bytes` lies.
     FrameLayout { bytes: u64 },
+    /// The hypercall number VMCALL reads in RAX.
+    HypercallNumber,
+    /// PKRU with EAX, ECX and EDX for RDPKRU and WRPKRU.
+    KeyRights,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -461,6 +465,7 @@ pub enum OperandValue {
     X87Case(x87_arithmetic::X87Case),
     FarPointer { offset: u64, selector: u16 },
     SegmentLoad { segment: usize, selector: u16 },
+    KeyRights { pkru: u32, accumulator: u64, counter: u64, data: u64 },
     IretFrame(segment::IretFrame),
     CallStack(segment::CallStack),
 }
@@ -782,6 +787,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::IretFrame => segment::generate_frames(),
             OperandType::CallStack => segment::generate_call_stacks(),
             OperandType::FrameLayout { bytes } => segment::generate_frame_layouts(bytes),
+            OperandType::HypercallNumber => system::generate_hypercall_numbers(),
+            OperandType::KeyRights => system::generate_key_rights(),
         };
         values.into_iter()
     }

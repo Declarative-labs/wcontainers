@@ -242,7 +242,9 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::SegmentSelector
         | OperandType::SegmentLoad
         | OperandType::FarPointer
-        | OperandType::IretFrame => true,
+        | OperandType::IretFrame
+        | OperandType::HypercallNumber
+        | OperandType::KeyRights => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }
