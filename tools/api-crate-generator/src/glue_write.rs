@@ -656,10 +656,12 @@ impl Writer<'_, '_> {
             }
             let _ = writeln!(inner, "            drop(found);");
             // The implementation's objects no array out hands over are dropped before any object is served: a `Drop`
-            // that panics or re-enters then leaves no reference served and never given to C.
+            // that panics or re-enters then leaves no reference served and never given to C. Each is dropped on its own
+            // and caught: a second panic while a `Vec` drops its rest would abort the process.
             for (name, part, _) in &outs {
                 if let Part::ObjectsOut { .. } = part {
-                    let _ = writeln!(inner, "            let mut {name}_value = {name}_value;\n            {name}_value.truncate(if {name}.is_null() {{ 0 }} else {{ {name}_length / size_of::<usize>() }});");
+                    let _ = writeln!(inner, "            let mut {name}_value = {name}_value;\n            let {name}_room = if {name}.is_null() {{ usize::MIN }} else {{ {name}_length / size_of::<usize>() }};");
+                    let _ = writeln!(inner, "            if {name}_value.len() > {name}_room {{\n                for extra in {name}_value.drain({name}_room..) {{\n                    guarded((), move || drop(extra));\n                }}\n            }}");
                 }
             }
             for (name, part, _) in &outs {
