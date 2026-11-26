@@ -15,7 +15,7 @@ const REGENERATE: &str = "REGENERATE";
 const COLUMNS: usize = 6;
 
 /// What the table's comment lines start with.
-const COMMENT: char = '#';
+const TABLE_COMMENT: char = '#';
 
 /// The level column of an ioctl request, which has none.
 const NO_LEVEL: &str = "-";
@@ -67,15 +67,16 @@ fn bare(path: &str) -> &str {
     path.rsplit("::").next().unwrap_or(path)
 }
 
+/// Gives the interface's folder, which holds the table, the trait and the suite, two above this crate's.
 fn crate_folder() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn rows(table: &str) -> Vec<Row<'_>> {
     table
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with(COMMENT))
+        .filter(|line| !line.is_empty() && !line.starts_with(TABLE_COMMENT))
         .map(|line| {
             let columns: Vec<&str> = line.split_whitespace().collect();
             assert_eq!(columns.len(), COLUMNS, "a row of {COLUMNS} columns: {line}");
@@ -180,33 +181,18 @@ fn signature(row: &Row<'_>) -> (String, String, String) {
     (generics, parameters, result)
 }
 
-/// The method's documentation, one sentence.
+/// The method's documentation, one sentence naming the option and the manual page that defines it.
 fn summary(row: &Row<'_>) -> String {
     let option = bare(row.option);
     let manual = row.manual;
     if row.level == NO_LEVEL {
-        return format!(
-            "Reads the int the `{option}` ioctl request gives for the socket, as {manual} defines it."
-        );
-    }
-    let level = bare(row.level);
-    let what = match row.value {
-        "bool" => "on or off",
-        "c_int" | "u32" | "u64" => "a number",
-        "bytes" => "a byte string",
-        "program" => "a classic BPF program",
-        "group_filter" => "a source filter",
-        _ if row.value.starts_with("slice:") => "a run of values",
-        _ => "a value",
-    };
-    if row.written_back() {
-        format!(
-            "Sets `{option}` of level `{level}` to {what} the kernel may write into, as {manual} defines it."
-        )
+        format!("Reads the int of the `{option}` request ({manual}).")
+    } else if row.written_back() {
+        format!("Sets `{option}` to a value the kernel may write into ({manual}).")
     } else if row.sets() {
-        format!("Sets `{option}` of level `{level}` to {what}, as {manual} defines it.")
+        format!("Sets `{option}` ({manual}).")
     } else {
-        format!("Reads `{option}` of level `{level}`, as {manual} defines it.")
+        format!("Reads `{option}` ({manual}).")
     }
 }
 
@@ -232,10 +218,10 @@ fn body(row: &Row<'_>) -> String {
     }
 }
 
-const INTERFACE_HEAD: &str = r#"//! Linux's socket option and socket ioctl calls (setsockopt(2), getsockopt(2), ioctl(2) on a socket), one method per
-//! option and request the host socket crates use that no vetted crate wraps safely.
+const INTERFACE_HEAD: &str = r#"//! Linux's socket option and socket ioctl calls that no vetted crate wraps safely, one method each.
 //!
-//! Made from `options.table` by `tests/generated.rs`; edit the table, not this file.
+//! The calls are setsockopt(2), getsockopt(2) and ioctl(2) on a socket. Made from `options.table` by the direct
+//! implementation's `tests/generated.rs`; edit the table, not this file.
 #![cfg(target_os = "linux")]
 
 use std::ffi::c_int;
@@ -257,10 +243,11 @@ pub struct Written<const ROOM: usize> {
 pub const SOCKET_STORAGE_LENGTH: usize = size_of::<uapi::__kernel_sockaddr_storage>();
 
 /// A socket address in the kernel's storage form, as bytes aligned as `struct __kernel_sockaddr_storage` is.
-#[repr(C)]
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/socket.h
+#[repr(C, align(8))]
 #[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub struct SocketStorage {
-    _aligned: [usize; 0],
     pub bytes: [u8; SOCKET_STORAGE_LENGTH],
 }
 
@@ -281,8 +268,9 @@ pub const MPTCP_INFO_LENGTH: usize = 96;
 /// The length of one `struct tcp_ao_getsockopt`, the query and answer of `TCP_AO_GET_KEYS`.
 pub const KEY_QUERY_LENGTH: usize = size_of::<uapi::tcp_ao_getsockopt>();
 
-/// What `MPTCP_FULL_INFO` gave: the kernel's lengths and counts, the connection's `struct mptcp_info`, and each subflow's
-/// `struct mptcp_subflow_info` and `struct tcp_info` in rooms of the sizes asked, as many as asked for.
+/// What `MPTCP_FULL_INFO` gave: the kernel's lengths and counts, the connection's information and each subflow's.
+///
+/// Each subflow's `struct mptcp_subflow_info` and `struct tcp_info` sit in rooms of the sizes asked, as many as asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MptcpFullInformation<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize> {
     /// `size_tcpinfo_kernel`, the length of the kernel's `struct tcp_info`.

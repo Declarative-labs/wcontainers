@@ -20,51 +20,51 @@ use wcontainers_linux_socket_options::{
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 /// The socket option and ioctl calls of the kernel the program runs on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct DirectLinuxSocketOptions;
 
 /// The options and requests that neither linux-raw-sys nor the uapi names, with where Linux defines each.
 mod local {
-    /// `MPTCP_INFO`.
+    /// The multipath TCP option that reads the connection's `struct mptcp_info`.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
-    pub const MPTCP_INFO: u32 = 1;
-    /// `MPTCP_FULL_INFO`.
+    pub(crate) const MPTCP_INFO: u32 = 1;
+    /// The multipath TCP option that reads the connection's and its subflows' information at once.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
-    pub const MPTCP_FULL_INFO: u32 = 4;
-    /// `UDP_NO_CHECK6_TX`.
+    pub(crate) const MPTCP_FULL_INFO: u32 = 4;
+    /// The UDP option that sends IPv6 datagrams with a zero checksum.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub const UDP_NO_CHECK6_TX: u32 = libc::UDP_NO_CHECK6_TX as u32;
-    /// `UDP_NO_CHECK6_RX`.
+    pub(crate) const UDP_NO_CHECK6_TX: u32 = libc::UDP_NO_CHECK6_TX as u32;
+    /// The UDP option that takes IPv6 datagrams with a zero checksum.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub const UDP_NO_CHECK6_RX: u32 = libc::UDP_NO_CHECK6_RX as u32;
+    pub(crate) const UDP_NO_CHECK6_RX: u32 = libc::UDP_NO_CHECK6_RX as u32;
     /// The level of UDP-Lite's own options, its protocol number.
     ///
     /// https://man7.org/linux/man-pages/man7/udplite.7.html
-    pub const SOL_UDPLITE: u32 = super::uapi::IPPROTO_UDPLITE as u32;
-    /// `UDPLITE_SEND_CSCOV`.
+    pub(crate) const SOL_UDPLITE: u32 = super::uapi::IPPROTO_UDPLITE as u32;
+    /// The UDP-Lite option that sets how much of each datagram sent the checksum covers.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub const UDPLITE_SEND_CSCOV: u32 = 10;
-    /// `UDPLITE_RECV_CSCOV`.
+    pub(crate) const UDPLITE_SEND_CSCOV: u32 = 10;
+    /// The UDP-Lite option that sets how much of each datagram taken the checksum must cover.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub const UDPLITE_RECV_CSCOV: u32 = 11;
-    /// `SIOCOUTQ`, which Linux defines as `TIOCOUTQ`.
+    pub(crate) const UDPLITE_RECV_CSCOV: u32 = 11;
+    /// The request for the bytes sent and not yet acknowledged, which Linux defines as `TIOCOUTQ`.
     ///
     /// https://man7.org/linux/man-pages/man7/tcp.7.html
-    pub const SIOCOUTQ: u32 = linux_raw_sys::ioctl::TIOCOUTQ;
-    /// `SIOCOUTQNSD`.
+    pub(crate) const SIOCOUTQ: u32 = linux_raw_sys::ioctl::TIOCOUTQ;
+    /// The request for the bytes not yet sent.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/sockios.h
-    pub const SIOCOUTQNSD: u32 = libc::SIOCOUTQNSD as u32;
-    /// `SIOCATMARK`.
+    pub(crate) const SIOCOUTQNSD: u32 = libc::SIOCOUTQNSD as u32;
+    /// The request for whether the urgent mark is next to read.
     ///
     /// https://man7.org/linux/man-pages/man7/tcp.7.html
-    pub const SIOCATMARK: u32 = linux_raw_sys::ioctl::SIOCATMARK;
+    pub(crate) const SIOCATMARK: u32 = linux_raw_sys::ioctl::SIOCATMARK;
 }
 
 /// A value whose bytes the kernel takes as an option's value: it holds no address the kernel follows.
@@ -80,10 +80,13 @@ impl Plain for u8 {}
 impl<T: Plain> Plain for [T] {}
 
 /// What a successful call answers.
+///
+/// https://man7.org/linux/man-pages/man2/setsockopt.2.html
 const SUCCESS: c_int = 0;
 
-/// The `nkeys` of a `TCP_AO_GET_KEYS` query that the room of one answer holds: the kernel writes one answer per key
-/// asked for, whatever length it is given.
+/// The `nkeys` of a `TCP_AO_GET_KEYS` query that the room of one answer holds.
+///
+/// The kernel writes one answer per key asked for, whatever length it is given.
 ///
 /// https://docs.kernel.org/networking/tcp_ao.html
 const KEYS_IN_ONE_ANSWER: u32 = 1;

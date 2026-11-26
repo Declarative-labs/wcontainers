@@ -64,8 +64,7 @@ const AO_INFORMATION_ROOMS: [usize; 5] = [0, 1, 8, size_of::<uapi::tcp_ao_info_o
 const AO_REPAIR_ROOMS: [usize; 5] = [0, 1, 8, size_of::<uapi::tcp_ao_repair>(), LARGE_ROOM];
 const REPAIR_WINDOW_ROOMS: [usize; 5] = [0, 1, 8, size_of::<uapi::tcp_repair_window>(), LARGE_ROOM];
 
-/// The forwarding setting of the namespace's loopback, which lets it join any anycast address, not only those its
-/// prefixes hold.
+/// The forwarding setting of the namespace's loopback, which lets it join any anycast address.
 ///
 /// https://docs.kernel.org/networking/ip-sysctl.html
 const LOOPBACK_FORWARDING: &str = "/proc/sys/net/ipv6/conf/lo/forwarding";
@@ -1168,7 +1167,7 @@ fn full_information_once<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usiz
     }
 }
 
-/// Calls the row as the case says, a fresh socket for each call, and gives what the calls did.
+/// Makes the row's calls as the case says, a fresh socket for each, and gives what they did.
 fn calls(row: &Row, case: &Case) -> Seen {
     let mut seen = Seen::default();
     match &case.input {

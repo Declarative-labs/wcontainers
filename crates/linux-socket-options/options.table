@@ -1,5 +1,5 @@
 # The Linux socket options and socket ioctl requests that no vetted crate (rustix, socket2, nix, std) wraps safely.
-# interface.rs and implementation/direct/generated.rs are made from this table by the test tests/generated.rs, which
+# interface.rs and implementation/direct/generated.rs are made from this table by implementation/direct/tests/generated.rs, which
 # fails when either differs from what the table gives; run it with REGENERATE=1 to write them.
 #
 # Columns: the method; the level (`-` for an ioctl request); the option or request; its value; the manual page that
