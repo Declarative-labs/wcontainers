@@ -3,7 +3,7 @@
 //! embed in DXIL.
 
 use std::ops::Range;
-use wcontainers_gpu::SlotKind;
+use wcontainers_gpu::reflect::SlotKind;
 use wcontainers_shaders::container::{self, Tag};
 
 /// `D3D12_ROOT_PARAMETER_TYPE` with its payload.

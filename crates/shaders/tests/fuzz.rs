@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use wcontainers_gpu::VariantKey;
+use wcontainers_gpu::reflect::VariantKey;
 use wcontainers_shaders::{ConvertError, Source, container, convert, token};
 
 /// The most the test's Rust code may hold at once: an allocation past it is refused, as on a host short

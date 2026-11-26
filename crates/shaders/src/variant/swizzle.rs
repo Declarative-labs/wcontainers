@@ -4,7 +4,7 @@
 //! holds its first component alone in the common form, so its gathers of another component are
 //! resolved here too, through the identity where the slot has no mapping.
 
-use wcontainers_gpu::ViewComponent;
+use wcontainers_gpu::reflect::ViewComponent;
 
 use crate::refusal::{DEPTH_GATHER_COMPONENT, SWIZZLED_DEPTH};
 

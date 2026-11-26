@@ -17,11 +17,14 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture,
-    DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, Gpu,
-    LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology, ViewDimension,
-    WriteMode,
+    Gpu, caps::Features, caps::FormatUse, draw::ColorAttachment, draw::DrawCall, draw::DrawRange,
+    draw::LoadOp, draw::PassDesc, draw::StoreOp, error::DeviceStatus, format::FORMAT_FACTS,
+    format::Format, resource::BindingEntry, resource::BindingResource, resource::BufferDesc,
+    resource::BufferUsage, resource::CopyBufferTexture, resource::Extent, resource::MapIntent,
+    resource::Origin, resource::ReadSource, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::ViewDimension, resource::WriteMode, shader::StageSet, slow::SlowPath,
+    state::Topology,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

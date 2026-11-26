@@ -5,9 +5,11 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    BufferDesc, BufferUsage, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind,
-    FormatUse, Gpu, MapIntent, Object, Origin, ReadSource, STORAGE_WORD, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, WriteMode,
+    Gpu, Object, STORAGE_WORD, caps::FormatUse, format::FORMAT_FACTS, format::Format,
+    format::FormatKind, resource::BufferDesc, resource::BufferUsage, resource::CopyBufferTexture,
+    resource::Extent, resource::MapIntent, resource::Origin, resource::ReadSource,
+    resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
+    resource::TextureUsage, resource::WriteMode,
 };
 
 use crate::context::Context;

@@ -10,7 +10,7 @@ use wcontainers_direct3d_12::state::{
     CULL_MODE_NONE, FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{DeviceStatus, Features, Gpu, SlowPath};
+use wcontainers_gpu::{Gpu, caps::Features, error::DeviceStatus, slow::SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 /// The rig's shaders passing a three-component position and a colour.
@@ -362,7 +362,7 @@ fn clamp_scene(
         FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, RootSignatureDesc, VERSION_1_0, serialize,
     };
     use wcontainers_direct3d_12::state::*;
-    use wcontainers_gpu::ColorWrites;
+    use wcontainers_gpu::state::ColorWrites;
     use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
 
     // A vertex at (x, y, z) / w, then its colour.

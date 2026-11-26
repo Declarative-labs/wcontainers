@@ -1,7 +1,10 @@
 //! Small drawing helpers the back end's checks share, generic over the back end so a check can run on
 //! WebGL 2 and on WebGPU alike.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+    resource::*, shader::*, slow::*, state::*, *,
+};
 
 /// The blocks most checks draw with: opaque writes of every channel, no depth or stencil test, no
 /// culling, no vertex streams.

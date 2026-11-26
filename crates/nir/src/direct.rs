@@ -14,11 +14,13 @@ use naga::{
     VectorSize,
 };
 use std::ffi::{CStr, c_char};
-use wcontainers_gpu::Format as GpuFormat;
+use wcontainers_gpu::format::Format as GpuFormat;
 use wcontainers_gpu::{
-    CUBE_FACES, HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, SLOT_KINDS,
-    ShaderModule, ShaderStage as GpuStage, SlotKind, SlowPath, SourceStage, StageExtras,
-    TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
+    reflect::HELPER_SET, reflect::HelperSlot, reflect::HelperValue, reflect::ReflectedBinding,
+    reflect::Reflection, reflect::SLOT_KINDS, reflect::SlotKind, reflect::SourceStage,
+    reflect::StageExtras, reflect::TEXEL_BUFFER_TEXTURE_WIDTH, reflect::TexelBufferRoute,
+    reflect::VariantFlags, reflect::VariantKey, resource::CUBE_FACES, shader::ShaderModule,
+    shader::ShaderStage as GpuStage, slow::SlowPath,
 };
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
@@ -4693,7 +4695,9 @@ impl Builder<'_> {
                                 space: AddressSpace::Uniform,
                                 binding: Some(naga::ResourceBinding {
                                     group: HELPER_SET,
-                                    binding: helper_binding(stage),
+                                    binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                                        stage,
+                                    ),
                                 }),
                                 ty: block,
                                 init: None,

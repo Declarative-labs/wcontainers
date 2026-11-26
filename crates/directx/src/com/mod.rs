@@ -64,12 +64,12 @@ pub fn backend() -> Option<Chosen> {
 }
 
 /// The caps of the first back end made.
-static CAPS: std::sync::OnceLock<wcontainers_gpu::Caps> = std::sync::OnceLock::new();
+static CAPS: std::sync::OnceLock<wcontainers_gpu::caps::Caps> = std::sync::OnceLock::new();
 
 /// The back end's caps, for factories made before any device: those of the first back end made, or
 /// of one made for them and dropped while no other exists (two native WebGL 2 back ends on a thread
 /// would share EGL's display and current context).
-pub fn caps() -> Option<&'static wcontainers_gpu::Caps> {
+pub fn caps() -> Option<&'static wcontainers_gpu::caps::Caps> {
     if CAPS.get().is_none() {
         drop(backend()?);
     }
@@ -199,7 +199,7 @@ pub fn missing_void(what: &'static str) {
 /// What `GetDeviceRemovedReason` answers for a removal.
 pub fn removal(r: Option<wcontainers_direct3d_11::Removal>) -> Result<()> {
     use wcontainers_direct3d_11::Removal;
-    use wcontainers_gpu::LossReason;
+    use wcontainers_gpu::error::LossReason;
     use windows::Win32::Graphics::Dxgi::{
         DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DRIVER_INTERNAL_ERROR,
     };

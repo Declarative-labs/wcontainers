@@ -7,7 +7,7 @@ use crate::program::{self, Error, Value};
 use crate::recorder::{Bound, Entries, Id, Obj, Recorder, varyings};
 use naga::{Binding, BuiltIn, ScalarKind};
 use std::cell::RefCell;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{caps::*, draw::*, error::*, resource::*, shader::*, *};
 
 type Refusal = Result<String, GpuError>;
 

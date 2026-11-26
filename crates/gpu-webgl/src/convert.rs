@@ -1,10 +1,10 @@
 //! Copies between formats of one typeless group whose texels `readPixels` reads wider than stored
 //! (integers and 32-bit floats), or that are depth formats: a full-screen draw fetches each source
 //! texel, recovers its stored bits and writes them as the destination format's values
-//! ([`wcontainers_gpu::SlowPath::CopyThroughBuffer`]), or as depth
-//! ([`wcontainers_gpu::SlowPath::DepthWrittenByDraw`]).
+//! ([`wcontainers_gpu::slow::SlowPath::CopyThroughBuffer`]), or as depth
+//! ([`wcontainers_gpu::slow::SlowPath::DepthWrittenByDraw`]).
 
-use wcontainers_gpu::Format;
+use wcontainers_gpu::format::Format;
 
 /// How a colour format's components hold their bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

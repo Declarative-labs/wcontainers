@@ -1,6 +1,6 @@
 //! The adapter description DXGI's `GetDesc`, `GetDesc1`, `GetDesc2` and `GetDesc3` answer with.
 
-use wcontainers_gpu::Caps;
+use wcontainers_gpu::caps::Caps;
 
 /// The locally unique identifier of the one adapter, the same for every factory and device of the
 /// process (`DXGI_ADAPTER_DESC::AdapterLuid`, `ID3D12Device::GetAdapterLuid`).

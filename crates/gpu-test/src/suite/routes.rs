@@ -626,7 +626,7 @@ pub fn missing_components_read_their_defaults<H: Host>() {
         let expected: Vec<u8> = (0..4)
             .map(|c| {
                 match (
-                    wcontainers_gpu::FORMAT_FACTS[format as usize].components >> c & 1,
+                    wcontainers_gpu::format::FORMAT_FACTS[format as usize].components >> c & 1,
                     c,
                 ) {
                     (1, _) => present,
@@ -809,7 +809,7 @@ pub fn a_copy_within_one_3d_or_compressed_subresource_moves_the_region<H: Host>(
         {
             continue;
         }
-        let (w, h, size) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
+        let (w, h, size) = wcontainers_gpu::format::FORMAT_FACTS[format as usize].block;
         let t = texture(
             &mut b,
             format,
@@ -1046,7 +1046,7 @@ pub fn typed_buffers_through_storage_read_their_views_place_and_length<H: Host>(
         .expect("create_binding_set");
     let helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Fragment),
+            binding: ShaderStage::Fragment.helper_binding(),
             stages: StageSet::FRAGMENT,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &uniforms,
@@ -1166,7 +1166,7 @@ pub fn typed_buffers_through_a_texture_lie_2048_elements_to_a_row<H: Host>() {
         .expect("create_binding_set");
     let helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Fragment),
+            binding: ShaderStage::Fragment.helper_binding(),
             stages: StageSet::FRAGMENT,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &uniforms,

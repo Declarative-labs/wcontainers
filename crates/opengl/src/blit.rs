@@ -4,8 +4,9 @@
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Extent, FORMAT_FACTS, Format, FormatKind, FormatUse, Gpu, Origin, SlowPath, TextureDesc,
-    TextureDimension, TextureRegion,
+    Gpu, caps::FormatUse, format::FORMAT_FACTS, format::Format, format::FormatKind,
+    resource::Extent, resource::Origin, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, slow::SlowPath,
 };
 
 use crate::context::Context;

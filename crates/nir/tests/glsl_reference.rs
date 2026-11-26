@@ -59,7 +59,7 @@ mod llvmpipe;
 mod table;
 
 use compare::{CompareOptions, DEFAULT_SEED, INPUT_SETS, SEED, Verdict};
-use wcontainers_gpu::{Format, VariantKey};
+use wcontainers_gpu::{format::Format, reflect::VariantKey};
 use wcontainers_nir::direct::Rewrites;
 use wcontainers_nir::mesa::{Nir, Stage};
 

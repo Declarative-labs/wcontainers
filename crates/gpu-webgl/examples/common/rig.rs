@@ -2,7 +2,10 @@
 //! and `depth` scenes, crates/graphics-test/src/d3d11/scenes), drawn through the
 //! interface with the same vertices, cells and states, for the features WebGL extensions give.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+    resource::*, shader::*, slow::*, state::*, *,
+};
 
 /// Position and colour, as the rig's `Colored`.
 type Colored = [f32; 7];

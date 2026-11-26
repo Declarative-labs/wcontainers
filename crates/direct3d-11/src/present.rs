@@ -8,7 +8,7 @@ use std::rc::Rc;
 use wcontainers_directx_graphics_infrastructure::{
     Model, SwapChain, SwapChainDesc, SwapChainError,
 };
-use wcontainers_gpu::{Gpu, GpuError};
+use wcontainers_gpu::{Gpu, error::GpuError};
 
 use crate::desc::{TexDim, TextureDesc, bind};
 use crate::object::{ChainBuffer, Kept, Texture};

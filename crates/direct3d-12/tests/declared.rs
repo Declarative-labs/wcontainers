@@ -8,7 +8,7 @@ use std::fmt::Write;
 use std::ops::Range;
 use std::path::PathBuf;
 use wcontainers_direct3d_12::dxbc::{self, TypedView};
-use wcontainers_gpu::SlotKind;
+use wcontainers_gpu::reflect::SlotKind;
 
 /// The folders of containers, relative to the crate.
 const CORPORA: [&str; 3] = [

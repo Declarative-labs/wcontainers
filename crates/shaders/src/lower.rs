@@ -25,9 +25,11 @@ use naga::{
 };
 use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
 use wcontainers_gpu::{
-    DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
-    SLOT_KINDS, ScalarKind as ValueKind, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras,
-    StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
+    reflect::DrawBaseSource, reflect::HelperSlot, reflect::HelperValue, reflect::Interpolation,
+    reflect::ReflectedBinding, reflect::Reflection, reflect::SLOT_KINDS,
+    reflect::ScalarKind as ValueKind, reflect::SlotKind, reflect::SourceStage,
+    reflect::StageExtras, reflect::StageValue, reflect::SystemValue, reflect::TexelBufferRoute,
+    reflect::VariantFlags, reflect::VariantKey, shader::ShaderStage, slow::SlowPath,
 };
 
 use crate::variant::texel::{TexelBuffer, TexelPlace};
@@ -1325,14 +1327,14 @@ impl<'a> Lowering<'a> {
             (SourceStage::Pixel, true, builtin::CLIP_DISTANCE) => {
                 self.variant
                     .flags
-                    .contains(wcontainers_gpu::VariantFlags::CLIP_DISTANCE)
+                    .contains(wcontainers_gpu::reflect::VariantFlags::CLIP_DISTANCE)
                     && self.variant.linked.clip_distances > 0
             }
             // Read from the values the vertex program passes them in.
             (SourceStage::Pixel, true, builtin::CULL_DISTANCE) => self
                 .variant
                 .flags
-                .contains(wcontainers_gpu::VariantFlags::CULL_DISTANCE_LINKED),
+                .contains(wcontainers_gpu::reflect::VariantFlags::CULL_DISTANCE_LINKED),
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
@@ -1375,8 +1377,8 @@ impl<'a> Lowering<'a> {
             crate::build::HELPERS.into(),
             AddressSpace::Uniform,
             Some(ResourceBinding {
-                group: wcontainers_gpu::HELPER_SET,
-                binding: helper_binding(ShaderStage::Vertex),
+                group: wcontainers_gpu::reflect::HELPER_SET,
+                binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
             }),
             ty,
             None,
@@ -2122,9 +2124,9 @@ fn ones(s: Scalar) -> Literal {
 }
 
 /// The storage texture format of an interface format, where WGSL has one.
-pub(crate) fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::StorageFormat> {
+pub(crate) fn storage_format(f: wcontainers_gpu::format::Format) -> Option<naga::StorageFormat> {
     use naga::StorageFormat as S;
-    use wcontainers_gpu::Format as F;
+    use wcontainers_gpu::format::Format as F;
     Some(match f {
         F::R8Unorm => S::R8Unorm,
         F::R8Snorm => S::R8Snorm,
@@ -2173,9 +2175,10 @@ pub(crate) fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::Storage
 /// The storage texture format a program declares for a storage view of an interface format: WGSL's
 /// own, or `rgba8unorm` for `A8Unorm`, which the back ends hold so with the value in alpha (the
 /// variant's `alpha_only` keeps the colour channels zero).
-pub(crate) fn storage_form(f: wcontainers_gpu::Format) -> Option<naga::StorageFormat> {
+pub(crate) fn storage_form(f: wcontainers_gpu::format::Format) -> Option<naga::StorageFormat> {
     storage_format(f)
-        .or((f == wcontainers_gpu::Format::A8Unorm).then_some(naga::StorageFormat::Rgba8Unorm))
+        .or((f == wcontainers_gpu::format::Format::A8Unorm)
+            .then_some(naga::StorageFormat::Rgba8Unorm))
 }
 
 /// The scalar kind a storage format's texels are read and written as.

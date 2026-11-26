@@ -6,9 +6,11 @@
 use crate::draw;
 use half::f16;
 use wcontainers_gpu::{
-    BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format, Gpu, LoadOp,
-    Origin, PassDesc, ReadSource, SlowPath, StepMode, StoreOp, TextureRegion, TextureUsage,
-    Topology, VertexBinding, VertexFormat, WriteMode,
+    Gpu, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc,
+    draw::StoreOp, draw::VertexBinding, error::DeviceStatus, format::Format, resource::BufferUsage,
+    resource::Extent, resource::Origin, resource::ReadSource, resource::TextureRegion,
+    resource::TextureUsage, resource::WriteMode, slow::SlowPath, state::StepMode, state::Topology,
+    state::VertexFormat,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -244,7 +246,7 @@ pub fn lacking_vertex_formats(b: &mut WebGpu, seed: u64, n: u32) {
                 });
             }
             b.begin_pass(&pass);
-            let viewport = [wcontainers_gpu::Viewport {
+            let viewport = [wcontainers_gpu::draw::Viewport {
                 x: 0,
                 y: 0,
                 width: (n as f32).to_bits(),
@@ -362,7 +364,7 @@ pub fn bgra_attributes(b: &mut WebGpu, bytes: &[u8]) -> Vec<[f32; 4]> {
         index: None,
         topology: Topology::PointList,
         restart: false,
-        viewports: &[wcontainers_gpu::Viewport {
+        viewports: &[wcontainers_gpu::draw::Viewport {
             x: 0,
             y: 0,
             width: (n as f32).to_bits(),

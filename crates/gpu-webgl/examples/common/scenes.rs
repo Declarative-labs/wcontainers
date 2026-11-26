@@ -1,7 +1,10 @@
 //! The graphics rig's first three Direct3D 11 scenes drawn through the interface, on any back end, with
 //! their programs written in WGSL. Each returns the target's texels, RGBA8, rows top first.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+    resource::*, shader::*, slow::*, state::*, *,
+};
 
 #[path = "../../../graphics-test/src/scene.rs"]
 #[allow(dead_code)]

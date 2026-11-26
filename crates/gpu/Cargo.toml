@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+path = "interface.rs"
+
 [dependencies]
 bitflags = { workspace = true, features = ["serde"] }
 blake3 = { version = "1", default-features = false }

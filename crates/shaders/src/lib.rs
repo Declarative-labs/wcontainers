@@ -26,7 +26,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use wcontainers_gpu::{
-    DrawBaseSource, Reflection, ShaderModule, ShaderStage, StageExtras, VariantFlags, VariantKey,
+    reflect::DrawBaseSource, reflect::Reflection, reflect::StageExtras, reflect::VariantFlags,
+    reflect::VariantKey, shader::ShaderModule, shader::ShaderStage,
 };
 
 /// Shader bytecode in one of the forms the fronts hand over.

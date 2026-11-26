@@ -12,8 +12,9 @@
 //! the GPU, by a draw.
 
 use wcontainers_gpu::{
-    CopyBufferTexture, Extent, FORMAT_FACTS, Format, Gpu, Origin, SlowPath, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, WriteMode,
+    Gpu, format::FORMAT_FACTS, format::Format, resource::CopyBufferTexture, resource::Extent,
+    resource::Origin, resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
+    resource::TextureUsage, resource::WriteMode, slow::SlowPath,
 };
 
 use crate::memory::DX12_PLACEMENT_ALIGNMENT;

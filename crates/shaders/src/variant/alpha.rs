@@ -9,7 +9,9 @@ use naga::{
     Expression, GlobalVariable, Handle, ImageClass, Literal, Module, Scalar, Span, Statement, Type,
     TypeInner, VectorSize,
 };
-use wcontainers_gpu::{Format, Reflection, SlotKind, VariantKey};
+use wcontainers_gpu::{
+    format::Format, reflect::Reflection, reflect::SlotKind, reflect::VariantKey,
+};
 
 use super::{Result, each_block, each_function, global_of, push, slot_of};
 use crate::{ConvertError, refusal};

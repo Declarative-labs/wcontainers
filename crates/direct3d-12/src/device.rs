@@ -10,18 +10,24 @@ use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::stage_registers::OUTPUT_REGISTERS;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
-    AspectOps, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
-    CopyBufferTexture, CountedDraw, DepthAttachment, DeviceStatus, DispatchCall, DispatchGroups,
-    DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, FORMAT_FACTS, Features, Format,
-    FormatKind, FormatUse, Gpu, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding,
-    IndexFormat, Interpolation, LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS,
-    MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc,
-    Program, ReadSource, ReadState, SLOW_PATH_REASONS, STORAGE_WORD, SamplerDesc, ScissorRect,
-    ShaderModule, ShaderStage, SlowPath, StageSet, StageValue, StepMode, StoreOp, SystemValue,
-    Target, TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantFlags, VariantKey,
-    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent, ViewDimension,
-    Viewport, WriteMode,
+    ClearValue, Gpu, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PrepareDesc, STORAGE_WORD,
+    caps::Features, caps::FormatUse, draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment,
+    draw::DispatchCall, draw::DispatchGroups, draw::DrawCall, draw::DrawRange, draw::EmptyPass,
+    draw::IndexBinding, draw::LoadOp, draw::PassDesc, draw::ScissorRect, draw::StoreOp,
+    draw::VertexBinding, draw::Viewport, error::DeviceStatus, error::GpuError,
+    format::FORMAT_FACTS, format::Format, format::FormatKind, occlusion::CountedDraw,
+    occlusion::OcclusionCounter, passes::ColorTarget, passes::PassTargets, passes::PassTracker,
+    passes::Target, reflect::DrawBaseSource, reflect::HELPER_SET, reflect::HelperValue,
+    reflect::Interpolation, reflect::LinkedValues, reflect::StageValue, reflect::SystemValue,
+    reflect::TargetInShader, reflect::TexelBufferRoute, reflect::VariantFlags, reflect::VariantKey,
+    reflect::ViewComponent, resource::BufferDesc, resource::BufferUsage,
+    resource::CopyBufferTexture, resource::Extent, resource::MapIntent, resource::Origin,
+    resource::ReadSource, resource::ReadState, resource::SamplerDesc, resource::TextureDesc,
+    resource::TextureDimension, resource::TextureRegion, resource::TextureUsage,
+    resource::TextureViewDesc, resource::ViewDimension, resource::WriteMode, shader::Program,
+    shader::ShaderModule, shader::ShaderStage, shader::StageSet, slow::SLOW_PATH_REASONS,
+    slow::SlowPath, state::INDEX_FORMATS, state::IndexFormat, state::StepMode, state::TargetLayout,
+    state::Topology, state::VertexAttribute, state::VertexLayoutDesc, state::VertexStream,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, refusal};
 use zerocopy::FromZeros;
@@ -1431,8 +1437,8 @@ impl<B: Gpu> Device<B> {
         )?;
         // Lines are not culled, and their rectangles are filled.
         if antialiased_lines {
-            raster.cull = wcontainers_gpu::CullMode::None;
-            raster.fill = wcontainers_gpu::FillMode::Solid;
+            raster.cull = wcontainers_gpu::state::CullMode::None;
+            raster.fill = wcontainers_gpu::state::FillMode::Solid;
         }
         let depth_stencil = desc.depth_stencil.block(targets.depth_stencil.is_some())?;
         let depth_stencil_bound = match targets.depth_stencil {
@@ -1562,7 +1568,7 @@ impl<B: Gpu> Device<B> {
             p.reflection
                 .inputs
                 .iter()
-                .any(|i| i.system == Some(wcontainers_gpu::SystemValue::PrimitiveId))
+                .any(|i| i.system == Some(wcontainers_gpu::reflect::SystemValue::PrimitiveId))
         });
         let per_primitive =
             match early_tests.is_some() && writes && made.is_none() && !reads_primitive {
@@ -1684,7 +1690,7 @@ impl<B: Gpu> Device<B> {
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
         let group_threads = match cs.reflection.extras {
-            wcontainers_gpu::StageExtras::Compute { workgroup_size } => {
+            wcontainers_gpu::reflect::StageExtras::Compute { workgroup_size } => {
                 workgroup_size.iter().map(|&n| u64::from(n)).product()
             }
             _ => 1,
@@ -1799,7 +1805,7 @@ impl<B: Gpu> Device<B> {
     fn convert_staged(
         &mut self,
         code: &[u8],
-        stage: wcontainers_gpu::SourceStage,
+        stage: wcontainers_gpu::reflect::SourceStage,
         variant: VariantKey,
     ) -> Result<Converted, Error> {
         let converted = self.convert_any(code, &format!("{stage:?}"), variant)?;
@@ -3060,8 +3066,8 @@ fn aspect_ops<V>(clear: Option<V>, read_only: bool) -> AspectOps<V> {
 }
 
 /// Whether a depth-stencil format has a depth and a stencil aspect.
-fn aspects(format: wcontainers_gpu::Format) -> (bool, bool) {
-    use wcontainers_gpu::Format::*;
+fn aspects(format: wcontainers_gpu::format::Format) -> (bool, bool) {
+    use wcontainers_gpu::format::Format::*;
     match format {
         Stencil8 => (false, true),
         Depth24PlusStencil8 | Depth32FloatStencil8 => (true, true),
@@ -3075,7 +3081,7 @@ fn container_has(code: &[u8], fourcc: [u8; 4]) -> bool {
 }
 
 /// The interface format of a DXGI format a view or target names.
-fn dxgi(value: u32) -> Result<wcontainers_gpu::Format, Error> {
+fn dxgi(value: u32) -> Result<wcontainers_gpu::format::Format, Error> {
     wcontainers_directx_graphics_infrastructure::dxgi_format(value)
         .map(|(f, _)| f)
         .ok_or(Error::Invalid("a format the front cannot store"))
@@ -3826,7 +3832,7 @@ impl<B: Gpu> Replay<B> {
                     d.backend.begin_pass(&PassDesc {
                         colors: Default::default(),
                         depth: None,
-                        empty: Some(wcontainers_gpu::EmptyPass {
+                        empty: Some(wcontainers_gpu::draw::EmptyPass {
                             width: 1,
                             height: 1,
                             samples: 1,
@@ -3882,7 +3888,8 @@ impl<B: Gpu> Replay<B> {
         if helpers.size != 0 {
             let block = d.stage_block(&helpers, 0)?;
             let merged = d.merged_samplers(&helpers, 0, StageSet::COMPUTE)?;
-            let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
+            let compute =
+                wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute);
             sets[HELPER_SET as usize] = Some(d.helper_blocks(
                 &[(compute, StageSet::COMPUTE, block)],
                 &[],
@@ -4850,8 +4857,8 @@ fn scissor(r: &Rect) -> ScissorRect {
 
 /// The width in bits of each component of a format a storage clear writes, in memory order from
 /// the lowest bit.
-fn components(format: wcontainers_gpu::Format) -> Option<&'static [u32]> {
-    use wcontainers_gpu::Format::*;
+fn components(format: wcontainers_gpu::format::Format) -> Option<&'static [u32]> {
+    use wcontainers_gpu::format::Format::*;
     Some(match format {
         R8Unorm | R8Snorm | R8Uint | R8Sint => &[u8::BITS],
         Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint => &[u8::BITS; 2],
@@ -4869,8 +4876,8 @@ fn components(format: wcontainers_gpu::Format) -> Option<&'static [u32]> {
 }
 
 /// Whether a format of [`components`] is signed normalised, and whether it is normalised at all.
-fn normalised(format: wcontainers_gpu::Format) -> (bool, bool) {
-    use wcontainers_gpu::Format::*;
+fn normalised(format: wcontainers_gpu::format::Format) -> (bool, bool) {
+    use wcontainers_gpu::format::Format::*;
     match format {
         R8Snorm | Rg8Snorm | Rgba8Snorm | R16Snorm | Rg16Snorm | Rgba16Snorm => (true, true),
         R8Unorm | Rg8Unorm | Rgba8Unorm | R16Unorm | Rg16Unorm | Rgba16Unorm | Rgb10a2Unorm => {
@@ -4916,7 +4923,7 @@ fn small_float_value(s: u32, bits: u32) -> f32 {
 /// A storage clear's value as each component's stored bits (masked to its width). Integer values
 /// are the bits themselves; float values are converted to the format.
 fn storage_bits(
-    format: wcontainers_gpu::Format,
+    format: wcontainers_gpu::format::Format,
     values: [u32; 4],
     float: bool,
 ) -> Option<Vec<u32>> {
@@ -4948,7 +4955,7 @@ fn storage_bits(
 /// One texel's bytes for a storage clear of a typed buffer view: the components packed from the
 /// lowest bit, little-endian.
 fn storage_texel(
-    format: wcontainers_gpu::Format,
+    format: wcontainers_gpu::format::Format,
     values: [u32; 4],
     float: bool,
 ) -> Option<Vec<u8>> {
@@ -4963,7 +4970,7 @@ fn storage_texel(
 
 /// A storage clear as the value [`ClearValue::Color`] takes for the format.
 fn storage_clear_value(
-    format: wcontainers_gpu::Format,
+    format: wcontainers_gpu::format::Format,
     values: [u32; 4],
     float: bool,
 ) -> Option<[u32; 4]> {
@@ -4989,7 +4996,7 @@ fn storage_clear_value(
 }
 
 /// A clear color as the bits the format's kind takes.
-fn clear_bits(format: wcontainers_gpu::Format, color: [f32; 4]) -> [u32; 4] {
+fn clear_bits(format: wcontainers_gpu::format::Format, color: [f32; 4]) -> [u32; 4] {
     match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => color.map(|c| c as u32),
         FormatKind::Sint => color.map(|c| c as i32 as u32),
@@ -5284,7 +5291,7 @@ fn early_tests_matter(ps: Option<&Converted>, ds: &DepthStencil) -> bool {
         && ps.is_some_and(|ps| {
             matches!(
                 ps.reflection.extras,
-                wcontainers_gpu::StageExtras::Pixel {
+                wcontainers_gpu::reflect::StageExtras::Pixel {
                     early_tests: true,
                     side_effects,
                     discards,
@@ -5301,15 +5308,17 @@ fn retyped_targets(ps: &Converted, colors: &[Option<Format>]) -> Vec<TargetInSha
         .outputs
         .iter()
         .filter_map(|o| {
-            let Some(wcontainers_gpu::SystemValue::Target(target)) = o.system else {
+            let Some(wcontainers_gpu::reflect::SystemValue::Target(target)) = o.system else {
                 return None;
             };
             let format = (*colors.get(usize::from(target))?)?;
             let fits = matches!(
                 (FORMAT_FACTS[format as usize].kind, o.scalar),
-                (FormatKind::Float, wcontainers_gpu::ScalarKind::Float)
-                    | (FormatKind::Uint, wcontainers_gpu::ScalarKind::Uint)
-                    | (FormatKind::Sint, wcontainers_gpu::ScalarKind::Sint)
+                (
+                    FormatKind::Float,
+                    wcontainers_gpu::reflect::ScalarKind::Float
+                ) | (FormatKind::Uint, wcontainers_gpu::reflect::ScalarKind::Uint)
+                    | (FormatKind::Sint, wcontainers_gpu::reflect::ScalarKind::Sint)
             );
             (!fits).then_some(TargetInShader {
                 target,
@@ -5323,7 +5332,7 @@ fn retyped_targets(ps: &Converted, colors: &[Option<Format>]) -> Vec<TargetInSha
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wcontainers_gpu::Format;
+    use wcontainers_gpu::format::Format;
 
     fn texel(format: Format, values: [f32; 4], float: bool) -> u32 {
         let values = if float {

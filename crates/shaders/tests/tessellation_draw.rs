@@ -14,7 +14,9 @@ mod forms;
 
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
-use wcontainers_gpu::{BufferRange, BufferUsage, Gpu as Backend, ReadSource, RingKind};
+use wcontainers_gpu::{
+    Gpu as Backend, RingKind, resource::BufferRange, resource::BufferUsage, resource::ReadSource,
+};
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{Tessellation, Tessellator, tess};
 use windows::Win32::Graphics::Direct3D::*;
@@ -262,7 +264,7 @@ fn ours<B: Backend>(
     );
     let indices = &indices[header..];
     let points = read(b, tessellator.points().unwrap(), counts[5] as usize * 4);
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     indices
         .iter()
         .map(|&i| {
@@ -501,7 +503,7 @@ const SCENE_HEIGHT: u32 = 128;
 /// One set per number from `bindings`' entries.
 fn sets<B: Backend>(
     b: &mut B,
-    entries: Vec<(u32, wcontainers_gpu::BindingEntry<'_, B>)>,
+    entries: Vec<(u32, wcontainers_gpu::resource::BindingEntry<'_, B>)>,
 ) -> [Option<B::BindingSet>; 4] {
     let mut by_set: [Vec<_>; 4] = Default::default();
     for (set, e) in entries {
@@ -515,7 +517,10 @@ fn sets<B: Backend>(
 /// With `max`, each texel keeps the largest value drawn there in each channel, so the picture does not
 /// depend on the order its triangles are drawn in.
 fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route, max: bool) -> Vec<u8> {
-    use wcontainers_gpu::*;
+    use wcontainers_gpu::{
+        caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+        resource::*, shader::*, slow::*, state::*, *,
+    };
     use wcontainers_shaders::convert;
     use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
     let ext = route.extension();
@@ -848,10 +853,10 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route, max: bool) -
 }
 
 /// A channel's largest value: the fragment's or the target's.
-const MAX_BLEND: wcontainers_gpu::BlendComponent = wcontainers_gpu::BlendComponent {
-    src: wcontainers_gpu::BlendFactor::One,
-    dst: wcontainers_gpu::BlendFactor::One,
-    op: wcontainers_gpu::BlendOp::Max,
+const MAX_BLEND: wcontainers_gpu::state::BlendComponent = wcontainers_gpu::state::BlendComponent {
+    src: wcontainers_gpu::state::BlendFactor::One,
+    dst: wcontainers_gpu::state::BlendFactor::One,
+    op: wcontainers_gpu::state::BlendOp::Max,
 };
 
 /// The rig's tessellation scene by real Direct3D 11, every patch drawn solid or, as the scene draws
@@ -1006,7 +1011,7 @@ fn tessellated_patches_draw_as_direct3d_11_does() {
     keep(
         "tessellation-solid-direct3d",
         &reference,
-        wcontainers_gpu::Format::Rgba8Unorm,
+        wcontainers_gpu::format::Format::Rgba8Unorm,
     );
     let mut backend = webgpu();
     for route in Route::BOTH {
@@ -1014,7 +1019,7 @@ fn tessellated_patches_draw_as_direct3d_11_does() {
         keep(
             &format!("tessellation-solid-ours-{}", route.extension()),
             &ours,
-            wcontainers_gpu::Format::Rgba8Unorm,
+            wcontainers_gpu::format::Format::Rgba8Unorm,
         );
         let cells = by_cell(&reference, &ours);
         eprintln!(
@@ -1051,7 +1056,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
     keep(
         "tessellation-scene-direct3d",
         &reference,
-        wcontainers_gpu::Format::Rgba8Unorm,
+        wcontainers_gpu::format::Format::Rgba8Unorm,
     );
     let mut backend = webgpu();
     for route in Route::BOTH {
@@ -1059,7 +1064,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
         keep(
             &format!("tessellation-scene-ours-{}", route.extension()),
             &ours,
-            wcontainers_gpu::Format::Rgba8Unorm,
+            wcontainers_gpu::format::Format::Rgba8Unorm,
         );
         let cells = by_cell(&reference, &ours);
         eprintln!(
@@ -1089,7 +1094,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does_in_any_order() {
     keep(
         "tessellation-max-direct3d",
         &reference,
-        wcontainers_gpu::Format::Rgba8Unorm,
+        wcontainers_gpu::format::Format::Rgba8Unorm,
     );
     let mut backend = webgpu();
     for route in Route::BOTH {
@@ -1097,7 +1102,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does_in_any_order() {
         keep(
             &format!("tessellation-max-ours-{}", route.extension()),
             &ours,
-            wcontainers_gpu::Format::Rgba8Unorm,
+            wcontainers_gpu::format::Format::Rgba8Unorm,
         );
         let cells = by_cell(&reference, &ours);
         eprintln!(
@@ -1130,7 +1135,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_on_warp_does() {
     keep(
         "tessellation-scene-warp",
         &reference,
-        wcontainers_gpu::Format::Rgba8Unorm,
+        wcontainers_gpu::format::Format::Rgba8Unorm,
     );
     let mut backend = webgpu_on_warp();
     for route in Route::BOTH {
@@ -1138,7 +1143,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_on_warp_does() {
         keep(
             &format!("tessellation-scene-warp-ours-{}", route.extension()),
             &ours,
-            wcontainers_gpu::Format::Rgba8Unorm,
+            wcontainers_gpu::format::Format::Rgba8Unorm,
         );
         let cells = by_cell(&reference, &ours);
         eprintln!(
@@ -1177,7 +1182,10 @@ fn ours_staged<B: Backend>(
     factors: &[[f32; 8]],
     ring_room: Option<u64>,
 ) -> (Vec<Vertex>, [u32; 2]) {
-    use wcontainers_gpu::*;
+    use wcontainers_gpu::{
+        caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+        resource::*, shader::*, slow::*, state::*, *,
+    };
     use wcontainers_shaders::convert;
     use wcontainers_shaders::stage::{
         DomainSets, InputTopology, StageDraw, Stages, StreamOutput, StreamOutputEntry,
@@ -1728,7 +1736,10 @@ fn culled_ours<B: Backend>(
     (hs, ds): (&str, &str),
     factors: &[[f32; 8]],
 ) -> Vec<u8> {
-    use wcontainers_gpu::*;
+    use wcontainers_gpu::{
+        caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+        resource::*, shader::*, slow::*, state::*, *,
+    };
     use wcontainers_shaders::convert;
     use wcontainers_shaders::stage::{DomainSets, InputTopology, StageDraw, Stages};
     let plain = VariantKey::default();
@@ -2015,12 +2026,12 @@ fn domain_shaders_writing_cull_distances_draw_as_direct3d_does() {
                     keep(
                         &format!("cull-{seed}-{hs}-{ds}-direct3d"),
                         &reference,
-                        wcontainers_gpu::Format::Rgba8Unorm,
+                        wcontainers_gpu::format::Format::Rgba8Unorm,
                     );
                     keep(
                         &format!("cull-{seed}-{hs}-{ds}-{}", route.extension()),
                         &ours,
-                        wcontainers_gpu::Format::Rgba8Unorm,
+                        wcontainers_gpu::format::Format::Rgba8Unorm,
                     );
                     failures.push(name);
                 }

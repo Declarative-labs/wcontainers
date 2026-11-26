@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use wcontainers_gpu::{DrawCall, SlowPath, VertexFormat, VertexLayoutDesc};
+use wcontainers_gpu::{
+    draw::DrawCall, slow::SlowPath, state::VertexFormat, state::VertexLayoutDesc,
+};
 
 use crate::{BufferObj, GROUP, Stream, WebGpu, convert, with_group};
 

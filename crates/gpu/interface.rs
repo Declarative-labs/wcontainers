@@ -1,18 +1,72 @@
-//! The [`Gpu`] trait: the base every back end provides, and the fast paths with their defaults.
+//! The interface between graphics fronts and back ends.
+//!
+//! A **front** implements an API a guest program calls (Direct3D 11 and 12 now; OpenGL, Vulkan and
+//! Direct3D 9 later). A **back end** drives a GPU API the host offers (WebGPU and WebGL 2 now). Fronts and
+//! back ends never meet: both depend only on this crate.
+//!
+//! The shape, in brief (the plan, `docs/phase-2-graphics.md`, has the reasons):
+//!
+//! - [`Gpu`] holds the **base**: what every back end provides. Create and destroy buffers, textures,
+//!   views and samplers; write bytes into them straight from guest memory; take a shader in the common form
+//!   ([`ShaderModule`]); record passes of draws, each draw naming immutable state blocks, a binding set and
+//!   a range; copy and clear; read back later; present a frame.
+//! - It also holds the **fast paths**: methods with a default made from the base, which a back end
+//!   overrides only where it has something better (read back now, triangle fans and line loops, preparing
+//!   a state combination ahead of time, clearing a texture or rectangles of it, generating mipmaps, a ring
+//!   for per-draw data). Their defaults keep what they make in [`Helpers`].
+//! - Things with no cheap default (compute, transform feedback, big resource tables, timestamps) are
+//!   required methods: a back end without them answers [`GpuError::Absent`], one with them declares
+//!   them in its [`Caps`]. Fronts read [`Caps`] once and choose their route.
+//! - Drawing state is a handful of immutable blocks ([`BlendDesc`], [`DepthStencilDesc`], [`RasterDesc`],
+//!   [`VertexLayoutDesc`], a [`Program`]) plus binding sets
+//!   ([`Gpu::create_binding_set`]). Every block becomes a back-end handle once; a draw names one of
+//!   each. A back end consumes them its own way (WebGPU: a cached pipeline per combination; WebGL 2: apply
+//!   only the blocks that changed).
+//! - Everything is generic: a front is written as `Front<B: Gpu>` and each call is one ordinary
+//!   function call, resolved when the front is compiled for a back end.
+//! - One thread owns a back end. Nothing here is `Send`; guest threads reach it through the call channel.
 
-use crate::caps::{Caps, Features, FormatUse};
+#![no_std]
+
+extern crate alloc;
+
+pub mod caps;
+pub mod draw;
+pub mod error;
+pub mod format;
+pub mod helpers;
+pub mod occlusion;
+pub mod passes;
+pub mod reflect;
+pub mod resource;
+pub mod shader;
+pub mod slow;
+pub mod state;
+
+mod caps_methods;
+mod defaults;
+mod format_methods;
+mod helpers_methods;
+mod occlusion_methods;
+mod passes_methods;
+mod reflect_methods;
+mod resource_methods;
+mod shader_methods;
+#[cfg(test)]
+mod slow_tests;
+
+use crate::caps::Caps;
 use crate::draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DrawCall, DrawRange,
     IndexBinding, LoadOp, PassDesc, ScissorRect, StoreOp, Viewport,
 };
 use crate::error::{DeviceStatus, GpuError};
 use crate::format::{Format, FormatKind};
-use crate::helpers::{self, Builtin, Helpers, MipRead, PARAMS_SIZE, Ring};
+use crate::helpers::{Builtin, Builtins, HelperRing, Helpers, PARAMS_SIZE};
 use crate::resource::{
     BindingEntry, BindingLayoutKey, BindingResource, BufferDesc, BufferRange, BufferUsage,
-    CopyBufferTexture, Extent, MapIntent, Origin, QueryKind, ReadSource, ReadState, SamplerDesc,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
-    WriteMode,
+    CopyBufferTexture, Extent, MapIntent, QueryKind, ReadSource, ReadState, SamplerDesc,
+    TextureDesc, TextureDimension, TextureRegion, TextureViewDesc, ViewDimension, WriteMode,
 };
 use crate::shader::{Program, ShaderModule, StageSet};
 use crate::slow::{SlowPath, SlowPaths};
@@ -23,9 +77,6 @@ use crate::state::{
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::Range;
-
-/// Bytes of the ring [`Gpu::write_buffer_ring`] starts with; it grows to fit larger writes.
-const RING_SIZE: u64 = 1 << 22;
 
 /// Where the vertices of a fan or loop come from.
 #[derive(Clone, Copy, Debug)]
@@ -225,13 +276,13 @@ pub trait Gpu: Sized {
     /// Starts counting into query `index` of the pass's occlusion set. Inside a pass, one query at a
     /// time, and each index at most once in a pass (as WebGPU requires): a front whose API lets queries overlap ends the running query at every begin and end of
     /// its own, starts the next, and adds each stretch's result to every guest query open during it
-    /// (slow path [`crate::SlowPath::QueriesSegmented`]).
+    /// (slow path [`crate::slow::SlowPath::QueriesSegmented`]).
     fn begin_query(&mut self, index: u32);
     fn end_query(&mut self);
     /// Copies bytes between buffers. Source and destination may be the same buffer when the ranges do
     /// not overlap (OpenGL, Vulkan and Direct3D 12's `CopyBufferRegion` allow it): a back end whose API
     /// forbids that
-    /// copies through a temporary buffer ([`crate::SlowPath::CopyWithinBuffer`]).
+    /// copies through a temporary buffer ([`crate::slow::SlowPath::CopyWithinBuffer`]).
     fn copy_buffer(
         &mut self,
         src: &Self::Buffer,
@@ -245,15 +296,15 @@ pub trait Gpu: Sized {
     /// `R8G8B8A8_UINT`, or `R32_FLOAT` and `D32_FLOAT`), or (as Direct3D and Vulkan allow) a
     /// block-compressed format and an uncompressed one of the same block size. A back end whose API
     /// copies only equal formats copies the others through a buffer
-    /// ([`crate::SlowPath::CopyThroughBuffer`]); into a depth format its API cannot write by a copy, by a
-    /// draw writing depth ([`crate::SlowPath::DepthWrittenByDraw`]); and into a texture whose bytes it
-    /// keeps on the host, through that copy ([`crate::SlowPath::HostCopyReadBack`]). A combined
+    /// ([`crate::slow::SlowPath::CopyThroughBuffer`]); into a depth format its API cannot write by a copy, by a
+    /// draw writing depth ([`crate::slow::SlowPath::DepthWrittenByDraw`]); and into a texture whose bytes it
+    /// keeps on the host, through that copy ([`crate::slow::SlowPath::HostCopyReadBack`]). A combined
     /// depth-stencil format is copied whole, both aspects in one call (Direct3D's copies; WebGPU
     /// copies such textures only so). The two regions may lie in one subresource if they do not
     /// overlap (Vulkan and OpenGL allow it, for every format); a back end whose API refuses that copies
     /// through a buffer, or, for a depth or stencil format its API cannot copy into from a buffer,
     /// through a temporary texture of the same format by the routes above
-    /// ([`crate::SlowPath::CopyWithinTexture`]).
+    /// ([`crate::slow::SlowPath::CopyWithinTexture`]).
     fn copy_texture(
         &mut self,
         src: &TextureRegion<'_, Self>,
@@ -262,7 +313,7 @@ pub trait Gpu: Sized {
     );
     /// Copies texels from a buffer into a texture region. Into a depth format the API cannot write from
     /// a buffer, the back end copies into a colour texture first and draws the depth
-    /// ([`crate::SlowPath::DepthWrittenByDraw`]): `r32float` for 32-bit float depth, and `r32uint`
+    /// ([`crate::slow::SlowPath::DepthWrittenByDraw`]): `r32float` for 32-bit float depth, and `r32uint`
     /// for 24-bit depth, whose buffer bytes are 24-bit unorm in the low bits of a 32-bit word, drawn as
     /// `(v & 0xffffff) / 16777215`; see [`CopyBufferTexture::row_pitch`] for pitches. Float depth so
     /// drawn holds only what a draw can write: values outside 0 to 1, denormals and NaN are lost
@@ -322,7 +373,7 @@ pub trait Gpu: Sized {
     /// Attaches to a host window, given by the number the host's graphics hook uses for it.
     fn create_surface(&mut self, window: u32) -> Result<Self::Surface, GpuError>;
     /// Sets the size, format and whether presenting waits for the display. `format` is one with
-    /// [`crate::FormatUse::PRESENT`]; colors are shown as sRGB, values outside zero to one clipped.
+    /// [`crate::caps::FormatUse::PRESENT`]; colors are shown as sRGB, values outside zero to one clipped.
     fn configure_surface(
         &mut self,
         surface: &Self::Surface,
@@ -370,7 +421,7 @@ pub trait Gpu: Sized {
     ) -> Result<(), GpuError> {
         let mut bytes = core::mem::take(&mut self.helpers().scratch);
         bytes.clear();
-        let base_vertex = fan_or_loop_indices(kind, source, call.restart, provoking, &mut bytes);
+        let base_vertex = kind.indices(source, call.restart, provoking, &mut bytes);
         let count = (bytes.len() / 4) as u32;
         let mut offset = [0];
         let ring = (count > 0)
@@ -469,7 +520,7 @@ pub trait Gpu: Sized {
                             });
                         }
                         ClearValue::DepthStencil { depth, stencil } => {
-                            let (has_depth, has_stencil) = aspects(format);
+                            let (has_depth, has_stencil) = format.aspects();
                             pass.depth = Some(DepthAttachment {
                                 view: &view,
                                 depth: has_depth.then_some(AspectOps {
@@ -509,7 +560,7 @@ pub trait Gpu: Sized {
         if rects.is_empty() {
             return Ok(());
         }
-        let b = helpers::builtins(self)?;
+        let b = Builtins::new(self)?;
         let mut params = [0u8; PARAMS_SIZE];
         let mut pass = PassDesc {
             colors: Default::default(),
@@ -536,7 +587,7 @@ pub trait Gpu: Sized {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
                 });
-                let program = match crate::FORMAT_FACTS[format as usize].kind {
+                let program = match crate::format::FORMAT_FACTS[format as usize].kind {
                     FormatKind::Uint => Builtin::ClearUint,
                     FormatKind::Sint => Builtin::ClearSint,
                     _ => Builtin::ClearFloat,
@@ -544,7 +595,7 @@ pub trait Gpu: Sized {
                 (program, &b.no_depth, 0)
             }
             ClearValue::DepthStencil { depth, stencil } => {
-                let (has_depth, has_stencil) = aspects(format);
+                let (has_depth, has_stencil) = format.aspects();
                 let depth = depth.filter(|_| has_depth);
                 let stencil = stencil.filter(|_| has_stencil);
                 let which = match (depth, stencil) {
@@ -567,7 +618,7 @@ pub trait Gpu: Sized {
                 (program, &b.write_depth_stencil[which], stencil.unwrap_or(0))
             }
         };
-        let program = helpers::program(self, which)?;
+        let program = Helpers::program(self, which)?;
         let set = if which == Builtin::ClearStencil {
             None
         } else {
@@ -598,7 +649,7 @@ pub trait Gpu: Sized {
             .max()
             .unwrap_or(0)
             .min(most);
-        let viewport = [full_viewport(width, height)];
+        let viewport = [Viewport::full(width, height)];
         self.begin_pass(&pass);
         for rect in rects {
             self.draw(&DrawCall {
@@ -606,7 +657,7 @@ pub trait Gpu: Sized {
                 depth_stencil,
                 stencil_reference: [stencil_reference; 2],
                 scissors: core::slice::from_ref(rect),
-                ..builtin_draw(&b, &program, &viewport)
+                ..DrawCall::builtin(&b, &program, &viewport)
             });
         }
         self.end_pass();
@@ -620,11 +671,11 @@ pub trait Gpu: Sized {
     /// outside a pass (Direct3D's GenerateMips, OpenGL's glGenerateMipmap). `values` is the format whose
     /// values the texels hold: `desc.format`, its sRGB twin (Direct3D's GenerateMips through an sRGB view
     /// of a typeless texture, which filters in linear light), or the normalised format a front stores
-    /// as its integer twin ([`crate::SlowPath::NormAsInteger`]).
+    /// as its integer twin ([`crate::slow::SlowPath::NormAsInteger`]).
     ///
     /// The default draws each level and layer, or each slice of a 3D level, with a built-in program
     /// reading the level above: through the linear sampler where the format has
-    /// [`crate::FormatUse::FILTER`]; otherwise filtered in the program with the same weights, from
+    /// [`crate::caps::FormatUse::FILTER`]; otherwise filtered in the program with the same weights, from
     /// samples at texel centres through the nearest sampler (float formats) or from integer loads
     /// decoded and encoded again (integer twins), each such draw counted [`SlowPath::FilterInShader`].
     /// When the ranges hold no level to draw, nothing is built or counted. It reads the
@@ -634,7 +685,7 @@ pub trait Gpu: Sized {
     /// language has for cubes, read through a 2D array view, or without [`Features::TEXTURE_VIEWS`] from
     /// a copy of the level above ([`SlowPath::ReinterpretCopy`]). WebGL 2 overrides it with
     /// generateMipmap where the format allows and uses the default otherwise, through
-    /// [`generate_mips_by_draws`], which holds the default's body.
+    /// [`Helpers::generate_mips_by_draws`], which holds the default's body.
     fn generate_mips(
         &mut self,
         texture: &Self::Texture,
@@ -643,7 +694,7 @@ pub trait Gpu: Sized {
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
-        generate_mips_by_draws(self, texture, desc, values, mips, layers)
+        Helpers::generate_mips_by_draws(self, texture, desc, values, mips, layers)
     }
 
     /// Writes the data one draw needs (Direct3D 9's vertices and indices from user memory, OpenGL's
@@ -668,7 +719,7 @@ pub trait Gpu: Sized {
         let slot = kind as usize;
         let fits = matches!(&self.helpers().rings[slot], Some(r) if r.size >= total);
         if !fits {
-            let size = total.max(RING_SIZE).next_power_of_two();
+            let size = total.max(Helpers::<Self>::RING_SIZE).next_power_of_two();
             let usage = match kind {
                 RingKind::Indices => BufferUsage::INDEX,
                 RingKind::Data => BufferUsage::VERTEX | BufferUsage::UNIFORM,
@@ -678,7 +729,7 @@ pub trait Gpu: Sized {
                 usage: usage | BufferUsage::COPY_DST,
                 intent: MapIntent::Often,
             })?;
-            let old = self.helpers().rings[slot].replace(Ring {
+            let old = self.helpers().rings[slot].replace(HelperRing {
                 buffer,
                 size,
                 head: 0,
@@ -774,12 +825,12 @@ pub trait Gpu: Sized {
     /// position is captured writes it to a location too). The program writes at least one location
     /// output, and only outputs of 32-bit components. With one target every output of a vertex is
     /// written one after another, vertex after vertex, at most
-    /// [`crate::Limits::capture_components`] components; with more, output n goes to target n alone and
-    /// there are as many targets as outputs, at most [`crate::Limits::capture_buffers`]. Vertices are
+    /// [`crate::caps::Limits::capture_components`] components; with more, output n goes to target n alone and
+    /// there are as many targets as outputs, at most [`crate::caps::Limits::capture_buffers`]. Vertices are
     /// written once per vertex of each whole primitive, in draw order, instance after instance, and the
     /// targets hold every vertex the draw makes. Strips are written as the lists they draw: triangle
     /// `i` of a strip is `(i, i + 1, i + 2)` for even `i`, and for odd `i` `(i, i + 2, i + 1)`, or
-    /// `(i + 1, i, i + 2)` with [`crate::ProvokingVertex::Last`] (each keeps the winding and the
+    /// `(i + 1, i, i + 2)` with [`crate::state::ProvokingVertex::Last`] (each keeps the winding and the
     /// provoking vertex every API gives the triangle). Fans and loops need
     /// [`Features::FAN_AND_LOOP`].
     fn capture_vertices(
@@ -824,395 +875,15 @@ pub trait StandaloneGpu: Gpu {
     fn new(config: Self::Config) -> Result<Self, Self::NewError>;
 }
 
-/// The default of [`Gpu::generate_mips`], for a back end whose override takes only some cases.
-pub fn generate_mips_by_draws<B: Gpu>(
-    b: &mut B,
-    texture: &B::Texture,
-    desc: &TextureDesc,
-    values: Format,
-    mips: Range<u32>,
-    layers: Range<u32>,
-) -> Result<(), GpuError> {
-    let own = desc.own_view();
-    let three_d = own == ViewDimension::D3;
-    let layers = if three_d {
-        0..1
-    } else {
-        layers.start..layers.end.min(desc.depth_or_layers)
-    };
-    let mips = mips.start.max(1)..mips.end.min(desc.mip_levels);
-    if mips.is_empty() || layers.is_empty() {
-        return Ok(());
-    }
-    let built = helpers::builtins(b)?;
-    let decoded = norm_twin(values, desc.format)?;
-    // The views read and write the texels as their values: the sRGB twin is a view every back end
-    // makes, so filtering happens in linear light.
-    let seen = if decoded.is_some() {
-        desc.format
-    } else {
-        values
-    };
-    let read = match decoded {
-        Some((_, false)) => MipRead::Unorm,
-        Some((_, true)) => MipRead::Snorm,
-        None if b.caps().formats.uses[seen as usize].contains(FormatUse::FILTER) => {
-            MipRead::Filtered
-        }
-        None => MipRead::Unfiltered,
-    };
-    let cube = matches!(own, ViewDimension::Cube | ViewDimension::CubeArray);
-    let read_dim = if decoded.is_some() && cube {
-        ViewDimension::D2Array
-    } else {
-        own
-    };
-    let copied = read_dim != own && !b.caps().features.contains(Features::TEXTURE_VIEWS);
-    let which = Builtin::Mip(read_dim, read);
-    let program = helpers::program(b, which)?;
-    for mip in mips {
-        let size = |n: u32| (n >> mip).max(1);
-        let (width, height) = (size(desc.width), size(desc.height));
-        let slices = if three_d {
-            size(desc.depth_or_layers)
-        } else {
-            1
-        };
-        let viewport = [full_viewport(width, height)];
-        let scissor = [ScissorRect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        }];
-        let all = if three_d { 1 } else { desc.depth_or_layers };
-        let mut source_view = TextureViewDesc {
-            format: seen,
-            dimension: read_dim,
-            base_mip: mip - 1,
-            mip_count: 1,
-            base_layer: 0,
-            layer_count: all,
-            stencil: false,
-        };
-        // A cube read by loads without views: the level above copied into a 2D array first.
-        let copy = if copied {
-            b.record_slow_path(SlowPath::ReinterpretCopy);
-            let above = |n: u32| (n >> (mip - 1)).max(1);
-            let extent = Extent {
-                width: above(desc.width),
-                height: above(desc.height),
-                depth_or_layers: all,
-            };
-            let scratch = b.create_texture(&TextureDesc {
-                dimension: TextureDimension::D2,
-                format: desc.format,
-                width: extent.width,
-                height: extent.height,
-                depth_or_layers: all,
-                mip_levels: 1,
-                samples: 1,
-                usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
-                reinterpret: false,
-                cube: false,
-            })?;
-            let region = |texture, mip| TextureRegion {
-                texture,
-                mip,
-                layer: 0,
-                origin: Origin { x: 0, y: 0, z: 0 },
-                stencil: false,
-            };
-            b.copy_texture(&region(texture, mip - 1), &region(&scratch, 0), extent);
-            source_view.base_mip = 0;
-            Some(scratch)
-        } else {
-            None
-        };
-        let src = b.create_view(copy.as_ref().unwrap_or(texture), &source_view)?;
-        for layer in layers.clone() {
-            let dst = b.create_view(
-                texture,
-                &TextureViewDesc {
-                    format: seen,
-                    dimension: if three_d {
-                        ViewDimension::D3
-                    } else {
-                        ViewDimension::D2
-                    },
-                    base_mip: mip,
-                    mip_count: 1,
-                    base_layer: layer,
-                    layer_count: 1,
-                    stencil: false,
-                },
-            )?;
-            for slice in 0..slices {
-                if read != MipRead::Filtered {
-                    b.record_slow_path(SlowPath::FilterInShader);
-                }
-                let ring;
-                let mut entries = alloc::vec![BindingEntry {
-                    binding: 32,
-                    stages: StageSet::FRAGMENT,
-                    resource: BindingResource::Texture(&src),
-                }];
-                if which.uses_sampler() {
-                    let sampler = match read {
-                        MipRead::Filtered => &built.linear,
-                        _ => &built.nearest,
-                    };
-                    entries.push(BindingEntry {
-                        binding: 16,
-                        stages: StageSet::FRAGMENT,
-                        resource: BindingResource::Sampler(sampler),
-                    });
-                }
-                if which.uses_params() {
-                    let mut params = [0u8; PARAMS_SIZE];
-                    let scale = decoded.map_or(0, |(scale, _)| scale);
-                    params[0..4].copy_from_slice(&scale.to_le_bytes());
-                    let w = (slice as f32 + 0.5) / slices as f32;
-                    params[16..20].copy_from_slice(&w.to_bits().to_le_bytes());
-                    params[24..28].copy_from_slice(&layer.to_le_bytes());
-                    let align = b.caps().limits.min_uniform_offset_alignment;
-                    let mut offset = [0];
-                    ring = b.write_buffer_ring(RingKind::Data, &[&params], align, &mut offset)?;
-                    entries.push(BindingEntry {
-                        binding: 0,
-                        stages: StageSet::FRAGMENT,
-                        resource: BindingResource::UniformBuffer(BufferRange {
-                            buffer: &ring,
-                            offset: offset[0],
-                            size: PARAMS_SIZE as u64,
-                        }),
-                    });
-                }
-                let set = b.create_binding_set(&entries)?;
-                let mut pass = PassDesc {
-                    colors: Default::default(),
-                    depth: None,
-                    empty: None,
-                    occlusion: None,
-                };
-                pass.colors[0] = Some(ColorAttachment {
-                    view: &dst,
-                    depth_slice: slice,
-                    resolve: None,
-                    load: LoadOp::DontCare,
-                    store: StoreOp::Store,
-                });
-                b.begin_pass(&pass);
-                b.draw(&DrawCall {
-                    bindings: [Some(&set), None, None, None],
-                    scissors: &scissor,
-                    ..builtin_draw(&built, &program, &viewport)
-                });
-                b.end_pass();
-                b.destroy(Object::BindingSet(set));
-            }
-            b.destroy(Object::TextureView(dst));
-        }
-        b.destroy(Object::TextureView(src));
-        if let Some(copy) = copy {
-            b.destroy(Object::Texture(copy));
-        }
-    }
-    Ok(())
-}
-
-/// Which aspects a depth-stencil format has: depth, stencil.
-pub(crate) fn aspects(format: Format) -> (bool, bool) {
-    match crate::FORMAT_FACTS[format as usize].kind {
-        FormatKind::Depth => (true, false),
-        FormatKind::Stencil => (false, true),
-        FormatKind::DepthStencil => (true, true),
-        _ => (false, false),
-    }
-}
-
-/// For a texture a front stores as the integer twin of a normalised format, the largest encoded value
-/// and whether it is signed; None when the texture holds its own format's values.
-fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuError> {
-    use Format::*;
-    Ok(match (values, stored) {
-        _ if crate::FORMAT_FACTS[values as usize].linear
-            == crate::FORMAT_FACTS[stored as usize].linear =>
-        {
-            None
-        }
-        (R16Unorm | Rg16Unorm | Rgba16Unorm, _)
-            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
-        {
-            Some((u16::MAX.into(), false))
-        }
-        (R16Snorm | Rg16Snorm | Rgba16Snorm, _)
-            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
-        {
-            Some((i16::MAX as u32, true))
-        }
-        (R8Snorm | Rg8Snorm | Rgba8Snorm, _)
-            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
-        {
-            Some((i8::MAX as u32, true))
-        }
-        _ => {
-            return Err(GpuError::Invalid(
-                "generate_mips: values are neither the stored format, its srgb twin nor its integer twin",
-            ));
-        }
-    })
-}
-
-/// A viewport over `width` by `height` pixels at depth zero to one.
-pub(crate) fn full_viewport(width: u32, height: u32) -> Viewport {
-    Viewport {
-        x: 0,
-        y: 0,
-        width: (width as f32).to_bits(),
-        height: (height as f32).to_bits(),
-        min_depth: 0,
-        max_depth: 1.0f32.to_bits(),
-    }
-}
-
-/// A draw of the built-in full-screen triangle with `program`, no bindings and no depth test.
-pub(crate) fn builtin_draw<'a, B: Gpu>(
-    b: &'a helpers::Builtins<B>,
-    program: &'a B::Program,
-    viewports: &'a [Viewport],
-) -> DrawCall<'a, B> {
-    DrawCall {
-        program,
-        blend: &b.blend,
-        depth_stencil: &b.no_depth,
-        raster: &b.raster,
-        vertex_layout: &b.vertex_layout,
-        bindings: [None; crate::MAX_BINDING_SETS],
-        vertex_buffers: &[],
-        index: None,
-        topology: Topology::TriangleList,
-        restart: false,
-        viewports,
-        scissors: &[],
-        blend_constant: [0; 4],
-        stencil_reference: [0; 2],
-        immediates: &[],
-        range: DrawRange::Vertices {
-            first: 0,
-            count: 3,
-            first_instance: 0,
-            instances: 1,
-        },
-    }
-}
-
-/// Appends to `out`, as little-endian u32, the index list that draws a fan as a triangle list or a loop
-/// as a line list, honouring restart in guest indices, and returns the base vertex to draw it with. Each
-/// fan triangle keeps the fan's winding and puts the vertex `provoking` names where the list's own
-/// provoking vertex is: first for [`ProvokingVertex::First`] (vertex i + 1 of the fan), last for
-/// [`ProvokingVertex::Last`] (vertex i + 2).
-fn fan_or_loop_indices(
-    kind: FanOrLoop,
-    source: IndexSource<'_>,
-    restart: bool,
-    provoking: ProvokingVertex,
-    out: &mut Vec<u8>,
-) -> i32 {
-    // Generic over the index width, so each width gets its own loop with no call per index.
-    fn walk(
-        kind: FanOrLoop,
-        provoking: ProvokingVertex,
-        values: impl Iterator<Item = u32>,
-        restart_value: Option<u32>,
-        out: &mut Vec<u8>,
-    ) {
-        let mut push = |v: [u32; 3], n: usize| {
-            for i in &v[..n] {
-                out.extend_from_slice(&i.to_le_bytes());
-            }
-        };
-        // The piece's first vertex, the previous one, and how many it has had. A loop closes when its
-        // piece ends.
-        let (mut first, mut prev, mut n) = (0, 0, 0usize);
-        let closes = |n: usize| kind == FanOrLoop::LineLoop && n >= 2;
-        for v in values {
-            if Some(v) == restart_value {
-                if closes(n) {
-                    push([prev, first, 0], 2);
-                }
-                n = 0;
-                continue;
-            }
-            match (kind, n) {
-                (_, 0) => first = v,
-                (FanOrLoop::TriangleFan, 1) => {}
-                (FanOrLoop::TriangleFan, _) => match provoking {
-                    ProvokingVertex::First => push([prev, v, first], 3),
-                    ProvokingVertex::Last => push([first, prev, v], 3),
-                },
-                (FanOrLoop::LineLoop, _) => push([prev, v, 0], 2),
-            }
-            prev = v;
-            n += 1;
-        }
-        if closes(n) {
-            push([prev, first, 0], 2);
-        }
-    }
-    match source {
-        IndexSource::Sequential { first, count } => {
-            walk(
-                kind,
-                provoking,
-                first..first.saturating_add(count),
-                None,
-                out,
-            );
-            0
-        }
-        IndexSource::Guest {
-            indices,
-            format,
-            base_vertex,
-        } => {
-            let restart_value =
-                restart.then(|| crate::INDEX_FORMATS[format as usize].restart_value);
-            match format {
-                IndexFormat::U8 => walk(
-                    kind,
-                    provoking,
-                    indices.iter().map(|&b| u32::from(b)),
-                    restart_value,
-                    out,
-                ),
-                IndexFormat::U16 => walk(
-                    kind,
-                    provoking,
-                    indices
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|b| u32::from(u16::from_le_bytes(*b))),
-                    restart_value,
-                    out,
-                ),
-                IndexFormat::U32 => walk(
-                    kind,
-                    provoking,
-                    indices
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|b| u32::from_le_bytes(*b)),
-                    restart_value,
-                    out,
-                ),
-            }
-            base_vertex
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests;
+/// The most color targets any front can bind at once (Direct3D 10 and later, Vulkan's common limit).
+pub const MAX_COLOR_TARGETS: usize = 8;
+/// The most vertex streams a draw can read (Direct3D 11's input slots). Streams beyond the back end's
+/// [`Limits::vertex_streams`] are fetched by the program ([`SlowPath::VertexPulledInShader`]).
+pub const MAX_VERTEX_STREAMS: usize = 32;
+/// The most binding sets a draw names, by the binding rule (plan section 6.4): what the vertex (or
+/// compute) stage reads alone, what the fragment stage reads alone, what every stage reads (Direct3D 12
+/// ranges visible to all stages), and the helper constants ([`HELPER_SET`]).
+pub const MAX_BINDING_SETS: usize = 4;
+/// The bytes of one word of a storage buffer: a storage binding's size is a whole number of them
+/// (WebGPU's rule), and so is the size of a buffer such a binding reaches the end of.
+pub const STORAGE_WORD: u64 = size_of::<u32>() as u64;

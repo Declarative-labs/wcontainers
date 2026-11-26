@@ -11,7 +11,7 @@ use wcontainers_direct3d_12::root::{
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, GraphicsPipelineDesc, PipelineId, ResourceId};
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{ColorWrites, Gpu};
+use wcontainers_gpu::{Gpu, state::ColorWrites};
 
 pub const VS: &[u8] = include_bytes!("../../../graphics-test/shaders/dxil/triangle.vs.dxil");
 pub const PS: &[u8] = include_bytes!("../../../graphics-test/shaders/dxil/triangle.ps.dxil");

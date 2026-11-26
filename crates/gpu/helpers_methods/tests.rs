@@ -81,7 +81,9 @@ fn every_built_in_program_writes_in_each_back_end_language() {
         std::fs::create_dir_all(dir).unwrap();
     }
     for which in all() {
-        let (module, info) = module(which).unwrap_or_else(|e| panic!("{which:?}: {e:?}"));
+        let (module, info) = which
+            .module()
+            .unwrap_or_else(|e| panic!("{which:?}: {e:?}"));
         let name = format!("{which:?}").replace([' ', '(', ')', ','], "");
         let wgsl = wgsl::write_string(&module, &info, wgsl::WriterFlags::empty())
             .unwrap_or_else(|e| panic!("{which:?}: wgsl: {e}"));
@@ -114,11 +116,13 @@ fn every_built_in_program_writes_in_each_back_end_language() {
 /// Each module holds only what its own program uses.
 #[test]
 fn modules_hold_only_their_own_bindings() {
-    let (m, _) = super::module(Builtin::Mip(ViewDimension::D2, MipRead::Filtered)).unwrap();
+    let (m, _) = Builtin::Mip(ViewDimension::D2, MipRead::Filtered)
+        .module()
+        .unwrap();
     assert_eq!(m.global_variables.len(), 2, "the sampler and the texture");
-    let (m, _) = super::module(Builtin::ClearUint).unwrap();
+    let (m, _) = Builtin::ClearUint.module().unwrap();
     assert_eq!(m.global_variables.len(), 1, "the parameters");
-    let (m, _) = super::module(Builtin::ClearStencil).unwrap();
+    let (m, _) = Builtin::ClearStencil.module().unwrap();
     assert!(m.global_variables.is_empty());
     assert_eq!(m.entry_points.len(), 1, "the vertex stage only");
 }

@@ -3,7 +3,7 @@
 
 use crate::ShaderObj;
 use naga::{AddressSpace, ImageClass, ImageDimension, ScalarKind, StorageAccess, TypeInner};
-use wcontainers_gpu::{BindingLayoutKey, MAX_BINDING_SETS};
+use wcontainers_gpu::{MAX_BINDING_SETS, resource::BindingLayoutKey};
 use wgpu::{BindGroupLayoutEntry, BindingType, ShaderStages};
 
 /// The texture bindings whose bit a layout key may set start here (plan section 6.4).

@@ -9,7 +9,7 @@ mod record;
 use wcontainers_direct3d_12::features::*;
 use wcontainers_direct3d_12::root::*;
 use wcontainers_directx_graphics_infrastructure::stage_registers::{INPUT_SLOTS, OUTPUT_REGISTERS};
-use wcontainers_gpu::{Features, Format, FormatUse};
+use wcontainers_gpu::{caps::Features, caps::FormatUse, format::Format};
 
 fn signature(version: u32) -> RootSignatureDesc {
     RootSignatureDesc {
@@ -211,7 +211,7 @@ fn root_signatures_binding_a_register_twice_for_a_stage_are_refused() {
 /// Direct3D's 32, half the slots laid out and half fetched in the program and a location for
 /// every register but the position, and resource binding tier 1's counts with the helper block,
 /// as wgpu gives (and more) on the RTX 3080 through Vulkan.
-fn with_11_0_limits() -> wcontainers_gpu::Caps {
+fn with_11_0_limits() -> wcontainers_gpu::caps::Caps {
     let mut caps = record::webgpu_like_caps();
     let l = &mut caps.limits;
     (l.vertex_streams, l.storage_buffers_per_stage) = (INPUT_SLOTS / 2, INPUT_SLOTS / 2);
@@ -240,7 +240,7 @@ fn no_device_without_32_input_slots_and_stage_registers() {
 
 #[test]
 fn no_device_without_binding_tier_1_counts_or_eight_targets() {
-    let shorts: [fn(&mut wcontainers_gpu::Limits); 6] = [
+    let shorts: [fn(&mut wcontainers_gpu::caps::Limits); 6] = [
         |l| l.textures_per_stage -= 1,
         // The helper block takes one of the stage's uniform buffers.
         |l| l.uniform_buffers_per_stage = TIER_1_CONSTANT_BUFFERS,

@@ -5,8 +5,9 @@
 use crate::draw;
 use crate::renames::{Kit, begin, finish, kit};
 use wcontainers_gpu::{
-    DeviceStatus, DrawCall, DrawRange, Features, Format, Gpu, GpuError, Program, ShaderModule,
-    ShaderStage, Topology, Viewport,
+    Gpu, caps::Features, draw::DrawCall, draw::DrawRange, draw::Viewport, error::DeviceStatus,
+    error::GpuError, format::Format, shader::Program, shader::ShaderModule, shader::ShaderStage,
+    state::Topology,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

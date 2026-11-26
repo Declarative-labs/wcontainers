@@ -23,7 +23,7 @@ pub struct Adapter {
 }
 
 impl Adapter {
-    pub fn new(caps: &wcontainers_gpu::Caps, dxgi10: bool) -> Self {
+    pub fn new(caps: &wcontainers_gpu::caps::Caps, dxgi10: bool) -> Self {
         Adapter {
             private: Private::default(),
             desc: AdapterDesc::from_caps(caps),

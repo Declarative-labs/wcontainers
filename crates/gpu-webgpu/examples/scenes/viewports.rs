@@ -5,9 +5,11 @@
 //! tests/raster.rs and in Chrome by web/check.
 
 use wcontainers_gpu::{
-    BufferUsage, ColorAttachment, DrawCall, DrawRange, Extent, Format, Gpu, LoadOp, Origin,
-    PassDesc, RasterDesc, ReadSource, ScissorRect, StepMode, StoreOp, TextureRegion, TextureUsage,
-    Topology, VertexBinding, VertexFormat, Viewport,
+    Gpu, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc,
+    draw::ScissorRect, draw::StoreOp, draw::VertexBinding, draw::Viewport, format::Format,
+    resource::BufferUsage, resource::Extent, resource::Origin, resource::ReadSource,
+    resource::TextureRegion, resource::TextureUsage, state::RasterDesc, state::StepMode,
+    state::Topology, state::VertexFormat,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

@@ -6,7 +6,9 @@
 //! end cannot reinterpret). Typed buffer views and stream output are the front's to add; tiling,
 //! video and the formats the back end lacks are absent.
 
-use wcontainers_gpu::{Caps, FORMAT_FACTS, Features, Format, FormatUse};
+use wcontainers_gpu::{
+    caps::Caps, caps::Features, caps::FormatUse, format::FORMAT_FACTS, format::Format,
+};
 
 use crate::format::{BACK_BUFFER_FORMATS, dxgi, dxgi_format, dxgi_vertex_format, typeless_group};
 
@@ -158,7 +160,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     // Formats the back end cannot filter are filtered in the program (`FilterInShader`), but for
     // those whose sampling Direct3D leaves optional; integer formats are not sampled.
     let filter = sample
-        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Float
+        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::format::FormatKind::Float
         && (has(FormatUse::FILTER) || !OPTIONAL_SAMPLE.contains(&value));
     // A multisampled texture exists only as a target, so only formats that are targets load samples.
     let target = has(FormatUse::RENDER) || has(FormatUse::DEPTH_STENCIL);
@@ -234,7 +236,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         has(FormatUse::RESOLVE)
             && render
             && multisampled(caps, format)
-            && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Float,
+            && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::format::FormatKind::Float,
         MULTISAMPLE_RESOLVE,
     );
     bit(multisample_load, MULTISAMPLE_LOAD);
@@ -264,7 +266,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     }
     if render
         && caps.features.contains(Features::LOGIC_OP)
-        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Uint
+        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::format::FormatKind::Uint
     {
         s.support2 |= OUTPUT_MERGER_LOGIC_OP;
     }

@@ -13,10 +13,12 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups, Extent,
-    FORMAT_FACTS, Format, FormatUse, Gpu as Backend, Origin, Program, ReadSource, StageSet,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
-    WriteMode,
+    Gpu as Backend, caps::FormatUse, draw::DispatchCall, draw::DispatchGroups,
+    format::FORMAT_FACTS, format::Format, resource::BindingEntry, resource::BindingResource,
+    resource::BufferRange, resource::BufferUsage, resource::Extent, resource::Origin,
+    resource::ReadSource, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::ViewDimension, resource::WriteMode, shader::Program, shader::StageSet,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::ConvertError;
@@ -381,7 +383,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, refused: &mut Vec<&'static str>) -> 
         .unwrap();
         all.extend(out);
     }
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     all
 }
 

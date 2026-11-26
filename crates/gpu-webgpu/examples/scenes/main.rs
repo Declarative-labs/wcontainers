@@ -21,7 +21,7 @@ mod draw;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
-    use wcontainers_gpu::{DeviceStatus, Gpu};
+    use wcontainers_gpu::{Gpu, error::DeviceStatus};
     let args: Vec<String> = std::env::args().collect();
     let usage = "usage: scenes <dx12|vulkan|metal> <out-dir> [none|blend-factor|depth-function]";
     let (Some(api), Some(out)) = (args.get(1), args.get(2)) else {
@@ -111,7 +111,7 @@ mod suite;
 mod web {
     use super::{draw, scene};
     use wasm_bindgen::prelude::*;
-    use wcontainers_gpu::{DeviceStatus, Gpu};
+    use wcontainers_gpu::{Gpu, error::DeviceStatus};
     use wcontainers_gpu_webgpu::block_on;
 
     fn js(e: impl std::fmt::Display) -> JsError {

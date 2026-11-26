@@ -17,11 +17,14 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorAttachment,
-    ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, FillMode, Format,
-    FrontFace, Gpu, HelperValue, Interpolation, Origin, PassDesc, Program, ProvokingVertex,
-    RasterDesc, ReadSource, RenderTargetBlend, StageSet, StoreOp, TextureRegion, TextureUsage,
-    Topology, VariantKey, VertexFormat, VertexLayoutDesc, Viewport,
+    Gpu, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::PassDesc, draw::StoreOp,
+    draw::Viewport, format::Format, reflect::HelperValue, reflect::Interpolation,
+    reflect::VariantKey, resource::BindingEntry, resource::BindingResource, resource::BufferRange,
+    resource::BufferUsage, resource::Extent, resource::Origin, resource::ReadSource,
+    resource::TextureRegion, resource::TextureUsage, shader::Program, shader::StageSet,
+    state::BlendDesc, state::ColorWrites, state::CullMode, state::DepthStencilDesc,
+    state::FillMode, state::FrontFace, state::ProvokingVertex, state::RasterDesc,
+    state::RenderTargetBlend, state::Topology, state::VertexFormat, state::VertexLayoutDesc,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
@@ -254,7 +257,7 @@ fn ours<B: Gpu>(
     let ps = convert(source(&code[1], dxil), &VariantKey::default(), None).unwrap();
     let key = VariantKey {
         pulled: (0..).zip(inputs.iter().map(|i| i.format)).collect(),
-        draw_base: wcontainers_gpu::DrawBaseSource::Helpers,
+        draw_base: wcontainers_gpu::reflect::DrawBaseSource::Helpers,
         output_interpolation: ps
             .reflection
             .inputs
@@ -294,7 +297,7 @@ fn ours<B: Gpu>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let mut entries = Vec::new();
     for r in &vs.reflection.bindings {
-        let Some(wcontainers_gpu::AddedBinding::PulledStream(location)) = r.added else {
+        let Some(wcontainers_gpu::reflect::AddedBinding::PulledStream(location)) = r.added else {
             panic!("no case binds {r:?}");
         };
         let stream = inputs[location as usize].stream;
@@ -315,7 +318,9 @@ fn ours<B: Gpu>(
     let set = b.create_binding_set(&entries).unwrap();
     let helper_set = b
         .create_binding_set(&[BindingEntry {
-            binding: wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Vertex),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                wcontainers_gpu::shader::ShaderStage::Vertex,
+            ),
             stages: StageSet::VERTEX,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -383,7 +388,7 @@ fn ours<B: Gpu>(
         view: &view,
         depth_slice: 0,
         resolve: None,
-        load: wcontainers_gpu::LoadOp::Clear([0; 4]),
+        load: wcontainers_gpu::draw::LoadOp::Clear([0; 4]),
         store: StoreOp::Store,
     });
     b.begin_pass(&pass);
@@ -438,7 +443,7 @@ fn ours<B: Gpu>(
         &mut out,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     out
 }
 

@@ -3,7 +3,7 @@
 
 use crate::recorder::{Id, Recorder};
 use std::rc::Rc;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{draw::*, error::*, format::*, resource::*, shader::*, state::*, *};
 
 /// A shader in the stream, compared by its content key, entry point and stage.
 #[derive(Clone)]

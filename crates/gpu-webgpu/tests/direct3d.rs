@@ -37,11 +37,14 @@ mod vertices;
 mod renames;
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment, DeviceStatus,
-    DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, LoadOp, Origin,
-    PassDesc, ReadSource, SlowPath, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexFormat,
-    ViewDimension, WriteMode,
+    caps::Features, caps::FormatUse, draw::ColorAttachment, draw::DrawCall, draw::DrawRange,
+    draw::LoadOp, draw::PassDesc, draw::StoreOp, draw::VertexBinding, error::DeviceStatus,
+    format::FORMAT_FACTS, format::Format, resource::BindingEntry, resource::BindingResource,
+    resource::BufferRange, resource::BufferUsage, resource::Extent, resource::Origin,
+    resource::ReadSource, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::ViewDimension, resource::WriteMode, shader::StageSet, slow::SlowPath,
+    state::StepMode, state::Topology, state::VertexFormat,
 };
 // The trait's methods, by a path: graphics-test's Direct3D 11 device is named `Gpu` here.
 use wcontainers_gpu::Gpu as _;
@@ -465,7 +468,7 @@ fn our_resolve(b: &mut B, format: Format) -> Vec<u8> {
     let vertices = draw::buffer(
         b,
         bytemuck::cast_slice(&wedges),
-        wcontainers_gpu::BufferUsage::VERTEX,
+        wcontainers_gpu::resource::BufferUsage::VERTEX,
     )
     .unwrap();
     let mut pass = PassDesc {

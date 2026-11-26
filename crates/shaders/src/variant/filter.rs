@@ -9,7 +9,10 @@ use naga::{
     Block, Expression, Function, FunctionArgument, FunctionResult, Handle, ImageClass, ImageQuery,
     Literal, Module, SampleLevel, Scalar, ScalarKind, Span, Statement, Type, TypeInner,
 };
-use wcontainers_gpu::{Format, HelperValue, Reflection, ShaderStage, VariantFlags};
+use wcontainers_gpu::{
+    format::Format, reflect::HelperValue, reflect::Reflection, reflect::VariantFlags,
+    shader::ShaderStage,
+};
 
 use super::{
     HelperMember, Outlined, Result, copy_constant, each_block, f32_lit, function, helper_once,

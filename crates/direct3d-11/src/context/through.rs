@@ -8,7 +8,8 @@
 use super::*;
 use crate::desc::ViewDim;
 use wcontainers_gpu::{
-    BufferUsage, CopyBufferTexture, FORMAT_FACTS, TextureDesc as GpuTexture, TextureRegion,
+    format::FORMAT_FACTS, resource::BufferUsage, resource::CopyBufferTexture,
+    resource::TextureDesc as GpuTexture, resource::TextureRegion,
 };
 
 const COMPARED_FORMAT_UNCLAIMED: &str =
@@ -109,11 +110,13 @@ impl<B: Gpu> Device<B> {
         let layers = v.desc.layer_count.max(1);
         let row_pitch = (width * bytes).next_multiple_of(256);
         let size = u64::from(row_pitch) * u64::from(height) * u64::from(layers);
-        let buffer = self.backend.create_buffer(&wcontainers_gpu::BufferDesc {
-            size,
-            usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
-            intent: wcontainers_gpu::MapIntent::Rarely,
-        });
+        let buffer = self
+            .backend
+            .create_buffer(&wcontainers_gpu::resource::BufferDesc {
+                size,
+                usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: wcontainers_gpu::resource::MapIntent::Rarely,
+            });
         let buffer = self.gpu(buffer)?;
         let id = self.id();
         Ok(Through {

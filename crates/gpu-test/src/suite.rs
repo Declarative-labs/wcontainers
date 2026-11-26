@@ -3,7 +3,10 @@
 //! stated tolerance where they do not, and ends by checking the device is still working. A back end
 //! runs them all with [`crate::suite!`].
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, occlusion::*, passes::*, reflect::*, resource::*,
+    shader::*, slow::*, state::*, *,
+};
 
 mod draws;
 mod routes;

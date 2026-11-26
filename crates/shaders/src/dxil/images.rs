@@ -18,7 +18,10 @@ use naga::{
     TypeInner, VectorSize,
 };
 use spirv::{Decoration, Dim, ImageFormat, Op, StorageClass};
-use wcontainers_gpu::{Reflection, SLOT_KINDS, ShaderStage, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{
+    reflect::Reflection, reflect::SLOT_KINDS, reflect::TexelBufferRoute, reflect::VariantKey,
+    shader::ShaderStage,
+};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -53,8 +56,8 @@ impl Declared {
     /// Its slot once numbered (`bindings`): the binding's place in its kind's range.
     fn slot(&self, module: &Module, var: Handle<GlobalVariable>) -> u32 {
         let kind = match self.storage {
-            true => wcontainers_gpu::SlotKind::Storage,
-            false => wcontainers_gpu::SlotKind::Texture,
+            true => wcontainers_gpu::reflect::SlotKind::Storage,
+            false => wcontainers_gpu::reflect::SlotKind::Texture,
         };
         let binding = module.global_variables[var]
             .binding

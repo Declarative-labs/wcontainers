@@ -8,7 +8,7 @@ use super::tessellation::{DomainDraw, PIXEL_HELPERS_BEHIND_DOMAIN, THROUGH_BEHIN
 use super::*;
 use crate::desc::{ViewDesc, bind};
 use crate::device::COUNTER_BYTES;
-use wcontainers_gpu::{BufferUsage, VariantFlags};
+use wcontainers_gpu::{reflect::VariantFlags, resource::BufferUsage};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
@@ -127,14 +127,16 @@ impl<B: Gpu> Device<B> {
         if let Some(f) = &*b.filled.borrow() {
             return Ok(f.handle.clone());
         }
-        let f = self.backend.create_buffer(&wcontainers_gpu::BufferDesc {
-            size: COUNTER_BYTES as u64,
-            usage: BufferUsage::STORAGE
-                | BufferUsage::COPY_SRC
-                | BufferUsage::COPY_DST
-                | BufferUsage::READ_BACK,
-            intent: wcontainers_gpu::MapIntent::Rarely,
-        });
+        let f = self
+            .backend
+            .create_buffer(&wcontainers_gpu::resource::BufferDesc {
+                size: COUNTER_BYTES as u64,
+                usage: BufferUsage::STORAGE
+                    | BufferUsage::COPY_SRC
+                    | BufferUsage::COPY_DST
+                    | BufferUsage::READ_BACK,
+                intent: wcontainers_gpu::resource::MapIntent::Rarely,
+            });
         let f = self.gpu(f)?;
         // A buffer never written by stream output is filled to nothing.
         self.end_pass();
@@ -1094,7 +1096,7 @@ impl<B: Gpu> Device<B> {
         );
         let ring = self.gpu(ring)?;
         let set = self.backend.create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Vertex),
+            binding: ShaderStage::Vertex.helper_binding(),
             stages,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &ring,
@@ -1146,14 +1148,16 @@ impl<B: Gpu> Device<B> {
         if let Some(f) = &self.stream_filled {
             return Ok(f.handle.clone());
         }
-        let f = self.backend.create_buffer(&wcontainers_gpu::BufferDesc {
-            size: FILLED_BYTES,
-            usage: BufferUsage::STORAGE
-                | BufferUsage::COPY_SRC
-                | BufferUsage::COPY_DST
-                | BufferUsage::READ_BACK,
-            intent: wcontainers_gpu::MapIntent::Rarely,
-        });
+        let f = self
+            .backend
+            .create_buffer(&wcontainers_gpu::resource::BufferDesc {
+                size: FILLED_BYTES,
+                usage: BufferUsage::STORAGE
+                    | BufferUsage::COPY_SRC
+                    | BufferUsage::COPY_DST
+                    | BufferUsage::READ_BACK,
+                intent: wcontainers_gpu::resource::MapIntent::Rarely,
+            });
         let f = self.gpu(f)?;
         let id = self.id();
         self.stream_filled = Some(Kept::new(f.clone(), id, Object::Buffer, &self.graveyard));

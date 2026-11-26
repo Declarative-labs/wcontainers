@@ -15,7 +15,7 @@ use naga::{
     AddressSpace, BinaryOperator, Binding, BuiltIn, FunctionArgument, Handle, Module,
     ResourceBinding, Scalar, ScalarKind, Span, StorageAccess, Type, TypeInner, VectorSize,
 };
-use wcontainers_gpu::{HELPER_SET, StageExtras, SystemValue};
+use wcontainers_gpu::{reflect::HELPER_SET, reflect::StageExtras, reflect::SystemValue};
 
 /// What a hull or domain shader declares.
 #[derive(Default, Clone, Copy)]
@@ -755,14 +755,14 @@ impl DomainPass<'_> {
         let patches = read(
             m,
             PATCHES_VARIABLE,
-            wcontainers_gpu::DOMAIN_PATCHES_BINDING,
+            wcontainers_gpu::reflect::DOMAIN_PATCHES_BINDING,
             words,
         );
         let point_array = build::runtime_array(m, uvec4, stage::RECORD_SLOT_BYTES);
         let points = read(
             m,
             POINTS_VARIABLE,
-            wcontainers_gpu::DOMAIN_POINTS_BINDING,
+            wcontainers_gpu::reflect::DOMAIN_POINTS_BINDING,
             point_array,
         );
 

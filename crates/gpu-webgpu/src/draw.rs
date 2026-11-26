@@ -9,10 +9,13 @@ use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{
-    BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
-    DispatchGroups, DrawCall, DrawRange, FORMAT_FACTS, Features, FormatKind, FormatUse, GpuError,
-    INDEX_FORMATS, LoadOp, MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc,
-    ScissorRect, SlowPath, StepMode, TargetLayout, VertexLayoutDesc, Viewport,
+    MAX_BINDING_SETS, MAX_COLOR_TARGETS, PrepareDesc, caps::Features, caps::FormatUse,
+    draw::DispatchCall, draw::DispatchGroups, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::ScissorRect, draw::Viewport, error::GpuError, format::FORMAT_FACTS,
+    format::FormatKind, resource::BindingEntry, resource::BindingLayoutKey,
+    resource::BindingResource, slow::SlowPath, state::BlendDesc, state::DepthStencilDesc,
+    state::INDEX_FORMATS, state::RasterDesc, state::StepMode, state::TargetLayout,
+    state::VertexLayoutDesc,
 };
 
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
@@ -421,7 +424,7 @@ struct LastGroup {
 
 /// Whether a clear value would change these bits of a format of 32-bit float channels: a
 /// denormal (flushed) or a NaN (its payload quieted) among the channels it has.
-fn float_bits_changed(format: wcontainers_gpu::Format, bits: crate::fill::Words) -> bool {
+fn float_bits_changed(format: wcontainers_gpu::format::Format, bits: crate::fill::Words) -> bool {
     let (_, _, bytes) = FORMAT_FACTS[format as usize].block;
     let channels = FORMAT_FACTS[format as usize].components.count_ones();
     FORMAT_FACTS[format as usize].kind == FormatKind::Float
@@ -1049,7 +1052,7 @@ impl WebGpu {
             targets.samples = v.samples;
             (width, height) = (v.width, v.height);
             fn aspect<V: Copy, W>(
-                ops: Option<wcontainers_gpu::AspectOps<V>>,
+                ops: Option<wcontainers_gpu::draw::AspectOps<V>>,
                 f: impl Fn(V) -> W,
             ) -> Option<Option<W>> {
                 ops.filter(|o| !o.read_only).map(|o| match o.load {
@@ -1070,7 +1073,7 @@ impl WebGpu {
                 self.fail("a pass with no attachment and no empty size");
                 return;
             };
-            targets.colors[0] = Some(wcontainers_gpu::Format::R8Unorm);
+            targets.colors[0] = Some(wcontainers_gpu::format::Format::R8Unorm);
             targets.samples = e.samples;
             (width, height) = (e.width, e.height);
             let device = &self.device;
@@ -1215,7 +1218,7 @@ impl WebGpu {
                 TargetLayout {
                     colors: {
                         let mut c = [None; MAX_COLOR_TARGETS];
-                        c[0] = Some(wcontainers_gpu::Format::R8Unorm);
+                        c[0] = Some(wcontainers_gpu::format::Format::R8Unorm);
                         c
                     },
                     ..targets
@@ -1313,7 +1316,7 @@ impl WebGpu {
             w.split_pass(SlowPath::PackedTargetReadByBlend, |w| {
                 read = wcontainers_gpu::Gpu::read_back_now(
                     w,
-                    &wcontainers_gpu::ReadSource::Buffer {
+                    &wcontainers_gpu::resource::ReadSource::Buffer {
                         buffer,
                         offset,
                         size,
@@ -1391,7 +1394,7 @@ impl WebGpu {
                 false => Vec::new(),
             };
             cuts = match index.format {
-                wcontainers_gpu::IndexFormat::U16 => bytes
+                wcontainers_gpu::state::IndexFormat::U16 => bytes
                     .as_chunks::<2>()
                     .0
                     .iter()
@@ -1729,9 +1732,9 @@ impl WebGpu {
 
     pub(crate) fn resolve_impl(
         &mut self,
-        src: &wcontainers_gpu::TextureRegion<'_, Self>,
-        dst: &wcontainers_gpu::TextureRegion<'_, Self>,
-        format: wcontainers_gpu::Format,
+        src: &wcontainers_gpu::resource::TextureRegion<'_, Self>,
+        dst: &wcontainers_gpu::resource::TextureRegion<'_, Self>,
+        format: wcontainers_gpu::format::Format,
     ) {
         if self.pass.is_some() {
             self.fail("resolve inside a pass");
@@ -1749,7 +1752,7 @@ impl WebGpu {
             self.fail("resolve in a format this back end does not hold");
             return;
         };
-        let view = |r: &wcontainers_gpu::TextureRegion<'_, Self>| {
+        let view = |r: &wcontainers_gpu::resource::TextureRegion<'_, Self>| {
             r.texture.0.used_in.set(self.serial);
             r.texture.0.raw().create_view(&wgpu::TextureViewDescriptor {
                 format: Some(format),
@@ -1798,8 +1801,8 @@ const ARGS_BYTES: u64 = size_of::<wgpu::util::DrawIndirectArgs>() as u64;
 const INDEXED_ARGS_BYTES: u64 = size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
 
 /// Whether `blend` reads what a target holds in any of the colour slots of `slots`.
-fn reads_target(blend: &wcontainers_gpu::BlendDesc, slots: u32) -> bool {
-    use wcontainers_gpu::{BlendComponent, BlendFactor as F, BlendOp};
+fn reads_target(blend: &wcontainers_gpu::state::BlendDesc, slots: u32) -> bool {
+    use wcontainers_gpu::{state::BlendComponent, state::BlendFactor as F, state::BlendOp};
     let reads = |c: BlendComponent| {
         c.dst != F::Zero
             || matches!(c.op, BlendOp::Min | BlendOp::Max)
@@ -1814,11 +1817,11 @@ fn reads_target(blend: &wcontainers_gpu::BlendDesc, slots: u32) -> bool {
         .any(|t| t.blend.is_some_and(|(c, a)| reads(c) || reads(a)))
 }
 
-fn blend_component(c: wcontainers_gpu::BlendComponent) -> wgpu::BlendComponent {
+fn blend_component(c: wcontainers_gpu::state::BlendComponent) -> wgpu::BlendComponent {
     // WebGPU requires factors of one with min and max, which ignore them in every API.
     let minmax = matches!(
         c.op,
-        wcontainers_gpu::BlendOp::Min | wcontainers_gpu::BlendOp::Max
+        wcontainers_gpu::state::BlendOp::Min | wcontainers_gpu::state::BlendOp::Max
     );
     let factor = |f| {
         if minmax {

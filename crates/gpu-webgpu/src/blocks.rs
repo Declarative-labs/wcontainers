@@ -5,8 +5,9 @@
 
 use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{
-    CopyBufferTexture, Extent, FORMAT_FACTS, Format, ReadSource, SlowPath, TextureDesc,
-    TextureDimension, TextureRegion, WriteMode,
+    format::FORMAT_FACTS, format::Format, resource::CopyBufferTexture, resource::Extent,
+    resource::ReadSource, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::WriteMode, slow::SlowPath,
 };
 
 use crate::{Readback, WebGpu};
@@ -405,7 +406,7 @@ mod tests {
     /// The decoder's block and texel sizes agree with the interface's for every BC format.
     #[test]
     fn block_sizes_match_the_formats() {
-        for format in (0..wcontainers_gpu::FORMAT_COUNT).map(crate::format_at) {
+        for format in (0..wcontainers_gpu::format::FORMAT_COUNT).map(crate::format_at) {
             if let Some(d) = decoded(format) {
                 let (w, h, _) = FORMAT_FACTS[format as usize].block;
                 assert_eq!((w as usize, h as usize), (SIDE, SIDE), "{format:?}");

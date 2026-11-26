@@ -9,8 +9,8 @@
 use super::*;
 use crate::list::{DSV_READ_ONLY_DEPTH, DSV_READ_ONLY_STENCIL};
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, DepthStencilDesc, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
-    FrontFace, StencilOp,
+    reflect::EARLY_DEPTH_BINDING, reflect::EARLY_STENCIL_BINDING, resource::BindingEntry,
+    resource::BindingResource, state::DepthStencilDesc, state::FrontFace, state::StencilOp,
 };
 use wcontainers_shaders::stage::TRIANGLE_VERTICES;
 
@@ -80,7 +80,7 @@ impl<B: Gpu> Device<B> {
     pub(super) fn per_primitive(
         &mut self,
         depth_stencil: &DepthStencilDesc,
-        raster: &wcontainers_gpu::RasterDesc,
+        raster: &wcontainers_gpu::state::RasterDesc,
         vertex: &ShaderModule,
     ) -> Result<PerPrimitive<B>, Error> {
         let tested = self.backend.create_depth_stencil(&DepthStencilDesc {
@@ -88,13 +88,15 @@ impl<B: Gpu> Device<B> {
             stencil_write_mask: [0; 2],
             ..*depth_stencil
         })?;
-        let flipped = self.backend.create_raster(&wcontainers_gpu::RasterDesc {
-            front: match raster.front {
-                FrontFace::CounterClockwise => FrontFace::Clockwise,
-                FrontFace::Clockwise => FrontFace::CounterClockwise,
-            },
-            ..*raster
-        })?;
+        let flipped = self
+            .backend
+            .create_raster(&wcontainers_gpu::state::RasterDesc {
+                front: match raster.front {
+                    FrontFace::CounterClockwise => FrontFace::Clockwise,
+                    FrontFace::Clockwise => FrontFace::CounterClockwise,
+                },
+                ..*raster
+            })?;
         let shader = self.backend.create_shader(vertex)?;
         let written = self.backend.create_program(&Program::Render {
             vertex: &shader,

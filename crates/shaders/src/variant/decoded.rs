@@ -7,7 +7,9 @@ use alloc::vec::Vec;
 use naga::{
     Block, Expression, Function, ImageClass, Module, ScalarKind, Span, Statement, Type, TypeInner,
 };
-use wcontainers_gpu::{Format, Reflection, SlotKind, VertexFormat};
+use wcontainers_gpu::{
+    format::Format, reflect::Reflection, reflect::SlotKind, state::VertexFormat,
+};
 
 use super::pull::{Kind, decode, layout};
 use super::texel::vertex_format;

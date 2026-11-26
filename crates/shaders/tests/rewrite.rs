@@ -5,8 +5,9 @@
 
 use naga::{Expression, Module, ShaderStage as NagaStage, TypeInner};
 use wcontainers_gpu::{
-    Format, HELPER_SET, ReflectedBinding, Reflection, SLOT_KINDS, SlotKind, SourceStage,
-    StageExtras, TexelBufferRoute, VariantKey, helper_binding,
+    format::Format, reflect::HELPER_SET, reflect::ReflectedBinding, reflect::Reflection,
+    reflect::SLOT_KINDS, reflect::SlotKind, reflect::SourceStage, reflect::StageExtras,
+    reflect::TexelBufferRoute, reflect::VariantKey,
 };
 use wcontainers_shaders::{
     ConvertError, ENTRY_POINT, Source, cache, convert, refusal, rewrite, stage,
@@ -573,7 +574,9 @@ fn the_variant_rewrites_apply_as_on_the_direct3d_routes() {
     let converted = rewrite(module, reflection, &variant, &ROUTE_KEY).expect("rewritten");
     let helper = naga::ResourceBinding {
         group: HELPER_SET,
-        binding: helper_binding(wcontainers_gpu::ShaderStage::Fragment),
+        binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+            wcontainers_gpu::shader::ShaderStage::Fragment,
+        ),
     };
     assert!(
         converted.modules[0]
@@ -617,7 +620,7 @@ fn a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_g
         ..compute_reflection(&module)
     };
     let key = VariantKey {
-        draw_base: wcontainers_gpu::DrawBaseSource::Helpers,
+        draw_base: wcontainers_gpu::reflect::DrawBaseSource::Helpers,
         ..Default::default()
     };
     let c = rewrite(module, reflection, &key, &ROUTE_KEY).unwrap();
@@ -627,7 +630,7 @@ fn a_vertex_program_takes_its_sampled_pairs_position_and_draw_bases_as_convert_g
     assert!(
         r.helpers
             .iter()
-            .any(|h| h.value == wcontainers_gpu::HelperValue::DrawBase),
+            .any(|h| h.value == wcontainers_gpu::reflect::HelperValue::DrawBase),
         "{:?}",
         r.helpers
     );

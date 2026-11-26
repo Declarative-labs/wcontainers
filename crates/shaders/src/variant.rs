@@ -11,9 +11,11 @@ use naga::{
     VectorSize,
 };
 use wcontainers_gpu::{
-    AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, Format,
-    HELPER_SET, HelperSlot, HelperValue, LinkedValues, Reflection, SLOT_KINDS, ShaderStage,
-    SlotKind, StageExtras, VariantFlags, VariantKey, helper_binding,
+    format::Format, reflect::AddedBinding, reflect::CLAMPED_SAMPLER_BINDING,
+    reflect::DRAW_ARGUMENTS_BINDING, reflect::DrawBaseSource, reflect::HELPER_SET,
+    reflect::HelperSlot, reflect::HelperValue, reflect::LinkedValues, reflect::Reflection,
+    reflect::SLOT_KINDS, reflect::SlotKind, reflect::StageExtras, reflect::VariantFlags,
+    reflect::VariantKey, shader::ShaderStage,
 };
 
 use crate::ConvertError;
@@ -356,7 +358,7 @@ fn helper(
 ) -> (Handle<GlobalVariable>, u32) {
     let binding = naga::ResourceBinding {
         group: HELPER_SET,
-        binding: helper_binding(stage),
+        binding: wcontainers_gpu::shader::ShaderStage::helper_binding(stage),
     };
     let found = module
         .global_variables
@@ -439,7 +441,7 @@ pub(crate) fn helper_once(
     if reflection.helpers.iter().any(|s| s.value == value) {
         let binding = naga::ResourceBinding {
             group: HELPER_SET,
-            binding: helper_binding(stage),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(stage),
         };
         let name = helper_name(value);
         let found = module
@@ -1802,7 +1804,7 @@ fn draw_arguments(
     slot.value = HelperValue::DrawArguments;
     let block = naga::ResourceBinding {
         group: HELPER_SET,
-        binding: helper_binding(ShaderStage::Vertex),
+        binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
     };
     let helpers = module
         .global_variables
@@ -2121,7 +2123,7 @@ fn copy_constant(
     into.expressions.append(copied, Span::UNDEFINED)
 }
 
-/// The slot of the resource bound to global `g` ([`wcontainers_gpu::ReflectedBinding::slot`]), if
+/// The slot of the resource bound to global `g` ([`wcontainers_gpu::reflect::ReflectedBinding::slot`]), if
 /// it is of `kind`.
 fn slot_of(
     module: &Module,
@@ -2561,7 +2563,7 @@ pub(crate) fn sampler_state(
 }
 
 /// `AddressMode::MirrorOnce`'s code in `HelperValue::SamplerState`.
-const MIRROR_ONCE_CODE: u32 = wcontainers_gpu::AddressMode::MirrorOnce as u32;
+const MIRROR_ONCE_CODE: u32 = wcontainers_gpu::resource::AddressMode::MirrorOnce as u32;
 
 /// Mirror-once addressing on a clamping sampler: each coordinate whose address mode in the sampler's
 /// state is mirror-once is taken as its absolute value, and an implicit level becomes the original

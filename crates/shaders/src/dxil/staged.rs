@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use naga::{Handle, Module, TypeInner};
 use rspirv::dr::{self, Instruction, Operand};
 use spirv::{Decoration, ExecutionMode, ExecutionModel, FunctionControl, Op, StorageClass};
-use wcontainers_gpu::StageValue;
+use wcontainers_gpu::reflect::StageValue;
 
 /// `OpEntryPoint`'s operands (3.32.5): the execution model, the function, its name, then its
 /// interface.

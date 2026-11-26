@@ -6,7 +6,7 @@ use crate::caps::Features;
 /// `DXGI_ERROR_DEVICE_REMOVED`, `GL_OUT_OF_MEMORY`, `VK_ERROR_DEVICE_LOST` and so on).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuError {
-    /// The back end does not have these features; the front should have read [`crate::Caps`] first.
+    /// The back end does not have these features; the front should have read [`crate::caps::Caps`] first.
     Absent(Features),
     /// The GPU or the host ran out of memory for this object, known when the call returns. Browser APIs
     /// mostly learn it later; a back end then reports [`LossReason::OutOfMemory`].

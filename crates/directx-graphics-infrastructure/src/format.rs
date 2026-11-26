@@ -1,6 +1,8 @@
 //! DXGI format numbers (`DXGI_FORMAT`) and the interface formats that hold them.
 
-use wcontainers_gpu::{Caps, FORMAT_FACTS, Format, FormatUse, VertexFormat};
+use wcontainers_gpu::{
+    caps::Caps, caps::FormatUse, format::FORMAT_FACTS, format::Format, state::VertexFormat,
+};
 
 /// `DXGI_FORMAT` values (dxgiformat.h), named as there without the prefix (`420_OPAQUE` as
 /// `OPAQUE_420`).

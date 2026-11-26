@@ -41,15 +41,15 @@ impl<B: Gpu> Device<B> {
         if v.dimension == UAV_DIMENSION_BUFFER {
             return Err(Error::NotImplemented(bind::OTHER_UAV_DIMENSION));
         }
-        let slot =
-            b.binding.binding - wcontainers_gpu::SLOT_KINDS[b.binding.kind as usize].first_binding;
+        let slot = b.binding.binding
+            - wcontainers_gpu::reflect::SLOT_KINDS[b.binding.kind as usize].first_binding;
         if slot >= 64 {
             return Err(Error::NotImplemented(
                 "a storage texture read through a buffer at a slot past 63",
             ));
         }
         let format = dxgi(v.format)?;
-        let (bw, bh, bytes) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
+        let (bw, bh, bytes) = wcontainers_gpu::format::FORMAT_FACTS[format as usize].block;
         if (bw, bh) != (1, 1) {
             return Err(Error::Invalid(
                 "a storage view of a block-compressed format",

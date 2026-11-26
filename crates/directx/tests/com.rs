@@ -867,7 +867,7 @@ fn constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu() {
     use wcontainers_direct3d_11::object::Resource;
     use wcontainers_direct3d_11::{Device, PIXEL};
     use wcontainers_directx_graphics_infrastructure::dxgi;
-    use wcontainers_gpu::SourceStage;
+    use wcontainers_gpu::reflect::SourceStage;
     use wcontainers_gpu_webgpu::WebGpu;
 
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();

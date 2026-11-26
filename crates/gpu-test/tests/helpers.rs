@@ -1,7 +1,10 @@
 //! The interface's shared helpers (the pass tracker, the occlusion counter and the combination
 //! tracker) driving the recording back end through scripted draws.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, occlusion::*, passes::*, resource::*, shader::*,
+    slow::*, state::*, *,
+};
 use wcontainers_gpu_test::{Call, Id, Recorder};
 use wcontainers_shaders::front::cut_scissors;
 

@@ -9,8 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use wcontainers_gpu::{
-    CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind, Gpu, GpuError, Origin, QueryKind,
-    ReadSource, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage, WriteMode,
+    Gpu, error::GpuError, format::FORMAT_FACTS, format::Format, format::FormatKind,
+    resource::CopyBufferTexture, resource::Extent, resource::Origin, resource::QueryKind,
+    resource::ReadSource, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::WriteMode, slow::SlowPath,
 };
 
 use crate::fill::{AspectRead, DepthSource};
@@ -247,7 +249,7 @@ fn texel_copy<'a>(
     texture: &crate::TextureObj,
     mip: u32,
     layer: u32,
-    origin: wcontainers_gpu::Origin,
+    origin: wcontainers_gpu::resource::Origin,
     stencil: bool,
 ) -> wgpu::TexelCopyTextureInfo<'a> {
     wgpu::TexelCopyTextureInfo {

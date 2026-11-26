@@ -4,11 +4,14 @@
 use std::ffi::{c_uint, c_void};
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DrawCall, DrawRange, FillMode, Format, FormatUse, FrontFace, Gpu, LoadOp,
-    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex, RasterDesc,
-    RenderTargetBlend, SLOT_KINDS, ScissorRect, ShaderModule, ShaderStage, SlotKind, StageSet,
-    StoreOp, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    Gpu, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, caps::FormatUse, draw::ColorAttachment,
+    draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc, draw::ScissorRect,
+    draw::StoreOp, draw::Viewport, format::Format, reflect::SLOT_KINDS, reflect::SlotKind,
+    resource::BindingEntry, resource::BindingResource, resource::TextureViewDesc, shader::Program,
+    shader::ShaderModule, shader::ShaderStage, shader::StageSet, state::BlendDesc,
+    state::ColorWrites, state::CullMode, state::DepthStencilDesc, state::FillMode,
+    state::FrontFace, state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend,
+    state::Topology, state::VertexLayoutDesc,
 };
 
 use crate::context::Context;
@@ -42,7 +45,7 @@ const VERTEX_ENTRY: &str = "vs";
 const FRAGMENT_ENTRY: &str = "fs";
 
 impl<B: Gpu> Copy<B> {
-    fn new(backend: &mut B) -> Result<Copy<B>, wcontainers_gpu::GpuError> {
+    fn new(backend: &mut B) -> Result<Copy<B>, wcontainers_gpu::error::GpuError> {
         let picture = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
         let source = format!(
             "@group(0) @binding({picture}) var picture: texture_2d<f32>;
@@ -182,7 +185,7 @@ fn show<B: HostWindows>(
             texture,
             &TextureViewDesc {
                 format,
-                dimension: wcontainers_gpu::ViewDimension::D2,
+                dimension: wcontainers_gpu::resource::ViewDimension::D2,
                 base_mip: level,
                 mip_count: 1,
                 base_layer: layer,

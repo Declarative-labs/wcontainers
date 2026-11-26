@@ -5,10 +5,12 @@ use wcontainers_directx_graphics_infrastructure::stage_registers::{
     MOVED_INVALID, MOVED_ONTO_A_TYPE,
 };
 use wcontainers_gpu::{
-    AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
-    HelperSlot, HelperValue, LinkedValues, Reflection, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
-    ViewComponent, helper_binding,
+    format::Format, format::FormatKind, reflect::AddedBinding, reflect::CLAMPED_SAMPLER_BINDING,
+    reflect::DrawBaseSource, reflect::HELPER_SET, reflect::HelperSlot, reflect::HelperValue,
+    reflect::LinkedValues, reflect::Reflection, reflect::SlotKind, reflect::SourceStage,
+    reflect::StageValue, reflect::SystemValue, reflect::TexelBufferRoute, reflect::VariantFlags,
+    reflect::VariantKey, reflect::ViewComponent, shader::ShaderModule, shader::ShaderStage,
+    slow::SlowPath,
 };
 use wcontainers_shaders::container::{
     self, Chunk, Tag, dxbc_dimension, dxbc_op, dxbc_sampled, token,
@@ -779,7 +781,7 @@ impl Helpers {
     /// its module declares at the vertex stage's helper binding.
     pub fn of_passthrough(passthrough: &ShaderModule, layer_from_stage: bool) -> Self {
         let module = &passthrough.module;
-        let binding = helper_binding(ShaderStage::Vertex);
+        let binding = wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex);
         let size = module
             .global_variables
             .iter()
@@ -1045,7 +1047,7 @@ pub fn cull_passthrough(
     key: VariantKey,
     inputs: &[StageValue],
 ) -> Result<ShaderModule> {
-    use wcontainers_gpu::{ScalarKind, VertexFormat};
+    use wcontainers_gpu::{reflect::ScalarKind, state::VertexFormat};
     let pulled = inputs
         .iter()
         .filter(|v| v.system.is_none())
@@ -1133,8 +1135,8 @@ mod tests {
             semantic_index: 0,
             register: location,
             mask: 0xf,
-            scalar: wcontainers_gpu::ScalarKind::Float,
-            interpolation: wcontainers_gpu::Interpolation::Perspective,
+            scalar: wcontainers_gpu::reflect::ScalarKind::Float,
+            interpolation: wcontainers_gpu::reflect::Interpolation::Perspective,
             system,
             location,
             component: 0,

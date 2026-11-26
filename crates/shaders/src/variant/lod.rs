@@ -9,7 +9,9 @@ use naga::{
     Block, DerivativeAxis, DerivativeControl, Expression, Function, Handle, ImageQuery, Literal,
     Module, Scalar, ScalarKind, Span, Statement, SwizzleComponent, VectorSize,
 };
-use wcontainers_gpu::{HelperValue, Reflection, ShaderStage, VariantKey};
+use wcontainers_gpu::{
+    reflect::HelperValue, reflect::Reflection, reflect::VariantKey, shader::ShaderStage,
+};
 
 use super::{Result, push};
 use crate::ConvertError;

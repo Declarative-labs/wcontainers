@@ -6,7 +6,9 @@
 
 use std::ffi::{c_uint, c_void};
 
-use wcontainers_gpu::{INDEX_FORMATS, IndexFormat, ProvokingVertex, Topology};
+use wcontainers_gpu::{
+    state::INDEX_FORMATS, state::IndexFormat, state::ProvokingVertex, state::Topology,
+};
 use wcontainers_shaders::stage::TRIANGLE_VERTICES;
 use zerocopy::IntoBytes;
 

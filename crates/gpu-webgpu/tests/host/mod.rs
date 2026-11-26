@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use wcontainers_gpu::{Gpu, SlowPath};
+use wcontainers_gpu::{Gpu, slow::SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 thread_local! {

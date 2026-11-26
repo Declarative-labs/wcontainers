@@ -24,7 +24,8 @@ use naga::{
     TypeInner, VectorSize,
 };
 use wcontainers_gpu::{
-    Interpolation, Reflection, ScalarKind as ValueKind, VariantFlags, VariantKey,
+    reflect::Interpolation, reflect::Reflection, reflect::ScalarKind as ValueKind,
+    reflect::VariantFlags, reflect::VariantKey,
 };
 
 mod helper;
@@ -161,7 +162,7 @@ pub(crate) fn value(b: &mut Builder, values: Expr, w: u32) -> Expr {
 
 /// The user locations of a stage's values (inputs or outputs) that are not system values, sorted:
 /// the order of a record's slots after the position.
-pub fn locations(values: &[wcontainers_gpu::StageValue]) -> Vec<u32> {
+pub fn locations(values: &[wcontainers_gpu::reflect::StageValue]) -> Vec<u32> {
     let mut locations: Vec<u32> = values
         .iter()
         .filter(|v| v.system.is_none())
@@ -177,7 +178,7 @@ pub fn locations(values: &[wcontainers_gpu::StageValue]) -> Vec<u32> {
 pub fn vertex_program(
     vertex: &crate::Converted,
     geometry: &crate::Converted,
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     let read = &geometry.reflection;
     vertex_program_for(vertex, &locations(&read.inputs), read_distances(read))
 }
@@ -188,7 +189,7 @@ pub(crate) fn vertex_program_for(
     vertex: &crate::Converted,
     inputs: &[u32],
     distances: (u32, u32),
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     compute_form(
         &vertex.modules[0],
         &vertex.modules[0].module,
@@ -206,7 +207,7 @@ pub(crate) fn domain_program_for(
     domain: &crate::Converted,
     inputs: &[u32],
     distances: (u32, u32),
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     let source = &domain.modules[0];
     compute_form(
         source,
@@ -219,16 +220,16 @@ pub(crate) fn domain_program_for(
 
 /// The module of a domain program (converted) reading the patches and points from the helper's own
 /// set.
-fn domain_module(source: &wcontainers_gpu::ShaderModule) -> Module {
+fn domain_module(source: &wcontainers_gpu::shader::ShaderModule) -> Module {
     let mut module = source.module.clone();
     for (_, g) in module.global_variables.iter_mut() {
         let Some(rb) = &mut g.binding else { continue };
-        if rb.group != wcontainers_gpu::HELPER_SET {
+        if rb.group != wcontainers_gpu::reflect::HELPER_SET {
             continue;
         }
         match rb.binding {
-            wcontainers_gpu::DOMAIN_PATCHES_BINDING => *rb = binding(PATCHES_BINDING),
-            wcontainers_gpu::DOMAIN_POINTS_BINDING => *rb = binding(POINTS_BINDING),
+            wcontainers_gpu::reflect::DOMAIN_PATCHES_BINDING => *rb = binding(PATCHES_BINDING),
+            wcontainers_gpu::reflect::DOMAIN_POINTS_BINDING => *rb = binding(POINTS_BINDING),
             _ => {}
         }
     }
@@ -237,7 +238,7 @@ fn domain_module(source: &wcontainers_gpu::ShaderModule) -> Module {
 
 /// Whether `domain` (converted) writes cull distances. Without a geometry stage after it, the stage
 /// helper then runs it as compute and drops the tessellator's primitives they drop
-/// ([`Stages::tessellated_with`], [`wcontainers_gpu::SlowPath::CullDistanceAsGeometry`]).
+/// ([`Stages::tessellated_with`], [`wcontainers_gpu::slow::SlowPath::CullDistanceAsGeometry`]).
 pub fn writes_cull_distances(domain: &crate::Converted) -> bool {
     cull_distances(&domain.reflection) != 0
 }
@@ -255,12 +256,12 @@ pub fn domain_cull_programs(domain: &crate::Converted) -> Result<CullPrograms> {
 }
 
 fn compute_form(
-    source: &wcontainers_gpu::ShaderModule,
+    source: &wcontainers_gpu::shader::ShaderModule,
     module: &Module,
     inputs: &[u32],
     distances: (u32, u32),
     what: &[u8],
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     let written = (distances != (0, 0)).then_some(distances);
     compute_module(
         source,
@@ -272,33 +273,33 @@ fn compute_form(
 
 /// A compute program made of `source` with the key of what it is and the record locations it writes.
 fn compute_module(
-    source: &wcontainers_gpu::ShaderModule,
+    source: &wcontainers_gpu::shader::ShaderModule,
     module: Module,
     inputs: &[u32],
     what: &[u8],
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     derived_module(
         source,
         module,
         inputs,
         what,
-        wcontainers_gpu::ShaderStage::Compute,
+        wcontainers_gpu::shader::ShaderStage::Compute,
     )
 }
 
 fn derived_module(
-    source: &wcontainers_gpu::ShaderModule,
+    source: &wcontainers_gpu::shader::ShaderModule,
     module: Module,
     inputs: &[u32],
     what: &[u8],
-    stage: wcontainers_gpu::ShaderStage,
-) -> Result<wcontainers_gpu::ShaderModule> {
+    stage: wcontainers_gpu::shader::ShaderStage,
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     let mut key = blake3::Hasher::new();
     key.update(&source.key).update(what);
     for l in inputs {
         key.update(&l.to_le_bytes());
     }
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
@@ -314,7 +315,7 @@ fn derived_module(
 pub fn capture_program(
     vertex: &crate::Converted,
     geometry: &crate::Converted,
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     let inputs = locations(&geometry.reflection.inputs);
     let distances = read_distances(&geometry.reflection);
     if distances
@@ -332,10 +333,10 @@ pub fn capture_program(
 pub(crate) struct StreamedPrograms {
     /// The vertex program writing records of its position, each output location (`locations`) and
     /// its clip distances' slots as flat four-word values from location 0.
-    pub(crate) capture: wcontainers_gpu::ShaderModule,
+    pub(crate) capture: wcontainers_gpu::shader::ShaderModule,
     /// The vertex program drawing those records, passing on every output with its own binding and
     /// the clip distances.
-    pub(crate) passthrough: wcontainers_gpu::ShaderModule,
+    pub(crate) passthrough: wcontainers_gpu::shader::ShaderModule,
     pub(crate) locations: Vec<u32>,
     /// Four-word slots per record.
     pub(crate) slots: u32,
@@ -370,7 +371,7 @@ fn capture_program_for(
     inputs: &[u32],
     (clip, cull): (u32, u32),
     what: &[u8],
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     let source = &vertex.modules[0];
     let mut module = source.module.clone();
     if module.entry_points.len() != 1 || module.entry_points[0].stage != naga::ShaderStage::Vertex {
@@ -500,7 +501,7 @@ fn capture_program_for(
         module,
         inputs,
         what,
-        wcontainers_gpu::ShaderStage::Vertex,
+        wcontainers_gpu::shader::ShaderStage::Vertex,
     )
 }
 
@@ -528,15 +529,15 @@ fn as_slot(b: &mut Builder, uvec4: Handle<Type>, v: Expr, kind: ScalarKind, size
 }
 
 /// The stream output program (`stream_out.wgsl`), which [`Stages`] runs after the last stage.
-pub fn stream_program() -> Result<wcontainers_gpu::ShaderModule> {
+pub fn stream_program() -> Result<wcontainers_gpu::shader::ShaderModule> {
     let text = include_str!("stage/stream_out.wgsl");
     let module = naga::front::wgsl::parse_str(text)
         .map_err(|e| ConvertError::Malformed(format!("the stream output program: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Compute,
+        stage: wcontainers_gpu::shader::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
@@ -545,14 +546,14 @@ const STRIP_PROGRAM: &str = include_str!("stage/strips.wgsl");
 
 /// The program listing an indexed strip's primitives (`strips.wgsl`), which [`Stages`] runs before the
 /// vertex stage of an indexed strip.
-pub fn strip_program() -> Result<wcontainers_gpu::ShaderModule> {
+pub fn strip_program() -> Result<wcontainers_gpu::shader::ShaderModule> {
     let module = naga::front::wgsl::parse_str(STRIP_PROGRAM)
         .map_err(|e| ConvertError::Malformed(format!("the strip program: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Compute,
+        stage: wcontainers_gpu::shader::ShaderStage::Compute,
         key: *blake3::hash(STRIP_PROGRAM.as_bytes()).as_bytes(),
     })
 }
@@ -656,15 +657,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 /// The cull program ([`CULL_PROGRAM`]), which [`Stages`] runs after a vertex stage writing cull
 /// distances.
-pub fn cull_program() -> Result<wcontainers_gpu::ShaderModule> {
+pub fn cull_program() -> Result<wcontainers_gpu::shader::ShaderModule> {
     let text = CULL_PROGRAM;
     let module = naga::front::wgsl::parse_str(text)
         .map_err(|e| ConvertError::Malformed(format!("the cull program: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Compute,
+        stage: wcontainers_gpu::shader::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
@@ -673,28 +674,28 @@ const GEOMETRY_CULL_PROGRAM: &str = include_str!("stage/geometry_cull.wgsl");
 
 /// The program listing a geometry stage's primitives its cull distances keep (`geometry_cull.wgsl`),
 /// which [`Stages`] runs after a geometry stage writing cull distances.
-pub fn geometry_cull_program() -> Result<wcontainers_gpu::ShaderModule> {
+pub fn geometry_cull_program() -> Result<wcontainers_gpu::shader::ShaderModule> {
     let module = naga::front::wgsl::parse_str(GEOMETRY_CULL_PROGRAM)
         .map_err(|e| ConvertError::Malformed(format!("the geometry cull program: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Compute,
+        stage: wcontainers_gpu::shader::ShaderStage::Compute,
         key: *blake3::hash(GEOMETRY_CULL_PROGRAM.as_bytes()).as_bytes(),
     })
 }
 
 /// A vertex program writing cull distances, drawn through the stage helper
-/// ([`wcontainers_gpu::SlowPath::CullDistanceAsGeometry`]); also, with none, one writing storage
+/// ([`wcontainers_gpu::slow::SlowPath::CullDistanceAsGeometry`]); also, with none, one writing storage
 /// ([`writes_storage`]).
 pub struct CullPrograms {
     /// Its compute form, writing records of its position, each output location (`locations`), its
     /// clip distances' slots and its cull distances' slots.
-    pub compute: wcontainers_gpu::ShaderModule,
+    pub compute: wcontainers_gpu::shader::ShaderModule,
     /// The vertex program drawing those records, passing on every output with its own binding and
     /// the clip distances.
-    pub passthrough: wcontainers_gpu::ShaderModule,
+    pub passthrough: wcontainers_gpu::shader::ShaderModule,
     pub locations: Vec<u32>,
     pub clip_distances: u32,
     pub cull_distances: u32,
@@ -785,12 +786,12 @@ pub fn cull_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
 
 /// Whether `converted` is a vertex program writing storage buffers or textures. Where the back end
 /// lacks `Features::VERTEX_STORAGE_WRITE` it is drawn through the stage helper
-/// ([`wcontainers_gpu::SlowPath::VertexStorageAsCompute`]): [`Stages::stored`] alone, or any of its
+/// ([`wcontainers_gpu::slow::SlowPath::VertexStorageAsCompute`]): [`Stages::stored`] alone, or any of its
 /// routes that runs the vertex stage as compute ([`Stages::new`], [`Stages::culled`],
 /// [`Stages::antialiased_lines`], [`Stages::primitive_numbered`], [`Stages::tessellated_with`]).
 pub fn writes_storage(converted: &crate::Converted) -> bool {
     let m = &converted.modules[0];
-    m.stage == wcontainers_gpu::ShaderStage::Vertex && crate::writes_storage(&m.module)
+    m.stage == wcontainers_gpu::shader::ShaderStage::Vertex && crate::writes_storage(&m.module)
 }
 
 /// The programs of `vertex` (converted with every input pulled), which writes storage
@@ -813,7 +814,7 @@ fn record_programs(vertex: &crate::Converted) -> Result<CullPrograms> {
 /// The cull route's programs of `source` as `module` (its bindings as the compute form reads them),
 /// its compute form keyed by `what`.
 fn record_programs_of(
-    source: &wcontainers_gpu::ShaderModule,
+    source: &wcontainers_gpu::shader::ShaderModule,
     module: &Module,
     what: &[u8],
 ) -> Result<CullPrograms> {
@@ -842,9 +843,9 @@ fn record_programs_of(
 pub(crate) struct ReplayedPrimitivePrograms {
     /// The vertex program writing records of its position, each output location, its clip distances'
     /// slots and its cull distances' slots as flat four-word values from location 0.
-    pub(crate) capture: wcontainers_gpu::ShaderModule,
+    pub(crate) capture: wcontainers_gpu::shader::ShaderModule,
     /// The route's pass-through ([`CullPrograms::passthrough`], [`PrimitivePrograms::passthrough`]).
-    pub(crate) passthrough: wcontainers_gpu::ShaderModule,
+    pub(crate) passthrough: wcontainers_gpu::shader::ShaderModule,
     /// Slots of a vertex record the pass-through draws: the position, the locations and the clip
     /// distances; then, on the primitive route, the number's slot.
     pub(crate) drawn_slots: u32,
@@ -912,12 +913,15 @@ fn replayed_primitive_programs(
 }
 
 /// A vertex program of the pass-through kind, keyed by `key`.
-fn vertex_module(module: Module, key: blake3::Hasher) -> Result<wcontainers_gpu::ShaderModule> {
-    Ok(wcontainers_gpu::ShaderModule {
+fn vertex_module(
+    module: Module,
+    key: blake3::Hasher,
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Vertex,
+        stage: wcontainers_gpu::shader::ShaderStage::Vertex,
         key: *key.finalize().as_bytes(),
     })
 }
@@ -942,7 +946,7 @@ impl DrawnOutputs {
     }
 }
 
-fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs> {
+fn drawn_outputs(source: &wcontainers_gpu::shader::ShaderModule) -> Result<DrawnOutputs> {
     let module = &source.module;
     let ep = module
         .entry_points
@@ -999,16 +1003,16 @@ fn drawn_outputs(source: &wcontainers_gpu::ShaderModule) -> Result<DrawnOutputs>
 }
 
 /// A vertex program's lines drawn as rectangles through the stage helper: antialiased
-/// ([`wcontainers_gpu::SlowPath::AntialiasedLinesAsQuads`]), or by Direct3D's aliased rule into a
-/// multisampled target ([`wcontainers_gpu::SlowPath::AliasedLinesAsQuads`]).
+/// ([`wcontainers_gpu::slow::SlowPath::AntialiasedLinesAsQuads`]), or by Direct3D's aliased rule into a
+/// multisampled target ([`wcontainers_gpu::slow::SlowPath::AliasedLinesAsQuads`]).
 pub struct LinePrograms {
     /// The vertex stage writing records of its position, each output location (`locations`) and its
     /// clip distances' slots: its compute form ([`line_programs`]), or the vertex program whose
     /// output is captured ([`line_capture_programs`]).
-    pub records: wcontainers_gpu::ShaderModule,
+    pub records: wcontainers_gpu::shader::ShaderModule,
     /// The vertex program drawing the rectangles' corners: a record as `records` writes it, then the
     /// coverage slot or the line's ends, passed on at the pixel program's [`line_coverage_location`].
-    pub passthrough: wcontainers_gpu::ShaderModule,
+    pub passthrough: wcontainers_gpu::shader::ShaderModule,
     pub locations: Vec<u32>,
     pub clip_distances: u32,
     /// The record slots after the position taken along the line at a corner (bit i: slot 1 + i), the
@@ -1077,9 +1081,9 @@ pub fn line_capture_programs(
 /// [`line_programs`] of `source` with `records` making the vertex stage's program writing the
 /// records.
 fn line_drawing(
-    source: &wcontainers_gpu::ShaderModule,
+    source: &wcontainers_gpu::shader::ShaderModule,
     pixel: &VariantKey,
-    records: impl FnOnce(&DrawnOutputs) -> Result<wcontainers_gpu::ShaderModule>,
+    records: impl FnOnce(&DrawnOutputs) -> Result<wcontainers_gpu::shader::ShaderModule>,
 ) -> Result<LinePrograms> {
     let drawn = drawn_outputs(source)?;
     if drawn.cull != 0 {
@@ -1157,14 +1161,14 @@ pub(crate) fn cull_distance_location(variant: &VariantKey) -> u32 {
 }
 
 /// A vertex program drawn through the stage helper so that its pixel program reads its primitive's
-/// number from it ([`wcontainers_gpu::SlowPath::PrimitiveIdAsGeometry`]).
+/// number from it ([`wcontainers_gpu::slow::SlowPath::PrimitiveIdAsGeometry`]).
 pub struct PrimitivePrograms {
     /// Its compute form, writing records of its position, each output location (`locations`) and its
     /// clip distances' slots.
-    pub compute: wcontainers_gpu::ShaderModule,
+    pub compute: wcontainers_gpu::shader::ShaderModule,
     /// The vertex program drawing each primitive's copies of those records, then the number's slot,
     /// passed on at the pixel program's [`primitive_id_location`].
-    pub passthrough: wcontainers_gpu::ShaderModule,
+    pub passthrough: wcontainers_gpu::shader::ShaderModule,
     pub locations: Vec<u32>,
     pub clip_distances: u32,
 }
@@ -1224,15 +1228,15 @@ const PRIMITIVE_PROGRAM: &str = include_str!("stage/primitives.wgsl");
 
 /// The primitive program ([`PRIMITIVE_PROGRAM`]), which [`Stages`] runs after the vertex stage on the
 /// primitive route.
-pub fn primitive_program() -> Result<wcontainers_gpu::ShaderModule> {
+pub fn primitive_program() -> Result<wcontainers_gpu::shader::ShaderModule> {
     let text = PRIMITIVE_PROGRAM;
     let module = naga::front::wgsl::parse_str(text)
         .map_err(|e| ConvertError::Malformed(format!("the primitive program: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Compute,
+        stage: wcontainers_gpu::shader::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
@@ -1243,15 +1247,15 @@ const LINE_PROGRAM: &str = include_str!("stage/lines.wgsl");
 
 /// The line program ([`LINE_PROGRAM`]), which [`Stages`] runs after the vertex stage on the line
 /// route.
-pub fn line_program() -> Result<wcontainers_gpu::ShaderModule> {
+pub fn line_program() -> Result<wcontainers_gpu::shader::ShaderModule> {
     let text = LINE_PROGRAM;
     let module = naga::front::wgsl::parse_str(text)
         .map_err(|e| ConvertError::Malformed(format!("the line program: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Compute,
+        stage: wcontainers_gpu::shader::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
@@ -1265,7 +1269,7 @@ const LINE_REPLAY_FUNCTION: &str = "line_corner";
 
 /// The line replay program ([`LINE_REPLAY_PROGRAM`]) writing corner records of `slots` four-word
 /// slots, which [`replay::GeometryReplay::antialiased_lines`] captures after the vertex stage.
-pub(crate) fn line_replay_program(slots: u32) -> Result<wcontainers_gpu::ShaderModule> {
+pub(crate) fn line_replay_program(slots: u32) -> Result<wcontainers_gpu::shader::ShaderModule> {
     replay_program(
         LINE_REPLAY,
         &format!("const SLOTS: u32 = {slots}u;\n{LINE_REPLAY_PROGRAM}"),
@@ -1287,7 +1291,7 @@ const PRIMITIVE_REPLAY_FUNCTION: &str = "replayed";
 pub(crate) fn primitive_replay_program(
     slots: u32,
     record_slots: u32,
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     replay_program(
         PRIMITIVE_REPLAY,
         &format!(
@@ -1306,7 +1310,7 @@ fn replay_program(
     body: &str,
     slots: u32,
     function: &str,
-) -> Result<wcontainers_gpu::ShaderModule> {
+) -> Result<wcontainers_gpu::shader::ShaderModule> {
     let members: String = (0..slots)
         .map(|i| format!("    @location({i}) @interpolate(flat) s{i}: vec4<u32>,\n"))
         .collect();
@@ -1323,25 +1327,25 @@ fn replay_program(
     );
     let module = naga::front::wgsl::parse_str(&text)
         .map_err(|e| ConvertError::Malformed(format!("{what}: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Vertex,
+        stage: wcontainers_gpu::shader::ShaderStage::Vertex,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
 
 /// The tessellator program (`tessellator.wgsl`), which [`Stages`] runs after the hull stage.
-pub fn tessellator_program() -> Result<wcontainers_gpu::ShaderModule> {
+pub fn tessellator_program() -> Result<wcontainers_gpu::shader::ShaderModule> {
     let text = include_str!("stage/tessellator.wgsl");
     let module = naga::front::wgsl::parse_str(text)
         .map_err(|e| ConvertError::Malformed(format!("the tessellator program: {e}")))?;
-    Ok(wcontainers_gpu::ShaderModule {
+    Ok(wcontainers_gpu::shader::ShaderModule {
         info: crate::validate(&module)?,
         module,
         entry_point: crate::ENTRY_POINT.into(),
-        stage: wcontainers_gpu::ShaderStage::Compute,
+        stage: wcontainers_gpu::shader::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
@@ -1384,7 +1388,7 @@ pub mod tess {
     const EDGE_POINTS_PAST_FACTOR: u32 = 3;
     /// Indices of two triangles, the most a point adds.
     const INDICES_PER_POINT: u32 = 6;
-    /// The hull shader's output primitive codes ([`wcontainers_gpu::StageExtras::Hull`]): points and
+    /// The hull shader's output primitive codes ([`wcontainers_gpu::reflect::StageExtras::Hull`]): points and
     /// lines; the others are triangles.
     pub const OUTPUT_POINT: u8 = 0;
     pub const OUTPUT_LINE: u8 = 1;
@@ -1827,8 +1831,8 @@ pub fn selects(reflection: &Reflection) -> bool {
     reflection.outputs.iter().any(|v| {
         matches!(
             v.system,
-            Some(wcontainers_gpu::SystemValue::RenderTargetArrayIndex)
-                | Some(wcontainers_gpu::SystemValue::ViewportArrayIndex)
+            Some(wcontainers_gpu::reflect::SystemValue::RenderTargetArrayIndex)
+                | Some(wcontainers_gpu::reflect::SystemValue::ViewportArrayIndex)
         )
     })
 }
@@ -1840,7 +1844,7 @@ pub fn writes_primitive_id(reflection: &Reflection) -> bool {
     reflection
         .outputs
         .iter()
-        .any(|v| v.system == Some(wcontainers_gpu::SystemValue::PrimitiveId))
+        .any(|v| v.system == Some(wcontainers_gpu::reflect::SystemValue::PrimitiveId))
 }
 
 /// The slots of a geometry stage's records that its pass-through draws, after the position: its output
@@ -1856,7 +1860,7 @@ pub(crate) fn drawn_slots(reflection: &Reflection) -> u32 {
 pub(crate) fn clip_distances(reflection: &Reflection) -> u32 {
     distances(
         &reflection.outputs,
-        wcontainers_gpu::SystemValue::ClipDistance,
+        wcontainers_gpu::reflect::SystemValue::ClipDistance,
     )
 }
 
@@ -1864,14 +1868,14 @@ pub(crate) fn clip_distances(reflection: &Reflection) -> u32 {
 pub(crate) fn cull_distances(reflection: &Reflection) -> u32 {
     distances(
         &reflection.outputs,
-        wcontainers_gpu::SystemValue::CullDistance,
+        wcontainers_gpu::reflect::SystemValue::CullDistance,
     )
 }
 
 /// The clip and the cull distances a geometry stage's inputs hold: its vertex records hold their
 /// slots after its input locations'.
 pub(crate) fn read_distances(reflection: &Reflection) -> (u32, u32) {
-    use wcontainers_gpu::SystemValue;
+    use wcontainers_gpu::reflect::SystemValue;
     (
         distances(&reflection.inputs, SystemValue::ClipDistance),
         distances(&reflection.inputs, SystemValue::CullDistance),
@@ -1883,7 +1887,10 @@ pub(crate) fn read_slots(locations: &[u32], (clip, cull): (u32, u32)) -> usize {
     locations.len() + (distance_slots(clip) + distance_slots(cull)) as usize
 }
 
-fn distances(values: &[wcontainers_gpu::StageValue], system: wcontainers_gpu::SystemValue) -> u32 {
+fn distances(
+    values: &[wcontainers_gpu::reflect::StageValue],
+    system: wcontainers_gpu::reflect::SystemValue,
+) -> u32 {
     values
         .iter()
         .filter(|v| v.system == Some(system))
@@ -1898,23 +1905,24 @@ pub(crate) fn distance_slots(distances: u32) -> u32 {
 
 /// The helper constants of the vertex program after a geometry stage that writes a layer or viewport:
 /// the draw's run, whose primitives alone it keeps.
-pub const PASSTHROUGH_HELPERS: [wcontainers_gpu::HelperSlot; 2] = [
-    wcontainers_gpu::HelperSlot {
-        value: wcontainers_gpu::HelperValue::Layer,
+pub const PASSTHROUGH_HELPERS: [wcontainers_gpu::reflect::HelperSlot; 2] = [
+    wcontainers_gpu::reflect::HelperSlot {
+        value: wcontainers_gpu::reflect::HelperValue::Layer,
         offset: 0,
     },
-    wcontainers_gpu::HelperSlot {
-        value: wcontainers_gpu::HelperValue::Viewport,
+    wcontainers_gpu::reflect::HelperSlot {
+        value: wcontainers_gpu::reflect::HelperValue::Viewport,
         offset: build::WORD,
     },
 ];
 
 /// The helper constant the pass-through made with `VariantFlags::LAYER_FROM_STAGE` reads beside
 /// [`PASSTHROUGH_HELPERS`].
-pub const PASSTHROUGH_LAYER_COUNT: wcontainers_gpu::HelperSlot = wcontainers_gpu::HelperSlot {
-    value: wcontainers_gpu::HelperValue::LayerCount,
-    offset: build::WORD * LAYER_COUNT_MEMBER,
-};
+pub const PASSTHROUGH_LAYER_COUNT: wcontainers_gpu::reflect::HelperSlot =
+    wcontainers_gpu::reflect::HelperSlot {
+        value: wcontainers_gpu::reflect::HelperValue::LayerCount,
+        offset: build::WORD * LAYER_COUNT_MEMBER,
+    };
 
 /// Where a pixel program made with `VariantFlags::LAYER_FROM_STAGE` reads the layer its primitive
 /// names: the location after the values `linked` holds.
@@ -2082,8 +2090,10 @@ fn passthrough_of(
             RUN_VARIABLE,
             AddressSpace::Uniform,
             Some(ResourceBinding {
-                group: wcontainers_gpu::HELPER_SET,
-                binding: wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Vertex),
+                group: wcontainers_gpu::reflect::HELPER_SET,
+                binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                    wcontainers_gpu::shader::ShaderStage::Vertex,
+                ),
             }),
             helpers_ty,
         );

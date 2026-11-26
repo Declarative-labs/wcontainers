@@ -27,7 +27,7 @@ use windows::core::{
 use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData, TexDim, TextureDesc};
 use wcontainers_direct3d_11::format;
 use wcontainers_direct3d_11::object::Resource;
-use wcontainers_gpu::SourceStage;
+use wcontainers_gpu::reflect::SourceStage;
 
 use super::counted::{Counted, Held};
 use super::sharing;
@@ -1480,7 +1480,7 @@ impl Device_Impl {
     fn compute(&self) -> bool {
         wcontainers_gpu::Gpu::caps(&self.front.borrow().backend)
             .features
-            .contains(wcontainers_gpu::Features::COMPUTE)
+            .contains(wcontainers_gpu::caps::Features::COMPUTE)
     }
 
     pub(super) fn get_feature_level(&self) -> D3D_FEATURE_LEVEL {

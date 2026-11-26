@@ -16,7 +16,9 @@ use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, Vie
 use wcontainers_direct3d_11::{
     DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, level_texture_limits, shader,
 };
-use wcontainers_gpu::{Gpu, LossReason, SLOW_PATH_REASONS, SlowPath, SourceStage};
+use wcontainers_gpu::{
+    Gpu, error::LossReason, reflect::SourceStage, slow::SLOW_PATH_REASONS, slow::SlowPath,
+};
 
 type Dev = Device<Recorder>;
 
@@ -195,7 +197,7 @@ fn feature_level_is_the_first_asked_for_that_is_served() {
 
 #[test]
 fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_back_end_serves() {
-    use wcontainers_gpu::{Features, Format, FormatUse};
+    use wcontainers_gpu::{caps::Features, caps::FormatUse, format::Format};
     let top = |change: &dyn Fn(&mut Recorder)| {
         let mut r = Recorder::new(None);
         change(&mut r);
@@ -2157,7 +2159,10 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
             &[],
         )
         .unwrap();
-    assert_eq!(depth.format, wcontainers_gpu::Format::Depth24PlusStencil8);
+    assert_eq!(
+        depth.format,
+        wcontainers_gpu::format::Format::Depth24PlusStencil8
+    );
     dev.create_view(&depth, Some(&view(45)), bind::DEPTH_STENCIL)
         .unwrap();
     let from = dev.backend.log.len();
@@ -2193,7 +2198,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
             &[],
         )
         .unwrap();
-    assert_eq!(r32.format, wcontainers_gpu::Format::Depth32Float);
+    assert_eq!(r32.format, wcontainers_gpu::format::Format::Depth32Float);
     dev.create_view(&r32, Some(&view(40)), bind::DEPTH_STENCIL)
         .unwrap();
     dev.create_view(&r32, Some(&view(41)), bind::SHADER_RESOURCE)
@@ -2216,7 +2221,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         .create_view(&colour, Some(&view(30)), bind::SHADER_RESOURCE)
         .unwrap();
     assert!(uint.twin.is_some());
-    assert_eq!(uint.format, wcontainers_gpu::Format::Rgba8Uint);
+    assert_eq!(uint.format, wcontainers_gpu::format::Format::Rgba8Uint);
     let target = dev
         .create_view(&colour, Some(&view(30)), bind::RENDER_TARGET)
         .unwrap();
@@ -2409,7 +2414,9 @@ fn a_sampler_with_a_level_of_detail_bias_is_read_through_a_program_that_adds_it(
         .filter(|l| l.starts_with("create_shader"))
         .count();
     assert_eq!(shaders, 1, "{log:#?}");
-    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let fragment = wcontainers_gpu::shader::ShaderStage::helper_binding(
+        wcontainers_gpu::shader::ShaderStage::Fragment,
+    );
     assert_eq!(helper_f32(&dev, &log, fragment, 0), Some(1.5), "{log:#?}");
     let sets = log
         .iter()
@@ -2454,7 +2461,9 @@ fn helper_words(dev: &Dev, log: &[String], binding: u32) -> Vec<u32> {
 fn border_and_mirror_once_addressing_the_back_end_lacks_is_applied_in_the_program() {
     let mut dev = device();
     sampling(&mut dev, "samplers.ps_sample");
-    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let fragment = wcontainers_gpu::shader::ShaderStage::helper_binding(
+        wcontainers_gpu::shader::ShaderStage::Fragment,
+    );
     // Border in u, mirror-once in v, clamp in w: the program filters through the sampler, which
     // is made clamping, reading its state, its border colour and the view's components.
     let border = SamplerDesc {
@@ -2539,10 +2548,15 @@ fn a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler() {
         .collect();
     assert_eq!(merged.len(), 1, "{log:#?}");
     let id = merged[0].split(' ').nth(1).unwrap();
-    let binding = format!(" {}=sampler {id}", wcontainers_gpu::CLAMPED_SAMPLER_BINDING);
+    let binding = format!(
+        " {}=sampler {id}",
+        wcontainers_gpu::reflect::CLAMPED_SAMPLER_BINDING
+    );
     let sets = log.iter().filter(|l| l.contains(&binding)).count();
     assert_eq!(sets, 1, "{log:#?}");
-    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let fragment = wcontainers_gpu::shader::ShaderStage::helper_binding(
+        wcontainers_gpu::shader::ShaderStage::Fragment,
+    );
     assert_eq!(helper_f32(&dev, &log, fragment, 0), Some(1.5), "{log:#?}");
     assert!(dev.backend.slow_paths().counts[SlowPath::MinLodClamp as usize] >= 2);
 
@@ -2561,7 +2575,7 @@ fn a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler() {
 #[test]
 fn dual_source_blending_draws_the_programs_second_output_where_the_back_end_blends_it() {
     let mut dev = device();
-    dev.backend.caps.features |= wcontainers_gpu::Features::DUAL_SOURCE_BLEND;
+    dev.backend.caps.features |= wcontainers_gpu::caps::Features::DUAL_SOURCE_BLEND;
     ready(&mut dev, "blend.vs", "blend.ps_dual", &[], 12);
     let mut blend = BlendDesc::default_state();
     blend.targets[0].enable = true;
@@ -2581,8 +2595,9 @@ fn dual_source_blending_draws_the_programs_second_output_where_the_back_end_blen
 #[test]
 fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     let mut dev = device();
-    let uses = &mut dev.backend.caps.formats.uses[wcontainers_gpu::Format::R32Float as usize];
-    uses.remove(wcontainers_gpu::FormatUse::FILTER);
+    let uses =
+        &mut dev.backend.caps.formats.uses[wcontainers_gpu::format::Format::R32Float as usize];
+    uses.remove(wcontainers_gpu::caps::FormatUse::FILTER);
     sampling(&mut dev, "samplers.ps_sample");
     let draws = |dev: &Dev| {
         dev.backend
@@ -2613,7 +2628,9 @@ fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     assert!(dev.removed.is_none());
     assert_eq!(draws(&dev), 2);
     let log = log_from(&dev, from);
-    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let fragment = wcontainers_gpu::shader::ShaderStage::helper_binding(
+        wcontainers_gpu::shader::ShaderStage::Fragment,
+    );
     let words = helper_words(&dev, &log, fragment);
     let state = [1, 1, 1, 2, 2, 2, 1, 0, 32f32.to_bits()];
     assert!(words.windows(9).any(|w| w == state), "{words:?}");
@@ -2719,7 +2736,9 @@ fn a_depth_bias_clamp_the_back_end_lacks_is_added_by_the_pixel_program() {
     assert!(rasters[1].ends_with("bias 0 0 0"), "{}", rasters[1]);
     let count = |p: &str| log.iter().filter(|l| l.starts_with(p)).count();
     assert_eq!(count("create_shader"), 1, "{log:#?}");
-    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let fragment = wcontainers_gpu::shader::ShaderStage::helper_binding(
+        wcontainers_gpu::shader::ShaderStage::Fragment,
+    );
     let words = helper_words(&dev, &log, fragment);
     let values = [1000.0f32, 2.0, 0.001, 1.0 / 16_777_215.0].map(f32::to_bits);
     assert!(words.windows(4).any(|w| w == values), "{words:?}");
@@ -3373,7 +3392,7 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
     let unorm = dev
         .create_view(&typeless, Some(&desc), bind::SHADER_RESOURCE)
         .unwrap();
-    assert_eq!(unorm.format, wcontainers_gpu::Format::Rg16Unorm);
+    assert_eq!(unorm.format, wcontainers_gpu::format::Format::Rg16Unorm);
     dev.set_shader_resources(PIXEL, 0, &[Some(Rc::new(ShaderView::Texture(unorm)))])
         .unwrap();
     for _ in 0..2 {
@@ -3395,7 +3414,7 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
 #[test]
 fn targets_blended_differently_without_the_back_ends_draw_once_per_group_from_saved_depth() {
     let mut dev = device();
-    dev.backend.caps.features -= wcontainers_gpu::Features::INDEPENDENT_BLEND;
+    dev.backend.caps.features -= wcontainers_gpu::caps::Features::INDEPENDENT_BLEND;
     let elements = [
         element("POSITION", RGB32F, 0),
         element("COLOR", RGBA32F, 12),
@@ -3540,7 +3559,9 @@ fn a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_view
         assert!(d.contains(&expected), "{d}");
     }
     // Each run's layer and viewport in the pass-through's helpers, after the stage helper's.
-    let vertex = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Vertex);
+    let vertex = wcontainers_gpu::shader::ShaderStage::helper_binding(
+        wcontainers_gpu::shader::ShaderStage::Vertex,
+    );
     let staged = find(&log, "create_view");
     let runs: Vec<[u32; 2]> = log
         .iter()
@@ -3574,7 +3595,7 @@ fn a_geometry_shader_choosing_layers_and_viewports_draws_once_per_layer_and_view
 #[test]
 fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
     use wcontainers_directx_graphics_infrastructure::dxgi;
-    use wcontainers_gpu::{Format, FormatUse};
+    use wcontainers_gpu::{caps::FormatUse, format::Format};
     let mut dev = device();
     dev.backend.caps.formats.uses[Format::R16Unorm as usize] = FormatUse::empty();
     let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
@@ -3625,7 +3646,7 @@ fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
 #[test]
 fn clear_values_of_integer_twins_are_encoded_as_direct3d_converts_them() {
     use wcontainers_direct3d_11::format::encode_norm;
-    use wcontainers_gpu::Format;
+    use wcontainers_gpu::format::Format;
     let half = 0.5;
     assert_eq!(encode_norm(Format::R16Unorm, half), u32::from(u16::MAX / 2));
     let one_and_a_half = 1.5;
@@ -3658,8 +3679,9 @@ fn clear_values_of_integer_twins_are_encoded_as_direct3d_converts_them() {
 #[test]
 fn creation_refuses_what_direct3d_refuses() {
     use wcontainers_directx_graphics_infrastructure::dxgi;
-    let invalid =
-        |r: Result<(wcontainers_gpu::Format, u32), Error>| matches!(r, Err(Error::InvalidArg(_)));
+    let invalid = |r: Result<(wcontainers_gpu::format::Format, u32), Error>| {
+        matches!(r, Err(Error::InvalidArg(_)))
+    };
     let mut dev = device();
     let side = 4;
     let mut volume = tex2d(side, side, dxgi::R24G8_TYPELESS, 0);

@@ -8,7 +8,7 @@ use naga::BinaryOperator::{
     ShiftRight, Subtract,
 };
 use naga::{ArraySize, ScalarKind, SwizzleComponent};
-use wcontainers_gpu::{ReflectedBinding, SLOT_KINDS, VertexFormat};
+use wcontainers_gpu::{reflect::ReflectedBinding, reflect::SLOT_KINDS, state::VertexFormat};
 
 use super::*;
 use crate::build;

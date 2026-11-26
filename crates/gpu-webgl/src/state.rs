@@ -4,9 +4,11 @@
 
 use glow::HasContext;
 use wcontainers_gpu::{
-    BlendDesc, BlendFactor, BlendOp, CompareFn, CullMode, DepthStencilDesc, FillMode, FrontFace,
-    MAX_COLOR_TARGETS, ProvokingVertex, RasterDesc, RenderTargetBlend, StencilFace, StencilOp,
-    StepMode, Topology, VertexFormat, VertexLayoutDesc,
+    MAX_COLOR_TARGETS, resource::CompareFn, state::BlendDesc, state::BlendFactor, state::BlendOp,
+    state::CullMode, state::DepthStencilDesc, state::FillMode, state::FrontFace,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::StencilFace,
+    state::StencilOp, state::StepMode, state::Topology, state::VertexFormat,
+    state::VertexLayoutDesc,
 };
 
 use crate::format;
@@ -116,7 +118,7 @@ impl GlTarget {
     };
 
     fn new(t: &RenderTargetBlend) -> GlTarget {
-        use wcontainers_gpu::ColorWrites as C;
+        use wcontainers_gpu::state::ColorWrites as C;
         let w = t.writes;
         let mask = [
             w.contains(C::R),
@@ -453,7 +455,7 @@ pub fn raster(gl: &glow::Context, v: &mut GlValues, r: &GlRaster, platform: &Pla
 pub struct GlLayout {
     pub attributes: Vec<GlAttribute>,
     /// Two bits per location of [`conversion`]: draws with it use a program variant
-    /// ([`wcontainers_gpu::SlowPath::VertexFormatConverted`]); 0 when GL reads every attribute as
+    /// ([`wcontainers_gpu::slow::SlowPath::VertexFormatConverted`]); 0 when GL reads every attribute as
     /// stored.
     pub converted: u32,
 }

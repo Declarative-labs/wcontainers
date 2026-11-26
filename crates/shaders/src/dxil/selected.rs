@@ -17,7 +17,8 @@ use naga::{
 use rspirv::dr::{self, Instruction, Operand};
 use spirv::{BuiltIn, ExecutionModel, Op, StorageClass};
 use wcontainers_gpu::{
-    HelperValue, Reflection, ShaderStage, SystemValue, VariantFlags, VariantKey,
+    reflect::HelperValue, reflect::Reflection, reflect::SystemValue, reflect::VariantFlags,
+    reflect::VariantKey, shader::ShaderStage,
 };
 
 /// The prefix of the names given to the private variables.

@@ -10,7 +10,9 @@
 
 use alloc::vec;
 use naga::{AtomicFunction, BinaryOperator as B, ScalarKind};
-use wcontainers_gpu::{FORMAT_FACTS, Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
+use wcontainers_gpu::{
+    format::FORMAT_FACTS, format::Format, reflect::TEXEL_BUFFER_TEXTURE_WIDTH, state::VertexFormat,
+};
 
 use super::pull::{Component, Kind, decode, layout, select};
 use super::*;

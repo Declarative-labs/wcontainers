@@ -1,6 +1,9 @@
 //! DXGI formats (their numbers in `dxgiformat.h`) as the interface's formats.
 
-use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, IndexFormat, ScalarKind, VertexFormat};
+use wcontainers_gpu::{
+    format::FORMAT_FACTS, format::Format, format::FormatKind, reflect::ScalarKind,
+    state::IndexFormat, state::VertexFormat,
+};
 
 use crate::desc::level;
 use crate::error::{Error, Result, not_implemented};

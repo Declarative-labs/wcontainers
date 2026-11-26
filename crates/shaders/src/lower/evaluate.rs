@@ -165,13 +165,13 @@ impl Lowering<'_> {
                 && io.location.is_none()
                 && (io.interpolation & interp::CENTROID != 0
                     || (self.per_sample() && io.interpolation & interp::SAMPLE == 0))
-        }) && self.stage == wcontainers_gpu::SourceStage::Pixel
+        }) && self.stage == wcontainers_gpu::reflect::SourceStage::Pixel
             // With one sample every place is the centre.
             && self.variant.samples > 1
     }
 
     fn centroid_position(&self) -> bool {
-        self.stage == wcontainers_gpu::SourceStage::Pixel
+        self.stage == wcontainers_gpu::reflect::SourceStage::Pixel
             && self.io.iter().any(|(_, io)| {
                 io.builtin == Some(builtin::POSITION)
                     && io.location.is_none()

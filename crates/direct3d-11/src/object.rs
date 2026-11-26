@@ -7,9 +7,10 @@ use std::rc::Rc;
 use zerocopy::IntoBytes;
 
 use wcontainers_gpu::{
-    Extent, FORMAT_FACTS, Format, FormatKind, Gpu, Object, Origin, Reflection,
-    SamplerDesc as GpuSampler, TextureDesc as GpuTexture, TextureRegion, VertexFormat,
-    ViewDimension,
+    Gpu, Object, format::FORMAT_FACTS, format::Format, format::FormatKind, reflect::Reflection,
+    resource::Extent, resource::Origin, resource::SamplerDesc as GpuSampler,
+    resource::TextureDesc as GpuTexture, resource::TextureRegion, resource::ViewDimension,
+    state::VertexFormat,
 };
 
 use crate::desc::{
@@ -478,7 +479,7 @@ pub struct InputLayout {
     /// signedness, whose bits the back end's formats would not keep.
     pub pulled: Vec<LayoutElement>,
     /// The slow paths a draw fetching `pulled` takes.
-    pub pulled_paths: Vec<wcontainers_gpu::SlowPath>,
+    pub pulled_paths: Vec<wcontainers_gpu::slow::SlowPath>,
     /// Every element, as the vertex stage fetches them behind a geometry shader or stream output.
     pub all: Vec<LayoutElement>,
     /// Per input slot: none (per vertex) or the instance step rate.

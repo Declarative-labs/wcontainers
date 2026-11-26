@@ -864,8 +864,8 @@ fn float32_textures_gathered_sampled_and_their_mips_generated_as_direct3d_does()
 fn float32_textures_filtered_in_the_program_as_direct3d_reads_them() {
     let off = untiered(&[wgpu::Features::FLOAT32_FILTERABLE]);
     let errors = case_env("float32_reads", "unfiltered", &[(FEATURES_OFF, &off)]);
-    let route =
-        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::FilterInShader as usize];
+    let route = wcontainers_gpu::slow::SLOW_PATH_REASONS
+        [wcontainers_gpu::slow::SlowPath::FilterInShader as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -883,8 +883,8 @@ fn normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does() {
 #[test]
 #[ignore = "no 11_0 device without texture-formats-tier1 or 16-bit norm: the level's format requirements are not met (Gap list)"]
 fn normalised_targets_through_integer_twins_as_direct3d_draws_them() {
-    let route =
-        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::NormAsInteger as usize];
+    let route = wcontainers_gpu::slow::SLOW_PATH_REASONS
+        [wcontainers_gpu::slow::SlowPath::NormAsInteger as usize];
     let no16 = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
     for (label, off) in [("untiered", untiered(&[])), ("no16", no16.to_string())] {
         let errors = case_env("norm_targets", label, &[(FEATURES_OFF, &off)]);
@@ -1110,8 +1110,8 @@ fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
         .as_str()
         .unwrap();
     let errors = case_env("typed", "untiered", &[(FEATURES_OFF, tier1)]);
-    let route = wcontainers_gpu::SLOW_PATH_REASONS
-        [wcontainers_gpu::SlowPath::StorageFormatThroughBuffer as usize];
+    let route = wcontainers_gpu::slow::SLOW_PATH_REASONS
+        [wcontainers_gpu::slow::SlowPath::StorageFormatThroughBuffer as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -1129,8 +1129,8 @@ fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d
     .map(|f| f.as_str().unwrap())
     .join(" ");
     let errors = case_env("typed", "untiered16", &[(FEATURES_OFF, &off)]);
-    let route =
-        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::NormAsInteger as usize];
+    let route = wcontainers_gpu::slow::SLOW_PATH_REASONS
+        [wcontainers_gpu::slow::SlowPath::NormAsInteger as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -1163,8 +1163,8 @@ fn copies_and_float_resolves_of_multisampled_textures_without_texture_formats_ti
     let off = untiered(&[]);
     let env = [(FEATURES_OFF, off.as_str())];
     let errors = case_args(&["msaa_copy", UNTIERED_LEVEL], "ours-untiered", &env);
-    let route =
-        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::ResolveByDraw as usize];
+    let route = wcontainers_gpu::slow::SLOW_PATH_REASONS
+        [wcontainers_gpu::slow::SlowPath::ResolveByDraw as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -1200,8 +1200,8 @@ fn depth_only_draws_clamped_and_clipped_as_direct3d_does() {
 fn depth_only_draws_clamped_in_the_program_as_direct3d_does() {
     let clamp = wgpu::Features::DEPTH_CLIP_CONTROL.as_str().unwrap();
     let errors = case_env("unshaded", "unclamped", &[(FEATURES_OFF, clamp)]);
-    let route =
-        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::DepthClampInShader as usize];
+    let route = wcontainers_gpu::slow::SLOW_PATH_REASONS
+        [wcontainers_gpu::slow::SlowPath::DepthClampInShader as usize];
     assert!(errors.contains(route), "{errors}");
 }
 

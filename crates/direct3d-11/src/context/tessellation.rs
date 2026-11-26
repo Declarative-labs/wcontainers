@@ -4,7 +4,7 @@
 //! the pixel program, reading the patches and points from its helper set.
 
 use super::*;
-use wcontainers_gpu::{DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING};
+use wcontainers_gpu::{reflect::DOMAIN_PATCHES_BINDING, reflect::DOMAIN_POINTS_BINDING};
 use wcontainers_shaders::Converted;
 use wcontainers_shaders::stage::{
     FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages,

@@ -32,7 +32,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, resource::*, shader::*, slow::*, state::*, *,
+};
 
 /// Ids name objects in the state the back end last applied; they are never reused.
 type Id = u64;
@@ -495,7 +497,7 @@ impl Gl {
             extensions,
             renderer,
             caps,
-            slow: wcontainers_gpu::NO_SLOW_PATHS,
+            slow: wcontainers_gpu::slow::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost: None,
             next_id: 1,
@@ -5490,7 +5492,7 @@ impl Gpu for Gl {
                 && texture.host.is_none()
                 && self.caps.formats.uses[values as usize].contains(native)
         }) else {
-            return generate_mips_by_draws(self, texture, desc, values, mips, layers);
+            return Helpers::generate_mips_by_draws(self, texture, desc, values, mips, layers);
         };
         if levels.is_empty() {
             return Ok(());

@@ -15,10 +15,12 @@ mod draw;
 
 use libtest_mimic::{Completion, Failed, Trial};
 use wcontainers_gpu::{
-    AspectOps, BufferUsage, ColorAttachment, CompareFn, DepthAttachment, DepthStencilDesc,
-    DeviceStatus, DrawCall, DrawRange, Extent, Features, Format, Gpu, LoadOp, Origin, PassDesc,
-    RasterDesc, ReadSource, StepMode, StoreOp, TextureRegion, TextureUsage, Topology,
-    VertexBinding, VertexFormat, Viewport,
+    Gpu, caps::Features, draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment,
+    draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc, draw::StoreOp,
+    draw::VertexBinding, draw::Viewport, error::DeviceStatus, format::Format,
+    resource::BufferUsage, resource::CompareFn, resource::Extent, resource::Origin,
+    resource::ReadSource, resource::TextureRegion, resource::TextureUsage, state::DepthStencilDesc,
+    state::RasterDesc, state::StepMode, state::Topology, state::VertexFormat,
 };
 use wcontainers_gpu_webgpu::{Depth24, WebGpu};
 

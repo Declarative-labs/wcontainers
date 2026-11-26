@@ -28,9 +28,11 @@ use naga::{
     Literal, Module, Range, Scalar, ScalarKind, Span, Statement, StructMember, Type, TypeInner,
 };
 use wcontainers_gpu::{
-    DrawBaseSource, HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding,
-    Reflection, SLOT_KINDS, ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage,
-    StageExtras, StageValue, SystemValue, VariantKey, helper_binding,
+    reflect::DrawBaseSource, reflect::HELPER_SET, reflect::HelperSlot, reflect::HelperValue,
+    reflect::Interpolation, reflect::ReflectedBinding, reflect::Reflection, reflect::SLOT_KINDS,
+    reflect::ScalarKind as ValueKind, reflect::SlotKind, reflect::SourceStage,
+    reflect::StageExtras, reflect::StageValue, reflect::SystemValue, reflect::VariantKey,
+    shader::ShaderStage,
 };
 
 /// The reason the carried patch of dxil-spirv's reader logs for a type of LLVM outside DXIL
@@ -290,7 +292,7 @@ pub(crate) fn lower(
     if atomic_signedness_differs(&spirv) {
         reflection
             .slow_paths
-            .push(wcontainers_gpu::SlowPath::AtomicExchangeLoop);
+            .push(wcontainers_gpu::slow::SlowPath::AtomicExchangeLoop);
     }
     let ep = &module.entry_points[0].function;
     let inputs = signature(dxil, &container::ISG1);
@@ -529,7 +531,7 @@ fn unconverted(module: &Module, variant: &VariantKey) -> Result<(), ConvertError
     let culls = ep.stage == naga::ShaderStage::Fragment
         && variant
             .flags
-            .contains(wcontainers_gpu::VariantFlags::CULL_DISTANCE_LINKED);
+            .contains(wcontainers_gpu::reflect::VariantFlags::CULL_DISTANCE_LINKED);
     if ep.stage != naga::ShaderStage::Vertex
         && !culls
         && builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance)
@@ -538,7 +540,7 @@ fn unconverted(module: &Module, variant: &VariantKey) -> Result<(), ConvertError
     }
     let linked = variant
         .flags
-        .contains(wcontainers_gpu::VariantFlags::CLIP_DISTANCE)
+        .contains(wcontainers_gpu::reflect::VariantFlags::CLIP_DISTANCE)
         && variant.linked.clip_distances > 0;
     if ep.stage == naga::ShaderStage::Fragment
         && !linked
@@ -1492,7 +1494,7 @@ fn helper_block(module: &mut Module, reflection: &mut Reflection) -> Handle<Glob
             space: AddressSpace::Uniform,
             binding: Some(naga::ResourceBinding {
                 group: HELPER_SET,
-                binding: helper_binding(ShaderStage::Vertex),
+                binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
             }),
             ty,
             init: None,

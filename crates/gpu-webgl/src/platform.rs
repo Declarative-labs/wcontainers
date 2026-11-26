@@ -3,7 +3,7 @@
 
 use glow::HasContext;
 use std::collections::BTreeSet;
-use wcontainers_gpu::LossReason;
+use wcontainers_gpu::error::LossReason;
 
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
 const EXTENSIONS: &[(&str, &str)] = &[

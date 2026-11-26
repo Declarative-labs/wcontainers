@@ -1,7 +1,7 @@
 //! The vertices a draw makes, in the list order `capture_vertices` writes them, for draws GLES 3.0's
 //! transform feedback cannot take (strips, fans, loops and indexed draws).
 
-use wcontainers_gpu::{ProvokingVertex, Topology};
+use wcontainers_gpu::{state::ProvokingVertex, state::Topology};
 
 /// Each primitive's vertices as the list it draws, from the draw's vertex numbers in order (`None`
 /// restarts the strip, fan or loop and drops an unfinished primitive). Odd strip triangles and fan

@@ -11,9 +11,11 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, FORMAT_FACTS, Filter,
-    Format, HelperValue, LinkedValues, ProvokingVertex, TargetInShader, TexelBufferRoute,
-    VariantFlags, VariantKey, VertexFormat,
+    format::FORMAT_FACTS, format::Format, reflect::DrawBaseSource, reflect::HelperValue,
+    reflect::LinkedValues, reflect::TargetInShader, reflect::TexelBufferRoute,
+    reflect::VariantFlags, reflect::VariantKey, resource::AddressMode, resource::Filter,
+    state::BlendComponent, state::BlendFactor, state::BlendOp, state::ProvokingVertex,
+    state::VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -123,14 +125,14 @@ fn clip_distances(draw: &Draw<'_>) -> u8 {
     vs.reflection
         .outputs
         .iter()
-        .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+        .filter(|v| v.system == Some(wcontainers_gpu::reflect::SystemValue::ClipDistance))
         .map(|v| v.mask.count_ones())
         .sum::<u32>() as u8
 }
 
 /// Direct3D 11's form of a target's blend.
 fn direct3d_11_blend(
-    target: &wcontainers_gpu::RenderTargetBlend,
+    target: &wcontainers_gpu::state::RenderTargetBlend,
 ) -> D3D11_RENDER_TARGET_BLEND_DESC {
     let factor = |f: BlendFactor| match f {
         BlendFactor::Zero => D3D11_BLEND_ZERO,
@@ -314,7 +316,7 @@ fn variants_draw_as_the_native_feature_does() {
         {
             use BlendFactor as F;
             use BlendOp as O;
-            use wcontainers_gpu::ColorWrites as W;
+            use wcontainers_gpu::state::ColorWrites as W;
             let half = |src, dst, op| BlendComponent { src, dst, op };
             let blends = [
                 (
@@ -348,7 +350,7 @@ fn variants_draw_as_the_native_feature_does() {
             ] {
                 let stored = FORMAT_FACTS[format as usize].integer_twin.unwrap();
                 let signed =
-                    FORMAT_FACTS[stored as usize].kind == wcontainers_gpu::FormatKind::Sint;
+                    FORMAT_FACTS[stored as usize].kind == wcontainers_gpu::format::FormatKind::Sint;
                 let channels = FORMAT_FACTS[stored as usize].components.count_ones();
                 let width = FORMAT_FACTS[stored as usize].block.2 / channels;
                 let largest = (1u64 << (u8::BITS * width - u32::from(signed))) - 1;
@@ -365,7 +367,7 @@ fn variants_draw_as_the_native_feature_does() {
                     .collect();
                 let copy = texel.repeat((SIZE * SIZE) as usize);
                 for (n, (color, alpha, writes)) in blends.into_iter().enumerate() {
-                    let target = wcontainers_gpu::RenderTargetBlend {
+                    let target = wcontainers_gpu::state::RenderTargetBlend {
                         blend: Some((color, alpha)),
                         writes,
                     };
@@ -393,7 +395,8 @@ fn variants_draw_as_the_native_feature_does() {
                         format,
                         combine: true,
                     }];
-                    let value = wcontainers_gpu::TargetCombineValue::new(&target, None, constant);
+                    let value =
+                        wcontainers_gpu::reflect::TargetCombineValue::new(&target, None, constant);
                     variant.setup.helpers[1] = helper_block(
                         variant.ps,
                         &variant.setup.ps_key,
@@ -416,7 +419,7 @@ fn variants_draw_as_the_native_feature_does() {
         // ps_component's integer output (which no provoking vertex decides) against old values read
         // from a copy, against Direct3D 11.1's logic operations, both back ends, with a write mask.
         {
-            use wcontainers_gpu::LogicOp as L;
+            use wcontainers_gpu::state::LogicOp as L;
             let code = [code[0].clone(), bytecode(&format!("ps_component.{route}"))];
             let operations = [
                 (L::Clear, D3D11_LOGIC_OP_CLEAR),
@@ -439,9 +442,9 @@ fn variants_draw_as_the_native_feature_does() {
             // Old values exact as the floats a clear of an integer target takes.
             let old: [u32; 4] = [0x00f0f1, 0x00ff00, 0x13579b, 0x800001];
             let format = Format::Rgba32Uint;
-            let writes = wcontainers_gpu::ColorWrites::R
-                | wcontainers_gpu::ColorWrites::B
-                | wcontainers_gpu::ColorWrites::A;
+            let writes = wcontainers_gpu::state::ColorWrites::R
+                | wcontainers_gpu::state::ColorWrites::B
+                | wcontainers_gpu::state::ColorWrites::A;
             let copy: Vec<u8> = old
                 .iter()
                 .flat_map(|w| w.to_le_bytes())
@@ -473,12 +476,15 @@ fn variants_draw_as_the_native_feature_does() {
                     format,
                     combine: true,
                 }];
-                let target = wcontainers_gpu::RenderTargetBlend {
+                let target = wcontainers_gpu::state::RenderTargetBlend {
                     blend: None,
                     writes,
                 };
-                let value =
-                    wcontainers_gpu::TargetCombineValue::new(&target, Some(operation), [0.0; 4]);
+                let value = wcontainers_gpu::reflect::TargetCombineValue::new(
+                    &target,
+                    Some(operation),
+                    [0.0; 4],
+                );
                 variant.setup.helpers[1] = helper_block(
                     variant.ps,
                     &variant.setup.ps_key,
@@ -571,7 +577,7 @@ fn variants_draw_as_the_native_feature_does() {
         // A view's component mapping: the plain program reading texels uploaded already mapped, as a
         // view with the mapping reads them, and the variant applying it to the texels as they are.
         {
-            use wcontainers_gpu::ViewComponent as C;
+            use wcontainers_gpu::reflect::ViewComponent as C;
             let map = [C::B, C::One, C::Zero, C::R];
             let mut native = plain.clone();
             native.setup.texel_map = Some(map);

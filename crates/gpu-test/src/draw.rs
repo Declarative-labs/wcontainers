@@ -10,7 +10,7 @@ use crate::recorder::{
 use crate::texel;
 use naga::{Binding, BuiltIn, Interpolation, ScalarKind, TypeInner};
 use std::cell::RefCell;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{caps::*, draw::*, format::*, resource::*, shader::*, state::*, *};
 
 /// One value a vertex passes on.
 #[derive(Clone, Debug)]

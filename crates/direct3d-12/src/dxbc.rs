@@ -5,7 +5,7 @@
 //! declarations, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 
 use std::ops::Range;
-use wcontainers_gpu::SlotKind;
+use wcontainers_gpu::reflect::SlotKind;
 use wcontainers_shaders::container::{
     self, Instruction, Tag, dxbc_dimension, dxbc_op, dxbc_sampled, token,
 };

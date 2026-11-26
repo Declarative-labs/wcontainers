@@ -16,8 +16,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wcontainers_gpu::{
-    DrawBaseSource, Format, SLOT_KINDS, ShaderModule, SlotKind, SystemValue, TexelBufferRoute,
-    VariantFlags, VariantKey, VertexFormat,
+    format::Format, reflect::DrawBaseSource, reflect::SLOT_KINDS, reflect::SlotKind,
+    reflect::SystemValue, reflect::TexelBufferRoute, reflect::VariantFlags, reflect::VariantKey,
+    shader::ShaderModule, state::VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, cache, capabilities, convert, stage};
 
@@ -276,7 +277,7 @@ const GLSLANG_TERMINATED: &str = "compilation terminated";
 #[cfg(not(target_arch = "wasm32"))]
 fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
     use wcontainers_gpu_webgl::glsl;
-    if m.stage == wcontainers_gpu::ShaderStage::Compute {
+    if m.stage == wcontainers_gpu::shader::ShaderStage::Compute {
         return "absent compute".into();
     }
     let needs = glsl::needs(m);
@@ -317,7 +318,7 @@ fn glsl_verdict(m: &ShaderModule, name: &str, out: Option<&Path>) -> String {
     let (Some(out), Ok(glslang)) = (out, std::env::var("GLSLANG")) else {
         return format!("{needed}{WRITTEN}");
     };
-    let ext = if m.stage == wcontainers_gpu::ShaderStage::Vertex {
+    let ext = if m.stage == wcontainers_gpu::shader::ShaderStage::Vertex {
         "vert"
     } else {
         "frag"
@@ -387,7 +388,7 @@ const EXTENSION_REQUIRED: &str = " : require";
 #[cfg(not(target_arch = "wasm32"))]
 fn naga_refusal(m: &ShaderModule) -> String {
     use naga::back::glsl;
-    let shader_stage = if m.stage == wcontainers_gpu::ShaderStage::Vertex {
+    let shader_stage = if m.stage == wcontainers_gpu::shader::ShaderStage::Vertex {
         naga::ShaderStage::Vertex
     } else {
         naga::ShaderStage::Fragment
@@ -586,7 +587,7 @@ const UNSUPPORTED: &str = "unsupported ";
 
 /// A vertex program writing cull distances (a geometry shader's compute form culls by its own).
 fn writes_cull_distances(converted: &Converted) -> bool {
-    converted.modules[0].stage == wcontainers_gpu::ShaderStage::Vertex
+    converted.modules[0].stage == wcontainers_gpu::shader::ShaderStage::Vertex
         && converted
             .reflection
             .outputs
@@ -597,13 +598,13 @@ fn writes_cull_distances(converted: &Converted) -> bool {
 fn is_domain(converted: &Converted) -> bool {
     matches!(
         converted.reflection.extras,
-        wcontainers_gpu::StageExtras::Domain { .. }
+        wcontainers_gpu::reflect::StageExtras::Domain { .. }
     )
 }
 
 /// Every vertex input pulled, in the format its reflection gives.
 fn pulled_inputs(converted: &Converted) -> Vec<(u32, VertexFormat)> {
-    use wcontainers_gpu::ScalarKind as K;
+    use wcontainers_gpu::reflect::ScalarKind as K;
     converted
         .reflection
         .inputs
@@ -862,15 +863,15 @@ fn dxil_reflection_matches_dxbc() {
     type Key = (
         String,
         u32,
-        Option<wcontainers_gpu::SystemValue>,
+        Option<wcontainers_gpu::reflect::SystemValue>,
         Option<u32>,
-        wcontainers_gpu::ScalarKind,
-        wcontainers_gpu::Interpolation,
+        wcontainers_gpu::reflect::ScalarKind,
+        wcontainers_gpu::reflect::Interpolation,
     );
-    let key = |v: &wcontainers_gpu::StageValue| -> Key {
+    let key = |v: &wcontainers_gpu::reflect::StageValue| -> Key {
         let located = matches!(
             v.system,
-            None | Some(wcontainers_gpu::SystemValue::Target(_))
+            None | Some(wcontainers_gpu::reflect::SystemValue::Target(_))
         );
         (
             v.semantic.clone(),
@@ -881,7 +882,7 @@ fn dxil_reflection_matches_dxbc() {
             v.interpolation,
         )
     };
-    let keys = |values: &[wcontainers_gpu::StageValue]| {
+    let keys = |values: &[wcontainers_gpu::reflect::StageValue]| {
         let mut k: Vec<_> = values.iter().map(key).collect();
         k.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
         k
@@ -962,7 +963,7 @@ fn dxil_values_between_stages_take_whole_registers() {
         let all = locations.len();
         locations.dedup();
         assert_eq!(all, locations.len(), "{name}");
-        let values = |r: &wcontainers_gpu::Reflection| {
+        let values = |r: &wcontainers_gpu::reflect::Reflection| {
             let mut v: Vec<_> = r
                 .inputs
                 .iter()
@@ -1020,14 +1021,14 @@ fn dxil_draw_bases_from_the_helpers() {
         .join("../graphics-test/shaders/dxil/common.vs_full.dxil");
     let bytes = std::fs::read(path).unwrap();
     let variant = VariantKey {
-        draw_base: wcontainers_gpu::DrawBaseSource::Helpers,
+        draw_base: wcontainers_gpu::reflect::DrawBaseSource::Helpers,
         ..VariantKey::default()
     };
     let with = convert(Source::Dxil(&bytes), &variant, None).unwrap();
     assert_eq!(with.reflection.helper_size, 16);
     assert_eq!(
         with.reflection.helpers[0].value,
-        wcontainers_gpu::HelperValue::DrawBase
+        wcontainers_gpu::reflect::HelperValue::DrawBase
     );
     let m = &with.modules[0];
     let wgsl =
@@ -1065,7 +1066,7 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
         ) else {
             continue;
         };
-        let bindings = |r: &wcontainers_gpu::Reflection| {
+        let bindings = |r: &wcontainers_gpu::reflect::Reflection| {
             let mut v: Vec<_> = r
                 .bindings
                 .iter()
@@ -1097,7 +1098,7 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
                 "{name}"
             );
         }
-        let register = |r: &wcontainers_gpu::Reflection, kind: SlotKind, slot: u32| {
+        let register = |r: &wcontainers_gpu::reflect::Reflection, kind: SlotKind, slot: u32| {
             r.bindings
                 .iter()
                 .find(|d| {
@@ -1106,7 +1107,7 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
                 })
                 .map(|d| d.register)
         };
-        let pairs = |r: &wcontainers_gpu::Reflection| -> Vec<_> {
+        let pairs = |r: &wcontainers_gpu::reflect::Reflection| -> Vec<_> {
             r.sampled_pairs
                 .iter()
                 .map(|&(t, s)| {

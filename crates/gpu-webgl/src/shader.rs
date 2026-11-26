@@ -3,7 +3,7 @@
 use glow::HasContext;
 use naga::back::glsl;
 use std::rc::Rc;
-use wcontainers_gpu::{Features, GpuError, ShaderModule, ShaderStage};
+use wcontainers_gpu::{caps::Features, error::GpuError, shader::ShaderModule, shader::ShaderStage};
 
 /// A (set, binding) pair: where a program reads a resource.
 pub type Slot = (u32, u32);

@@ -1,9 +1,9 @@
 //! Depth and stencil read back by drawing them into a colour texture
-//! ([`wcontainers_gpu::SlowPath::DepthReadByDraw`]): WebGL 2's `readPixels` reads neither, so a
+//! ([`wcontainers_gpu::slow::SlowPath::DepthReadByDraw`]): WebGL 2's `readPixels` reads neither, so a
 //! full-screen triangle fetches each texel and writes its stored value into an `r32uint` texture,
 //! which reads back like any colour texture. Stencil is fetched as unsigned integers with
 //! WEBGL_stencil_texturing; without it, eight draws count its bits into an `r8unorm` texture first
-//! ([`wcontainers_gpu::SlowPath::StencilCopiedByDraw`]), which the same fetch reads with a scale of 255.
+//! ([`wcontainers_gpu::slow::SlowPath::StencilCopiedByDraw`]), which the same fetch reads with a scale of 255.
 
 use glow::HasContext;
 
@@ -225,8 +225,8 @@ fn link_with(gl: &glow::Context, vertex: &str, fragment: &str) -> Result<glow::P
 
 /// What the stored depth of `format` is read as: the scale of [`DepthRead::scale`] and the bytes each
 /// texel keeps (Direct3D's: 16-bit unorm, 24-bit unorm in the low bits of a 32-bit word, 32-bit float).
-pub fn stored(format: wcontainers_gpu::Format) -> Option<(u32, usize)> {
-    use wcontainers_gpu::Format as F;
+pub fn stored(format: wcontainers_gpu::format::Format) -> Option<(u32, usize)> {
+    use wcontainers_gpu::format::Format as F;
     match format {
         F::Depth16Unorm => Some((65535, 2)),
         F::Depth24Plus | F::Depth24PlusStencil8 => Some((16_777_215, 4)),

@@ -10,7 +10,7 @@ const PROGRAM: &[u8] = include_bytes!("../tests/own/cs_atomics.dxbc");
 
 /// Converts `PROGRAM` with the default variant; fails when it did not convert.
 fn main() -> ExitCode {
-    let variant = wcontainers_gpu::VariantKey::default();
+    let variant = wcontainers_gpu::reflect::VariantKey::default();
     match wcontainers_shaders::convert(wcontainers_shaders::Source::Dxbc(PROGRAM), &variant, None) {
         Ok(_) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,

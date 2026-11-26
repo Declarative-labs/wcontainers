@@ -11,8 +11,9 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups, Gpu,
-    Program, ReadSource, SlotKind, StageSet, VariantKey,
+    Gpu, draw::DispatchCall, draw::DispatchGroups, reflect::SlotKind, reflect::VariantKey,
+    resource::BindingEntry, resource::BindingResource, resource::BufferRange,
+    resource::BufferUsage, resource::ReadSource, shader::Program, shader::StageSet,
 };
 use wcontainers_graphics_test::{Driver, d3d12};
 use wcontainers_shaders::{Source, convert};
@@ -187,7 +188,7 @@ fn ours<B: Gpu>(b: &mut B, shader: &Shader, source: Source, constants: &Constant
         &mut out,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     words(&out)
 }
 

@@ -9,7 +9,7 @@ use wcontainers_directx_graphics_infrastructure::{
     COLOR_SPACE_SRGB, DisplayMode, Model, OutputDesc, SwapChainDesc, SwapChainError, presents_in,
     sdr,
 };
-use wcontainers_gpu::{Gpu, SlowPath, TextureUsage};
+use wcontainers_gpu::{Gpu, resource::TextureUsage, slow::SlowPath};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -507,7 +507,7 @@ impl SwapChain {
         match result {
             Ok(()) => S_OK,
             Err(None) => DXGI_ERROR_WAS_STILL_DRAWING,
-            Err(Some(SwapChainError::Gpu(wcontainers_gpu::GpuError::DeviceLost))) => {
+            Err(Some(SwapChainError::Gpu(wcontainers_gpu::error::GpuError::DeviceLost))) => {
                 DXGI_ERROR_DEVICE_REMOVED
             }
             Err(Some(e)) => chain_error(e).code(),

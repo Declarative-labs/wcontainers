@@ -2,10 +2,12 @@
 //! made from it.
 
 use wcontainers_gpu::{
-    AddressMode, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor, Caps, ColorWrites,
-    CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace, LogicOp,
-    MAX_COLOR_TARGETS, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc, StencilFace,
-    StencilOp, Topology, VertexFormat,
+    MAX_COLOR_TARGETS, caps::Caps, caps::Features, resource::AddressMode, resource::BorderColor,
+    resource::CompareFn, resource::Filter, resource::SamplerDesc, state::BlendComponent,
+    state::BlendDesc, state::BlendFactor, state::BlendOp, state::ColorWrites, state::CullMode,
+    state::DepthStencilDesc, state::FillMode, state::FrontFace, state::LogicOp,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::StencilFace,
+    state::StencilOp, state::Topology, state::VertexFormat,
 };
 
 use wcontainers_directx_graphics_infrastructure::{d3d, dxgi_vertex_format};

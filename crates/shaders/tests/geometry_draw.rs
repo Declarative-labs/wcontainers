@@ -11,13 +11,17 @@ mod forms;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddedBinding, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
-    ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource, DrawCall, DrawRange,
-    Extent, FillMode, Format, FrontFace, Gpu as Backend, HelperValue, IndexBinding, IndexFormat,
-    Interpolation, LinkedValues, Origin, PassDesc, Program, ProvokingVertex, RasterDesc,
-    ReadSource, RenderTargetBlend, ShaderModule, ShaderStage, SlotKind, StageSet, StepMode,
-    StoreOp, SystemValue, TextureRegion, TextureUsage, VariantFlags, VariantKey, VertexAttribute,
-    VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, Viewport, helper_binding,
+    Gpu as Backend, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::IndexBinding,
+    draw::PassDesc, draw::StoreOp, draw::VertexBinding, draw::Viewport, format::Format,
+    reflect::AddedBinding, reflect::DrawBaseSource, reflect::HelperValue, reflect::Interpolation,
+    reflect::LinkedValues, reflect::SlotKind, reflect::SystemValue, reflect::VariantFlags,
+    reflect::VariantKey, resource::BindingEntry, resource::BindingResource, resource::BufferRange,
+    resource::BufferUsage, resource::Extent, resource::Origin, resource::ReadSource,
+    resource::TextureRegion, resource::TextureUsage, shader::Program, shader::ShaderModule,
+    shader::ShaderStage, shader::StageSet, state::BlendDesc, state::ColorWrites, state::CullMode,
+    state::DepthStencilDesc, state::FillMode, state::FrontFace, state::IndexFormat,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::StepMode,
+    state::VertexAttribute, state::VertexFormat, state::VertexLayoutDesc, state::VertexStream,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_graphics_test::d3d12;
@@ -1332,7 +1336,7 @@ fn ours_made<B: Backend>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let vertex_helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -1445,7 +1449,7 @@ fn ours_made<B: Backend>(
             .chunks(4)
             .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
             .collect();
-        assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+        assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
         return Made::Streamed(streamed, words);
     }
     let last = last.expect("primitives");
@@ -1491,7 +1495,7 @@ fn picture<B: Backend>(
         .unwrap();
     let depth_stencil = b
         .create_depth_stencil(&DepthStencilDesc {
-            depth_compare: clamped.map(|_| wcontainers_gpu::CompareFn::Always),
+            depth_compare: clamped.map(|_| wcontainers_gpu::resource::CompareFn::Always),
             depth_write: clamped.is_some(),
             stencil: None,
             stencil_read_mask: [0xff; 2],
@@ -1543,7 +1547,7 @@ fn picture<B: Backend>(
     let helper_buffer = (!helpers.is_empty()).then(|| buffer(b, &helpers, BufferUsage::UNIFORM));
     let helper_set = helper_buffer.as_ref().map(|helper_buffer| {
         b.create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Fragment),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Fragment),
             stages: StageSet::FRAGMENT,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: helper_buffer,
@@ -1557,10 +1561,10 @@ fn picture<B: Backend>(
         colors: Default::default(),
         depth: depth
             .as_ref()
-            .map(|(_, view)| wcontainers_gpu::DepthAttachment {
+            .map(|(_, view)| wcontainers_gpu::draw::DepthAttachment {
                 view,
-                depth: Some(wcontainers_gpu::AspectOps {
-                    load: wcontainers_gpu::LoadOp::Clear(1.0f32.to_bits()),
+                depth: Some(wcontainers_gpu::draw::AspectOps {
+                    load: wcontainers_gpu::draw::LoadOp::Clear(1.0f32.to_bits()),
                     store: StoreOp::Store,
                     read_only: false,
                 }),
@@ -1573,7 +1577,7 @@ fn picture<B: Backend>(
         view: &target_view,
         depth_slice: 0,
         resolve: None,
-        load: wcontainers_gpu::LoadOp::Clear(CLEAR.map(f32::to_bits)),
+        load: wcontainers_gpu::draw::LoadOp::Clear(CLEAR.map(f32::to_bits)),
         store: StoreOp::Store,
     });
     b.begin_pass(&pass);
@@ -1645,7 +1649,7 @@ fn picture<B: Backend>(
         &mut out,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     out
 }
 
@@ -1717,7 +1721,7 @@ fn ours_replayed<B: Backend>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let vertex_helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Vertex),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
             stages: StageSet::VERTEX,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -3759,8 +3763,8 @@ const GS_LAYERS_NAMED: u32 = 4;
 /// `route` names the build of `ps_layer` ours draws (Direct3D 11 draws fxc's).
 fn layered_geometry(layers: u32, route: Route) {
     use wcontainers_gpu::{
-        DeviceStatus, LoadOp, TextureDesc, TextureDimension, TextureViewDesc, VariantFlags,
-        ViewDimension,
+        draw::LoadOp, error::DeviceStatus, reflect::VariantFlags, resource::TextureDesc,
+        resource::TextureDimension, resource::TextureViewDesc, resource::ViewDimension,
     };
     let viewports = [
         [0.0f32, 0.0, SIZE as f32, SIZE as f32],
@@ -3975,7 +3979,9 @@ fn layered_geometry(layers: u32, route: Route) {
             let set = b
                 .create_binding_set(&[
                     BindingEntry {
-                        binding: helper_binding(ShaderStage::Vertex),
+                        binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                            ShaderStage::Vertex,
+                        ),
                         stages: StageSet::VERTEX,
                         resource: BindingResource::UniformBuffer(BufferRange {
                             buffer: &run_buffer,
@@ -3984,7 +3990,9 @@ fn layered_geometry(layers: u32, route: Route) {
                         }),
                     },
                     BindingEntry {
-                        binding: helper_binding(ShaderStage::Fragment),
+                        binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                            ShaderStage::Fragment,
+                        ),
                         stages: StageSet::FRAGMENT,
                         resource: BindingResource::UniformBuffer(BufferRange {
                             buffer: &pixel_buffer,

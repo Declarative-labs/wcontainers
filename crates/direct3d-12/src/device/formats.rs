@@ -17,7 +17,9 @@ use super::*;
 use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
 use std::ops::Range;
-use wcontainers_gpu::{Filter, SLOT_KINDS, SlotKind, ViewComponent};
+use wcontainers_gpu::{
+    reflect::SLOT_KINDS, reflect::SlotKind, reflect::ViewComponent, resource::Filter,
+};
 use wcontainers_shaders::container::DxilViews;
 
 /// A typed view's slot: a storage slot (else a texture slot) and its place in its kind's range

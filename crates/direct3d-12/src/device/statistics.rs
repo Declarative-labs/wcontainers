@@ -11,9 +11,10 @@
 //! statistics are the stage helper's counts of primitives written and needed, read back.
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BlendDesc, BufferRange, COUNTER_BINDING, ColorWrites,
-    DepthStencilDesc, HELPER_SET, INDEX_FORMATS, Reflection, RenderTargetBlend, StageExtras,
-    SystemValue,
+    reflect::COUNTER_BINDING, reflect::HELPER_SET, reflect::Reflection, reflect::StageExtras,
+    reflect::SystemValue, resource::BindingEntry, resource::BindingResource, resource::BufferRange,
+    state::BlendDesc, state::ColorWrites, state::DepthStencilDesc, state::INDEX_FORMATS,
+    state::RenderTargetBlend,
 };
 
 use super::*;

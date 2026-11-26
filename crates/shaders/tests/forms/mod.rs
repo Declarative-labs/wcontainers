@@ -7,8 +7,8 @@
 use naga::{Function, GlobalVariable, Handle, Module};
 use std::path::Path;
 use wcontainers_gpu::{
-    ReflectedBinding, Reflection, SLOT_KINDS, SlotKind, SourceStage, StageExtras, StageValue,
-    VariantKey,
+    reflect::ReflectedBinding, reflect::Reflection, reflect::SLOT_KINDS, reflect::SlotKind,
+    reflect::SourceStage, reflect::StageExtras, reflect::StageValue, reflect::VariantKey,
 };
 use wcontainers_shaders::staged::{
     self, BuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram, HullProgram,

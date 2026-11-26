@@ -1,21 +1,14 @@
-//! The occlusion counter (plan 4.12): exact sample counts for the APIs that ask for them, on back ends
-//! whose queries answer only "any" ([`SlowPath::OcclusionCountReplay`]). The query's draws run
-//! normally and are kept; before anything changes what they read or drew on, and at the query's end,
-//! they are drawn again into a counting target cleared to zero, each with its own depth-stencil and
-//! raster blocks, blending One plus One and a counting program from the front (the draw's fragment
-//! shader writing 1.0 at location 0, its storage writes removed), so each sample holds how many
-//! fragments passed every test there. The targets' sums add up to the count: summed on the GPU into
-//! a buffer of the counter's where the back end computes and no pixel can reach the counting format's
-//! exact bound, otherwise read back and summed here.
+//! Methods of the types [`crate::occlusion`] declares.
 
+use crate::Gpu;
 use crate::MAX_BINDING_SETS;
-use crate::backend::Gpu;
 use crate::draw::{
     AspectOps, ColorAttachment, DepthAttachment, DrawCall, DrawRange, IndexBinding, LoadOp,
-    PassDesc, ScissorRect, StoreOp, VertexBinding, Viewport,
+    PassDesc, StoreOp, VertexBinding,
 };
 use crate::error::GpuError;
 use crate::format::Format;
+use crate::occlusion::*;
 use crate::passes::{PassTargets, PassTracker};
 use crate::resource::{
     BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, Extent, MapIntent, Origin,
@@ -25,110 +18,52 @@ use crate::resource::{
 use crate::shader::{Program, ShaderModule, ShaderStage};
 use crate::slow::SlowPath;
 use crate::state::{
-    BlendComponent, BlendDesc, BlendFactor, BlendOp, ColorWrites, IndexFormat, RenderTargetBlend,
-    Topology,
+    BlendComponent, BlendDesc, BlendFactor, BlendOp, ColorWrites, RenderTargetBlend, Topology,
 };
-use crate::{DispatchCall, DispatchGroups, Object, StageSet};
-use crate::{Features, FormatUse, MAX_COLOR_TARGETS};
+use crate::{MAX_COLOR_TARGETS, caps::Features, caps::FormatUse};
+use crate::{Object, draw::DispatchCall, draw::DispatchGroups, shader::StageSet};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-/// What a kept draw covers.
-#[derive(Debug)]
-enum Range<B: Gpu> {
-    Vertices {
-        first: u32,
-        count: u32,
-        first_instance: u32,
-        instances: u32,
-    },
-    Indexed {
-        first: u32,
-        count: u32,
-        base_vertex: i32,
-        first_instance: u32,
-        instances: u32,
-    },
-    Indirect(B::Buffer, u64, bool),
-}
-
-/// One draw of a counted query, kept to be drawn again with its counting program.
-#[derive(Debug)]
-struct Kept<B: Gpu> {
-    program: B::Program,
-    alpha_to_coverage: bool,
-    depth_stencil: B::DepthStencil,
-    raster: B::Raster,
-    vertex_layout: B::VertexLayout,
-    bindings: [Option<B::BindingSet>; MAX_BINDING_SETS],
-    vertex_buffers: Vec<Option<(B::Buffer, u64)>>,
-    index: Option<(B::Buffer, u64, IndexFormat)>,
-    topology: Topology,
-    restart: bool,
-    viewports: Vec<Viewport>,
-    scissors: Vec<ScissorRect>,
-    stencil_reference: [u8; 2],
-    immediates: Vec<u8>,
-    range: Range<B>,
-    instances_step_by_one: bool,
-}
-
-/// What the occlusion counter needs of a counted draw that its call does not say; the front, which
-/// made the draw's blocks, knows it.
-#[derive(Debug)]
-pub struct CountedDraw<'a, B: Gpu> {
-    /// The draw's counting program.
-    pub counting: &'a B::Program,
-    /// The blend block's alpha to coverage.
-    pub alpha_to_coverage: bool,
-    /// The depth-stencil block writes depth or stencil. The first such draw since the last count
-    /// copies the depth-stencil target first, so the target must have [`TextureUsage::COPY_SRC`].
-    pub writes_depth_stencil: bool,
-    /// Every per-instance stream of the vertex layout steps by one instance
-    /// ([`crate::StepMode::Instance`] of 1), so the draw's instances can be counted in parts by
-    /// raising the first instance.
-    pub instances_step_by_one: bool,
-}
-
-impl<B: Gpu> Clone for Range<B> {
+impl<B: Gpu> Clone for KeptRange<B> {
     fn clone(&self) -> Self {
         match self {
-            Range::Vertices {
+            KeptRange::Vertices {
                 first,
                 count,
                 first_instance,
                 instances,
-            } => Range::Vertices {
+            } => KeptRange::Vertices {
                 first: *first,
                 count: *count,
                 first_instance: *first_instance,
                 instances: *instances,
             },
-            Range::Indexed {
+            KeptRange::Indexed {
                 first,
                 count,
                 base_vertex,
                 first_instance,
                 instances,
-            } => Range::Indexed {
+            } => KeptRange::Indexed {
                 first: *first,
                 count: *count,
                 base_vertex: *base_vertex,
                 first_instance: *first_instance,
                 instances: *instances,
             },
-            Range::Indirect(args, offset, indexed) => {
-                Range::Indirect(args.clone(), *offset, *indexed)
+            KeptRange::Indirect(args, offset, indexed) => {
+                KeptRange::Indirect(args.clone(), *offset, *indexed)
             }
         }
     }
 }
 
-impl<B: Gpu> Clone for Kept<B> {
+impl<B: Gpu> Clone for KeptDraw<B> {
     fn clone(&self) -> Self {
-        Kept {
+        KeptDraw {
             program: self.program.clone(),
             alpha_to_coverage: self.alpha_to_coverage,
             depth_stencil: self.depth_stencil.clone(),
@@ -149,53 +84,20 @@ impl<B: Gpu> Clone for Kept<B> {
     }
 }
 
-/// A pooled texture and its view, by size, format and sample count.
-#[derive(Debug)]
-struct Pooled<B: Gpu> {
-    key: (u32, u32, Format, u32),
-    texture: B::Texture,
-    view: B::TextureView,
-}
-
-#[derive(Debug)]
-pub struct OcclusionCounter<B: Gpu> {
-    /// The draws kept since the last count.
-    draws: Vec<Kept<B>>,
-    running: bool,
-    /// What the running query has counted so far.
-    sum: u64,
-    /// The targets the kept draws were drawn on, and the pass tracker's generation then.
-    segment: Option<(PassTargets<B>, u64)>,
-    /// The depth-stencil target as it was before the first kept draw that writes it; the count draws
-    /// on it in its place.
-    depth_copy: Option<Pooled<B>>,
-    copied: bool,
-    /// The copy as it was before a count that may have to be done again in halves.
-    saved: Option<Pooled<B>>,
-    targets: Vec<Pooled<B>>,
-    /// The One plus One blocks, without and with alpha to coverage.
-    blends: [Option<B::Blend>; 2],
-    /// The summing programs for single-sampled and multisampled counting targets, and the buffer
-    /// they add the running query's count to (a u64), made at the first sum on the GPU.
-    summing: [Option<B::Program>; 2],
-    sum_buffer: Option<B::Buffer>,
-    /// Some of the running query's count is in the sum buffer.
-    on_gpu: bool,
-}
-
 /// The summing program: adds every sample of a counting target into a u64 as two words, each
 /// workgroup's part first in workgroup memory. Each sample holds an exact integer below 2^24.
-fn summing_source(multisampled: bool) -> String {
-    let (ty, samples, at) = match multisampled {
-        true => (
-            "texture_multisampled_2d<f32>",
-            "textureNumSamples(counts)",
-            "s",
-        ),
-        false => ("texture_2d<f32>", "1u", "0"),
-    };
-    format!(
-        "@group(0) @binding(0) var counts: {ty};
+impl<B: Gpu> OcclusionCounter<B> {
+    fn summing_source(multisampled: bool) -> String {
+        let (ty, samples, at) = match multisampled {
+            true => (
+                "texture_multisampled_2d<f32>",
+                "textureNumSamples(counts)",
+                "s",
+            ),
+            false => ("texture_2d<f32>", "1u", "0"),
+        };
+        format!(
+            "@group(0) @binding(0) var counts: {ty};
 @group(0) @binding(1) var<storage, read_write> sum: array<atomic<u32>, 2>;
 var<workgroup> part: array<atomic<u32>, 2>;
 @compute @workgroup_size(16, 16)
@@ -219,7 +121,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_
         }}
     }}
 }}"
-    )
+        )
+    }
 }
 
 impl<B: Gpu> Default for OcclusionCounter<B> {
@@ -287,7 +190,7 @@ impl<B: Gpu> OcclusionCounter<B> {
         if counted.writes_depth_stencil && !self.copied {
             self.copy_depth(b, passes)?;
         }
-        self.draws.push(Kept {
+        self.draws.push(KeptDraw {
             program: counted.counting.clone(),
             alpha_to_coverage: counted.alpha_to_coverage,
             instances_step_by_one: counted.instances_step_by_one,
@@ -316,7 +219,7 @@ impl<B: Gpu> OcclusionCounter<B> {
                     count,
                     first_instance,
                     instances,
-                } => Range::Vertices {
+                } => KeptRange::Vertices {
                     first: *first,
                     count: *count,
                     first_instance: *first_instance,
@@ -328,7 +231,7 @@ impl<B: Gpu> OcclusionCounter<B> {
                     base_vertex,
                     first_instance,
                     instances,
-                } => Range::Indexed {
+                } => KeptRange::Indexed {
                     first: *first,
                     count: *count,
                     base_vertex: *base_vertex,
@@ -336,10 +239,10 @@ impl<B: Gpu> OcclusionCounter<B> {
                     instances: *instances,
                 },
                 DrawRange::Indirect { args, offset } => {
-                    Range::Indirect((*args).clone(), *offset, false)
+                    KeptRange::Indirect((*args).clone(), *offset, false)
                 }
                 DrawRange::IndexedIndirect { args, offset } => {
-                    Range::Indirect((*args).clone(), *offset, true)
+                    KeptRange::Indirect((*args).clone(), *offset, true)
                 }
             },
         });
@@ -431,7 +334,7 @@ impl<B: Gpu> OcclusionCounter<B> {
         let which = usize::from(multisampled);
         if self.summing[which].is_none() {
             let module = ShaderModule::from_wgsl(
-                &summing_source(multisampled),
+                &Self::summing_source(multisampled),
                 "main",
                 ShaderStage::Compute,
             )?;
@@ -499,7 +402,7 @@ impl<B: Gpu> OcclusionCounter<B> {
         let key = (d.width, d.height, d.format, d.samples);
         if self.depth_copy.as_ref().is_none_or(|c| c.key != key) {
             let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
-            self.depth_copy = Some(pooled(b, key, usage)?);
+            self.depth_copy = Some(Self::pooled(b, key, usage)?);
         }
         let copy = self
             .depth_copy
@@ -535,7 +438,7 @@ impl<B: Gpu> OcclusionCounter<B> {
         b: &mut B,
         targets: &PassTargets<B>,
         copied: bool,
-        draws: &[Kept<B>],
+        draws: &[KeptDraw<B>],
     ) -> Result<u64, GpuError> {
         let size = targets
             .depth
@@ -561,7 +464,8 @@ impl<B: Gpu> OcclusionCounter<B> {
             && caps.limits.compute_size[0] >= 16
             && caps.limits.compute_size[1] >= 16
             && (size.2 == 1 || caps.features.contains(Features::MULTISAMPLE_READ));
-        let on_gpu = compute && primitives(draws).saturating_mul(u64::from(size.2)) < bound as u64;
+        let on_gpu =
+            compute && Self::primitives(draws).saturating_mul(u64::from(size.2)) < bound as u64;
         let usage = match compute {
             true => TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::SAMPLE,
             false => TextureUsage::RENDER | TextureUsage::COPY_SRC,
@@ -569,7 +473,7 @@ impl<B: Gpu> OcclusionCounter<B> {
         let t = match self.targets.iter().position(|t| t.key == key) {
             Some(i) => i,
             None => {
-                self.targets.push(pooled(b, key, usage)?);
+                self.targets.push(Self::pooled(b, key, usage)?);
                 self.targets.len() - 1
             }
         };
@@ -580,7 +484,7 @@ impl<B: Gpu> OcclusionCounter<B> {
                 .any(|t| t.key == (key.0, key.1, format, 1))
         {
             self.targets
-                .push(pooled(b, (key.0, key.1, format, 1), usage)?);
+                .push(Self::pooled(b, (key.0, key.1, format, 1), usage)?);
         }
         for (i, slot) in self.blends.iter_mut().enumerate() {
             if slot.is_none() {
@@ -618,7 +522,7 @@ impl<B: Gpu> OcclusionCounter<B> {
         // is, to count the halves from.
         let saving = copied
             && targets.depth.is_some()
-            && primitives(draws).saturating_mul(u64::from(size.2)) >= bound as u64;
+            && Self::primitives(draws).saturating_mul(u64::from(size.2)) >= bound as u64;
         if saving {
             let copy = self
                 .depth_copy
@@ -626,16 +530,16 @@ impl<B: Gpu> OcclusionCounter<B> {
                 .ok_or(GpuError::Invalid("no depth copy"))?;
             if self.saved.as_ref().is_none_or(|s| s.key != copy.key) {
                 let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
-                self.saved = Some(pooled(b, copy.key, usage)?);
+                self.saved = Some(Self::pooled(b, copy.key, usage)?);
             }
             let saved = self
                 .saved
                 .as_ref()
                 .ok_or(GpuError::Invalid("no saved copy"))?;
-            whole_copy(b, copy, saved);
+            Self::whole_copy(b, copy, saved);
         }
         if let Some(d) = &targets.depth {
-            let (has_depth, has_stencil) = crate::backend::aspects(d.format);
+            let (has_depth, has_stencil) = d.format.aspects();
             let (view, ops) = match (&self.depth_copy, copied) {
                 // The copy is the target as it was before the first draw that writes it, and the
                 // count writes it as the draws wrote the target.
@@ -697,7 +601,7 @@ impl<B: Gpu> OcclusionCounter<B> {
                 stencil_reference: k.stencil_reference,
                 immediates: &k.immediates,
                 range: match &k.range {
-                    Range::Vertices {
+                    KeptRange::Vertices {
                         first,
                         count,
                         first_instance,
@@ -708,7 +612,7 @@ impl<B: Gpu> OcclusionCounter<B> {
                         first_instance: *first_instance,
                         instances: *instances,
                     },
-                    Range::Indexed {
+                    KeptRange::Indexed {
                         first,
                         count,
                         base_vertex,
@@ -721,11 +625,11 @@ impl<B: Gpu> OcclusionCounter<B> {
                         first_instance: *first_instance,
                         instances: *instances,
                     },
-                    Range::Indirect(args, offset, false) => DrawRange::Indirect {
+                    KeptRange::Indirect(args, offset, false) => DrawRange::Indirect {
                         args,
                         offset: *offset,
                     },
-                    Range::Indirect(args, offset, true) => DrawRange::IndexedIndirect {
+                    KeptRange::Indirect(args, offset, true) => DrawRange::IndexedIndirect {
                         args,
                         offset: *offset,
                     },
@@ -793,7 +697,7 @@ impl<B: Gpu> OcclusionCounter<B> {
             return Ok(sum as u64);
         }
         let bases = b.caps().features.contains(Features::BASE_VERTEX_INSTANCE);
-        let [a, c] = halves(draws, bases).ok_or(GpuError::Invalid(
+        let [a, c] = Self::halves(draws, bases).ok_or(GpuError::Invalid(
             "a draw reaching the counting format's bound at a pixel that cannot be split: a fan, a strip with restart, an indirect draw, or one primitive's instances where the first instance cannot be raised",
         ))?;
         if saving {
@@ -805,170 +709,172 @@ impl<B: Gpu> OcclusionCounter<B> {
                     .as_ref()
                     .ok_or(GpuError::Invalid("no saved copy"))?,
             );
-            whole_copy(b, saved, copy);
+            Self::whole_copy(b, saved, copy);
         }
         Ok(self.count(b, targets, copied, &a)? + self.count(b, targets, copied, &c)?)
     }
 }
 
-/// Copies one pooled texture into another of the same key, whole.
-fn whole_copy<B: Gpu>(b: &mut B, from: &Pooled<B>, to: &Pooled<B>) {
-    let at = |texture| TextureRegion {
-        texture,
-        mip: 0,
-        layer: 0,
-        origin: Origin { x: 0, y: 0, z: 0 },
-        stencil: false,
-    };
-    b.copy_texture(
-        &at(&from.texture),
-        &at(&to.texture),
-        Extent {
-            width: from.key.0,
-            height: from.key.1,
-            depth_or_layers: 1,
-        },
-    );
-}
-
-/// How many primitives the draws draw at most, which bounds how many fragments pass at one sample;
-/// an indirect draw's is unknown.
-fn primitives<B: Gpu>(draws: &[Kept<B>]) -> u64 {
-    draws
-        .iter()
-        .map(|k| {
-            let (count, instances) = match k.range {
-                Range::Vertices {
-                    count, instances, ..
-                }
-                | Range::Indexed {
-                    count, instances, ..
-                } => (u64::from(count), u64::from(instances)),
-                Range::Indirect(..) => return u64::MAX,
-            };
-            let per = match k.topology {
-                Topology::PointList | Topology::LineLoop => count,
-                Topology::LineList => count / 2,
-                Topology::LineStrip => count.saturating_sub(1),
-                Topology::TriangleList => count / 3,
-                Topology::TriangleStrip | Topology::TriangleFan => count.saturating_sub(2),
-            };
-            per.saturating_mul(instances)
-        })
-        .fold(0u64, u64::saturating_add)
-}
-
-/// The draws split into two halves; one draw into its halves of instances where the first instance
-/// can be raised without changing what any instance reads (`bases` is [`Features::BASE_VERTEX_INSTANCE`]),
-/// otherwise into its halves of primitives, each drawn for every instance.
-fn halves<B: Gpu>(draws: &[Kept<B>], bases: bool) -> Option<[Vec<Kept<B>>; 2]> {
-    if draws.len() > 1 {
-        let (a, c) = draws.split_at(draws.len() / 2);
-        return Some([a.to_vec(), c.to_vec()]);
-    }
-    let k = draws.first()?;
-    // Vertices per primitive, vertices shared with the next, and whether a split keeps strip
-    // triangles' winding (an even primitive).
-    let (per, shared, even) = match (k.topology, k.restart) {
-        (Topology::PointList, _) => (1, 0, false),
-        (Topology::LineList, _) => (2, 0, false),
-        (Topology::TriangleList, _) => (3, 0, false),
-        (Topology::LineStrip, false) => (1, 1, false),
-        (Topology::TriangleStrip, false) => (1, 2, true),
-        _ => (0, 0, false),
-    };
-    // The primitives the first half takes.
-    let split = |count: u32| {
-        let k = count.saturating_sub(shared) / per.max(1) / 2;
-        if even { k - k % 2 } else { k }
-    };
-    let (mut a, mut c) = (k.clone(), k.clone());
-    let by_instance = bases && k.instances_step_by_one;
-    match (&mut a.range, &mut c.range) {
-        (
-            Range::Vertices { instances: ia, .. },
-            Range::Vertices {
-                first_instance: fc,
-                instances: ic,
-                ..
-            },
-        )
-        | (
-            Range::Indexed { instances: ia, .. },
-            Range::Indexed {
-                first_instance: fc,
-                instances: ic,
-                ..
-            },
-        ) if by_instance && *ia > 1 => {
-            let half = *ia / 2;
-            *ia = half;
-            *fc += half;
-            *ic -= half;
-        }
-        (
-            Range::Vertices {
-                first: fa,
-                count: ca,
-                ..
-            },
-            Range::Vertices {
-                first: fc,
-                count: cc,
-                ..
-            },
-        )
-        | (
-            Range::Indexed {
-                first: fa,
-                count: ca,
-                ..
-            },
-            Range::Indexed {
-                first: fc,
-                count: cc,
-                ..
-            },
-        ) if per > 0 && split(*ca) > 0 => {
-            let k = split(*ca);
-            *ca = k * per + shared;
-            *fc = *fa + k * per;
-            *cc -= k * per;
-        }
-        _ => return None,
-    }
-    Some([vec![a], vec![c]])
-}
-
-fn pooled<B: Gpu>(
-    b: &mut B,
-    key: (u32, u32, Format, u32),
-    usage: TextureUsage,
-) -> Result<Pooled<B>, GpuError> {
-    let (width, height, format, samples) = key;
-    let texture = b.create_texture(&TextureDesc {
-        dimension: TextureDimension::D2,
-        format,
-        width,
-        height,
-        depth_or_layers: 1,
-        mip_levels: 1,
-        samples,
-        usage,
-        cube: false,
-        reinterpret: false,
-    })?;
-    let view = b.create_view(
-        &texture,
-        &TextureViewDesc {
-            format,
-            dimension: ViewDimension::D2,
-            base_mip: 0,
-            mip_count: 1,
-            base_layer: 0,
-            layer_count: 1,
+impl<B: Gpu> OcclusionCounter<B> {
+    /// Copies one pooled texture into another of the same key, whole.
+    fn whole_copy(b: &mut B, from: &PooledTexture<B>, to: &PooledTexture<B>) {
+        let at = |texture| TextureRegion {
+            texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin { x: 0, y: 0, z: 0 },
             stencil: false,
-        },
-    )?;
-    Ok(Pooled { key, texture, view })
+        };
+        b.copy_texture(
+            &at(&from.texture),
+            &at(&to.texture),
+            Extent {
+                width: from.key.0,
+                height: from.key.1,
+                depth_or_layers: 1,
+            },
+        );
+    }
+
+    /// How many primitives the draws draw at most, which bounds how many fragments pass at one sample;
+    /// an indirect draw's is unknown.
+    fn primitives(draws: &[KeptDraw<B>]) -> u64 {
+        draws
+            .iter()
+            .map(|k| {
+                let (count, instances) = match k.range {
+                    KeptRange::Vertices {
+                        count, instances, ..
+                    }
+                    | KeptRange::Indexed {
+                        count, instances, ..
+                    } => (u64::from(count), u64::from(instances)),
+                    KeptRange::Indirect(..) => return u64::MAX,
+                };
+                let per = match k.topology {
+                    Topology::PointList | Topology::LineLoop => count,
+                    Topology::LineList => count / 2,
+                    Topology::LineStrip => count.saturating_sub(1),
+                    Topology::TriangleList => count / 3,
+                    Topology::TriangleStrip | Topology::TriangleFan => count.saturating_sub(2),
+                };
+                per.saturating_mul(instances)
+            })
+            .fold(0u64, u64::saturating_add)
+    }
+
+    /// The draws split into two halves; one draw into its halves of instances where the first instance
+    /// can be raised without changing what any instance reads (`bases` is [`Features::BASE_VERTEX_INSTANCE`]),
+    /// otherwise into its halves of primitives, each drawn for every instance.
+    fn halves(draws: &[KeptDraw<B>], bases: bool) -> Option<[Vec<KeptDraw<B>>; 2]> {
+        if draws.len() > 1 {
+            let (a, c) = draws.split_at(draws.len() / 2);
+            return Some([a.to_vec(), c.to_vec()]);
+        }
+        let k = draws.first()?;
+        // Vertices per primitive, vertices shared with the next, and whether a split keeps strip
+        // triangles' winding (an even primitive).
+        let (per, shared, even) = match (k.topology, k.restart) {
+            (Topology::PointList, _) => (1, 0, false),
+            (Topology::LineList, _) => (2, 0, false),
+            (Topology::TriangleList, _) => (3, 0, false),
+            (Topology::LineStrip, false) => (1, 1, false),
+            (Topology::TriangleStrip, false) => (1, 2, true),
+            _ => (0, 0, false),
+        };
+        // The primitives the first half takes.
+        let split = |count: u32| {
+            let k = count.saturating_sub(shared) / per.max(1) / 2;
+            if even { k - k % 2 } else { k }
+        };
+        let (mut a, mut c) = (k.clone(), k.clone());
+        let by_instance = bases && k.instances_step_by_one;
+        match (&mut a.range, &mut c.range) {
+            (
+                KeptRange::Vertices { instances: ia, .. },
+                KeptRange::Vertices {
+                    first_instance: fc,
+                    instances: ic,
+                    ..
+                },
+            )
+            | (
+                KeptRange::Indexed { instances: ia, .. },
+                KeptRange::Indexed {
+                    first_instance: fc,
+                    instances: ic,
+                    ..
+                },
+            ) if by_instance && *ia > 1 => {
+                let half = *ia / 2;
+                *ia = half;
+                *fc += half;
+                *ic -= half;
+            }
+            (
+                KeptRange::Vertices {
+                    first: fa,
+                    count: ca,
+                    ..
+                },
+                KeptRange::Vertices {
+                    first: fc,
+                    count: cc,
+                    ..
+                },
+            )
+            | (
+                KeptRange::Indexed {
+                    first: fa,
+                    count: ca,
+                    ..
+                },
+                KeptRange::Indexed {
+                    first: fc,
+                    count: cc,
+                    ..
+                },
+            ) if per > 0 && split(*ca) > 0 => {
+                let k = split(*ca);
+                *ca = k * per + shared;
+                *fc = *fa + k * per;
+                *cc -= k * per;
+            }
+            _ => return None,
+        }
+        Some([vec![a], vec![c]])
+    }
+
+    fn pooled(
+        b: &mut B,
+        key: (u32, u32, Format, u32),
+        usage: TextureUsage,
+    ) -> Result<PooledTexture<B>, GpuError> {
+        let (width, height, format, samples) = key;
+        let texture = b.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width,
+            height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples,
+            usage,
+            cube: false,
+            reinterpret: false,
+        })?;
+        let view = b.create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )?;
+        Ok(PooledTexture { key, texture, view })
+    }
 }

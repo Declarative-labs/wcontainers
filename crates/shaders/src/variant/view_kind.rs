@@ -7,7 +7,10 @@ use alloc::vec::Vec;
 use naga::{
     Expression, GlobalVariable, Handle, ImageClass, Module, ScalarKind, Span, Type, TypeInner,
 };
-use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, Reflection, SlotKind, VariantKey};
+use wcontainers_gpu::{
+    format::FORMAT_FACTS, format::Format, format::FormatKind, reflect::Reflection,
+    reflect::SlotKind, reflect::VariantKey,
+};
 
 use super::{Result, global_of, owners, slot_of};
 use crate::{ConvertError, refusal};

@@ -10,7 +10,10 @@ use naga::{
     AddressSpace, ArraySize, BinaryOperator, Expression, Function, Handle, Literal, Module, Range,
     Scalar, ScalarKind, Span, Statement, TypeInner,
 };
-use wcontainers_gpu::{HelperValue, Reflection, SLOT_KINDS, ShaderStage, SlotKind};
+use wcontainers_gpu::{
+    reflect::HelperValue, reflect::Reflection, reflect::SLOT_KINDS, reflect::SlotKind,
+    shader::ShaderStage,
+};
 
 /// One of the program's storage buffers: its variable, the struct member holding its runtime array
 /// (none where the variable is the array), the array's stride and its offset's helper member.

@@ -14,8 +14,8 @@ use naga::{
     SwizzleComponent, Type, TypeInner, VectorSize,
 };
 use wcontainers_gpu::{
-    CompareFn, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperValue, Reflection,
-    ShaderStage,
+    reflect::EARLY_DEPTH_BINDING, reflect::EARLY_STENCIL_BINDING, reflect::HELPER_SET,
+    reflect::HelperValue, reflect::Reflection, resource::CompareFn, shader::ShaderStage,
 };
 
 /// The multisampled count the program tests, that of Direct3D's standard pattern it knows.
@@ -285,7 +285,7 @@ fn u32_lit(f: &mut Function, v: u32) -> Handle<Expression> {
         .append(Expression::Literal(Literal::U32(v)), Span::UNDEFINED)
 }
 
-/// Whether `a` passes against `b` under a [`wcontainers_gpu::CompareFn`] code (zero: off). Code
+/// Whether `a` passes against `b` under a [`wcontainers_gpu::resource::CompareFn`] code (zero: off). Code
 /// minus one is the set of relations that pass: less 1, equal 2, greater 4.
 fn compare(
     f: &mut Function,

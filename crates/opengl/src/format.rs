@@ -1,6 +1,8 @@
 //! Gallium's formats in the interface's terms, and what the device can do with each.
 
-use wcontainers_gpu::{FORMAT_FACTS, Format, FormatCaps, FormatUse, VertexFormat};
+use wcontainers_gpu::{
+    caps::FormatCaps, caps::FormatUse, format::FORMAT_FACTS, format::Format, state::VertexFormat,
+};
 
 use crate::gallium::*;
 

@@ -29,13 +29,17 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcontainers_gpu::{
-    BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps, CopyBufferTexture,
-    DepthStencilDesc, DeviceStatus, Extent, FORMAT_COUNT, FORMAT_FACTS, Features, FillMode, Filter,
-    Format, FormatCaps, FormatKind, FormatUse, Gpu, GpuError, Helpers, Limits, LossReason,
-    MAX_BINDING_SETS, MapIntent, Object, PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc,
-    ReadSource, ReadState, SLOW_PATHS, SamplerDesc, ShaderModule, ShaderStage, SlowPaths,
-    StandaloneGpu, StepMode, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, VertexLayoutDesc, WriteMode,
+    Gpu, MAX_BINDING_SETS, Object, StandaloneGpu, caps::Caps, caps::Features, caps::FormatCaps,
+    caps::FormatUse, caps::Limits, draw::PassDesc, error::DeviceStatus, error::GpuError,
+    error::LossReason, format::FORMAT_COUNT, format::FORMAT_FACTS, format::Format,
+    format::FormatKind, helpers::Helpers, resource::BindingEntry, resource::BindingLayoutKey,
+    resource::BufferDesc, resource::BufferUsage, resource::CopyBufferTexture, resource::Extent,
+    resource::Filter, resource::MapIntent, resource::QueryKind, resource::ReadSource,
+    resource::ReadState, resource::SamplerDesc, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::WriteMode, shader::Program, shader::ShaderModule, shader::ShaderStage,
+    slow::SLOW_PATHS, slow::SlowPaths, state::BlendDesc, state::DepthStencilDesc, state::FillMode,
+    state::ProvokingVertex, state::RasterDesc, state::StepMode, state::VertexLayoutDesc,
 };
 
 pub use draw::Counters;
@@ -622,7 +626,7 @@ impl WebGpu {
             device,
             queue,
             caps,
-            slow: wcontainers_gpu::NO_SLOW_PATHS,
+            slow: wcontainers_gpu::slow::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost,
             next_id: 1,
@@ -1014,7 +1018,7 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> (Caps, FormatTables) 
     };
     let info = adapter.get_info();
     let caps = Caps {
-        adapter: wcontainers_gpu::AdapterInfo {
+        adapter: wcontainers_gpu::caps::AdapterInfo {
             name: info.name,
             vendor: info.vendor,
             device: info.device,
@@ -1263,7 +1267,7 @@ impl Gpu for WebGpu {
                     "a use of a converted format this back end does not declare",
                 ));
             }
-            self.record_slow_path(wcontainers_gpu::SlowPath::FormatConverted);
+            self.record_slow_path(wcontainers_gpu::slow::SlowPath::FormatConverted);
         }
         usage |= copies & allowed;
         // Copies between a buffer and a converted format are draws, into the texture or from it.
@@ -1350,7 +1354,7 @@ impl Gpu for WebGpu {
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Sampler, GpuError> {
         let address = |ours| {
             convert::address(ours).ok_or(GpuError::Absent(match ours {
-                wcontainers_gpu::AddressMode::MirrorOnce => Features::MIRROR_ONCE,
+                wcontainers_gpu::resource::AddressMode::MirrorOnce => Features::MIRROR_ONCE,
                 _ => Features::BORDER_COLOR,
             }))
         };
@@ -1692,7 +1696,7 @@ impl Gpu for WebGpu {
         self.prepare_impl(desc);
     }
 
-    fn draw(&mut self, call: &wcontainers_gpu::DrawCall<'_, Self>) {
+    fn draw(&mut self, call: &wcontainers_gpu::draw::DrawCall<'_, Self>) {
         self.draw_impl(call);
     }
 
@@ -1707,7 +1711,11 @@ impl Gpu for WebGpu {
                 // A part on another page than the query's own begins it in a spare slot there.
                 let (own_page, own_slot) = QuerySetObj::own_slot(index);
                 if p.page != own_page && set.0.free.borrow()[p.page].is_empty() {
-                    self.split_onto_page(wcontainers_gpu::SlowPath::QueriesSegmented, |_| {}, true);
+                    self.split_onto_page(
+                        wcontainers_gpu::slow::SlowPath::QueriesSegmented,
+                        |_| {},
+                        true,
+                    );
                 }
                 let Some(p) = self.pass.as_mut() else { return };
                 let slot = match p.page {
@@ -2088,7 +2096,10 @@ impl Gpu for WebGpu {
         self.resolve_queries_impl(set, first, count, dst, dst_offset)
     }
 
-    fn dispatch(&mut self, call: &wcontainers_gpu::DispatchCall<'_, Self>) -> Result<(), GpuError> {
+    fn dispatch(
+        &mut self,
+        call: &wcontainers_gpu::draw::DispatchCall<'_, Self>,
+    ) -> Result<(), GpuError> {
         self.dispatch_impl(call)
     }
 
@@ -2128,8 +2139,8 @@ impl Gpu for WebGpu {
 
     fn capture_vertices(
         &mut self,
-        call: &wcontainers_gpu::DrawCall<'_, Self>,
-        targets: wcontainers_gpu::CaptureTargets<'_, Self>,
+        call: &wcontainers_gpu::draw::DrawCall<'_, Self>,
+        targets: wcontainers_gpu::draw::CaptureTargets<'_, Self>,
         rasterize: bool,
     ) -> Result<(), GpuError> {
         let _ = (call, targets, rasterize);

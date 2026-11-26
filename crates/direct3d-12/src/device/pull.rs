@@ -4,8 +4,9 @@
 //! back end without them (`InstanceRateInShader`).
 
 use wcontainers_gpu::{
-    AddedBinding, BindingEntry, BindingResource, BufferRange, CLAMPED_SAMPLER_BINDING, Caps,
-    DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
+    RingKind, caps::Caps, reflect::AddedBinding, reflect::CLAMPED_SAMPLER_BINDING,
+    reflect::DRAW_ARGUMENTS_BINDING, reflect::HelperSlot, resource::BindingEntry,
+    resource::BindingResource, resource::BufferRange, state::VertexFormat,
 };
 
 use wcontainers_directx_graphics_infrastructure::stage_registers::{
@@ -397,13 +398,17 @@ impl<B: Gpu> Device<B> {
                 };
                 put(&mut block, slot.offset, slot.value, words)?;
             }
-            blocks.push((helper_binding(ShaderStage::Vertex), stages, block));
+            blocks.push((
+                wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
+                stages,
+                block,
+            ));
         }
         let mut merged = Vec::new();
         if let Some(p) = pixel.filter(|p| p.size != 0) {
             let block = self.stage_block(p, bind::PIXEL)?;
             blocks.push((
-                helper_binding(ShaderStage::Fragment),
+                wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Fragment),
                 StageSet::FRAGMENT,
                 block,
             ));

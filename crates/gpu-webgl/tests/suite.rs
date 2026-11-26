@@ -28,7 +28,7 @@ impl wcontainers_gpu_test::Host for Angle {
         use wcontainers_gpu::Gpu;
         assert_eq!(
             b.status(),
-            wcontainers_gpu::DeviceStatus::Ok,
+            wcontainers_gpu::error::DeviceStatus::Ok,
             "the back end was lost as it was made: {}",
             b.last_log()
         );

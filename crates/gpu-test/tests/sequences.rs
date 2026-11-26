@@ -6,7 +6,7 @@
 use proptest::test_runner::{Config, RngAlgorithm, RngSeed, TestRunner};
 use std::cell::Cell;
 use std::collections::HashMap;
-use wcontainers_gpu::WriteMode;
+use wcontainers_gpu::resource::WriteMode;
 use wcontainers_gpu_test::{Call, Recorder, replay, sequence};
 
 fn knob(name: &str, default: u64) -> u64 {
@@ -91,10 +91,9 @@ fn random_sequences_record_and_replay_identically() {
                 Call::CaptureVertices(..) => 10,
                 Call::WriteTimestamp(..) => 11,
                 Call::CopyTexture(s, d, _) if (s.0, s.1, s.2) == (d.0, d.1, d.2) => {
-                    if formats
-                        .get(&s.0)
-                        .is_some_and(|f| wcontainers_gpu::FORMAT_FACTS[*f as usize].depth_stencil)
-                    {
+                    if formats.get(&s.0).is_some_and(|f| {
+                        wcontainers_gpu::format::FORMAT_FACTS[*f as usize].depth_stencil
+                    }) {
                         n[13] += 1;
                     }
                     12

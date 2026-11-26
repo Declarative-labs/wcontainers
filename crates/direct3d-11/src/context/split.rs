@@ -125,7 +125,7 @@ impl<B: Gpu> Device<B> {
             return Ok(None);
         }
         let e = view.texture.mip_extent(view.desc.first_mip);
-        let desc = wcontainers_gpu::TextureDesc {
+        let desc = wcontainers_gpu::resource::TextureDesc {
             width: e.width,
             height: e.height,
             depth_or_layers: 1,

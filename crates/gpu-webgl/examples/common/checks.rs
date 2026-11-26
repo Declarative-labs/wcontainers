@@ -3,7 +3,10 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+    resource::*, shader::*, slow::*, state::*, *,
+};
 use wcontainers_gpu_test::Host;
 
 /// What every pattern of these checks is mixed with; 0 gives the patterns the checks were written
@@ -4163,8 +4166,15 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                 let before = b.slow_paths().counts[SlowPath::FilterInShader as usize];
                 b.generate_mips(&native, &desc, format, first..levels, 0..layers)
                     .expect("generate_mips");
-                generate_mips_by_draws(&mut b, &drawn, &desc, format, first..levels, 0..layers)
-                    .expect("generate_mips_by_draws");
+                Helpers::generate_mips_by_draws(
+                    &mut b,
+                    &drawn,
+                    &desc,
+                    format,
+                    first..levels,
+                    0..layers,
+                )
+                .expect("generate_mips_by_draws");
                 assert_eq!(
                     b.slow_paths().counts[SlowPath::FilterInShader as usize],
                     before

@@ -25,7 +25,7 @@ use naga::{
     Literal, MathFunction, Module, Sampling, Scalar, ShaderStage, Span, Statement,
     SwizzleComponent, Type, TypeInner, VectorSize,
 };
-use wcontainers_gpu::SystemValue;
+use wcontainers_gpu::reflect::SystemValue;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 

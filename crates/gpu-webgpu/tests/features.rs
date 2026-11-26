@@ -21,7 +21,7 @@ mod renames;
 mod features;
 
 use features::Feature;
-use wcontainers_gpu::{Gpu, GpuError, ShaderStage};
+use wcontainers_gpu::{Gpu, error::GpuError, shader::ShaderStage};
 
 fn backends() -> wgpu::Backends {
     match std::env::var("WEBGPU_API").as_deref() {

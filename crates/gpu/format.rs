@@ -1,5 +1,5 @@
 //! Texel formats. One list for every front: each front maps its own format names onto it, and each back
-//! end says in [`crate::Caps`] what it can do with each one.
+//! end says in [`crate::caps::Caps`] what it can do with each one.
 
 /// A texel format. Names follow the channel order in memory, then the number type.
 #[derive(
@@ -46,7 +46,7 @@ pub enum Format {
     Bgra4Unorm,
     /// Two pixels in four bytes, R, G0, B, G1: pixel 0 is (R, G0, B), pixel 1 is (R, G1, B)
     /// (Direct3D's R8G8_B8G8_UNORM). No browser has it: back ends store it decoded
-    /// ([`crate::SlowPath::BlockDecoded`]).
+    /// ([`crate::slow::SlowPath::BlockDecoded`]).
     Rgbg8Unorm,
     /// Two pixels in four bytes, G0, R, G1, B (Direct3D's G8R8_G8B8_UNORM), stored as
     /// [`Format::Rgbg8Unorm`] is.
@@ -69,7 +69,7 @@ pub enum Format {
     A8Unorm,
     Stencil8,
     Depth16Unorm,
-    /// 24-bit depth: stored as 24-bit unsigned normalised where [`crate::Features::DEPTH24_UNORM`],
+    /// 24-bit depth: stored as 24-bit unsigned normalised where [`crate::caps::Features::DEPTH24_UNORM`],
     /// otherwise as 32-bit float (more bits, never fewer). The same holds for the depth of
     /// [`Format::Depth24PlusStencil8`].
     Depth24Plus,
@@ -110,7 +110,7 @@ pub enum FormatKind {
 }
 
 /// How many formats there are: every format, in declaration order, indexes [`FORMAT_FACTS`] and
-/// [`crate::Caps::formats`] by `Format as usize`.
+/// [`crate::caps::Caps::formats`] by `Format as usize`.
 pub const FORMAT_COUNT: usize = Format::Astc4x4UnormSrgb as usize + 1;
 
 /// What one [`Format`] is: [`FORMAT_FACTS`] holds one per format.
@@ -122,7 +122,7 @@ pub struct FormatFacts {
     pub kind: FormatKind,
     /// The components a view of this format reads from its texels, a bit each from red; the others
     /// read their defaults, zero and one for alpha. Depth and stencil read as red. The measure of
-    /// [`crate::HelperValue::TextureComponents`].
+    /// [`crate::reflect::HelperValue::TextureComponents`].
     pub components: u32,
     /// The format holds depth, stencil or both: its kind is `Depth`, `DepthStencil` or `Stencil`.
     pub depth_stencil: bool,
@@ -130,11 +130,11 @@ pub struct FormatFacts {
     /// otherwise.
     pub linear: Format,
     /// The integer format of the same bits a front stores this normalised format as where the back
-    /// end lacks it ([`crate::SlowPath::NormAsInteger`]): unsigned for unsigned normalised, signed
+    /// end lacks it ([`crate::slow::SlowPath::NormAsInteger`]): unsigned for unsigned normalised, signed
     /// for signed normalised; None for formats that have no such twin.
     pub integer_twin: Option<Format>,
     /// What one sample of a colour target in this format counts toward
-    /// [`crate::Limits::color_bytes_per_sample`]: its byte cost and the alignment it starts at, as
+    /// [`crate::caps::Limits::color_bytes_per_sample`]: its byte cost and the alignment it starts at, as
     /// WebGPU counts render targets (8 bytes for 8-bit normalised RGBA). Formats WebGPU does not
     /// render count as their nearest one there: the packed and two-pixel 8-bit formats as
     /// `rgba8unorm`, `A8Unorm` as `r8unorm`, `Rgb9e5Float` as `rg11b10ufloat`, three 32-bit channels
@@ -945,69 +945,3 @@ pub const FORMAT_FACTS: [FormatFacts; FORMAT_COUNT] = [
         target_bytes: None,
     },
 ];
-
-/// The bytes one sample of colour targets in these formats holds, in attachment order, as
-/// [`crate::Limits::color_bytes_per_sample`] bounds it: each target starts at a multiple of its
-/// alignment and adds its cost ([`FormatFacts::target_bytes`]). None where one cannot be a colour
-/// target.
-pub fn color_target_bytes(formats: impl IntoIterator<Item = Format>) -> Option<u32> {
-    formats.into_iter().try_fold(0, |at: u32, f| {
-        let (cost, align) = FORMAT_FACTS[f as usize].target_bytes?;
-        Some(at.next_multiple_of(align) + cost)
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::{format, vec::Vec};
-    use serde::Deserialize;
-
-    /// Every format, by its number.
-    fn all() -> Vec<Format> {
-        (0..)
-            .map_while(|n| {
-                Format::deserialize(
-                    serde::de::value::U32Deserializer::<serde::de::value::Error>::new(n),
-                )
-                .ok()
-            })
-            .collect()
-    }
-
-    /// A format's name lists the channels its texels hold, as DXGI's and WebGPU's names do
-    /// (`x` padding, `e` a shared exponent; ASTC blocks hold all four); `components` names the same.
-    #[test]
-    fn components_are_the_channels_a_format_names() {
-        let formats = all();
-        assert_eq!(formats.last(), Some(&Format::Astc4x4UnormSrgb));
-        for f in formats {
-            let name = format!("{f:?}");
-            let expected = if FORMAT_FACTS[f as usize].depth_stencil {
-                0b0001
-            } else if name.starts_with("Astc") {
-                0b1111
-            } else {
-                let rest = ["Bc1", "Bc2", "Bc3", "Bc4", "Bc5", "Bc6h", "Bc7", "Etc2"]
-                    .iter()
-                    .find_map(|p| name.strip_prefix(p))
-                    .unwrap_or(&name);
-                let end = rest[1..]
-                    .find(|c: char| c.is_ascii_uppercase())
-                    .map_or(rest.len(), |i| i + 1);
-                rest[..end]
-                    .to_ascii_lowercase()
-                    .chars()
-                    .map(|c| match c {
-                        'r' => 0b0001,
-                        'g' => 0b0010,
-                        'b' => 0b0100,
-                        'a' => 0b1000,
-                        _ => 0,
-                    })
-                    .fold(0, |m, b| m | b)
-            };
-            assert_eq!(FORMAT_FACTS[f as usize].components, expected, "{f:?}");
-        }
-    }
-}

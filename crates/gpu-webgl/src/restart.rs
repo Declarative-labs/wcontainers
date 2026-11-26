@@ -4,7 +4,7 @@
 
 use rangemap::RangeSet;
 use std::ops::Range;
-use wcontainers_gpu::IndexFormat;
+use wcontainers_gpu::state::IndexFormat;
 
 /// Bytes per index of each width, in the order of [`Maxima`]'s sets.
 const WIDTHS: [u64; 3] = [1, 2, 4];
@@ -96,8 +96,8 @@ pub enum Rewrite {
 
 /// The rewrite `bytes`, indices of `format`, need to draw without restarting.
 pub fn rewrite(bytes: &[u8], format: IndexFormat) -> Rewrite {
-    let width = wcontainers_gpu::INDEX_FORMATS[format as usize].size as usize;
-    let largest = wcontainers_gpu::INDEX_FORMATS[format as usize].restart_value;
+    let width = wcontainers_gpu::state::INDEX_FORMATS[format as usize].size as usize;
+    let largest = wcontainers_gpu::state::INDEX_FORMATS[format as usize].restart_value;
     let values = || {
         bytes.chunks_exact(width).map(|c| {
             let mut word = [0; 4];

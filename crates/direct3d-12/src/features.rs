@@ -11,7 +11,9 @@ use wcontainers_directx_graphics_infrastructure::{
     FormatSupport, atomic_operations, dxgi, dxgi_format, dxgi_vertex_format,
     format_support as shared_format_support, storage_viewed, support1, support2, takes_samples,
 };
-use wcontainers_gpu::{Caps, FORMAT_FACTS, Features, Format, FormatUse};
+use wcontainers_gpu::{
+    caps::Caps, caps::Features, caps::FormatUse, format::FORMAT_FACTS, format::Format,
+};
 
 pub const FEATURE_LEVEL_11_0: u32 = required::level::L11_0;
 /// Feature level 11_0's sizes (`D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION`, which cube faces share,
@@ -86,7 +88,7 @@ pub fn has_abilities_of_11_0(caps: &Caps) -> bool {
 /// Whether `limits` bind resource binding tier 1's counts in a stage, with the uniform block that
 /// holds a converted program's helper constants beside its constant buffers, and draw 11_0's
 /// targets at once.
-pub fn binds_tier_1(limits: &wcontainers_gpu::Limits) -> bool {
+pub fn binds_tier_1(limits: &wcontainers_gpu::caps::Limits) -> bool {
     limits.textures_per_stage >= TIER_1_SHADER_RESOURCES
         && limits.uniform_buffers_per_stage > TIER_1_CONSTANT_BUFFERS
         && limits.samplers_per_stage >= TIER_1_SAMPLERS
@@ -100,7 +102,7 @@ pub fn binds_tier_1(limits: &wcontainers_gpu::Limits) -> bool {
 /// buffer each (`VertexPulledInShader`); and its 32 registers from the last vertex stage (vertex,
 /// domain or geometry shader) to the pixel stage, one the position, the rest moved onto the back
 /// end's inter-stage locations with any the front links beside them (`StageMoves`).
-pub fn serves_stage_registers(limits: &wcontainers_gpu::Limits) -> bool {
+pub fn serves_stage_registers(limits: &wcontainers_gpu::caps::Limits) -> bool {
     let fetched =
         limits.vertex_streams.min(limits.vertex_attributes) + limits.storage_buffers_per_stage;
     fetched >= INPUT_SLOTS && limits.inter_stage_slots + 1 >= OUTPUT_REGISTERS

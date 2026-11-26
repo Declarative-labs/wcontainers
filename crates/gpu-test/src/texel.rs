@@ -2,7 +2,7 @@
 //! Colour values are four f64: floats for float and normalised formats, exact integers for integer
 //! ones.
 
-use wcontainers_gpu::Format;
+use wcontainers_gpu::format::Format;
 
 /// How a format's channels are numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

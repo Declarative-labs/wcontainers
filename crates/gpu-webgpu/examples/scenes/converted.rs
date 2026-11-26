@@ -7,11 +7,15 @@
 
 use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
-    AddressMode, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp, BorderColor,
-    BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus, DrawCall, DrawRange,
-    Extent, FORMAT_FACTS, Filter, Format, FormatUse, Gpu, LoadOp, MapIntent, Origin, PassDesc,
-    ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, Topology, WriteMode,
+    Gpu, caps::FormatUse, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::StoreOp, error::DeviceStatus, format::FORMAT_FACTS, format::Format,
+    resource::AddressMode, resource::BindingEntry, resource::BindingResource,
+    resource::BorderColor, resource::BufferDesc, resource::BufferUsage,
+    resource::CopyBufferTexture, resource::Extent, resource::Filter, resource::MapIntent,
+    resource::Origin, resource::ReadSource, resource::SamplerDesc, resource::TextureDesc,
+    resource::TextureDimension, resource::TextureRegion, resource::TextureUsage,
+    resource::WriteMode, shader::StageSet, slow::SlowPath, state::BlendComponent,
+    state::BlendFactor, state::BlendOp, state::Topology,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -215,7 +219,7 @@ pub fn blended() -> Vec<f32> {
     out
 }
 
-fn gpu<T>(r: Result<T, wcontainers_gpu::GpuError>) -> Result<T> {
+fn gpu<T>(r: Result<T, wcontainers_gpu::error::GpuError>) -> Result<T> {
     r.map_err(|e| anyhow!("{e:?}"))
 }
 
@@ -343,7 +347,7 @@ fn full_draw(
     b: &mut B,
     program: &<B as Gpu>::Program,
     target: &<B as Gpu>::TextureView,
-    blend: &wcontainers_gpu::BlendDesc,
+    blend: &wcontainers_gpu::state::BlendDesc,
     sets: [Option<&<B as Gpu>::BindingSet>; 2],
     clear: [u32; 4],
 ) -> Result<()> {
@@ -552,8 +556,8 @@ fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
     let (src, dst) = (buffer(b)?, buffer(b)?);
     b.write_buffer(&src, 0, &slices, WriteMode::Ordered);
     b.write_buffer(&dst, 0, &vec![0xab; slices.len()], WriteMode::Ordered);
-    let t = gpu(b.create_texture(&wcontainers_gpu::TextureDesc {
-        dimension: wcontainers_gpu::TextureDimension::D3,
+    let t = gpu(b.create_texture(&wcontainers_gpu::resource::TextureDesc {
+        dimension: wcontainers_gpu::resource::TextureDimension::D3,
         format,
         width: SIZE.0,
         height: SIZE.1,

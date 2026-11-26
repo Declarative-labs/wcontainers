@@ -5,8 +5,9 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    BufferDesc, BufferRange, BufferUsage, Gpu, Interpolation, MapIntent, Object, STORAGE_WORD,
-    ScalarKind, StageValue, SystemValue, WriteMode,
+    Gpu, Object, STORAGE_WORD, reflect::Interpolation, reflect::ScalarKind, reflect::StageValue,
+    reflect::SystemValue, resource::BufferDesc, resource::BufferRange, resource::BufferUsage,
+    resource::MapIntent, resource::WriteMode,
 };
 use wcontainers_nir::mesa::StreamedOutput;
 use wcontainers_shaders::stage::{

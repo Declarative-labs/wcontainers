@@ -15,7 +15,7 @@ use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_directx_graphics_infrastructure::stage_registers::TOO_MANY_VALUES;
-use wcontainers_gpu::{FORMAT_FACTS, Features, Gpu};
+use wcontainers_gpu::{Gpu, caps::Features, format::FORMAT_FACTS};
 
 #[test]
 fn footprints_follow_the_pitch_and_placement_rules() {
@@ -246,7 +246,8 @@ fn the_triangle_scene_replays() {
     );
     assert_eq!(calls.iter().filter(|c| c.starts_with("draw")).count(), 1);
     assert_eq!(
-        device.backend().slow_paths().counts[wcontainers_gpu::SlowPath::MappedUploadWhole as usize],
+        device.backend().slow_paths().counts
+            [wcontainers_gpu::slow::SlowPath::MappedUploadWhole as usize],
         1
     );
 }
@@ -381,7 +382,7 @@ fn values_past_the_back_ends_locations_move_or_are_refused_by_name() {
     );
     let slow = device.backend().slow_paths();
     assert_eq!(
-        slow.counts[wcontainers_gpu::SlowPath::VaryingsBeyondLimit as usize],
+        slow.counts[wcontainers_gpu::slow::SlowPath::VaryingsBeyondLimit as usize],
         1
     );
 }
@@ -426,7 +427,7 @@ fn staged_pipeline(programs: [&[u8]; 5], locations: u32) -> Result<PipelineId, E
     }))?;
     let [vs, hs, ds, gs, ps] = programs;
     let mut blend = Blend::default();
-    blend.targets[0].write_mask = wcontainers_gpu::ColorWrites::all().bits();
+    blend.targets[0].write_mask = wcontainers_gpu::state::ColorWrites::all().bits();
     device.create_graphics_pipeline(&GraphicsPipelineDesc {
         root: Some(root),
         vs,
@@ -522,7 +523,7 @@ fn a_back_end_that_lost_its_device_removes_it() {
     let mut device = Device::new(Recorder::new());
     let queue = device.create_queue().unwrap();
     assert_eq!(device.removed(), None);
-    device.backend().lost = Some(wcontainers_gpu::LossReason::Error);
+    device.backend().lost = Some(wcontainers_gpu::error::LossReason::Error);
     assert_eq!(device.execute(queue, &[]), Err(Error::DeviceRemoved));
     assert_eq!(device.removed(), Some(Error::DeviceRemoved));
 }
@@ -631,7 +632,7 @@ fn back_buffers_are_resources_and_present_follows_the_work() {
                 format: RGBA8,
                 buffers: 2,
                 model: Model::FlipDiscard,
-                usage: wcontainers_gpu::TextureUsage::empty(),
+                usage: wcontainers_gpu::resource::TextureUsage::empty(),
             },
         )
         .unwrap();
@@ -707,7 +708,7 @@ fn queues_wait_for_fences_signalled_late() {
 
 #[test]
 fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
-    use wcontainers_gpu::SlowPath::AliasCopied;
+    use wcontainers_gpu::slow::SlowPath::AliasCopied;
     let mut device = Device::new(Recorder::new());
     let queue = device.create_queue().unwrap();
     let page =

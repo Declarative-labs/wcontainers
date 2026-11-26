@@ -19,7 +19,7 @@ use windows::core::{
 };
 
 use wcontainers_direct3d_11::{Chain, Model, SwapChainDesc};
-use wcontainers_gpu::TextureUsage;
+use wcontainers_gpu::resource::TextureUsage;
 
 use super::counted::{Held, public_count};
 use super::*;

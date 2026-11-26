@@ -6,8 +6,9 @@ use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
-    BindingLayoutKey, FORMAT_FACTS, Format, Gpu, MAX_BINDING_SETS, PrepareDesc, ScalarKind,
-    SlowPath, SystemValue, TargetLayout, Topology,
+    Gpu, MAX_BINDING_SETS, PrepareDesc, format::FORMAT_FACTS, format::Format, reflect::ScalarKind,
+    reflect::SystemValue, resource::BindingLayoutKey, slow::SlowPath, state::TargetLayout,
+    state::Topology,
 };
 use wcontainers_shaders::front::{Combination, CombinationTracker};
 
@@ -169,7 +170,7 @@ fn covers<B: Gpu>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
 /// by the back ends.
 pub(crate) fn writes<B: Gpu>(
     ps: &Shader<B>,
-    target: impl Fn(usize) -> Option<wcontainers_gpu::Format>,
+    target: impl Fn(usize) -> Option<wcontainers_gpu::format::Format>,
 ) -> bool {
     ps.reflection.outputs.iter().all(|o| {
         let Some(SystemValue::Target(n)) = o.system else {
@@ -180,10 +181,10 @@ pub(crate) fn writes<B: Gpu>(
 }
 
 /// Whether an output of `scalar`'s kind is of the kind (float, unsigned or signed) of `format`.
-pub(crate) fn fits_target(scalar: ScalarKind, format: wcontainers_gpu::Format) -> bool {
+pub(crate) fn fits_target(scalar: ScalarKind, format: wcontainers_gpu::format::Format) -> bool {
     let kind = match FORMAT_FACTS[format as usize].kind {
-        wcontainers_gpu::FormatKind::Uint => ScalarKind::Uint,
-        wcontainers_gpu::FormatKind::Sint => ScalarKind::Sint,
+        wcontainers_gpu::format::FormatKind::Uint => ScalarKind::Uint,
+        wcontainers_gpu::format::FormatKind::Sint => ScalarKind::Sint,
         _ => ScalarKind::Float,
     };
     kind == scalar

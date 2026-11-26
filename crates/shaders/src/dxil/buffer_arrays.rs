@@ -17,7 +17,7 @@ use naga::{
     GlobalVariable, Handle, LocalVariable, Module, Range, ResourceBinding, Scalar, Span, Statement,
     SwitchCase, Type, TypeInner,
 };
-use wcontainers_gpu::VariantKey;
+use wcontainers_gpu::reflect::VariantKey;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 

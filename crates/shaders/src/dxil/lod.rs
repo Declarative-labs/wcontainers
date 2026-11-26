@@ -13,7 +13,7 @@ use naga::{
     Block, Expression, Function, GlobalVariable, Handle, ImageClass, ImageDimension, Module,
     Statement, TypeInner, VectorSize,
 };
-use wcontainers_gpu::{Reflection, ShaderStage, VariantKey};
+use wcontainers_gpu::{reflect::Reflection, reflect::VariantKey, shader::ShaderStage};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 

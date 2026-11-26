@@ -2,7 +2,9 @@
 //! check what a front asked for. Read backs answer zeros. Used until the interface track's recording
 //! back end is on the shared branch.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, resource::*, shader::*, slow::*, state::*, *,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Id(pub u32);
@@ -119,7 +121,7 @@ impl Recorder {
         Recorder {
             calls: Vec::new(),
             caps: webgpu_like_caps(),
-            slow: wcontainers_gpu::NO_SLOW_PATHS,
+            slow: wcontainers_gpu::slow::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             next: 0,
             fences: 0,

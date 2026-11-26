@@ -19,7 +19,10 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use wcontainers_gpu::{Format, ReflectedBinding, SLOT_KINDS, SlotKind, VariantKey};
+use wcontainers_gpu::{
+    format::Format, reflect::ReflectedBinding, reflect::SLOT_KINDS, reflect::SlotKind,
+    reflect::VariantKey,
+};
 use wcontainers_nir::direct::{Rewrites, Routed};
 use wcontainers_nir::mesa::{Nir, Stage};
 

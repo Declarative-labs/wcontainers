@@ -7,7 +7,9 @@ use std::fmt::Write;
 
 use wcontainers_direct3d_11::format::row_bytes;
 use wcontainers_direct3d_11::required::SAMPLE_COUNTS;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, resource::*, shader::*, slow::*, state::*, *,
+};
 
 /// The recording back end's handles: a number per object.
 pub type Id = u32;
@@ -128,7 +130,7 @@ impl Recorder {
                     ..Default::default()
                 },
             },
-            slow: wcontainers_gpu::NO_SLOW_PATHS,
+            slow: wcontainers_gpu::slow::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             next: 0,
             log: Vec::new(),

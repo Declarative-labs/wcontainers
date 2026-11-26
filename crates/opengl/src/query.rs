@@ -8,8 +8,9 @@ use std::ffi::c_uint;
 use std::ops::Range;
 
 use wcontainers_gpu::{
-    BufferDesc, BufferUsage, Gpu, MapIntent, Object, PassTracker, QueryKind, ReadSource, ReadState,
-    STORAGE_WORD, SlowPath,
+    Gpu, Object, STORAGE_WORD, passes::PassTracker, resource::BufferDesc, resource::BufferUsage,
+    resource::MapIntent, resource::QueryKind, resource::ReadSource, resource::ReadState,
+    slow::SlowPath,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 

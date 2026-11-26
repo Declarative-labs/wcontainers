@@ -17,9 +17,11 @@ mod allowance;
 mod clears;
 
 use wcontainers_gpu::{
-    BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, FORMAT_FACTS, Format, Gpu,
-    LoadOp, MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp,
-    TextureRegion, TextureUsage, WriteMode,
+    Gpu, Object, draw::ColorAttachment, draw::LoadOp, draw::PassDesc, draw::StoreOp,
+    error::DeviceStatus, format::FORMAT_FACTS, format::Format, resource::BufferDesc,
+    resource::BufferUsage, resource::Extent, resource::MapIntent, resource::Origin,
+    resource::QueryKind, resource::ReadSource, resource::TextureRegion, resource::TextureUsage,
+    resource::WriteMode, slow::SlowPath,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -865,7 +867,7 @@ fn ordered_writes_are_staged_in_one_ring() {
 /// counter as `name=count`.
 #[test]
 fn written_bytes_are_counted_and_reported() {
-    use wcontainers_gpu::{TextureDesc, TextureDimension};
+    use wcontainers_gpu::{resource::TextureDesc, resource::TextureDimension};
     const BUFFER_BYTES: usize = 64;
     const TEXTURE_SIDE: u32 = 4;
     let mut b = device();

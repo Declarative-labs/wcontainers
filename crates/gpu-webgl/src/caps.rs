@@ -4,8 +4,8 @@
 use glow::HasContext;
 use std::collections::BTreeSet;
 use wcontainers_gpu::{
-    AdapterInfo, Caps, FORMAT_COUNT, FORMAT_FACTS, Features, Format, FormatCaps, FormatKind,
-    FormatUse, Limits,
+    caps::AdapterInfo, caps::Caps, caps::Features, caps::FormatCaps, caps::FormatUse, caps::Limits,
+    format::FORMAT_COUNT, format::FORMAT_FACTS, format::Format, format::FormatKind,
 };
 
 use crate::format::{self, FormatExtensions};

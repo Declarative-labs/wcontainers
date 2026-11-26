@@ -12,7 +12,10 @@ use naga::{
     GlobalVariable, Handle, ImageClass, ImageDimension, ImageQuery, Literal, Module, Range,
     ResourceBinding, Scalar, ScalarKind, Span, Statement, TypeInner, VectorSize,
 };
-use wcontainers_gpu::{Reflection, SLOT_KINDS, ShaderStage, SlotKind, VariantKey};
+use wcontainers_gpu::{
+    reflect::Reflection, reflect::SLOT_KINDS, reflect::SlotKind, reflect::VariantKey,
+    shader::ShaderStage,
+};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 

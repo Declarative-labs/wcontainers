@@ -3,7 +3,7 @@
 //! naga (B), each validated.
 #![cfg(all(mesa, feature = "standalone"))]
 
-use wcontainers_gpu::{SLOT_KINDS, ShaderStage, SlotKind};
+use wcontainers_gpu::{reflect::SLOT_KINDS, reflect::SlotKind, shader::ShaderStage};
 use wcontainers_nir::ConvertError;
 use wcontainers_nir::bind::stage_set;
 use wcontainers_nir::mesa::{Assembled, GlslNameKind, GlslStage, Nir, PositionTransform, Stage};
@@ -442,7 +442,7 @@ fn images_of_buffers_are_storage_words_with_their_views_in_helper_constants() {
     let (module, reflection) = wcontainers_nir::direct::rewrite(
         routed,
         bindings,
-        &wcontainers_gpu::VariantKey::default(),
+        &wcontainers_gpu::reflect::VariantKey::default(),
         &key,
     )
     .unwrap();
@@ -453,7 +453,7 @@ fn images_of_buffers_are_storage_words_with_their_views_in_helper_constants() {
         .filter(|h| {
             matches!(
                 h.value,
-                wcontainers_gpu::HelperValue::TexelBufferView { .. }
+                wcontainers_gpu::reflect::HelperValue::TexelBufferView { .. }
             )
         })
         .count();
@@ -515,7 +515,7 @@ fn signed_and_unsigned_atomics_beside_each_other_keep_their_own_kinds() {
         let (module, reflection) = wcontainers_nir::direct::rewrite(
             routed,
             bindings,
-            &wcontainers_gpu::VariantKey::default(),
+            &wcontainers_gpu::reflect::VariantKey::default(),
             &key,
         )
         .unwrap();
@@ -523,7 +523,7 @@ fn signed_and_unsigned_atomics_beside_each_other_keep_their_own_kinds() {
         assert_eq!(
             reflection
                 .slow_paths
-                .contains(&wcontainers_gpu::SlowPath::AtomicExchangeLoop),
+                .contains(&wcontainers_gpu::slow::SlowPath::AtomicExchangeLoop),
             looped
         );
     }
@@ -563,7 +563,7 @@ fn images_of_textures_beside_atomics_are_storage_words_laid_out_by_helper_consta
     let (module, reflection) = wcontainers_nir::direct::rewrite(
         routed,
         bindings,
-        &wcontainers_gpu::VariantKey::default(),
+        &wcontainers_gpu::reflect::VariantKey::default(),
         &key,
     )
     .unwrap();
@@ -573,8 +573,8 @@ fn images_of_textures_beside_atomics_are_storage_words_laid_out_by_helper_consta
             .helpers
             .iter()
             .filter(|h| match h.value {
-                wcontainers_gpu::HelperValue::TexelLayout { .. } => layout,
-                wcontainers_gpu::HelperValue::TexelBufferView { .. } => !layout,
+                wcontainers_gpu::reflect::HelperValue::TexelLayout { .. } => layout,
+                wcontainers_gpu::reflect::HelperValue::TexelBufferView { .. } => !layout,
                 _ => false,
             })
             .count()
@@ -720,14 +720,14 @@ fn early_tests_a_fragment_program_forces_are_in_its_pixel_extras() {
     let (module, reflection) = wcontainers_nir::direct::rewrite(
         routed,
         bindings,
-        &wcontainers_gpu::VariantKey::default(),
+        &wcontainers_gpu::reflect::VariantKey::default(),
         &key,
     )
     .unwrap();
     wcontainers_nir::spirv::validate(&module.module).unwrap();
     assert!(matches!(
         reflection.extras,
-        wcontainers_gpu::StageExtras::Pixel {
+        wcontainers_gpu::reflect::StageExtras::Pixel {
             early_tests: true,
             side_effects: true,
             discards: false,
@@ -831,12 +831,12 @@ fn an_image_without_a_format_is_declared_in_the_format_the_variant_names() {
     let slot = found.binding - SLOT_KINDS[found.kind as usize].first_binding;
     let routed = || wcontainers_nir::direct::route(&mut stage.nir.try_clone().unwrap()).unwrap();
     assert_eq!(routed().rewrites.formatless, [slot]);
-    let unnamed = wcontainers_gpu::VariantKey::default();
+    let unnamed = wcontainers_gpu::reflect::VariantKey::default();
     assert!(wcontainers_nir::direct::rewrite(routed(), bindings.clone(), &unnamed, &key).is_err());
-    let format = wcontainers_gpu::Format::Rgba16Float;
-    let named = wcontainers_gpu::VariantKey {
+    let format = wcontainers_gpu::format::Format::Rgba16Float;
+    let named = wcontainers_gpu::reflect::VariantKey {
         storage_formats: vec![(slot, format)],
-        ..wcontainers_gpu::VariantKey::default()
+        ..wcontainers_gpu::reflect::VariantKey::default()
     };
     let (module, _) = wcontainers_nir::direct::rewrite(routed(), bindings, &named, &key).unwrap();
     wcontainers_nir::spirv::validate(&module.module).unwrap();
@@ -895,7 +895,7 @@ fn an_array_of_integer_textures_indexed_at_run_time_is_loaded_alike_through_ever
     let bindings = alike.to_common_form(Stage::Fragment).unwrap();
     let routed = wcontainers_nir::direct::route(&mut alike).unwrap();
     // The array split into its elements, each loaded where the index names it.
-    let unnamed = wcontainers_gpu::VariantKey::default();
+    let unnamed = wcontainers_gpu::reflect::VariantKey::default();
     let (module, _) = wcontainers_nir::direct::rewrite(routed, bindings, &unnamed, &key).unwrap();
     wcontainers_nir::spirv::validate(&module.module).unwrap();
     // Elements sampled two ways are left sampled, which the route refuses by name.
@@ -930,7 +930,7 @@ fn an_array_of_arrays_of_textures_is_one_array_of_its_elements() {
     let key = nir.key().unwrap();
     let bindings = nir.to_common_form(Stage::Fragment).unwrap();
     let routed = wcontainers_nir::direct::route(&mut nir).unwrap();
-    let unnamed = wcontainers_gpu::VariantKey::default();
+    let unnamed = wcontainers_gpu::reflect::VariantKey::default();
     let (module, _) = wcontainers_nir::direct::rewrite(routed, bindings, &unnamed, &key).unwrap();
     wcontainers_nir::spirv::validate(&module.module).unwrap();
 }
@@ -1039,7 +1039,7 @@ fn points_are_drawn_as_squares_passing_their_coordinate_after_every_location() {
     assert_eq!(square.geometry_vertices_out(), 4);
     let key = square.key().unwrap();
     let routed = wcontainers_nir::direct::route(&mut square).unwrap();
-    let unnamed = wcontainers_gpu::VariantKey::default();
+    let unnamed = wcontainers_gpu::reflect::VariantKey::default();
     let converted = wcontainers_nir::direct::geometry(routed, bindings, &unnamed, &key).unwrap();
     for form in &converted.modules {
         wcontainers_nir::spirv::validate(&form.module).unwrap();
@@ -1122,7 +1122,7 @@ fn a_vertex_program_using_storage_gets_a_pass_through_for_every_primitive_it_may
         let bindings = geometry.to_common_form(Stage::Compute).unwrap();
         let key = geometry.key().unwrap();
         let routed = wcontainers_nir::direct::route(&mut geometry).unwrap();
-        let unnamed = wcontainers_gpu::VariantKey::default();
+        let unnamed = wcontainers_gpu::reflect::VariantKey::default();
         let converted =
             wcontainers_nir::direct::geometry(routed, bindings, &unnamed, &key).unwrap();
         for form in &converted.modules {

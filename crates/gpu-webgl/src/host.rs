@@ -4,7 +4,9 @@
 //! extension, and the two-pixel formats, are stored decoded (`BlockDecoded`).
 
 use std::cell::RefCell;
-use wcontainers_gpu::{FORMAT_FACTS, Format, TextureDesc, TextureDimension};
+use wcontainers_gpu::{
+    format::FORMAT_FACTS, format::Format, resource::TextureDesc, resource::TextureDimension,
+};
 
 /// Whether textures of `format` keep a host copy: GL cannot read them back, and GPU writes never
 /// reach them (they are not renderable) or, for signed normalised formats with EXT_render_snorm,

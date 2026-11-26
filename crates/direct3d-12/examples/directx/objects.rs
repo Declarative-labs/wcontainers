@@ -22,7 +22,7 @@ use wcontainers_direct3d_12::{
     ResourceId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, dxgi_format, plane_count};
-use wcontainers_gpu::{Extent, FORMAT_FACTS, Gpu, Origin};
+use wcontainers_gpu::{Gpu, format::FORMAT_FACTS, resource::Extent, resource::Origin};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -1848,7 +1848,7 @@ impl Device {
                     d.backend()
                         .caps()
                         .features
-                        .contains(wcontainers_gpu::Features::TIMESTAMPS)
+                        .contains(wcontainers_gpu::caps::Features::TIMESTAMPS)
                 });
                 *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS3>(data, size)? } =
                     D3D12_FEATURE_DATA_D3D12_OPTIONS3 {
@@ -2165,7 +2165,7 @@ impl Queue {
             d.backend()
                 .caps()
                 .features
-                .contains(wcontainers_gpu::Features::TIMESTAMPS)
+                .contains(wcontainers_gpu::caps::Features::TIMESTAMPS)
         }) {
             Ok(1_000_000_000)
         } else {
@@ -2184,7 +2184,7 @@ impl Queue {
                 .backend()
                 .caps()
                 .features
-                .contains(wcontainers_gpu::Features::TIMESTAMPS)
+                .contains(wcontainers_gpu::caps::Features::TIMESTAMPS)
             {
                 return Ok(None);
             }

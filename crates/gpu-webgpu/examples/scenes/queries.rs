@@ -3,8 +3,9 @@
 
 use crate::{draw, scene};
 use wcontainers_gpu::{
-    BufferUsage, ColorAttachment, DeviceStatus, Features, Gpu, LoadOp, PassDesc, QueryKind,
-    SlowPath, StoreOp, WriteMode,
+    Gpu, caps::Features, draw::ColorAttachment, draw::LoadOp, draw::PassDesc, draw::StoreOp,
+    error::DeviceStatus, resource::BufferUsage, resource::QueryKind, resource::WriteMode,
+    slow::SlowPath,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -14,7 +15,7 @@ const QUERIES: u32 = 5000;
 /// WebGPU's queries a set: the first query of the second page.
 const PAGE: u32 = wgpu::QUERY_SET_MAX_QUERIES;
 
-fn gpu<T>(r: Result<T, wcontainers_gpu::GpuError>) -> Result<T, String> {
+fn gpu<T>(r: Result<T, wcontainers_gpu::error::GpuError>) -> Result<T, String> {
     r.map_err(|e| format!("{e:?}"))
 }
 
@@ -84,7 +85,7 @@ pub fn paged_sets(b: &mut WebGpu) -> Result<String, String> {
     b.end_query();
     b.end_pass();
     gpu(b.resolve_queries(&set, PAGE - 2, 4, &results, 8))?;
-    let around = gpu(b.read_back(&wcontainers_gpu::ReadSource::Buffer {
+    let around = gpu(b.read_back(&wcontainers_gpu::resource::ReadSource::Buffer {
         buffer: &results,
         offset: 0,
         size: 48,
@@ -167,7 +168,7 @@ pub fn results_ring(b: &mut WebGpu, frames: u32) -> Result<String, String> {
         b.end_query();
         b.end_pass();
         gpu(b.resolve_queries(&set, 0, 2, &results, 0))?;
-        let resolved = gpu(b.read_back(&wcontainers_gpu::ReadSource::Buffer {
+        let resolved = gpu(b.read_back(&wcontainers_gpu::resource::ReadSource::Buffer {
             buffer: &results,
             offset: 0,
             size: 16,

@@ -1,6 +1,9 @@
 //! Dispatches: the compute program converted by the NIR route, its resources bound as a draw's.
 
-use wcontainers_gpu::{DispatchCall, DispatchGroups, Gpu, Object, Program, SlowPath, StageSet};
+use wcontainers_gpu::{
+    Gpu, Object, draw::DispatchCall, draw::DispatchGroups, shader::Program, shader::StageSet,
+    slow::SlowPath,
+};
 
 use crate::context::{Context, end_if_lost};
 use crate::draw::{self, Variant};

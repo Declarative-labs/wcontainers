@@ -3,7 +3,8 @@
 
 use std::path::Path;
 use wcontainers_gpu::{
-    HelperValue, LinkedValues, StageExtras, SystemValue, VariantFlags, VariantKey, VertexFormat,
+    reflect::HelperValue, reflect::LinkedValues, reflect::StageExtras, reflect::SystemValue,
+    reflect::VariantFlags, reflect::VariantKey, state::VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, convert, stage};
 
@@ -16,7 +17,7 @@ fn own(name: &str) -> Vec<u8> {
     .unwrap()
 }
 
-fn wgsl(m: &wcontainers_gpu::ShaderModule) -> String {
+fn wgsl(m: &wcontainers_gpu::shader::ShaderModule) -> String {
     naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())
         .unwrap()
 }
@@ -68,8 +69,14 @@ fn geometry_shaders_declare_what_they_are() {
             "{name}"
         );
         assert_eq!(c.modules.len(), 2, "{name}");
-        assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Compute);
-        assert_eq!(c.modules[1].stage, wcontainers_gpu::ShaderStage::Vertex);
+        assert_eq!(
+            c.modules[0].stage,
+            wcontainers_gpu::shader::ShaderStage::Compute
+        );
+        assert_eq!(
+            c.modules[1].stage,
+            wcontainers_gpu::shader::ShaderStage::Vertex
+        );
         assert_ne!(c.modules[0].key, c.modules[1].key);
         // The outputs the pixel stage links to: the position and two locations.
         let outputs = &c.reflection.outputs;
@@ -85,7 +92,7 @@ fn geometry_shaders_declare_what_they_are() {
         }
         // The vertex stage's compute form writes the records this shader reads.
         let records = stage::vertex_program(&vertex, &c).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_eq!(records.stage, wcontainers_gpu::ShaderStage::Compute);
+        assert_eq!(records.stage, wcontainers_gpu::shader::ShaderStage::Compute);
         wgsl(&records);
         // A cache record gives the same modules back.
         let back = wcontainers_shaders::cache::decode(
@@ -325,7 +332,7 @@ fn geometry_shaders_have_a_replay_form() {
         assert_eq!(c.modules.len(), 2, "{name}");
         assert_eq!(
             c.modules[0].stage,
-            wcontainers_gpu::ShaderStage::Vertex,
+            wcontainers_gpu::shader::ShaderStage::Vertex,
             "{name}"
         );
         assert_eq!(wgsl(&c.modules[1]), wgsl(&compute.modules[1]), "{name}");
@@ -349,7 +356,7 @@ fn geometry_shaders_have_a_replay_form() {
         wcontainers_gpu_webgl::glsl::write(&c.modules[0], settings)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         let captured = stage::capture_program(&drawn, &c).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_eq!(captured.stage, wcontainers_gpu::ShaderStage::Vertex);
+        assert_eq!(captured.stage, wcontainers_gpu::shader::ShaderStage::Vertex);
         wcontainers_gpu_webgl::glsl::write(&captured, settings)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }
@@ -401,7 +408,7 @@ fn geometry_refusals_are_named() {
     );
     // The last vertex stage's rewrites the stage helper's vertex program does not make.
     let key = VariantKey {
-        flags: wcontainers_gpu::VariantFlags::CLIP_DEPTH_REWRITE,
+        flags: wcontainers_gpu::reflect::VariantFlags::CLIP_DEPTH_REWRITE,
         ..Default::default()
     };
     assert_eq!(
@@ -434,7 +441,7 @@ fn geometry_clip_distances_reach_the_pass_through() {
         .last()
         .map_or(0, |l| l + 1);
     let key = VariantKey {
-        flags: wcontainers_gpu::VariantFlags::CLIP_DISTANCE,
+        flags: wcontainers_gpu::reflect::VariantFlags::CLIP_DISTANCE,
         linked: LinkedValues {
             location,
             clip_distances: 3,
@@ -458,7 +465,7 @@ fn depth_clamping_reaches_the_pass_through() {
         .last()
         .map_or(0, |l| l + 1);
     let key = VariantKey {
-        flags: wcontainers_gpu::VariantFlags::DEPTH_CLAMP,
+        flags: wcontainers_gpu::reflect::VariantFlags::DEPTH_CLAMP,
         linked: LinkedValues {
             location,
             clip_distances: 0,
@@ -548,7 +555,7 @@ fn the_named_layer_passes_from_the_stage_to_the_pixel_shader() {
 #[test]
 fn the_stream_output_program_validates() {
     let m = stage::stream_program().unwrap();
-    assert_eq!(m.stage, wcontainers_gpu::ShaderStage::Compute);
+    assert_eq!(m.stage, wcontainers_gpu::shader::ShaderStage::Compute);
     wgsl(&m);
 }
 
@@ -594,7 +601,7 @@ fn cull_distances_take_the_stage_helpers_route() {
         );
         assert_eq!(
             programs.compute.stage,
-            wcontainers_gpu::ShaderStage::Compute
+            wcontainers_gpu::shader::ShaderStage::Compute
         );
         assert!(wgsl(&programs.compute).contains("fn main"), "{route}");
         let passthrough = wgsl(&programs.passthrough);
@@ -904,7 +911,10 @@ fn hull_and_domain_shaders_declare_what_they_are() {
                 for ext in ["dxbc", "dxil"] {
                     let c = converted(&hs, ext);
                     assert_eq!(c.modules.len(), 1);
-                    assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Compute);
+                    assert_eq!(
+                        c.modules[0].stage,
+                        wcontainers_gpu::shader::ShaderStage::Compute
+                    );
                     assert_eq!(
                         c.reflection.extras,
                         StageExtras::Hull {
@@ -933,7 +943,10 @@ fn hull_and_domain_shaders_declare_what_they_are() {
         let ds = format!("ds_{name}");
         for ext in ["dxbc", "dxil"] {
             let c = converted(&ds, ext);
-            assert_eq!(c.modules[0].stage, wcontainers_gpu::ShaderStage::Vertex);
+            assert_eq!(
+                c.modules[0].stage,
+                wcontainers_gpu::shader::ShaderStage::Vertex
+            );
             assert_eq!(
                 c.reflection.extras,
                 StageExtras::Domain {
@@ -1096,7 +1109,7 @@ fn dxil_geometry_outputs_match_dxbc_on_every_stream() {
 #[test]
 fn the_tessellator_program_validates() {
     let m = stage::tessellator_program().unwrap();
-    assert_eq!(m.stage, wcontainers_gpu::ShaderStage::Compute);
+    assert_eq!(m.stage, wcontainers_gpu::shader::ShaderStage::Compute);
     wgsl(&m);
 }
 

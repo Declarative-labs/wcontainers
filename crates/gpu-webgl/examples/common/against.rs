@@ -3,7 +3,10 @@
 //! (tests/against_webgpu.rs) and in Chrome against its WebGPU (examples/browser.rs, against.html).
 
 use crate::kit::{self, Kit};
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+    resource::*, shader::*, slow::*, state::*, *,
+};
 
 /// What one drawing gives: named parts read back.
 pub type Parts = Vec<(String, Vec<u8>)>;

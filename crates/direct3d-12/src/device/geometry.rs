@@ -8,8 +8,8 @@
 //! and the domain program draws the tessellator's points with the pixel program.
 
 use wcontainers_gpu::{
-    BufferRange, DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, SourceStage, StageExtras,
-    VertexFormat, WriteMode,
+    reflect::DOMAIN_PATCHES_BINDING, reflect::DOMAIN_POINTS_BINDING, reflect::SourceStage,
+    reflect::StageExtras, resource::BufferRange, resource::WriteMode, state::VertexFormat,
 };
 use wcontainers_shaders::stage::{
     DomainSets, FinalDraw, StageDraw, StageError, StageIndex, Stages, StreamOutput, StreamTargets,
@@ -59,11 +59,11 @@ pub(super) struct Selects {
 }
 
 impl Selects {
-    fn of(r: &wcontainers_gpu::Reflection, passthrough: Option<&ShaderModule>) -> Self {
+    fn of(r: &wcontainers_gpu::reflect::Reflection, passthrough: Option<&ShaderModule>) -> Self {
         let writes = |v| r.outputs.iter().any(|o| o.system == Some(v));
         Selects {
-            layer: writes(wcontainers_gpu::SystemValue::RenderTargetArrayIndex),
-            viewport: writes(wcontainers_gpu::SystemValue::ViewportArrayIndex),
+            layer: writes(wcontainers_gpu::reflect::SystemValue::RenderTargetArrayIndex),
+            viewport: writes(wcontainers_gpu::reflect::SystemValue::ViewportArrayIndex),
             block: passthrough.map_or(0, run_block_size),
         }
     }
@@ -75,7 +75,7 @@ fn run_block_size(module: &ShaderModule) -> u32 {
     let m = &module.module;
     let binding = naga::ResourceBinding {
         group: HELPER_SET,
-        binding: wcontainers_gpu::helper_binding(ShaderStage::Vertex),
+        binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
     };
     m.global_variables
         .iter()
@@ -108,7 +108,7 @@ pub(super) fn writes_cull_distances(c: &Converted) -> bool {
     c.reflection
         .outputs
         .iter()
-        .any(|v| v.system == Some(wcontainers_gpu::SystemValue::CullDistance))
+        .any(|v| v.system == Some(wcontainers_gpu::reflect::SystemValue::CullDistance))
 }
 
 impl<B: Gpu> Device<B> {
@@ -383,7 +383,7 @@ impl<B: Gpu> Device<B> {
             .bindings
             .iter()
             .filter_map(|b| match b.added {
-                Some(wcontainers_gpu::AddedBinding::PulledStream(location)) => {
+                Some(wcontainers_gpu::reflect::AddedBinding::PulledStream(location)) => {
                     Some((b.binding, location))
                 }
                 _ => None,
@@ -559,7 +559,8 @@ impl<B: Gpu> Replay<B> {
             .0;
         if middle_helpers.size != 0 {
             let block = d.stage_block(&middle_helpers, middle)?;
-            let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
+            let compute =
+                wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute);
             geometry_sets[HELPER_SET as usize] = Some(d.helper_blocks(
                 &[(compute, StageSet::COMPUTE, block)],
                 &[],
@@ -568,7 +569,7 @@ impl<B: Gpu> Replay<B> {
             )?);
         }
         // The sets of the domain stage run as compute and of a geometry stage after it.
-        let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
+        let compute = wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute);
         let later_sets = match &after_domain {
             Some(late) => {
                 let mut domain_sets = d
@@ -577,7 +578,8 @@ impl<B: Gpu> Replay<B> {
                 if let Some(helpers) = domain.as_ref().filter(|h| h.size != 0) {
                     // The compute form keeps the drawn program's helper binding.
                     let block = d.stage_block(helpers, DOMAIN)?;
-                    let vertex = wcontainers_gpu::helper_binding(ShaderStage::Vertex);
+                    let vertex =
+                        wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex);
                     domain_sets[HELPER_SET as usize] = Some(d.helper_blocks(
                         &[(vertex, StageSet::COMPUTE, block)],
                         &[],
@@ -641,13 +643,15 @@ impl<B: Gpu> Replay<B> {
                 let mut blocks = Vec::new();
                 if let Some(helpers) = drawn_domain.as_ref().filter(|h| h.size != 0) {
                     let block = d.stage_block(helpers, DOMAIN)?;
-                    let vertex = wcontainers_gpu::helper_binding(ShaderStage::Vertex);
+                    let vertex =
+                        wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex);
                     blocks.push((vertex, StageSet::VERTEX, block));
                 }
                 let helpers = d.pipelines[pid.0 as usize].helpers.clone();
                 if helpers.size != 0 {
                     let block = d.stage_block(&helpers, bind::PIXEL)?;
-                    let fragment = wcontainers_gpu::helper_binding(ShaderStage::Fragment);
+                    let fragment =
+                        wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Fragment);
                     blocks.push((fragment, StageSet::FRAGMENT, block));
                 }
                 Some((sets, blocks))
@@ -863,13 +867,13 @@ impl<B: Gpu> Replay<B> {
             for viewport in 0..viewports {
                 let run = [layer, viewport];
                 let mut blocks = vec![(
-                    wcontainers_gpu::helper_binding(ShaderStage::Vertex),
+                    wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
                     StageSet::VERTEX,
                     passthrough_block(run, layers, selects),
                 )];
                 if pixel.size != 0 {
                     blocks.push((
-                        wcontainers_gpu::helper_binding(ShaderStage::Fragment),
+                        wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Fragment),
                         StageSet::FRAGMENT,
                         d.run_block(&pixel, bind::PIXEL, run)?,
                     ));

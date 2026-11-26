@@ -15,14 +15,18 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp, BufferRange,
-    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource,
-    DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace, Gpu as Backend,
-    HelperValue, IndexBinding, IndexFormat, LinkedValues, Origin, PassDesc, Program,
-    ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, ShaderModule, ShaderStage,
-    SlotKind, SlowPath, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, VariantFlags,
-    VariantKey, VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream,
-    Viewport, helper_binding,
+    Gpu as Backend, caps::Features, draw::ColorAttachment, draw::DrawCall, draw::DrawRange,
+    draw::IndexBinding, draw::PassDesc, draw::StoreOp, draw::VertexBinding, draw::Viewport,
+    format::Format, reflect::DrawBaseSource, reflect::HelperValue, reflect::LinkedValues,
+    reflect::SlotKind, reflect::VariantFlags, reflect::VariantKey, resource::BindingEntry,
+    resource::BindingResource, resource::BufferRange, resource::BufferUsage, resource::Extent,
+    resource::Origin, resource::ReadSource, resource::TextureRegion, resource::TextureUsage,
+    shader::Program, shader::ShaderModule, shader::ShaderStage, shader::StageSet, slow::SlowPath,
+    state::BlendComponent, state::BlendDesc, state::BlendFactor, state::BlendOp,
+    state::ColorWrites, state::CullMode, state::DepthStencilDesc, state::FillMode,
+    state::FrontFace, state::IndexFormat, state::ProvokingVertex, state::RasterDesc,
+    state::RenderTargetBlend, state::StepMode, state::VertexAttribute, state::VertexFormat,
+    state::VertexLayoutDesc, state::VertexStream,
 };
 use wcontainers_graphics_test::Driver;
 use wcontainers_graphics_test::d3d11::{self, Gpu};
@@ -448,7 +452,7 @@ fn ours<B: Backend>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let vertex_helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -565,7 +569,7 @@ fn ours_replayed<B: Backend>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let vertex_helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Vertex),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
             stages: StageSet::VERTEX,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -719,7 +723,7 @@ fn drawn<B: Backend>(
         view: &target_view,
         depth_slice: 0,
         resolve: resolved.as_ref().map(|(_, view)| view),
-        load: wcontainers_gpu::LoadOp::Clear(
+        load: wcontainers_gpu::draw::LoadOp::Clear(
             if blending { CLEAR } else { [0.0; 4] }.map(f32::to_bits),
         ),
         store: StoreOp::Store,
@@ -791,7 +795,7 @@ fn drawn<B: Backend>(
         &mut out,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     out
 }
 
@@ -1565,7 +1569,7 @@ fn ours_stored<B: Backend>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let vertex_helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -1932,7 +1936,7 @@ fn ours_geometry<B: Backend>(
         ..Default::default()
     };
     let gs_key = VariantKey {
-        texel_buffers: wcontainers_gpu::TexelBufferRoute::Storage,
+        texel_buffers: wcontainers_gpu::reflect::TexelBufferRoute::Storage,
         texel_formats: vec![(0, Format::Rgba32Float)],
         ..Default::default()
     };
@@ -1986,7 +1990,7 @@ fn ours_geometry<B: Backend>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let vertex_helpers = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -2033,7 +2037,7 @@ fn ours_geometry<B: Backend>(
         (!gs_helpers.is_empty()).then(|| buffer(b, &gs_helpers, BufferUsage::UNIFORM));
     let geometry_helpers = gs_helper_buffer.as_ref().map(|helper_buffer| {
         b.create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: helper_buffer,

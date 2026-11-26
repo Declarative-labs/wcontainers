@@ -2,7 +2,7 @@
 //! timestamps run and give exact results, and each of their rules (plan 4.3, 4.7) broken once is
 //! refused, as a violation that loses the device and `GpuError::Invalid`, or as `GpuError::Absent`.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{caps::*, draw::*, error::*, format::*, resource::*, shader::*, state::*, *};
 use wcontainers_gpu_test::{Id, Recorder};
 
 const PROGRAMS: &str = "

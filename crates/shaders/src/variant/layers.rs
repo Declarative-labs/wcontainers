@@ -38,7 +38,7 @@ pub(super) fn split(
         .filter(|b| b.kind == SlotKind::Texture)
         .map(|b| b.binding + b.count)
         .max()
-        .unwrap_or(wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].first_binding);
+        .unwrap_or(wcontainers_gpu::reflect::SLOT_KINDS[SlotKind::Texture as usize].first_binding);
     // Each array with its layers' variables, layer 0 first.
     let mut split = Vec::new();
     for g in arrays {
@@ -73,8 +73,8 @@ pub(super) fn split(
         let mut vars = alloc::vec![g];
         for layer in 1..count {
             if next
-                >= wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].first_binding
-                    + wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].slots
+                >= wcontainers_gpu::reflect::SLOT_KINDS[SlotKind::Texture as usize].first_binding
+                    + wcontainers_gpu::reflect::SLOT_KINDS[SlotKind::Texture as usize].slots
             {
                 return Err(ConvertError::Unsupported(
                     crate::refusal::BINDINGS_BEYOND_LIMIT,
@@ -94,16 +94,18 @@ pub(super) fn split(
                 },
                 Span::UNDEFINED,
             ));
-            reflection.bindings.push(wcontainers_gpu::ReflectedBinding {
-                kind: SlotKind::Texture,
-                space: 0,
-                register: 0,
-                count: 1,
-                set,
-                binding: next,
-                added: Some(AddedBinding::TextureLayer(slot, layer)),
-                stride: 0,
-            });
+            reflection
+                .bindings
+                .push(wcontainers_gpu::reflect::ReflectedBinding {
+                    kind: SlotKind::Texture,
+                    space: 0,
+                    register: 0,
+                    count: 1,
+                    set,
+                    binding: next,
+                    added: Some(AddedBinding::TextureLayer(slot, layer)),
+                    stride: 0,
+                });
             next += 1;
         }
         split.push(vars);

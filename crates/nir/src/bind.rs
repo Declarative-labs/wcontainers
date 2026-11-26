@@ -3,7 +3,7 @@
 //! (set, binding), recorded in the reflection with the program's set as `space` and its binding as
 //! `register`.
 
-use wcontainers_gpu::{ShaderStage, SlotKind};
+use wcontainers_gpu::{reflect::SlotKind, shader::ShaderStage};
 
 /// The kinds the route numbers, in the order of the bridge's `enum wc_slot_kind`.
 pub const KINDS: [SlotKind; 4] = [

@@ -5,7 +5,7 @@
 //! is ready, objects used after destroy, blocks needing absent features) and the usage-scope rule
 //! (`tests/helpers.rs`) are not repeated here.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{caps::*, draw::*, error::*, format::*, resource::*, shader::*, state::*, *};
 use wcontainers_gpu_test::{Id, Recorder};
 
 const PROGRAM: &str = "
@@ -3633,7 +3633,7 @@ fn passes_stay_within_the_colour_target_limits() {
         ([Format::Rgba8Unorm, Format::Rgba8Unorm], 16),
         ([Format::R8Unorm, Format::R32Float], 8),
     ] {
-        assert_eq!(color_target_bytes(pair), Some(limit));
+        assert_eq!(Format::color_target_bytes(pair), Some(limit));
         for (limit, fits) in [(limit - 1, false), (limit, true)] {
             let mut d = Drawing::with_caps(|c| c.limits.color_bytes_per_sample = limit);
             let [a, b] = pair.map(|f| {

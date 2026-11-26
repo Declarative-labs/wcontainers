@@ -25,7 +25,7 @@ mod lavapipe;
 
 use ash::vk;
 use lavapipe::{Descriptor, Element, Job, Lavapipe};
-use wcontainers_gpu::SlotKind;
+use wcontainers_gpu::reflect::SlotKind;
 use wcontainers_nir::mesa::{Nir, Stage};
 
 const PROGRAM: &str = "#version 450

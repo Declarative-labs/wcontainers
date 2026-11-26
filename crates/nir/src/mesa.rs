@@ -6,7 +6,7 @@ use crate::bind::{self, KINDS};
 use std::ffi::{CStr, CString, c_char};
 #[cfg(feature = "standalone")]
 use std::sync::Once;
-use wcontainers_gpu::{ReflectedBinding, SLOT_KINDS, ShaderStage};
+use wcontainers_gpu::{reflect::ReflectedBinding, reflect::SLOT_KINDS, shader::ShaderStage};
 
 /// The program stages the routes take (`enum wc_stage`).
 #[repr(C)]

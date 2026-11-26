@@ -7,7 +7,7 @@ use naga::{
     AddressSpace, Binding, Block, Expression, Handle, ImageClass, Literal, Scalar, Span, Statement,
     StorageAccess, StructMember, Type, TypeInner, VectorSize,
 };
-use wcontainers_gpu::{ShaderModule, ShaderStage};
+use wcontainers_gpu::{shader::ShaderModule, shader::ShaderStage};
 use wcontainers_shaders::ENTRY_POINT;
 
 use crate::error::{Result, not_implemented};

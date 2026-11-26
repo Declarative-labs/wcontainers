@@ -8,8 +8,9 @@
 
 use naga::ScalarKind;
 use wcontainers_gpu::{
-    FORMAT_FACTS, FormatKind, HELPER_SET, HelperValue, Reflection, ScalarKind as ValueKind,
-    ShaderStage, SystemValue, TARGET_COPY_BINDING, TargetInShader,
+    format::FORMAT_FACTS, format::FormatKind, reflect::HELPER_SET, reflect::HelperValue,
+    reflect::Reflection, reflect::ScalarKind as ValueKind, reflect::SystemValue,
+    reflect::TARGET_COPY_BINDING, reflect::TargetInShader, shader::ShaderStage,
 };
 
 use super::pull::{Kind, layout};
@@ -249,7 +250,7 @@ const LOGIC_PREFIX: &str = "LOGIC_";
 
 /// `combine.wgsl` with the codes it names declared ahead of it, as the interface numbers them.
 fn library_source() -> String {
-    use wcontainers_gpu::{BlendFactor as F, BlendOp as O, LogicOp as L};
+    use wcontainers_gpu::{state::BlendFactor as F, state::BlendOp as O, state::LogicOp as L};
     let factors = [
         F::Zero,
         F::One,
@@ -459,7 +460,7 @@ fn combine(
     (to, count, own_count): (Scalar, u32, u32),
 ) -> Result<()> {
     use naga::{MathFunction, VectorSize};
-    use wcontainers_gpu::{ColorWrites, TargetCombineValue};
+    use wcontainers_gpu::{reflect::TargetCombineValue, state::ColorWrites};
     match samples {
         0 => return Err(ConvertError::Unsupported(crate::refusal::SAMPLE_COUNT)),
         1 => {}

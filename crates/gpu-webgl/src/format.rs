@@ -1,7 +1,7 @@
 //! How each interface format is stored in GL ES 3.0, and what GL lets it do.
 
 use glow::*;
-use wcontainers_gpu::{FORMAT_FACTS, Format, FormatUse};
+use wcontainers_gpu::{caps::FormatUse, format::FORMAT_FACTS, format::Format};
 
 /// A format's GL sized internal format and the format and type its texels are written in.
 #[derive(Clone, Copy, Debug)]
@@ -143,7 +143,7 @@ pub fn float_bits(format: Format) -> bool {
 }
 
 /// Whether the interface's bytes of `format` hold blue first, where GL stores red first
-/// ([`wcontainers_gpu::SlowPath::FormatConverted`] on the way in and out).
+/// ([`wcontainers_gpu::slow::SlowPath::FormatConverted`] on the way in and out).
 pub fn swapped(format: Format) -> bool {
     matches!(
         format,
@@ -363,7 +363,7 @@ impl ReadAs {
     }
 
     /// Whether the host converts the values read, not only keeps part of each texel's bytes
-    /// ([`wcontainers_gpu::SlowPath::FormatConverted`]).
+    /// ([`wcontainers_gpu::slow::SlowPath::FormatConverted`]).
     pub fn converts(self) -> bool {
         self.swap || self.fields.is_some()
     }

@@ -6,7 +6,9 @@
 mod forms;
 
 use std::path::Path;
-use wcontainers_gpu::{ShaderStage, StageValue, VariantFlags, VariantKey};
+use wcontainers_gpu::{
+    reflect::StageValue, reflect::VariantFlags, reflect::VariantKey, shader::ShaderStage,
+};
 use wcontainers_shaders::staged::{self, DomainProgram, GeometryProgram};
 use wcontainers_shaders::{ConvertError, Converted, Source, convert};
 
@@ -161,7 +163,7 @@ fn programs_from_a_module_are_refused_by_name() {
         instances: 1,
         values,
     };
-    let reflection = || forms::bare(wcontainers_gpu::SourceStage::Geometry, Vec::new());
+    let reflection = || forms::bare(wcontainers_gpu::reflect::SourceStage::Geometry, Vec::new());
     let plain = VariantKey::default();
     // Several streams of strips, which Direct3D does not take.
     let strips = staged::geometry(
@@ -209,7 +211,7 @@ fn programs_from_a_module_are_refused_by_name() {
             input_points: 0,
             values: Vec::new(),
         },
-        forms::bare(wcontainers_gpu::SourceStage::Domain, Vec::new()),
+        forms::bare(wcontainers_gpu::reflect::SourceStage::Domain, Vec::new()),
         &plain,
         &key,
     );

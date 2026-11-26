@@ -74,11 +74,11 @@ impl Recorder {
                 features: Features::empty(),
                 limits,
                 formats: FormatCaps {
-                    uses: [FormatUse::all(); crate::FORMAT_COUNT],
-                    samples: [0b101; crate::FORMAT_COUNT],
+                    uses: [FormatUse::all(); crate::format::FORMAT_COUNT],
+                    samples: [0b101; crate::format::FORMAT_COUNT],
                 },
             }),
-            slow: crate::NO_SLOW_PATHS,
+            slow: crate::slow::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             next: 0,
             log: Vec::new(),
@@ -532,7 +532,7 @@ fn texture(dimension: TextureDimension, format: Format, layers: u32, mips: u32) 
         depth_or_layers: layers,
         mip_levels: mips,
         samples: 1,
-        usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
+        usage: crate::resource::TextureUsage::SAMPLE | crate::resource::TextureUsage::RENDER,
         reinterpret: false,
         cube: false,
     }
@@ -690,7 +690,7 @@ fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
         ]
     );
     // Too little room left: the ring starts again at zero, dropping its old contents by renaming.
-    let big = vec![9u8; RING_SIZE as usize - 256];
+    let big = vec![9u8; Helpers::<Recorder>::RING_SIZE as usize - 256];
     let mut one = [0];
     r.write_buffer_ring(RingKind::Data, &[&big], 256, &mut one)
         .unwrap();
@@ -700,7 +700,7 @@ fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
         "write_buffer 1 4194048 bytes Discard"
     );
     // Larger than the ring: a larger ring replaces it.
-    let huge = vec![1u8; RING_SIZE as usize + 4];
+    let huge = vec![1u8; Helpers::<Recorder>::RING_SIZE as usize + 4];
     let ring = r
         .write_buffer_ring(RingKind::Data, &[&huge], 4, &mut one)
         .unwrap();
@@ -745,7 +745,7 @@ fn own_view_follows_cube_and_layers() {
         depth_or_layers: 1,
         mip_levels: 1,
         samples: 1,
-        usage: crate::TextureUsage::SAMPLE,
+        usage: crate::resource::TextureUsage::SAMPLE,
         reinterpret: false,
         cube: false,
     };
@@ -771,7 +771,7 @@ fn generate_mips_draws_each_level_and_layer_from_the_one_above() {
         depth_or_layers: 2,
         mip_levels: 3,
         samples: 1,
-        usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
+        usage: crate::resource::TextureUsage::SAMPLE | crate::resource::TextureUsage::RENDER,
         reinterpret: false,
         cube: false,
     };
@@ -821,7 +821,7 @@ fn generate_mips_of_a_volume_draws_each_slice_at_its_centre() {
         depth_or_layers: 4,
         mip_levels: 2,
         samples: 1,
-        usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
+        usage: crate::resource::TextureUsage::SAMPLE | crate::resource::TextureUsage::RENDER,
         reinterpret: false,
         cube: false,
     };
@@ -967,7 +967,7 @@ fn absent_features_say_which() {
         program: &BLOCK,
         bindings: [None; crate::MAX_BINDING_SETS],
         immediates: &[],
-        groups: crate::DispatchGroups::Direct([1, 1, 1]),
+        groups: crate::draw::DispatchGroups::Direct([1, 1, 1]),
     };
     assert_eq!(
         r.dispatch(&dispatch).unwrap_err(),

@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use naga::Module;
 use rspirv::dr::{self, Operand};
 use spirv::{BuiltIn, ExecutionMode, ExecutionModel, Op, StorageClass};
-use wcontainers_gpu::{SourceStage, StageExtras, StageValue};
+use wcontainers_gpu::{reflect::SourceStage, reflect::StageExtras, reflect::StageValue};
 
 /// The prefix of the names given to the stage values' variables.
 const VALUE_NAME: &str = "ts_value";

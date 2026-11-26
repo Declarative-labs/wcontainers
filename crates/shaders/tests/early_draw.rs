@@ -12,13 +12,17 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AspectOps, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorAttachment,
-    ColorWrites, CompareFn, CullMode, DepthAttachment, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FillMode, Format, FrontFace, Gpu as Backend, HELPER_SET, HelperValue, LoadOp, Origin,
-    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, ShaderStage,
-    SlotKind, StageSet, StencilFace, StencilOp, StoreOp, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VariantFlags, VariantKey, VertexLayoutDesc, ViewDimension, Viewport,
-    helper_binding,
+    Gpu as Backend, draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment, draw::DrawCall,
+    draw::DrawRange, draw::LoadOp, draw::PassDesc, draw::StoreOp, draw::Viewport, format::Format,
+    reflect::HELPER_SET, reflect::HelperValue, reflect::SlotKind, reflect::VariantFlags,
+    reflect::VariantKey, resource::BindingEntry, resource::BindingResource, resource::BufferRange,
+    resource::BufferUsage, resource::CompareFn, resource::Extent, resource::Origin,
+    resource::ReadSource, resource::TextureRegion, resource::TextureUsage,
+    resource::TextureViewDesc, resource::ViewDimension, shader::Program, shader::ShaderStage,
+    shader::StageSet, state::BlendDesc, state::ColorWrites, state::CullMode,
+    state::DepthStencilDesc, state::FillMode, state::FrontFace, state::ProvokingVertex,
+    state::RasterDesc, state::RenderTargetBlend, state::StencilFace, state::StencilOp,
+    state::Topology, state::VertexLayoutDesc,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Converted, Source, convert};
@@ -408,7 +412,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> (Vec<u8>, Vec<u8>) {
         let helpers = &mut entries[HELPER_SET as usize];
         if vs.reflection.helper_size > 0 {
             helpers.push(BindingEntry {
-                binding: helper_binding(ShaderStage::Vertex),
+                binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
                 stages: StageSet::VERTEX,
                 resource: BindingResource::UniformBuffer(BufferRange {
                     buffer: &vertex_helpers,
@@ -419,7 +423,9 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> (Vec<u8>, Vec<u8>) {
         }
         if n == 1 {
             helpers.push(BindingEntry {
-                binding: helper_binding(ShaderStage::Fragment),
+                binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                    ShaderStage::Fragment,
+                ),
                 stages: StageSet::FRAGMENT,
                 resource: BindingResource::UniformBuffer(BufferRange {
                     buffer: &tests,
@@ -428,8 +434,11 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> (Vec<u8>, Vec<u8>) {
                 }),
             });
             for (binding, view) in [
-                (wcontainers_gpu::EARLY_DEPTH_BINDING, &depth_view),
-                (wcontainers_gpu::EARLY_STENCIL_BINDING, &stencil_view),
+                (wcontainers_gpu::reflect::EARLY_DEPTH_BINDING, &depth_view),
+                (
+                    wcontainers_gpu::reflect::EARLY_STENCIL_BINDING,
+                    &stencil_view,
+                ),
             ] {
                 helpers.push(BindingEntry {
                     binding,
@@ -542,7 +551,11 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> (Vec<u8>, Vec<u8>) {
         &mut texels,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok, "{case:?}");
+    assert_eq!(
+        b.status(),
+        wcontainers_gpu::error::DeviceStatus::Ok,
+        "{case:?}"
+    );
     (marked, texels)
 }
 

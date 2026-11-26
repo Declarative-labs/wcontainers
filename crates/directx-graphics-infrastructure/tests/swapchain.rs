@@ -7,7 +7,7 @@ mod support {
 
 use support::record::Recorder;
 use wcontainers_directx_graphics_infrastructure::*;
-use wcontainers_gpu::{Format, Gpu, TextureUsage};
+use wcontainers_gpu::{Gpu, format::Format, resource::TextureUsage};
 
 fn desc(format: u32, buffers: u32, model: Model) -> SwapChainDesc {
     SwapChainDesc {
@@ -107,7 +107,7 @@ fn sequential_blit_buffers_move_down_at_each_present() {
     let at = |k: &str| calls.iter().position(|c| c.starts_with(k)).unwrap();
     assert!(at("end_pass") < at("copy_texture") && at("copy_texture") < at("submit"));
     assert_eq!(
-        b.slow_paths().counts[wcontainers_gpu::SlowPath::SequentialBuffersCopied as usize],
+        b.slow_paths().counts[wcontainers_gpu::slow::SlowPath::SequentialBuffersCopied as usize],
         1
     );
     // One buffer moves nowhere.
@@ -287,13 +287,13 @@ fn format_support_follows_the_back_ends_format_uses() {
     // declares of the format.
     let mut generous = caps.clone();
     for f in [
-        wcontainers_gpu::Format::R32Uint,
-        wcontainers_gpu::Format::Bc1RgbaUnorm,
+        wcontainers_gpu::format::Format::R32Uint,
+        wcontainers_gpu::format::Format::Bc1RgbaUnorm,
     ] {
         generous.formats.uses[f as usize] |=
-            wcontainers_gpu::FormatUse::RESOLVE | wcontainers_gpu::FormatUse::SAMPLE;
+            wcontainers_gpu::caps::FormatUse::RESOLVE | wcontainers_gpu::caps::FormatUse::SAMPLE;
         generous.formats.samples[f as usize] =
-            generous.formats.samples[wcontainers_gpu::Format::Rgba8Unorm as usize];
+            generous.formats.samples[wcontainers_gpu::format::Format::Rgba8Unorm as usize];
     }
     assert_eq!(
         format_support(&generous, dxgi::R32_UINT).support1 & MULTISAMPLE_RESOLVE,
@@ -308,11 +308,11 @@ fn format_support_follows_the_back_ends_format_uses() {
     let shapes = TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP;
     let mut sampled = caps.clone();
     for f in [
-        wcontainers_gpu::Format::Bc1RgbaUnorm,
-        wcontainers_gpu::Format::Rgbg8Unorm,
-        wcontainers_gpu::Format::Grgb8Unorm,
+        wcontainers_gpu::format::Format::Bc1RgbaUnorm,
+        wcontainers_gpu::format::Format::Rgbg8Unorm,
+        wcontainers_gpu::format::Format::Grgb8Unorm,
     ] {
-        sampled.formats.uses[f as usize] = wcontainers_gpu::FormatUse::SAMPLE;
+        sampled.formats.uses[f as usize] = wcontainers_gpu::caps::FormatUse::SAMPLE;
     }
     assert_eq!(
         format_support(&sampled, dxgi::BC1_UNORM).support1 & shapes,

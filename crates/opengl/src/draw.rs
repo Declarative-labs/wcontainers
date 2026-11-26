@@ -6,16 +6,23 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    AddedBinding, AddressMode, BindingEntry, BindingResource, BlendDesc, BlendFactor, BorderColor,
-    BufferDesc, BufferRange, BufferUsage, CountedDraw, CullMode, DOMAIN_PATCHES_BINDING,
-    DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FORMAT_FACTS, FanOrLoop, Features, FillMode,
-    Filter, Format, FormatKind, FormatUse, FrontFace, Gpu, HELPER_SET, HelperSlot, HelperValue,
-    INDEX_FORMATS, IndexBinding, IndexFormat, IndexSource, Interpolation, LinkedValues,
-    MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, PassTracker,
-    Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection, RingKind,
-    SLOT_KINDS, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
-    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, helper_binding,
+    FanOrLoop, Gpu, IndexSource, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, Object, RingKind,
+    STORAGE_WORD, caps::Features, caps::FormatUse, draw::DrawCall, draw::DrawRange,
+    draw::IndexBinding, draw::ScissorRect, draw::VertexBinding, draw::Viewport,
+    format::FORMAT_FACTS, format::Format, format::FormatKind, occlusion::CountedDraw,
+    occlusion::OcclusionCounter, passes::PassTracker, reflect::AddedBinding,
+    reflect::DOMAIN_PATCHES_BINDING, reflect::DOMAIN_POINTS_BINDING, reflect::HELPER_SET,
+    reflect::HelperSlot, reflect::HelperValue, reflect::Interpolation, reflect::LinkedValues,
+    reflect::ReflectedBinding, reflect::Reflection, reflect::SLOT_KINDS, reflect::SlotKind,
+    reflect::SourceStage, reflect::StageExtras, reflect::VariantFlags, reflect::VariantKey,
+    resource::AddressMode, resource::BindingEntry, resource::BindingResource,
+    resource::BorderColor, resource::BufferDesc, resource::BufferRange, resource::BufferUsage,
+    resource::Filter, resource::MapIntent, resource::ReadSource, resource::SamplerDesc,
+    resource::WriteMode, shader::Program, shader::ShaderModule, shader::ShaderStage,
+    shader::StageSet, slow::SlowPath, state::BlendDesc, state::BlendFactor, state::CullMode,
+    state::FillMode, state::FrontFace, state::INDEX_FORMATS, state::IndexFormat,
+    state::ProvokingVertex, state::RasterDesc, state::StepMode, state::Topology,
+    state::VertexFormat, state::VertexLayoutDesc,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{
@@ -1603,7 +1610,9 @@ fn helper_set<B: Gpu>(
         .iter()
         .zip(offsets)
         .map(|((stage, bytes), offset)| BindingEntry {
-            binding: helper_binding(stage.nir().shader_stage()),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                stage.nir().shader_stage(),
+            ),
             stages: stage_visibility(*stage, vertex_visible),
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &ring,
@@ -3165,7 +3174,7 @@ fn passthrough_helper_size<B: Gpu>(built: &Built<B>) -> Result<u32, String> {
         .and_then(|c| c.modules.get(PASSTHROUGH_MODULE))
         .ok_or("a geometry program without its pass-through")?
         .module;
-    let binding = helper_binding(ShaderStage::Vertex);
+    let binding = wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex);
     Ok(module
         .global_variables
         .iter()

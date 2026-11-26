@@ -4,8 +4,9 @@
 //! sets are made from them (plan 4.5 and 5.2).
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, FORMAT_FACTS, MAX_BINDING_SETS, ReflectedBinding,
-    SLOT_KINDS, SlotKind, ViewComponent,
+    MAX_BINDING_SETS, format::FORMAT_FACTS, reflect::ReflectedBinding, reflect::SLOT_KINDS,
+    reflect::SlotKind, reflect::ViewComponent, resource::BindingEntry, resource::BindingResource,
+    resource::BufferRange,
 };
 
 use super::*;
@@ -117,7 +118,7 @@ pub(super) fn stage_bindings(
         .filter(|b| {
             !matches!(
                 b.added,
-                Some(wcontainers_gpu::AddedBinding::PulledStream(_))
+                Some(wcontainers_gpu::reflect::AddedBinding::PulledStream(_))
             )
         })
         .map(|b| {
@@ -1549,7 +1550,7 @@ mod tests {
     use super::{RootState, reads_as_identity, view_mapping};
     use crate::list::RootArgument;
     use crate::root::{RootParameter, RootParameterKind, RootSignature, RootSignatureDesc};
-    use wcontainers_gpu::ViewComponent as C;
+    use wcontainers_gpu::reflect::ViewComponent as C;
 
     #[test]
     fn setting_the_same_root_signature_again_keeps_its_bindings() {

@@ -2,7 +2,10 @@
 //! that the written WGSL reads back. Run against real Direct3D 11 in `tests/compute_draw.rs`.
 
 use std::path::Path;
-use wcontainers_gpu::{Format, HelperValue, SLOT_KINDS, SlotKind, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{
+    format::Format, reflect::HelperValue, reflect::SLOT_KINDS, reflect::SlotKind,
+    reflect::TexelBufferRoute, reflect::VariantKey,
+};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::{Source, convert};
 
@@ -75,7 +78,7 @@ fn a_dxbc_program_through_the_dxil_route_is_refused_by_name() {
     assert_eq!(before, after);
 }
 
-fn reads_back(file: &str, m: &wcontainers_gpu::ShaderModule) {
+fn reads_back(file: &str, m: &wcontainers_gpu::shader::ShaderModule) {
     let text =
         naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())
             .unwrap();

@@ -2,9 +2,10 @@
 
 use std::path::Path;
 use wcontainers_gpu::{
-    AddedBinding, DrawBaseSource, Format, HelperSlot, HelperValue, Interpolation, LinkedValues,
-    SLOT_KINDS, ScalarKind, SlotKind, SystemValue, TargetInShader, TexelBufferRoute, VariantFlags,
-    VariantKey, VertexFormat,
+    format::Format, reflect::AddedBinding, reflect::DrawBaseSource, reflect::HelperSlot,
+    reflect::HelperValue, reflect::Interpolation, reflect::LinkedValues, reflect::SLOT_KINDS,
+    reflect::ScalarKind, reflect::SlotKind, reflect::SystemValue, reflect::TargetInShader,
+    reflect::TexelBufferRoute, reflect::VariantFlags, reflect::VariantKey, state::VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Source, convert};
 
@@ -533,8 +534,8 @@ fn targets_of_another_type_take_the_outputs_bits() {
             let copy = c.modules[0].module.global_variables.iter().any(|(_, g)| {
                 g.binding
                     == Some(naga::ResourceBinding {
-                        group: wcontainers_gpu::HELPER_SET,
-                        binding: wcontainers_gpu::TARGET_COPY_BINDING,
+                        group: wcontainers_gpu::reflect::HELPER_SET,
+                        binding: wcontainers_gpu::reflect::TARGET_COPY_BINDING,
                     })
             });
             assert!(copy, "{format:?}");
@@ -635,7 +636,7 @@ fn clip_distances_are_the_built_in_array() {
             c.reflection
                 .outputs
                 .iter()
-                .any(|o| o.system == Some(wcontainers_gpu::SystemValue::ClipDistance)),
+                .any(|o| o.system == Some(wcontainers_gpu::reflect::SystemValue::ClipDistance)),
             "{:?}",
             c.reflection.outputs
         );
@@ -647,7 +648,7 @@ fn clip_distances_are_the_built_in_array() {
 /// program clips by that many in the program.
 #[test]
 fn clip_distances_are_listed_per_signature_register() {
-    use wcontainers_gpu::SystemValue;
+    use wcontainers_gpu::reflect::SystemValue;
     for (name, count, registers) in [("vs_clip", 2, 1), ("vs_clip_six", 6, 2)] {
         let code = own_pair(name);
         for c in both(&code, &VariantKey::default()) {
@@ -967,7 +968,7 @@ fn clip_distances_a_pixel_program_reads_come_from_the_linked_values() {
             .reflection
             .inputs
             .iter()
-            .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+            .filter(|v| v.system == Some(wcontainers_gpu::reflect::SystemValue::ClipDistance))
             .map(|v| v.mask)
             .collect();
         assert_eq!(reads.iter().map(|m| m.count_ones()).sum::<u32>(), 6);
@@ -1352,7 +1353,7 @@ fn decoded_textures_are_read_as_integers() {
 fn read_written_four_channel_storage_goes_through_a_buffer() {
     let code = read("tests/own/ps_halves.dxil");
     let mut key = VariantKey {
-        storage_formats: vec![(0, wcontainers_gpu::Format::Rgba32Float)],
+        storage_formats: vec![(0, wcontainers_gpu::format::Format::Rgba32Float)],
         ..VariantKey::default()
     };
     let refused = convert(Source::Dxil(&code), &key, None).map(|c| wgsl(&c));
@@ -1501,7 +1502,7 @@ fn buffer_arrays_are_a_binding_per_element() {
             .collect()
     };
     let key = VariantKey {
-        texel_buffers: wcontainers_gpu::TexelBufferRoute::Storage,
+        texel_buffers: wcontainers_gpu::reflect::TexelBufferRoute::Storage,
         texel_formats: formats(SlotKind::Texture),
         storage_formats: formats(SlotKind::Storage),
         register_ranges: buffer_array_ranges(),
@@ -1595,7 +1596,7 @@ fn typed_buffer_arrays_are_a_binding_per_element_on_both_routes() {
     let ranges = vec![(SlotKind::Texture, 0, 0..5), (SlotKind::Storage, 0, 0..3)];
     let formats = |n: u32| (0..n).map(|r| (r, Format::R32Uint)).collect();
     let key = VariantKey {
-        texel_buffers: wcontainers_gpu::TexelBufferRoute::Storage,
+        texel_buffers: wcontainers_gpu::reflect::TexelBufferRoute::Storage,
         texel_formats: formats(5),
         storage_formats: formats(3),
         register_ranges: ranges.clone(),
@@ -1742,7 +1743,7 @@ fn multisampled_array_layers_are_a_texture_each() {
 /// gather of a component gathers the one it maps to, or is the constant it maps to.
 #[test]
 fn swizzled_slots_compose_what_they_read() {
-    use wcontainers_gpu::ViewComponent as C;
+    use wcontainers_gpu::reflect::ViewComponent as C;
     for (name, map) in [
         ("ps_textured", [C::B, C::One, C::Zero, C::R]),
         ("ps_mingather", [C::G, C::R, C::Zero, C::A]),
@@ -1765,7 +1766,7 @@ fn swizzled_slots_compose_what_they_read() {
 /// constant; through green, blue or alpha they are refused by name.
 #[test]
 fn mapped_depth_views_compose_what_they_read() {
-    use wcontainers_gpu::ViewComponent as C;
+    use wcontainers_gpu::reflect::ViewComponent as C;
     let key = |map| VariantKey {
         swizzled: vec![(0, map)],
         ..VariantKey::default()
@@ -1805,7 +1806,7 @@ fn mapped_depth_views_compose_what_they_read() {
 /// whose channel dxil-spirv's SPIR-V drops.
 #[test]
 fn depth_gathers_of_other_components_convert_where_exact() {
-    use wcontainers_gpu::ViewComponent as C;
+    use wcontainers_gpu::reflect::ViewComponent as C;
     both(&own_pair("ps_shadow_gathers"), &VariantKey::default());
     let kept = VariantKey {
         swizzled: vec![(0, [C::R; 4])],
@@ -1849,7 +1850,7 @@ fn atomics_of_the_other_signedness_are_exchange_loops() {
     for c in both(&own_pair("cs_atomics"), &VariantKey::default()) {
         assert_eq!(
             c.reflection.slow_paths,
-            [wcontainers_gpu::SlowPath::AtomicExchangeLoop]
+            [wcontainers_gpu::slow::SlowPath::AtomicExchangeLoop]
         );
         assert!(wgsl(&c).contains("atomicCompareExchangeWeak"));
     }

@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use wcontainers_gpu::VariantKey;
+use wcontainers_gpu::reflect::VariantKey;
 use wcontainers_shaders::cache::{self as file, Cache};
 use wcontainers_shaders::container::DxilViews;
 use wcontainers_shaders::{ConvertError, Converted, Source};

@@ -5,7 +5,10 @@
 
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+    resource::*, shader::*, slow::*, state::*, *,
+};
 use wcontainers_gpu_webgl::Gl;
 use wcontainers_gpu_webgl::trace::{Frame, Replay};
 use wcontainers_gpu_webgpu::{WebGpu, block_on};

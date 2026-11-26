@@ -1,6 +1,6 @@
 //! The shared suite on the recording back end, and the interface rules it enforces.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{caps::*, draw::*, error::*, format::*, resource::*, state::*, *};
 use wcontainers_gpu_test::{Host, Recorder};
 
 struct RecorderHost;

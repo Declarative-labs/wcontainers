@@ -27,12 +27,15 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddressMode, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange, BufferUsage,
-    ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent,
-    FORMAT_FACTS, FillMode, Filter, Format, FrontFace, Gpu as Backend, HelperValue, Origin,
-    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc,
-    SlotKind, StageSet, StoreOp, TextureRegion, TextureUsage, Topology, VariantKey,
-    VertexLayoutDesc, Viewport, WriteMode,
+    Gpu as Backend, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::PassDesc,
+    draw::StoreOp, draw::Viewport, format::FORMAT_FACTS, format::Format, reflect::HelperValue,
+    reflect::SlotKind, reflect::VariantKey, resource::AddressMode, resource::BindingEntry,
+    resource::BindingResource, resource::BorderColor, resource::BufferRange, resource::BufferUsage,
+    resource::Extent, resource::Filter, resource::Origin, resource::ReadSource,
+    resource::SamplerDesc, resource::TextureRegion, resource::TextureUsage, resource::WriteMode,
+    shader::Program, shader::StageSet, state::BlendDesc, state::ColorWrites, state::CullMode,
+    state::DepthStencilDesc, state::FillMode, state::FrontFace, state::ProvokingVertex,
+    state::RasterDesc, state::RenderTargetBlend, state::Topology, state::VertexLayoutDesc,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -375,7 +378,9 @@ fn ours<B: Backend>(
     let helper_buffer = (!helpers.is_empty()).then(|| buffer(b, &helpers, BufferUsage::UNIFORM));
     let helper_set = helper_buffer.as_ref().map(|buffer| {
         b.create_binding_set(&[BindingEntry {
-            binding: wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                wcontainers_gpu::shader::ShaderStage::Fragment,
+            ),
             stages: StageSet::FRAGMENT,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer,
@@ -444,7 +449,7 @@ fn ours<B: Backend>(
         view: &target_view,
         depth_slice: 0,
         resolve: None,
-        load: wcontainers_gpu::LoadOp::Clear([0; 4]),
+        load: wcontainers_gpu::draw::LoadOp::Clear([0; 4]),
         store: StoreOp::Store,
     });
     b.begin_pass(&pass);
@@ -499,7 +504,11 @@ fn ours<B: Backend>(
         &mut out,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok, "{key:?}");
+    assert_eq!(
+        b.status(),
+        wcontainers_gpu::error::DeviceStatus::Ok,
+        "{key:?}"
+    );
     out
 }
 
@@ -641,7 +650,7 @@ fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
                 for route in ["dxbc", "dxil"] {
                     // WebGL 2's fronts read level counts from the helpers.
                     let gl_key = VariantKey {
-                        flags: wcontainers_gpu::VariantFlags::TEXTURE_INFO,
+                        flags: wcontainers_gpu::reflect::VariantFlags::TEXTURE_INFO,
                         ..key.clone()
                     };
                     let mut webgpu_texels = Vec::new();
@@ -921,9 +930,9 @@ fn levels_of_detail_match_direct3d() {
         {
             let key = VariantKey {
                 flags: if back_end == "webgl" {
-                    wcontainers_gpu::VariantFlags::TEXTURE_INFO
+                    wcontainers_gpu::reflect::VariantFlags::TEXTURE_INFO
                 } else {
-                    wcontainers_gpu::VariantFlags::empty()
+                    wcontainers_gpu::reflect::VariantFlags::empty()
                 },
                 ..Default::default()
             };

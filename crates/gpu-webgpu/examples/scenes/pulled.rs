@@ -11,10 +11,12 @@ use std::fmt::Write;
 
 use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment, DeviceStatus,
-    DrawCall, DrawRange, Extent, Format, Gpu, LoadOp, Object, Origin, PassDesc, QueryKind,
-    ReadSource, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding,
-    VertexFormat, Viewport,
+    Gpu, Object, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::StoreOp, draw::VertexBinding, draw::Viewport, error::DeviceStatus,
+    format::Format, resource::BindingEntry, resource::BindingResource, resource::BufferRange,
+    resource::BufferUsage, resource::Extent, resource::Origin, resource::QueryKind,
+    resource::ReadSource, resource::TextureRegion, resource::TextureUsage, shader::StageSet,
+    state::StepMode, state::Topology, state::VertexFormat,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

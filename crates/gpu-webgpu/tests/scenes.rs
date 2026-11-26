@@ -15,7 +15,7 @@ mod allowance;
 
 use draw::Twist;
 use scene::Scene;
-use wcontainers_gpu::{DeviceStatus, FORMAT_FACTS, Gpu};
+use wcontainers_gpu::{Gpu, error::DeviceStatus, format::FORMAT_FACTS};
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn device() -> WebGpu {
@@ -31,7 +31,13 @@ fn device() -> WebGpu {
 }
 
 fn render(b: &mut WebGpu, which: Scene, twist: Twist) -> Vec<u8> {
-    let rb = draw::render_on(b, which, twist, wcontainers_gpu::Format::Depth32Float).unwrap();
+    let rb = draw::render_on(
+        b,
+        which,
+        twist,
+        wcontainers_gpu::format::Format::Depth32Float,
+    )
+    .unwrap();
     b.wait_read(&rb);
     let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
     b.finish_read(rb, &mut rgba);
@@ -91,7 +97,7 @@ fn changed_blend_factor_and_depth_function_fail() {
 /// where the format has one, within the rig's allowance of Direct3D's picture.
 #[test]
 fn quads_match_direct3d_on_every_depth_format() {
-    use wcontainers_gpu::{Format, FormatUse};
+    use wcontainers_gpu::{caps::FormatUse, format::Format};
     let mut b = device();
     let reference = reference(Scene::Quads);
     for format in [
@@ -132,7 +138,7 @@ fn pipelines_and_bind_groups_are_cached() {
         "equal blocks made twice must be one block"
     );
     assert!(first.program != again.program);
-    let t = draw::targets(&mut b, Some(wcontainers_gpu::Format::Depth32Float)).unwrap();
+    let t = draw::targets(&mut b, Some(wcontainers_gpu::format::Format::Depth32Float)).unwrap();
     let before = *b.counters();
     draw::begin(&mut b, &t, true);
     for _ in 0..10 {
@@ -176,7 +182,7 @@ fn pipelines_and_bind_groups_are_cached() {
         "setPipeline only when it changes"
     );
     assert_eq!(
-        b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize],
+        b.slow_paths().counts[wcontainers_gpu::slow::SlowPath::PipelineMiss as usize],
         2
     );
 }
@@ -266,7 +272,7 @@ struct VsOut { @builtin(position) pos: vec4f }
     .validate(&module)
     .unwrap();
     let mut stage = |entry: &str, stage| {
-        b.create_shader(&wcontainers_gpu::ShaderModule {
+        b.create_shader(&wcontainers_gpu::shader::ShaderModule {
             module: module.clone(),
             info: info.clone(),
             entry_point: entry.into(),
@@ -276,11 +282,11 @@ struct VsOut { @builtin(position) pos: vec4f }
         .unwrap()
     };
     let (vs, ps) = (
-        stage("vs", wcontainers_gpu::ShaderStage::Vertex),
-        stage("ps", wcontainers_gpu::ShaderStage::Fragment),
+        stage("vs", wcontainers_gpu::shader::ShaderStage::Vertex),
+        stage("ps", wcontainers_gpu::shader::ShaderStage::Fragment),
     );
     p.program = b
-        .create_program(&wcontainers_gpu::Program::Render {
+        .create_program(&wcontainers_gpu::shader::Program::Render {
             vertex: &vs,
             fragment: Some(&ps),
         })
@@ -323,7 +329,7 @@ struct VsOut { @builtin(position) pos: vec4f }
 #[test]
 fn integer_formats_are_not_resolvable() {
     use Format::*;
-    use wcontainers_gpu::{Format, FormatKind, FormatUse};
+    use wcontainers_gpu::{caps::FormatUse, format::Format, format::FormatKind};
     let b = device();
     let integer = [
         R8Uint,

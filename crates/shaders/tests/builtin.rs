@@ -1,7 +1,7 @@
 //! The built-in clear program (any machine): every storage format and dimension gives a module that
 //! validates and whose WGSL reads back, and the values it stores.
 
-use wcontainers_gpu::{Format, ViewDimension};
+use wcontainers_gpu::{format::Format, resource::ViewDimension};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::builtin::{
     clear_groups, clear_params, storage_clear, storage_clear_value,
@@ -189,7 +189,10 @@ fn params_and_groups() {
 /// the depth range, clip distances discarding, the counting output; nothing at all without a variant.
 #[test]
 fn a_pixel_program_is_made_for_a_variant_alone() {
-    use wcontainers_gpu::{HelperValue, LinkedValues, StageExtras, VariantFlags, VariantKey};
+    use wcontainers_gpu::{
+        reflect::HelperValue, reflect::LinkedValues, reflect::StageExtras, reflect::VariantFlags,
+        reflect::VariantKey,
+    };
     use wcontainers_shaders::builtin::pixel_program_for_variant;
     let wgsl = |c: &wcontainers_shaders::Converted| {
         let m = &c.modules[0];

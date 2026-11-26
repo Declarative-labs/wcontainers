@@ -5,8 +5,9 @@
 //! counts a small compute program zeroes when the predicate skips them, so nothing waits.
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, INDEX_FORMATS, MAX_BINDING_SETS, QueryKind,
-    RingKind, SLOT_KINDS, ShaderModule, SlotKind,
+    MAX_BINDING_SETS, RingKind, reflect::SLOT_KINDS, reflect::SlotKind, resource::BindingEntry,
+    resource::BindingResource, resource::BufferRange, resource::QueryKind, shader::ShaderModule,
+    state::INDEX_FORMATS,
 };
 
 use super::bind::CONSTANT_REGISTER;

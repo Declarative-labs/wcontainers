@@ -12,11 +12,15 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorAttachment,
-    ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, FillMode, Format,
-    FrontFace, Gpu as Backend, HELPER_SET, LoadOp, Origin, PassDesc, Program, ProvokingVertex,
-    RasterDesc, ReadSource, RenderTargetBlend, ShaderStage, SlotKind, SlowPath, StageSet, StoreOp,
-    TextureRegion, TextureUsage, Topology, VariantKey, VertexLayoutDesc, Viewport, helper_binding,
+    Gpu as Backend, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::StoreOp, draw::Viewport, format::Format, reflect::HELPER_SET,
+    reflect::SlotKind, reflect::VariantKey, resource::BindingEntry, resource::BindingResource,
+    resource::BufferRange, resource::BufferUsage, resource::Extent, resource::Origin,
+    resource::ReadSource, resource::TextureRegion, resource::TextureUsage, shader::Program,
+    shader::ShaderStage, shader::StageSet, slow::SlowPath, state::BlendDesc, state::ColorWrites,
+    state::CullMode, state::DepthStencilDesc, state::FillMode, state::FrontFace,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::Topology,
+    state::VertexLayoutDesc,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Converted, Source, convert};
@@ -241,7 +245,7 @@ fn ours<B: Backend>(b: &mut B, corners: &[[f32; 4]; 3], dxil: bool) -> (Vec<u8>,
     assert_eq!(ps.reflection.helper_size, 0);
     if vs.reflection.helper_size > 0 {
         entries[HELPER_SET as usize].push(BindingEntry {
-            binding: helper_binding(ShaderStage::Vertex),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Vertex),
             stages: StageSet::VERTEX,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &vertex_helpers,
@@ -328,7 +332,7 @@ fn ours<B: Backend>(b: &mut B, corners: &[[f32; 4]; 3], dxil: bool) -> (Vec<u8>,
         &mut texels,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     (read_words, texels)
 }
 

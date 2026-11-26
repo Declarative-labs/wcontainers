@@ -175,7 +175,7 @@ impl<B: Gpu> Device<B> {
                 TextureUsage::SAMPLE
             };
             let drawn = shape.samples > 1
-                || wcontainers_gpu::FORMAT_FACTS[shape.format as usize].depth_stencil;
+                || wcontainers_gpu::format::FORMAT_FACTS[shape.format as usize].depth_stencil;
             if drawn {
                 usage |= TextureUsage::RENDER;
             }
@@ -224,16 +224,17 @@ impl<B: Gpu> Device<B> {
     fn zero_texture(&mut self, t: &NullTexture<B>) -> Result<(), Error> {
         let layers = t.desc.depth_or_layers;
         if t.shape.samples > 1
-            || wcontainers_gpu::FORMAT_FACTS[t.shape.format as usize].depth_stencil
+            || wcontainers_gpu::format::FORMAT_FACTS[t.shape.format as usize].depth_stencil
         {
-            let value = if wcontainers_gpu::FORMAT_FACTS[t.shape.format as usize].depth_stencil {
-                ClearValue::DepthStencil {
-                    depth: Some(0),
-                    stencil: None,
-                }
-            } else {
-                ClearValue::Color([0; 4])
-            };
+            let value =
+                if wcontainers_gpu::format::FORMAT_FACTS[t.shape.format as usize].depth_stencil {
+                    ClearValue::DepthStencil {
+                        depth: Some(0),
+                        stencil: None,
+                    }
+                } else {
+                    ClearValue::Color([0; 4])
+                };
             self.backend.clear_texture(
                 &t.texture,
                 &t.desc,
@@ -243,7 +244,7 @@ impl<B: Gpu> Device<B> {
                 value,
             )?;
         } else {
-            let bytes = wcontainers_gpu::FORMAT_FACTS[t.shape.format as usize]
+            let bytes = wcontainers_gpu::format::FORMAT_FACTS[t.shape.format as usize]
                 .block
                 .2;
             let zeros = vec![0; (bytes * layers) as usize];

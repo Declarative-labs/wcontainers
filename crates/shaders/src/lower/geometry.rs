@@ -15,7 +15,9 @@ use naga::{
     AddressSpace, BinaryOperator, Binding, BuiltIn, FunctionArgument, Handle, Module, Scalar,
     ScalarKind, Span, StorageAccess,
 };
-use wcontainers_gpu::{StageExtras, SystemValue, VariantFlags, VariantKey};
+use wcontainers_gpu::{
+    reflect::StageExtras, reflect::SystemValue, reflect::VariantFlags, reflect::VariantKey,
+};
 
 /// What a geometry shader declares, and the parts of its compute form.
 #[derive(Default)]

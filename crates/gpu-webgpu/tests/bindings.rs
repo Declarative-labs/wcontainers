@@ -21,13 +21,17 @@ mod views;
 use renames::{Kit, LOAD_WGSL, begin, draw_at, finish, kit};
 
 use wcontainers_gpu::{
-    AddressMode, AspectOps, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
-    BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn, DepthAttachment,
-    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Features, Filter, Format,
-    FormatUse, Gpu, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc, Program,
-    ReadSource, SamplerDesc, ShaderModule, ShaderStage, StageSet, StepMode, StoreOp, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VertexAttribute, VertexFormat, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport, WriteMode,
+    Gpu, MAX_VERTEX_STREAMS, caps::Features, caps::FormatUse, draw::AspectOps,
+    draw::ColorAttachment, draw::DepthAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::StoreOp, draw::Viewport, error::DeviceStatus, error::GpuError,
+    format::Format, resource::AddressMode, resource::BindingEntry, resource::BindingResource,
+    resource::BorderColor, resource::BufferDesc, resource::BufferRange, resource::BufferUsage,
+    resource::CompareFn, resource::Extent, resource::Filter, resource::MapIntent, resource::Origin,
+    resource::ReadSource, resource::SamplerDesc, resource::TextureRegion, resource::TextureUsage,
+    resource::TextureViewDesc, resource::ViewDimension, resource::WriteMode, shader::Program,
+    shader::ShaderModule, shader::ShaderStage, shader::StageSet, state::BlendComponent,
+    state::BlendFactor, state::BlendOp, state::DepthStencilDesc, state::StepMode, state::Topology,
+    state::VertexAttribute, state::VertexFormat, state::VertexLayoutDesc, state::VertexStream,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

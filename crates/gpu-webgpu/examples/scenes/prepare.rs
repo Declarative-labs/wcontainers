@@ -3,8 +3,9 @@
 //! and the browser page.
 
 use wcontainers_gpu::{
-    ColorAttachment, DeviceStatus, DrawCall, DrawRange, Format, Gpu, LoadOp, MAX_COLOR_TARGETS,
-    PassDesc, PrepareDesc, SlowPath, StoreOp, TargetLayout, TextureUsage, Topology, Viewport,
+    Gpu, MAX_COLOR_TARGETS, PrepareDesc, draw::ColorAttachment, draw::DrawCall, draw::DrawRange,
+    draw::LoadOp, draw::PassDesc, draw::StoreOp, draw::Viewport, error::DeviceStatus,
+    format::Format, resource::TextureUsage, slow::SlowPath, state::TargetLayout, state::Topology,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -188,7 +189,7 @@ pub fn first_draws(
 /// A strip combination prepared, then drawn without indices and with 16-bit and 32-bit indices:
 /// nothing is built while drawing. One line, or the failed check.
 pub fn prepared_strips(b: &mut WebGpu) -> Result<String, String> {
-    use wcontainers_gpu::{BufferUsage, IndexBinding, IndexFormat};
+    use wcontainers_gpu::{draw::IndexBinding, resource::BufferUsage, state::IndexFormat};
     let (_target, view) =
         draw::texture_2d(b, Format::Rgba8Unorm, 64, 64, TextureUsage::RENDER).unwrap();
     let blend = b.create_blend(&draw::opaque()).unwrap();

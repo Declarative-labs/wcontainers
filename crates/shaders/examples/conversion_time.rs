@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use wcontainers_gpu::VariantKey;
+use wcontainers_gpu::reflect::VariantKey;
 use wcontainers_shaders::{Source, convert};
 
 /// The file extensions of the two kinds of bytecode.

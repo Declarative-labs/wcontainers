@@ -7,7 +7,9 @@
 use std::{collections::HashMap, ops::Range};
 
 use wcontainers_gpu::Gpu;
-use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, SlowPath, TargetLayout};
+use wcontainers_gpu::{
+    format::FORMAT_FACTS, format::Format, format::FormatKind, slow::SlowPath, state::TargetLayout,
+};
 
 use crate::{Stream, WebGpu, convert};
 
@@ -592,7 +594,7 @@ impl WebGpu {
         into: bool,
         held: (&wgpu::Texture, u32, u32, [u32; 2]),
         raw: &wgpu::Texture,
-        extent: wcontainers_gpu::Extent,
+        extent: wcontainers_gpu::resource::Extent,
     ) {
         let (texture, mip, first, [x, y]) = held;
         let three_d = texture.dimension() == wgpu::TextureDimension::D3;

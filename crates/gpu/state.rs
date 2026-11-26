@@ -24,7 +24,7 @@ pub enum BlendFactor {
     Constant,
     OneMinusConstant,
     /// The blend constant's alpha in every channel (OpenGL's and Vulkan's); needs
-    /// [`crate::Features::BLEND_CONSTANT_ALPHA`].
+    /// [`crate::caps::Features::BLEND_CONSTANT_ALPHA`].
     ConstantAlpha,
     OneMinusConstantAlpha,
     Src1,
@@ -95,13 +95,13 @@ pub struct RenderTargetBlend {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BlendDesc {
     pub targets: [RenderTargetBlend; MAX_COLOR_TARGETS],
-    /// Whether every target uses `targets[0]`. Back ends without [`crate::Features::INDEPENDENT_BLEND`]
+    /// Whether every target uses `targets[0]`. Back ends without [`crate::caps::Features::INDEPENDENT_BLEND`]
     /// are only given blocks with it set: a front whose targets differ in blend or write mask draws once
     /// per group of targets that agree, each group in a block of its own (slow path
-    /// [`crate::SlowPath::TargetsSplit`]).
+    /// [`crate::slow::SlowPath::TargetsSplit`]).
     pub same_for_all: bool,
     pub alpha_to_coverage: bool,
-    /// Present only where [`crate::Features::LOGIC_OP`] is.
+    /// Present only where [`crate::caps::Features::LOGIC_OP`] is.
     pub logic_op: Option<LogicOp>,
 }
 
@@ -128,7 +128,7 @@ pub struct StencilFace {
 }
 
 /// The depth and stencil block. The stencil reference is not here: it changes per draw
-/// ([`crate::DrawCall::stencil_reference`]).
+/// ([`crate::draw::DrawCall::stencil_reference`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DepthStencilDesc {
     /// None turns the depth test off.
@@ -137,11 +137,11 @@ pub struct DepthStencilDesc {
     /// None turns the stencil test off.
     pub stencil: Option<(StencilFace, StencilFace)>,
     /// Read and write masks for front and back faces; they differ only with
-    /// [`crate::Features::STENCIL_PER_FACE`].
+    /// [`crate::caps::Features::STENCIL_PER_FACE`].
     pub stencil_read_mask: [u8; 2],
     pub stencil_write_mask: [u8; 2],
     /// Depth bounds test (Direct3D 12, Vulkan), as f32 bits of the low and high bound. Present only with
-    /// [`crate::Features::DEPTH_BOUNDS`].
+    /// [`crate::caps::Features::DEPTH_BOUNDS`].
     pub depth_bounds: Option<[u32; 2]>,
 }
 
@@ -183,28 +183,28 @@ pub struct RasterDesc {
     pub front: FrontFace,
     /// Depth bias: constant (in steps of the depth format), slope scale and clamp, each as f32 bits. The
     /// bias applies to triangles only (WebGPU allows none on lines and points, GLES offsets only filled
-    /// polygons); a non-zero clamp needs [`crate::Features::DEPTH_BIAS_CLAMP`], and a constant with a
-    /// fraction needs [`crate::Features::FRACTIONAL_DEPTH_BIAS`]. A front whose API biases lines and
+    /// polygons); a non-zero clamp needs [`crate::caps::Features::DEPTH_BIAS_CLAMP`], and a constant with a
+    /// fraction needs [`crate::caps::Features::FRACTIONAL_DEPTH_BIAS`]. A front whose API biases lines and
     /// points, or needs what the back end lacks, passes zero and binds the program variant that adds the
-    /// bias to the fragment's depth (slow path [`crate::SlowPath::DepthBiasInShader`]).
+    /// bias to the fragment's depth (slow path [`crate::slow::SlowPath::DepthBiasInShader`]).
     pub depth_bias: u32,
     pub depth_bias_slope: u32,
     pub depth_bias_clamp: u32,
     /// False clamps depth instead of clipping it.
     pub depth_clip: bool,
     pub scissor: bool,
-    /// Line width as f32 bits; one unless [`crate::Features::WIDE_LINES`].
+    /// Line width as f32 bits; one unless [`crate::caps::Features::WIDE_LINES`].
     pub line_width: u32,
     pub provoking: ProvokingVertex,
     /// Clip space depth runs from minus one (OpenGL) instead of zero (Direct3D, Vulkan). Native only
-    /// with [`crate::Features::CLIP_DEPTH_MINUS_ONE`] or [`crate::Features::CLIP_DEPTH_ZERO_ONE`]
+    /// with [`crate::caps::Features::CLIP_DEPTH_MINUS_ONE`] or [`crate::caps::Features::CLIP_DEPTH_ZERO_ONE`]
     /// respectively; otherwise the vertex program rewrites depth (slow path
-    /// [`crate::SlowPath::ClipDepthRewrite`]).
+    /// [`crate::slow::SlowPath::ClipDepthRewrite`]).
     pub depth_minus_one: bool,
     /// Bits of the sample mask, applied with the fragment's own coverage. Back ends without
-    /// [`crate::Features::SAMPLE_MASK`] are only given all ones: a front whose mask clears a sample of a
+    /// [`crate::caps::Features::SAMPLE_MASK`] are only given all ones: a front whose mask clears a sample of a
     /// multisampled target binds the program variant that writes the mask instead (slow path
-    /// [`crate::SlowPath::SampleMaskInShader`]), and with single-sample targets drops a draw whose bit 0
+    /// [`crate::slow::SlowPath::SampleMaskInShader`]), and with single-sample targets drops a draw whose bit 0
     /// is clear, since it writes nothing.
     pub sample_mask: u32,
 }
@@ -212,7 +212,7 @@ pub struct RasterDesc {
 /// How a vertex attribute is stored: every component count of every 8, 16 and 32-bit type, and the packed
 /// formats Direct3D and OpenGL use. Every back end takes every one: a back end whose API lacks one
 /// (WebGPU has no three-component 8 or 16-bit formats) converts the stream itself, so no capability
-/// lists them (slow path [`crate::SlowPath::VertexFormatConverted`]).
+/// lists them (slow path [`crate::slow::SlowPath::VertexFormatConverted`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VertexFormat {
     Uint8x1,
@@ -279,9 +279,9 @@ pub enum StepMode {
     /// Advances once every `n` instances (Direct3D's step rate; zero means never): the instance of
     /// index `i` reads element `first_instance + (i - first_instance) / n`, or `first_instance` for
     /// zero.
-    /// Rates other than one need [`crate::Features::INSTANCE_STEP_RATE`] (WebGPU steps by one only);
+    /// Rates other than one need [`crate::caps::Features::INSTANCE_STEP_RATE`] (WebGPU steps by one only);
     /// without it they are fetched in the vertex program from the instance index (slow path
-    /// [`crate::SlowPath::InstanceRateInShader`]).
+    /// [`crate::slow::SlowPath::InstanceRateInShader`]).
     Instance(u32),
 }
 
@@ -325,7 +325,7 @@ pub struct TargetLayout {
 /// [`crate::Gpu::draw`]. Adjacency topologies (Direct3D 10 and 11, OpenGL) are not here: with a
 /// geometry shader the stage helper reads them; without one, as OpenGL allows, the front draws the list
 /// or strip from indices that leave out the adjacent vertices (slow path
-/// [`crate::SlowPath::AdjacencyDropped`]).
+/// [`crate::slow::SlowPath::AdjacencyDropped`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Topology {
     PointList,
@@ -340,8 +340,8 @@ pub enum Topology {
 /// Width of index values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum IndexFormat {
-    /// 8-bit indices (OpenGL's `GL_UNSIGNED_BYTE`), where [`crate::Features::INDEX_U8`] is present;
-    /// otherwise a front widens them to 16 bits in the index ring ([`crate::SlowPath::IndexWidened`]).
+    /// 8-bit indices (OpenGL's `GL_UNSIGNED_BYTE`), where [`crate::caps::Features::INDEX_U8`] is present;
+    /// otherwise a front widens them to 16 bits in the index ring ([`crate::slow::SlowPath::IndexWidened`]).
     U8,
     U16,
     U32,

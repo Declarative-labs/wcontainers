@@ -6,14 +6,20 @@
 use std::path::Path;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddedBinding, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc, BufferRange,
-    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, Gpu as Backend, GpuError,
-    HelperValue, Interpolation, MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc,
-    ReadSource, RenderTargetBlend, SamplerDesc, SlotKind, StageSet, StepMode, StoreOp,
-    TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding,
-    VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
+    Gpu as Backend, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::PassDesc,
+    draw::StoreOp, draw::VertexBinding, draw::Viewport, error::GpuError, format::FORMAT_FACTS,
+    format::Format, reflect::AddedBinding, reflect::HelperValue, reflect::Interpolation,
+    reflect::SlotKind, reflect::TEXEL_BUFFER_TEXTURE_WIDTH, reflect::TexelBufferRoute,
+    reflect::VariantKey, resource::BindingEntry, resource::BindingResource, resource::BorderColor,
+    resource::BufferDesc, resource::BufferRange, resource::BufferUsage, resource::Extent,
+    resource::Filter, resource::MapIntent, resource::Origin, resource::ReadSource,
+    resource::SamplerDesc, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::ViewDimension, resource::WriteMode, shader::Program, shader::StageSet,
+    state::BlendDesc, state::ColorWrites, state::CullMode, state::DepthStencilDesc,
+    state::FillMode, state::FrontFace, state::ProvokingVertex, state::RasterDesc,
+    state::RenderTargetBlend, state::StepMode, state::Topology, state::VertexAttribute,
+    state::VertexFormat, state::VertexLayoutDesc, state::VertexStream,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -757,21 +763,21 @@ pub struct Setup {
     pub depth: bool,
     pub depth_minus_one: bool,
     pub blend: Option<(
-        wcontainers_gpu::BlendComponent,
-        wcontainers_gpu::BlendComponent,
+        wcontainers_gpu::state::BlendComponent,
+        wcontainers_gpu::state::BlendComponent,
     )>,
     pub blend_constant: [f32; 4],
     /// Levels of the sampled texture: level 0 is [`texels`], level n the solid [`level_colour`].
     pub levels: u32,
     /// The draw's range, where not `count` vertices from vertex 0; an argument buffer is also bound
-    /// at [`wcontainers_gpu::DRAW_ARGUMENTS_BINDING`] when the vertex program reads its bases there.
+    /// at [`wcontainers_gpu::reflect::DRAW_ARGUMENTS_BINDING`] when the vertex program reads its bases there.
     pub bases: Option<Bases>,
     /// The sampled texture's minimum level-of-detail clamp: the pixel program's samples go through a
     /// merged sampler whose range starts at it, bound at
-    /// [`wcontainers_gpu::CLAMPED_SAMPLER_BINDING`] plus each pair's index.
+    /// [`wcontainers_gpu::reflect::CLAMPED_SAMPLER_BINDING`] plus each pair's index.
     pub min_lod: Option<f32>,
     /// The sampler's address modes.
-    pub address: [wcontainers_gpu::AddressMode; 3],
+    pub address: [wcontainers_gpu::resource::AddressMode; 3],
     /// Typed buffers the pixel program reads at texture slots, by the route its key names; their
     /// views' places and lengths are put in its helper block.
     pub texel_buffers: Vec<TexelData>,
@@ -780,18 +786,18 @@ pub struct Setup {
     pub layers: u32,
     /// A component mapping applied to the sampled texture's texels as they are uploaded: what a view
     /// with that mapping reads, for comparing `VariantKey::swizzled` against.
-    pub texel_map: Option<[wcontainers_gpu::ViewComponent; 4]>,
+    pub texel_map: Option<[wcontainers_gpu::reflect::ViewComponent; 4]>,
     /// Drawn as a pipeline without a pixel shader: the pixel program is the built-in one for
     /// `ps_key` (`builtin::pixel_program_for_variant`), writing no colour.
     pub no_pixel_shader: bool,
     /// Texels of a copy of target 0 before the draw, rows tightly packed, bound at
-    /// [`wcontainers_gpu::TARGET_COPY_BINDING`] for a pixel program combining with it.
+    /// [`wcontainers_gpu::reflect::TARGET_COPY_BINDING`] for a pixel program combining with it.
     pub target_copy: Option<Vec<u8>>,
 }
 
 /// `texels` (Rgba8Unorm) with each texel's components mapped by `map`.
-pub fn mapped(texels: &[u8], map: [wcontainers_gpu::ViewComponent; 4]) -> Vec<u8> {
-    use wcontainers_gpu::ViewComponent as C;
+pub fn mapped(texels: &[u8], map: [wcontainers_gpu::reflect::ViewComponent; 4]) -> Vec<u8> {
+    use wcontainers_gpu::reflect::ViewComponent as C;
     texels
         .chunks(4)
         .flat_map(|t| {
@@ -820,7 +826,7 @@ impl Setup {
             levels: 1,
             bases: None,
             min_lod: None,
-            address: [wcontainers_gpu::AddressMode::Clamp; 3],
+            address: [wcontainers_gpu::resource::AddressMode::Clamp; 3],
             texel_buffers: Vec::new(),
             layers: 0,
             texel_map: None,
@@ -952,7 +958,7 @@ pub fn multisampled_layers<B: Backend>(
             view: &made.1,
             depth_slice: 0,
             resolve: None,
-            load: wcontainers_gpu::LoadOp::Clear([0; 4]),
+            load: wcontainers_gpu::draw::LoadOp::Clear([0; 4]),
             store: StoreOp::Store,
         });
         b.begin_pass(&pass);
@@ -1018,7 +1024,7 @@ fn buffer_size(bases: &Option<Bases>) -> u64 {
 /// A constant buffer's bytes in the texture `AddedBinding::ConstantsAsTexture` reads: one 16-byte row
 /// per RGBA32 unsigned texel, `CONSTANTS_TEXTURE_WIDTH` rows to a texture row.
 pub fn constants_texture<B: Backend>(b: &mut B, bytes: &[u8]) -> (B::Texture, B::TextureView) {
-    let width = wcontainers_gpu::CONSTANTS_TEXTURE_WIDTH;
+    let width = wcontainers_gpu::reflect::CONSTANTS_TEXTURE_WIDTH;
     let rows = bytes.len().div_ceil(16) as u32;
     let (w, h) = (rows.min(width), rows.div_ceil(width));
     let mut texels = bytes.to_vec();
@@ -1328,12 +1334,12 @@ pub fn try_ours<B: Backend + 'static>(
         (
             &setup.helpers[0],
             &vs.reflection,
-            wcontainers_gpu::ShaderStage::Vertex,
+            wcontainers_gpu::shader::ShaderStage::Vertex,
         ),
         (
             &pixel_helpers,
             &ps.reflection,
-            wcontainers_gpu::ShaderStage::Fragment,
+            wcontainers_gpu::shader::ShaderStage::Fragment,
         ),
     ] {
         assert!(
@@ -1356,13 +1362,13 @@ pub fn try_ours<B: Backend + 'static>(
         .reflection
         .helpers
         .iter()
-        .any(|h| h.value == wcontainers_gpu::HelperValue::DrawArguments);
+        .any(|h| h.value == wcontainers_gpu::reflect::HelperValue::DrawArguments);
     let mut helper_entries: Vec<BindingEntry<'_, B>> = helper_buffers
         .iter()
         .map(|(buffer, len, stage)| BindingEntry {
-            binding: wcontainers_gpu::helper_binding(*stage),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(*stage),
             stages: match stage {
-                wcontainers_gpu::ShaderStage::Vertex => StageSet::VERTEX,
+                wcontainers_gpu::shader::ShaderStage::Vertex => StageSet::VERTEX,
                 _ => StageSet::FRAGMENT,
             },
             resource: BindingResource::UniformBuffer(BufferRange {
@@ -1375,7 +1381,7 @@ pub fn try_ours<B: Backend + 'static>(
     if let Some(merged) = &merged {
         for n in 0..ps.reflection.sampled_pairs.len() as u32 {
             helper_entries.push(BindingEntry {
-                binding: wcontainers_gpu::CLAMPED_SAMPLER_BINDING + n,
+                binding: wcontainers_gpu::reflect::CLAMPED_SAMPLER_BINDING + n,
                 stages: StageSet::FRAGMENT,
                 resource: BindingResource::Sampler(merged),
             });
@@ -1384,7 +1390,7 @@ pub fn try_ours<B: Backend + 'static>(
     if reads_arguments {
         let buffer = arguments.as_ref().expect("an indirect draw");
         helper_entries.push(BindingEntry {
-            binding: wcontainers_gpu::DRAW_ARGUMENTS_BINDING,
+            binding: wcontainers_gpu::reflect::DRAW_ARGUMENTS_BINDING,
             stages: StageSet::VERTEX,
             resource: BindingResource::StorageBuffer {
                 range: BufferRange {
@@ -1425,7 +1431,7 @@ pub fn try_ours<B: Backend + 'static>(
     });
     if let Some((_, view)) = &copy {
         helper_entries.push(BindingEntry {
-            binding: wcontainers_gpu::TARGET_COPY_BINDING,
+            binding: wcontainers_gpu::reflect::TARGET_COPY_BINDING,
             stages: StageSet::FRAGMENT,
             resource: BindingResource::Texture(view),
         });
@@ -1477,7 +1483,9 @@ pub fn try_ours<B: Backend + 'static>(
         .unwrap();
     let depth_stencil = b
         .create_depth_stencil(&DepthStencilDesc {
-            depth_compare: setup.depth.then_some(wcontainers_gpu::CompareFn::Always),
+            depth_compare: setup
+                .depth
+                .then_some(wcontainers_gpu::resource::CompareFn::Always),
             depth_write: setup.depth,
             stencil: None,
             stencil_read_mask: [0xff; 2],
@@ -1533,10 +1541,10 @@ pub fn try_ours<B: Backend + 'static>(
         colors: Default::default(),
         depth: depth
             .as_ref()
-            .map(|(_, view)| wcontainers_gpu::DepthAttachment {
+            .map(|(_, view)| wcontainers_gpu::draw::DepthAttachment {
                 view,
-                depth: Some(wcontainers_gpu::AspectOps {
-                    load: wcontainers_gpu::LoadOp::Clear(1.0f32.to_bits()),
+                depth: Some(wcontainers_gpu::draw::AspectOps {
+                    load: wcontainers_gpu::draw::LoadOp::Clear(1.0f32.to_bits()),
                     store: StoreOp::Store,
                     read_only: false,
                 }),
@@ -1549,7 +1557,7 @@ pub fn try_ours<B: Backend + 'static>(
         view: &target_view,
         depth_slice: 0,
         resolve: resolved.as_ref().map(|(_, view)| view),
-        load: wcontainers_gpu::LoadOp::Clear(draw.clear),
+        load: wcontainers_gpu::draw::LoadOp::Clear(draw.clear),
         store: StoreOp::Store,
     });
     b.begin_pass(&pass);
@@ -1601,10 +1609,10 @@ pub fn try_ours<B: Backend + 'static>(
         vertex_buffers: &streams,
         index: indices
             .as_ref()
-            .map(|buffer| wcontainers_gpu::IndexBinding {
+            .map(|buffer| wcontainers_gpu::draw::IndexBinding {
                 buffer,
                 offset: 0,
-                format: wcontainers_gpu::IndexFormat::U32,
+                format: wcontainers_gpu::state::IndexFormat::U32,
             }),
         topology: Topology::TriangleList,
         restart: false,
@@ -1647,7 +1655,7 @@ pub fn try_ours<B: Backend + 'static>(
         &mut out,
     )?;
     // A browser API reports a program it cannot run by losing the device at the draw.
-    if b.status() != wcontainers_gpu::DeviceStatus::Ok {
+    if b.status() != wcontainers_gpu::error::DeviceStatus::Ok {
         eprintln!(
             "device lost: {}vertex {:?}, pixel {:?}, {} samples, depth {}, viewport {:?}, format {:?}",
             (b as &dyn std::any::Any)
@@ -1692,8 +1700,8 @@ pub fn differ(a: &[u8], b: &[u8], format: Format) -> (usize, u64) {
         }
         _ => (1, 4),
     };
-    let signed =
-        FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Sint && channel < 4;
+    let signed = FORMAT_FACTS[format as usize].kind == wcontainers_gpu::format::FormatKind::Sint
+        && channel < 4;
     let mut count = 0;
     let mut largest = 0;
     for (x, y) in a.chunks(texel).zip(b.chunks(texel)) {

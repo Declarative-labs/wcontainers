@@ -4,10 +4,12 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    BufferDesc, BufferUsage, CUBE_FACES, CopyBufferTexture, Extent, FORMAT_FACTS, Features, Format,
-    FormatKind, Gpu, MapIntent, Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
-    WriteMode,
+    Gpu, Object, STORAGE_WORD, caps::Features, format::FORMAT_FACTS, format::Format,
+    format::FormatKind, reflect::TEXEL_BUFFER_TEXTURE_WIDTH, resource::BufferDesc,
+    resource::BufferUsage, resource::CUBE_FACES, resource::CopyBufferTexture, resource::Extent,
+    resource::MapIntent, resource::Origin, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::ViewDimension, resource::WriteMode, slow::SlowPath,
 };
 
 use naga::VectorSize;

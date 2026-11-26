@@ -4,7 +4,7 @@
 //! sequence is valid.
 
 use proptest::prelude::*;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{caps::*, draw::*, error::*, format::*, resource::*, shader::*, state::*, *};
 
 /// One step; its numbers choose sizes, objects and ranges when it runs.
 #[derive(Clone, Debug)]

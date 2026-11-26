@@ -20,10 +20,13 @@ mod depth16;
 mod gaps;
 
 use wcontainers_gpu::{
-    AspectOps, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
-    CopyBufferTexture, DepthAttachment, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS,
-    Format, FormatKind, FormatUse, Gpu, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath,
-    StageSet, StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
+    Gpu, caps::FormatUse, draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment,
+    draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc, draw::StoreOp, draw::Viewport,
+    error::DeviceStatus, format::FORMAT_FACTS, format::Format, format::FormatKind,
+    resource::BindingEntry, resource::BindingResource, resource::BufferDesc, resource::BufferUsage,
+    resource::CopyBufferTexture, resource::Extent, resource::MapIntent, resource::Origin,
+    resource::ReadSource, resource::TextureRegion, resource::TextureUsage, resource::WriteMode,
+    shader::StageSet, slow::SlowPath, state::Topology,
 };
 use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
 
@@ -787,8 +790,8 @@ fn copies_within_one_subresource_go_through_a_buffer() {
     let mut b = device();
     let b = &mut b;
     let t = b
-        .create_texture(&wcontainers_gpu::TextureDesc {
-            dimension: wcontainers_gpu::TextureDimension::D2,
+        .create_texture(&wcontainers_gpu::resource::TextureDesc {
+            dimension: wcontainers_gpu::resource::TextureDimension::D2,
             format: Format::Rgba8Unorm,
             width: W,
             height: H,
@@ -860,8 +863,8 @@ fn depth_copies_within_one_subresource_go_through_a_texture() {
     let mut b = device();
     let b = &mut b;
     let t = b
-        .create_texture(&wcontainers_gpu::TextureDesc {
-            dimension: wcontainers_gpu::TextureDimension::D2,
+        .create_texture(&wcontainers_gpu::resource::TextureDesc {
+            dimension: wcontainers_gpu::resource::TextureDimension::D2,
             format: Format::Depth32Float,
             width: W,
             height: H,
@@ -983,7 +986,7 @@ fn sixteen_bit_group_copies_with_depth_both_ways_keep_the_bits() {
 fn query_results_past_the_buffer_are_refused() {
     let mut b = device();
     let set = b
-        .create_query_set(wcontainers_gpu::QueryKind::OcclusionAny, 4)
+        .create_query_set(wcontainers_gpu::resource::QueryKind::OcclusionAny, 4)
         .unwrap();
     let dst = b
         .create_buffer(&BufferDesc {
@@ -994,11 +997,11 @@ fn query_results_past_the_buffer_are_refused() {
         .unwrap();
     assert!(matches!(
         b.resolve_queries(&set, 0, 4, &dst, 0),
-        Err(wcontainers_gpu::GpuError::Invalid(_))
+        Err(wcontainers_gpu::error::GpuError::Invalid(_))
     ));
     assert!(matches!(
         b.resolve_queries(&set, 2, 4, &dst, 0),
-        Err(wcontainers_gpu::GpuError::Invalid(_))
+        Err(wcontainers_gpu::error::GpuError::Invalid(_))
     ));
     assert_eq!(b.resolve_queries(&set, 0, 3, &dst, 0), Ok(()));
     let fence = b.submit();
@@ -1012,8 +1015,8 @@ fn volume_writes_with_padded_slices_keep_every_slice() {
     let mut b = device();
     let b = &mut b;
     let t = b
-        .create_texture(&wcontainers_gpu::TextureDesc {
-            dimension: wcontainers_gpu::TextureDimension::D3,
+        .create_texture(&wcontainers_gpu::resource::TextureDesc {
+            dimension: wcontainers_gpu::resource::TextureDimension::D3,
             format: Format::Rgba8Unorm,
             width: 2,
             height: 2,

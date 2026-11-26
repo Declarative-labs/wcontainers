@@ -4,7 +4,7 @@
 
 use crate::dxbc::{Kind, TypedView};
 use std::ops::Range;
-use wcontainers_gpu::{ScalarKind, SlotKind};
+use wcontainers_gpu::{reflect::ScalarKind, reflect::SlotKind};
 use wcontainers_shaders::container::{DxilShape, DxilView, DxilViews, RANGE_WITHOUT_SIZE};
 
 /// A view's elements: its space, first register and element count.

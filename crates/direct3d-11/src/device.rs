@@ -5,13 +5,19 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AddressMode, BlendComponent, BlendFactor, BlendOp, BorderColor, BufferDesc as GpuBuffer,
-    BufferUsage, Caps, ColorWrites, CompareFn, CullMode, DepthStencilDesc as GpuDepthStencil,
-    DeviceStatus, Extent, FORMAT_FACTS, Features, FillMode, Filter, Format, FormatKind, FormatUse,
-    FrontFace, Gpu, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object, Origin,
-    ProvokingVertex, RasterDesc, RenderTargetBlend, SLOW_PATH_REASONS, SamplerDesc as GpuSampler,
-    ScalarKind, SlowPath, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
+    Gpu, MAX_COLOR_TARGETS, Object, caps::Caps, caps::Features, caps::FormatUse,
+    error::DeviceStatus, error::GpuError, error::LossReason, format::FORMAT_FACTS, format::Format,
+    format::FormatKind, reflect::ScalarKind, resource::AddressMode, resource::BorderColor,
+    resource::BufferDesc as GpuBuffer, resource::BufferUsage, resource::CompareFn,
+    resource::Extent, resource::Filter, resource::MapIntent, resource::Origin,
+    resource::SamplerDesc as GpuSampler, resource::TextureDesc as GpuTexture,
+    resource::TextureDimension, resource::TextureRegion, resource::TextureUsage,
+    resource::TextureViewDesc, resource::ViewDimension, resource::WriteMode,
+    slow::SLOW_PATH_REASONS, slow::SlowPath, state::BlendComponent, state::BlendFactor,
+    state::BlendOp, state::ColorWrites, state::CullMode,
+    state::DepthStencilDesc as GpuDepthStencil, state::FillMode, state::FrontFace,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::StencilFace,
+    state::StencilOp,
 };
 
 use crate::context::ContextState;
@@ -92,12 +98,12 @@ pub struct Device<B: Gpu> {
     pub(crate) storage_clears: HashMap<(Format, ViewDimension), Kept<B, B::Program>>,
     /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
     /// tracker holds them for the counter; the front opens and ends its own passes).
-    pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
+    pub(crate) counter: wcontainers_gpu::occlusion::OcclusionCounter<B>,
     /// Pixel shader invocations of pipeline statistics queries: the draws replayed with the depth
     /// and stencil tests off (`tests_off`) through a program counting one per invocation.
-    pub(crate) pixel_counter: wcontainers_gpu::OcclusionCounter<B>,
+    pub(crate) pixel_counter: wcontainers_gpu::occlusion::OcclusionCounter<B>,
     pub(crate) tests_off: Option<Rc<DepthStencil<B>>>,
-    pub(crate) passes: wcontainers_gpu::PassTracker<B>,
+    pub(crate) passes: wcontainers_gpu::passes::PassTracker<B>,
     /// The helper constants as last written. The front is the only writer of the back end's data
     /// ring, so the blocks stay as written until the front's next write.
     pub(crate) helper_blocks: Option<HelperBlocks<B>>,
@@ -130,7 +136,7 @@ pub struct Device<B: Gpu> {
     /// The stage helper's filled sizes and primitive counts of a streaming draw.
     pub(crate) stream_filled: Option<Kept<B, B::Buffer>>,
     /// Depth and stencil saved before a draw run once per group of targets, and its description.
-    pub(crate) split_depth: Option<(wcontainers_gpu::TextureDesc, Kept<B, B::Texture>)>,
+    pub(crate) split_depth: Option<(wcontainers_gpu::resource::TextureDesc, Kept<B, B::Texture>)>,
     /// What the program's start built from the cache's record.
     pub(crate) warm: crate::cache::Warm<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
@@ -283,7 +289,7 @@ const GEOMETRY_STAGE_UNSERVED: &str = "geometry shaders and stream output withou
 /// targets, and the geometry stage and stream output, which the stage helper serves through compute
 /// programs or, below 11_0, through transform feedback (its replay); from 10_1 cube arrays
 /// (`cube_arrays`, which `Caps` does not name); at 11_0 compute.
-fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
+fn serves(caps: &wcontainers_gpu::caps::Caps, level: u32, cube_arrays: bool) -> bool {
     let limits = &caps.limits;
     let [extent, cube_extent, volume, layers] = level_texture_limits(level);
     let sized = limits.max_texture_2d >= extent
@@ -308,7 +314,7 @@ fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
 /// to the back end's streams and locations and in the vertex program past them, one storage buffer
 /// each; and its vertex shader output registers, one the position, the rest moved onto the back
 /// end's inter-stage locations (`shader::output_moves`).
-fn stage_values_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
+fn stage_values_served(limits: &wcontainers_gpu::caps::Limits, level: u32) -> bool {
     let registers = level_registers(level);
     let fetched =
         limits.vertex_streams.min(limits.vertex_attributes) + limits.storage_buffers_per_stage;
@@ -350,7 +356,7 @@ struct StageSlots {
 
 /// Whether `limits` give each stage feature level `level`'s shader resource views, samplers and
 /// unordered access views ([`level_slots`]).
-fn slots_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
+fn slots_served(limits: &wcontainers_gpu::caps::Limits, level: u32) -> bool {
     let StageSlots {
         views,
         samplers,
@@ -363,13 +369,13 @@ fn slots_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
 }
 
 /// The highest feature level `caps` serves, if any, with `cube_arrays` as [`serves`] takes it.
-pub fn top_level(caps: &wcontainers_gpu::Caps, cube_arrays: bool) -> Option<u32> {
+pub fn top_level(caps: &wcontainers_gpu::caps::Caps, cube_arrays: bool) -> Option<u32> {
     DEFAULT_LEVELS
         .into_iter()
         .find(|&l| serves(caps, l, cube_arrays))
 }
 
-pub use wcontainers_gpu::CUBE_FACES;
+pub use wcontainers_gpu::resource::CUBE_FACES;
 
 /// Whether `backend` makes textures of more than one cube, which `Caps` does not say: a texture of
 /// two cubes of one texel, made and destroyed.
@@ -2484,12 +2490,13 @@ impl<B: Gpu> Device<B> {
     pub fn create_shader(
         &mut self,
         bytecode: &[u8],
-        stage: wcontainers_gpu::SourceStage,
+        stage: wcontainers_gpu::reflect::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
         shader::check_model(bytecode, self.level)?;
         if matches!(
             stage,
-            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Domain
+            wcontainers_gpu::reflect::SourceStage::Vertex
+                | wcontainers_gpu::reflect::SourceStage::Domain
         ) && shader::writes_layer_or_viewport(bytecode)?
         {
             return Err(Error::InvalidArg(
@@ -2522,14 +2529,16 @@ impl<B: Gpu> Device<B> {
         let constant_sizes = constant_sizes(&module.module);
         let stand_ins = stand_ins(&module.module);
         // Constant buffers past the back end's uniform buffers are read through textures.
-        let set = crate::context::set_of(if stage == wcontainers_gpu::SourceStage::Pixel {
-            crate::PIXEL
-        } else {
-            crate::VERTEX
-        });
+        let set =
+            crate::context::set_of(if stage == wcontainers_gpu::reflect::SourceStage::Pixel {
+                crate::PIXEL
+            } else {
+                crate::VERTEX
+            });
         let past_limit = if matches!(
             stage,
-            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+            wcontainers_gpu::reflect::SourceStage::Vertex
+                | wcontainers_gpu::reflect::SourceStage::Pixel
         ) {
             shader::constants_past_limit(
                 &converted.reflection,
@@ -2597,7 +2606,7 @@ impl<B: Gpu> Device<B> {
                 .features
                 .contains(Features::CULL_DISTANCE);
         if culled {
-            if stage != wcontainers_gpu::SourceStage::Vertex
+            if stage != wcontainers_gpu::reflect::SourceStage::Vertex
                 || !self.backend.caps().features.contains(Features::COMPUTE)
             {
                 return not_implemented(CULL_DISTANCES_UNSERVED);
@@ -2631,7 +2640,7 @@ impl<B: Gpu> Device<B> {
         let gpu = self.gpu(gpu)?;
         let indexed_constants = shader::indexed_constants(bytecode)?;
         let id = self.id();
-        let vertex = stage == wcontainers_gpu::SourceStage::Vertex;
+        let vertex = stage == wcontainers_gpu::reflect::SourceStage::Vertex;
         let shader = Rc::new(Shader {
             indexed_constants,
             clip,
@@ -2655,7 +2664,8 @@ impl<B: Gpu> Device<B> {
         if !culled
             && matches!(
                 stage,
-                wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+                wcontainers_gpu::reflect::SourceStage::Vertex
+                    | wcontainers_gpu::reflect::SourceStage::Pixel
             )
         {
             self.build_ahead(&shader, vertex);
@@ -2669,7 +2679,7 @@ impl<B: Gpu> Device<B> {
         bytecode: &[u8],
         so: Option<crate::stream::Declaration<'_>>,
     ) -> Result<Rc<Geometry<B>>> {
-        use wcontainers_gpu::SourceStage;
+        use wcontainers_gpu::reflect::SourceStage;
         shader::check_model(bytecode, self.level)?;
         let vertex = match shader::stage(bytecode)? {
             SourceStage::Geometry => false,
@@ -3170,7 +3180,7 @@ fn blend_op(op: u32) -> BlendOp {
     }
 }
 
-pub(crate) fn blend_block(d: &BlendDesc) -> wcontainers_gpu::BlendDesc {
+pub(crate) fn blend_block(d: &BlendDesc) -> wcontainers_gpu::state::BlendDesc {
     let target = |t: &TargetBlend| RenderTargetBlend {
         blend: t.enable.then(|| {
             (
@@ -3197,7 +3207,7 @@ pub(crate) fn blend_block(d: &BlendDesc) -> wcontainers_gpu::BlendDesc {
         }
     });
     let same_for_all = targets.iter().all(|t| *t == targets[0]);
-    wcontainers_gpu::BlendDesc {
+    wcontainers_gpu::state::BlendDesc {
         targets,
         same_for_all,
         alpha_to_coverage: d.alpha_to_coverage,

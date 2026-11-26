@@ -4,8 +4,10 @@
 //! real Direct3D 11's timestamps around the same work) and the browser page.
 
 use wcontainers_gpu::{
-    BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Features, Format, Gpu, LoadOp,
-    PassDesc, QueryKind, ReadSource, StoreOp, TextureUsage, Topology, Viewport,
+    Gpu, caps::Features, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::StoreOp, draw::Viewport, error::DeviceStatus, format::Format,
+    resource::BufferUsage, resource::QueryKind, resource::ReadSource, resource::TextureUsage,
+    state::Topology,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

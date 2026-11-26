@@ -27,7 +27,7 @@ use ash::vk;
 use naga::Module;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use wcontainers_gpu::{CUBE_FACES, ReflectedBinding};
+use wcontainers_gpu::{reflect::ReflectedBinding, resource::CUBE_FACES};
 use wcontainers_nir::mesa::{GlslName, GlslNameKind, Stage};
 
 /// What OpenGL's reflection adds to an array's name.

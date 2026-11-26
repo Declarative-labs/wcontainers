@@ -7,8 +7,9 @@ use super::{RECORD_SLOT_BYTES, WORKGROUP, tess};
 use crate::build::WORD;
 use core::mem::size_of;
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups, Gpu,
-    MAX_BINDING_SETS, Program, RingKind, StageSet,
+    Gpu, MAX_BINDING_SETS, RingKind, draw::DispatchCall, draw::DispatchGroups,
+    resource::BindingEntry, resource::BindingResource, resource::BufferRange,
+    resource::BufferUsage, shader::Program, shader::StageSet,
 };
 
 /// The fixed-function tessellator's state, as a hull shader declares it (`StageExtras::Hull`'s

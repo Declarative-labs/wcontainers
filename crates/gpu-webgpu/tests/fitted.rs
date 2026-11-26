@@ -14,11 +14,14 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorTarget, DeviceStatus, DrawCall,
-    DrawRange, Extent, Features, Format, Gpu, MAX_COLOR_TARGETS, Origin, PassTargets, PassTracker,
-    Program, ReadSource, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet, Target,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    ViewDimension, Viewport, WriteMode,
+    Gpu, MAX_COLOR_TARGETS, caps::Features, draw::DrawCall, draw::DrawRange, draw::ScissorRect,
+    draw::Viewport, error::DeviceStatus, format::Format, passes::ColorTarget, passes::PassTargets,
+    passes::PassTracker, passes::Target, resource::BindingEntry, resource::BindingResource,
+    resource::BufferRange, resource::BufferUsage, resource::Extent, resource::Origin,
+    resource::ReadSource, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::ViewDimension, resource::WriteMode, shader::Program, shader::ShaderModule,
+    shader::ShaderStage, shader::StageSet, slow::SlowPath, state::Topology,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 use wcontainers_shaders::front::cut_scissors;
@@ -218,7 +221,7 @@ fn multisampled_targets_of_different_sizes_are_fitted() {
         depth_stencil: b.create_depth_stencil(&draw::no_depth()).unwrap(),
         raster: b.create_raster(&draw::solid()).unwrap(),
         scissored: b
-            .create_raster(&wcontainers_gpu::RasterDesc {
+            .create_raster(&wcontainers_gpu::state::RasterDesc {
                 scissor: true,
                 ..draw::solid()
             })

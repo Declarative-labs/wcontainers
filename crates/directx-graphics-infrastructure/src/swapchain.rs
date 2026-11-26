@@ -10,12 +10,16 @@
 use std::collections::VecDeque;
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, FillMode, Format,
-    FrontFace, Gpu, GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin,
-    PassDesc, Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule,
-    ShaderStage, SlowPath, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    Gpu, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, draw::ColorAttachment, draw::DrawCall,
+    draw::DrawRange, draw::LoadOp, draw::PassDesc, draw::ScissorRect, draw::StoreOp,
+    draw::Viewport, error::DeviceStatus, error::GpuError, format::FORMAT_FACTS, format::Format,
+    resource::BindingEntry, resource::BindingResource, resource::Extent, resource::Origin,
+    resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
+    resource::TextureUsage, resource::TextureViewDesc, shader::Program, shader::ShaderModule,
+    shader::ShaderStage, shader::StageSet, slow::SlowPath, state::BlendDesc, state::ColorWrites,
+    state::CullMode, state::DepthStencilDesc, state::FillMode, state::FrontFace,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::StencilFace,
+    state::Topology, state::VertexLayoutDesc,
 };
 
 use crate::format::{BACK_BUFFER_FORMATS, back_buffer_format, dxgi, present_format};
@@ -330,7 +334,7 @@ impl<B: Gpu> SwapChain<B> {
                 &texture,
                 &TextureViewDesc {
                     format: self.format,
-                    dimension: wcontainers_gpu::ViewDimension::D2,
+                    dimension: wcontainers_gpu::resource::ViewDimension::D2,
                     base_mip: 0,
                     mip_count: 1,
                     base_layer: 0,

@@ -7,8 +7,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use wcontainers_gpu::{
-    FORMAT_FACTS, Format, FormatKind, Reflection, ShaderModule, ShaderStage, SourceStage,
-    StageExtras, VariantKey, ViewDimension,
+    format::FORMAT_FACTS, format::Format, format::FormatKind, reflect::Reflection,
+    reflect::SourceStage, reflect::StageExtras, reflect::VariantKey, resource::ViewDimension,
+    shader::ShaderModule, shader::ShaderStage,
 };
 
 use crate::{ConvertError, Converted};

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::{Device, cache};
-use wcontainers_gpu::SourceStage;
+use wcontainers_gpu::reflect::SourceStage;
 use wcontainers_shaders::cache::Cache;
 
 type Dev = Device<Recorder>;

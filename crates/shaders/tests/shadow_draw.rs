@@ -16,13 +16,18 @@ mod common;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddressMode, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange, BufferUsage,
-    ColorAttachment, ColorWrites, CompareFn, CullMode, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, Gpu as Backend, HELPER_SET,
-    HelperValue, Interpolation, LoadOp, Origin, PassDesc, Program, ProvokingVertex, RasterDesc,
-    ReadSource, RenderTargetBlend, SamplerDesc, ShaderStage, SlotKind, StageSet, StepMode, StoreOp,
-    TextureRegion, TextureUsage, Topology, VariantKey, VertexAttribute, VertexFormat,
-    VertexLayoutDesc, VertexStream, ViewComponent, Viewport, WriteMode, helper_binding,
+    Gpu as Backend, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::StoreOp, draw::Viewport, format::FORMAT_FACTS, format::Format,
+    reflect::HELPER_SET, reflect::HelperValue, reflect::Interpolation, reflect::SlotKind,
+    reflect::VariantKey, reflect::ViewComponent, resource::AddressMode, resource::BindingEntry,
+    resource::BindingResource, resource::BorderColor, resource::BufferRange, resource::BufferUsage,
+    resource::CompareFn, resource::Extent, resource::Filter, resource::Origin,
+    resource::ReadSource, resource::SamplerDesc, resource::TextureRegion, resource::TextureUsage,
+    resource::WriteMode, shader::Program, shader::ShaderStage, shader::StageSet, state::BlendDesc,
+    state::ColorWrites, state::CullMode, state::DepthStencilDesc, state::FillMode,
+    state::FrontFace, state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend,
+    state::StepMode, state::Topology, state::VertexAttribute, state::VertexFormat,
+    state::VertexLayoutDesc, state::VertexStream,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_graphics_test::d3d12;
@@ -605,7 +610,7 @@ fn ours<B: Backend>(
         .collect();
     for (buffer, size, stage) in &helpers {
         entries[HELPER_SET as usize].push(BindingEntry {
-            binding: helper_binding(*stage),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(*stage),
             stages: match stage {
                 ShaderStage::Vertex => StageSet::VERTEX,
                 _ => StageSet::FRAGMENT,
@@ -642,7 +647,7 @@ fn ours<B: Backend>(
         raster: &raster,
         vertex_layout: &vertex_layout,
         bindings: std::array::from_fn(|i| sets[i].as_ref()),
-        vertex_buffers: &[Some(wcontainers_gpu::VertexBinding {
+        vertex_buffers: &[Some(wcontainers_gpu::draw::VertexBinding {
             buffer: &vertex_buffer,
             offset: 0,
         })],
@@ -688,7 +693,7 @@ fn ours<B: Backend>(
         &mut texels,
     )
     .unwrap();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     texels
 }
 

@@ -7,7 +7,10 @@ use crate::program::Value;
 use crate::stream::{self, BufferSide, Call, Draw, Region, Shader, bind_of, kind_of};
 use crate::texel;
 use std::rc::Rc;
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, reflect::*, resource::*, shader::*, slow::*,
+    state::*, *,
+};
 
 /// A handle of the recording back end: an index into its objects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -295,7 +298,7 @@ impl Recorder {
     fn from_caps(caps: Caps) -> Self {
         Recorder {
             caps,
-            slow: wcontainers_gpu::NO_SLOW_PATHS,
+            slow: wcontainers_gpu::slow::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost: None,
             objects: Vec::new(),
@@ -727,7 +730,7 @@ impl Recorder {
             same_samples(self.texture(texture)?.desc.samples)?;
             depth = Some((*d.view, d.depth, d.stencil));
         }
-        let bytes = color_target_bytes(formats)
+        let bytes = Format::color_target_bytes(formats)
             .ok_or("a colour attachment of a format that cannot be a colour target")?;
         if bytes > self.caps.limits.color_bytes_per_sample {
             return Err("colour attachments of more bytes a sample than the limit".into());

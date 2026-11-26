@@ -1,6 +1,6 @@
 //! The recording back end built alone from its config (`StandaloneGpu`), as the suite builds them.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{caps::*, *};
 use wcontainers_gpu_test::{Recorder, RecorderConfig};
 
 #[test]

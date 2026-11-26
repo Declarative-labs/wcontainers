@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use naga::{Module, Statement};
 use rspirv::dr::{self, Instruction};
 use spirv::{BuiltIn, ExecutionMode, ExecutionModel, Op, StorageClass};
-use wcontainers_gpu::{StageExtras, StageValue, VariantKey};
+use wcontainers_gpu::{reflect::StageExtras, reflect::StageValue, reflect::VariantKey};
 
 /// The prefix of the names given to the stage values' variables.
 const VALUE_NAME: &str = "gs_value";

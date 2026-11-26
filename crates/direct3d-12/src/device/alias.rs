@@ -9,8 +9,8 @@
 //! texture in that format, and the two inherit from each other the same way (`ReinterpretCopy`).
 
 use wcontainers_gpu::{
-    Extent, FORMAT_FACTS, Features, Format, FormatUse, Gpu, Origin, SlowPath, TextureRegion,
-    TextureUsage,
+    Gpu, caps::Features, caps::FormatUse, format::FORMAT_FACTS, format::Format, resource::Extent,
+    resource::Origin, resource::TextureRegion, resource::TextureUsage, slow::SlowPath,
 };
 
 use super::{Device, Resource, ResourceId, Storage, dxgi as format_of};
@@ -328,7 +328,7 @@ impl<B: Gpu> Device<B> {
             }
             (from @ Storage::Texture { desc, .. }, to @ Storage::Texture { .. }) => {
                 let desc = *desc;
-                let three_d = desc.dimension == wcontainers_gpu::TextureDimension::D3;
+                let three_d = desc.dimension == wcontainers_gpu::resource::TextureDimension::D3;
                 let layers = if three_d { 1 } else { desc.depth_or_layers };
                 let at = |s: &Storage<B>, layer| {
                     s.layer(layer)

@@ -11,11 +11,14 @@ mod forms;
 use common::*;
 // The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddressMode, BindingEntry, BindingResource, BorderColor, BufferRange, BufferUsage,
-    DispatchCall, DispatchGroups, Extent, FORMAT_FACTS, Filter, Format, Gpu as Backend, HELPER_SET,
-    HelperValue, Origin, Program, ReadSource, SamplerDesc, ShaderStage, SlotKind, StageSet,
-    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    VariantKey, ViewDimension, WriteMode, helper_binding,
+    Gpu as Backend, draw::DispatchCall, draw::DispatchGroups, format::FORMAT_FACTS, format::Format,
+    reflect::HELPER_SET, reflect::HelperValue, reflect::SlotKind, reflect::TexelBufferRoute,
+    reflect::VariantKey, resource::AddressMode, resource::BindingEntry, resource::BindingResource,
+    resource::BorderColor, resource::BufferRange, resource::BufferUsage, resource::Extent,
+    resource::Filter, resource::Origin, resource::ReadSource, resource::SamplerDesc,
+    resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
+    resource::TextureUsage, resource::TextureViewDesc, resource::ViewDimension,
+    resource::WriteMode, shader::Program, shader::ShaderStage, shader::StageSet,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{ConvertError, Source, convert};
@@ -40,7 +43,7 @@ struct View {
 
 /// The view a binding of the program stands for: the one of its kind (shader resource views at
 /// texture slots, unordered access views and their counters at the others) at its register.
-fn view_of(case: &Case, r: &wcontainers_gpu::ReflectedBinding) -> usize {
+fn view_of(case: &Case, r: &wcontainers_gpu::reflect::ReflectedBinding) -> usize {
     let read = r.kind == SlotKind::Texture;
     case.views
         .iter()
@@ -447,7 +450,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
     let moved = case.views.iter().any(|v| v.first != 0);
     let mut key = VariantKey::default();
     if moved {
-        key.flags |= wcontainers_gpu::VariantFlags::STORAGE_OFFSET;
+        key.flags |= wcontainers_gpu::reflect::VariantFlags::STORAGE_OFFSET;
     }
     let c = match dxil {
         true => convert(
@@ -470,7 +473,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
     // Each moved view binds from the largest multiple of the alignment and of the program's element
     // below its start; the rest goes into the helper block.
     let alignment = b.caps().limits.min_storage_offset_alignment as u64;
-    let start = |r: &wcontainers_gpu::ReflectedBinding| {
+    let start = |r: &wcontainers_gpu::reflect::ReflectedBinding| {
         let first = 4 * case.views[view_of(case, r)].first as u64;
         if r.stride == 0 {
             return (first, 0);
@@ -540,7 +543,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
         (!helper_bytes.is_empty()).then(|| buffer(b, &helper_bytes, BufferUsage::UNIFORM));
     let helper_set = helper_buffer.as_ref().map(|h| {
         b.create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: h,
@@ -584,7 +587,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
                 .map(|c| u32::from_le_bytes(read(c, 4).try_into().unwrap()))
         })
         .collect();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     Ok(Ran { views, counters })
 }
 
@@ -1054,7 +1057,7 @@ fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -
             all
         })
         .collect();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     out
 }
 
@@ -1331,7 +1334,7 @@ fn storage_texture_arrays_use_the_elements_picked() {
                     .filter(|(o, e)| u32::from_le_bytes((*o).try_into().unwrap()) != **e)
                     .count();
             }
-            assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+            assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
             eprintln!("seed {seed} cs_image_array ({route}): {apart} texels apart");
             if apart > 0 {
                 failures.push((route, seed));
@@ -1612,7 +1615,9 @@ fn buffer_arrays_alike(
             let helper_buffer = buffer(&mut b, &helpers, BufferUsage::UNIFORM);
             let helper_set = b
                 .create_binding_set(&[BindingEntry {
-                    binding: helper_binding(ShaderStage::Compute),
+                    binding: wcontainers_gpu::shader::ShaderStage::helper_binding(
+                        ShaderStage::Compute,
+                    ),
                     stages: StageSet::COMPUTE,
                     resource: BindingResource::UniformBuffer(BufferRange {
                         buffer: &helper_buffer,
@@ -1649,7 +1654,7 @@ fn buffer_arrays_alike(
                     .filter(|(o, e)| u32::from_le_bytes((*o).try_into().unwrap()) != **e)
                     .count();
             }
-            assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+            assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
             eprintln!("seed {seed} {build} {shader}: {apart} words apart");
             if apart > 0 {
                 failures.push(format!("{build} seed {seed}"));
@@ -1926,7 +1931,7 @@ fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], build: TexelBuild) ->
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let helper_set = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -1966,7 +1971,7 @@ fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], build: TexelBuild) ->
         }
     }
     out.push(read(&results, results_len as usize));
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     out
 }
 
@@ -2409,7 +2414,7 @@ fn ours_through<B: Backend>(
     let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
     let helper_set = b
         .create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Compute),
+            binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
             stages: StageSet::COMPUTE,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &helper_buffer,
@@ -2455,7 +2460,7 @@ fn ours_through<B: Backend>(
             texels
         })
         .collect();
-    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(b.status(), wcontainers_gpu::error::DeviceStatus::Ok);
     out
 }
 
@@ -3159,8 +3164,8 @@ enum FormatKindOf {
 impl FormatKindOf {
     fn of(format: Format) -> FormatKindOf {
         match FORMAT_FACTS[format as usize].kind {
-            wcontainers_gpu::FormatKind::Uint => FormatKindOf::Uint,
-            wcontainers_gpu::FormatKind::Sint => FormatKindOf::Sint,
+            wcontainers_gpu::format::FormatKind::Uint => FormatKindOf::Uint,
+            wcontainers_gpu::format::FormatKind::Sint => FormatKindOf::Sint,
             _ => FormatKindOf::Float,
         }
     }

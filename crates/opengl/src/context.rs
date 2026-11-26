@@ -5,9 +5,10 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    ClearValue, ColorTarget, DeviceStatus, EmptyPass, FORMAT_FACTS, Gpu, MAX_COLOR_TARGETS, Object,
-    PassTargets, PassTracker, ScissorRect, Target, TextureDesc, TextureDimension, TextureViewDesc,
-    ViewDimension,
+    ClearValue, Gpu, MAX_COLOR_TARGETS, Object, draw::EmptyPass, draw::ScissorRect,
+    error::DeviceStatus, format::FORMAT_FACTS, passes::ColorTarget, passes::PassTargets,
+    passes::PassTracker, passes::Target, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureViewDesc, resource::ViewDimension,
 };
 
 use crate::draw::Programs;
@@ -106,7 +107,7 @@ pub struct Context<B: Gpu> {
     pub running: Option<*mut pipe_query>,
     /// The exact sample counts of counted occlusion queries, one running at a time, and whether
     /// it counts the next draw (not while st/mesa draws for itself).
-    pub counter: wcontainers_gpu::OcclusionCounter<B>,
+    pub counter: wcontainers_gpu::occlusion::OcclusionCounter<B>,
     pub counts_samples: bool,
     /// Queries ended whose counts are not yet read back: their reads start at the next flush, so
     /// that a finished context has every answer.
@@ -161,7 +162,7 @@ pub unsafe extern "C" fn context_create<B: crate::device::HostWindows>(
             blit_bytes: Vec::new(),
             queries: query::Sets::default(),
             running: None,
-            counter: wcontainers_gpu::OcclusionCounter::default(),
+            counter: wcontainers_gpu::occlusion::OcclusionCounter::default(),
             counts_samples: false,
             unread: Vec::new(),
             counting: Vec::new(),
@@ -469,8 +470,9 @@ fn clear_surface<B: Gpu>(
 }
 
 /// Why a surface had no view.
-const NO_VIEW: wcontainers_gpu::GpuError =
-    wcontainers_gpu::GpuError::Invalid("a surface of no texture or of a format the device lacks");
+const NO_VIEW: wcontainers_gpu::error::GpuError = wcontainers_gpu::error::GpuError::Invalid(
+    "a surface of no texture or of a format the device lacks",
+);
 
 #[allow(clippy::too_many_arguments, reason = "Gallium's signature")]
 unsafe extern "C" fn clear_render_target<B: Gpu>(
@@ -533,7 +535,7 @@ pub fn surface_view<B: Gpu>(
     backend: &mut B,
     surface: &pipe_surface,
     layer: u32,
-) -> Option<(B::TextureView, wcontainers_gpu::Format)> {
+) -> Option<(B::TextureView, wcontainers_gpu::format::Format)> {
     if surface.texture.is_null() {
         return None;
     }
@@ -572,12 +574,16 @@ pub fn surface_view<B: Gpu>(
 
 /// Whether a colour target in `format` of a texture `desc` describes is drawn into through a twin:
 /// the host views a texture only in its own format or its sRGB twin unless it reinterprets.
-fn through_twin<B: Gpu>(backend: &B, format: wcontainers_gpu::Format, desc: &TextureDesc) -> bool {
+fn through_twin<B: Gpu>(
+    backend: &B,
+    format: wcontainers_gpu::format::Format,
+    desc: &TextureDesc,
+) -> bool {
     let reinterprets = desc.reinterpret
         && backend
             .caps()
             .features
-            .contains(wcontainers_gpu::Features::FORMAT_REINTERPRET);
+            .contains(wcontainers_gpu::caps::Features::FORMAT_REINTERPRET);
     let colour = !FORMAT_FACTS[format as usize].depth_stencil
         && !FORMAT_FACTS[desc.format as usize].depth_stencil;
     colour

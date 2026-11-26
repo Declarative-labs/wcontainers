@@ -5,8 +5,9 @@ use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    Caps, DeviceStatus, Features, Format, FormatUse, Gpu, Object, SLOT_KINDS, SLOW_PATH_REASONS,
-    SLOW_PATHS, SlotKind, TEXEL_BUFFER_TEXTURE_WIDTH,
+    Gpu, Object, caps::Caps, caps::Features, caps::FormatUse, error::DeviceStatus, format::Format,
+    reflect::SLOT_KINDS, reflect::SlotKind, reflect::TEXEL_BUFFER_TEXTURE_WIDTH,
+    slow::SLOW_PATH_REASONS, slow::SLOW_PATHS,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
@@ -218,7 +219,7 @@ const GL_3_2_PASSED_COMPONENTS: c_uint = 128;
 
 /// The core profile's GLSL version: 3.30's where the passed values meet OpenGL 3.2's minimums,
 /// otherwise OpenGL 3.1's, so that no version is reported whose minimums are not met.
-pub(crate) fn glsl_version(limits: &wcontainers_gpu::Limits) -> c_uint {
+pub(crate) fn glsl_version(limits: &wcontainers_gpu::caps::Limits) -> c_uint {
     if passed_values(limits) * naga::VectorSize::Quad as c_uint >= GL_3_2_PASSED_COMPONENTS {
         GLSL_VERSION
     } else {
@@ -245,7 +246,7 @@ const PASS_THROUGH_INPUTS: c_uint = 2;
 /// The values a vertex, geometry or evaluation program may pass on: what the host passes between
 /// stages, and what the stage helper's pass-through vertex program, which draws a geometry or
 /// evaluation program's output and points as squares, takes as vertex inputs beside its own.
-fn passed_values(limits: &wcontainers_gpu::Limits) -> c_uint {
+fn passed_values(limits: &wcontainers_gpu::caps::Limits) -> c_uint {
     limits
         .inter_stage_slots
         .min(limits.vertex_attributes.saturating_sub(PASS_THROUGH_INPUTS))
@@ -253,7 +254,7 @@ fn passed_values(limits: &wcontainers_gpu::Limits) -> c_uint {
 
 /// Whether points drawn as squares can pass `gl_PointCoord` at location `at`: between stages, and
 /// to the pass-through vertex program beside its position.
-pub(crate) fn point_coordinate_passes(limits: &wcontainers_gpu::Limits, at: u32) -> bool {
+pub(crate) fn point_coordinate_passes(limits: &wcontainers_gpu::caps::Limits, at: u32) -> bool {
     at < limits.inter_stage_slots && at + PASS_THROUGH_INPUTS <= limits.vertex_attributes
 }
 
@@ -599,7 +600,7 @@ pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
 
 #[cfg(test)]
 mod tests {
-    use wcontainers_gpu::{Gpu, SlowPath};
+    use wcontainers_gpu::{Gpu, slow::SlowPath};
     use wcontainers_gpu_test::Recorder;
 
     use super::*;

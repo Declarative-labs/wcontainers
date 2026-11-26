@@ -5,36 +5,37 @@
 use alloc::vec::Vec;
 
 /// The reason [`SlowPath::StorageOffsetInShader`] shows.
-const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shader";
+pub const STORAGE_OFFSET_IN_SHADER: &str = "storage view's offset added in the shader";
 
 /// The reason [`SlowPath::FloatBitsClearByDraw`] shows.
-const FLOAT_BITS_CLEAR_BY_DRAW: &str = "float colour clear made by a draw keeping its bits";
+pub const FLOAT_BITS_CLEAR_BY_DRAW: &str = "float colour clear made by a draw keeping its bits";
 
 /// The reason [`SlowPath::StreamOutAfterReplay`] shows.
-const STREAM_OUT_AFTER_REPLAY: &str = "stream output of the replay route written on the host";
+pub const STREAM_OUT_AFTER_REPLAY: &str = "stream output of the replay route written on the host";
 
 /// The reason [`SlowPath::FrameStretched`] shows.
-const FRAME_STRETCHED: &str = "frame stretched to its window against the swap chain's scaling";
+pub const FRAME_STRETCHED: &str = "frame stretched to its window against the swap chain's scaling";
 
 /// The reason [`SlowPath::SharedThroughHost`] shows.
-const SHARED_THROUGH_HOST: &str = "shared resource copied between devices through the host";
+pub const SHARED_THROUGH_HOST: &str = "shared resource copied between devices through the host";
 
 /// The reason [`SlowPath::QuerySetSplitPass`] shows.
-const QUERY_SET_SPLIT_PASS: &str = "query set out of indices split a pass";
+pub const QUERY_SET_SPLIT_PASS: &str = "query set out of indices split a pass";
 
 /// The reason [`SlowPath::PackedTargetQuantised`] shows.
-const PACKED_TARGET_QUANTISED: &str = "packed target drawn wider and rounded to its bits by a draw";
+pub const PACKED_TARGET_QUANTISED: &str =
+    "packed target drawn wider and rounded to its bits by a draw";
 
 /// The reason [`SlowPath::PackedTargetReadByBlend`] shows.
-const PACKED_TARGET_READ_BY_BLEND: &str =
+pub const PACKED_TARGET_READ_BY_BLEND: &str =
     "packed target read by a blend split a pass to round it first";
 
 /// The reason [`SlowPath::StorageReadWriteThroughBuffer`] shows.
-const STORAGE_READ_WRITE_THROUGH_BUFFER: &str =
+pub const STORAGE_READ_WRITE_THROUGH_BUFFER: &str =
     "storage texture loaded and stored by one program through a buffer of its texels";
 
 /// The reason [`SlowPath::AliasedLinesAsQuads`] shows.
-const ALIASED_LINES_AS_QUADS: &str =
+pub const ALIASED_LINES_AS_QUADS: &str =
     "aliased lines drawn as rectangles keeping the pixels of their rule";
 
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
@@ -203,7 +204,7 @@ pub enum SlowPath {
     EarlyTestsPerPrimitive,
     /// A per-resource minimum level-of-detail clamp applied by merged samplers and by the program.
     MinLodClamp,
-    /// A fractional viewport, or one past [`crate::Viewport`]'s bounds, drawn with a whole-pixel
+    /// A fractional viewport, or one past [`crate::draw::Viewport`]'s bounds, drawn with a whole-pixel
     /// viewport within them that covers what it draws, adjusted in the program.
     ViewportInShader,
     /// A staging resource the GPU wrote, mapped for writing only, read back first so the bytes the
@@ -561,7 +562,7 @@ pub const SLOW_PATH_REASONS: [&str; SLOW_PATH_COUNT] = [
     // StreamOutRepacked
     "stream output repacked",
     // TargetReadPerPrimitive
-    { "draw reading its target run one primitive at a time" },
+    "draw reading its target run one primitive at a time",
     // LayerSplit
     "layered draw split per layer",
     // VertexFetchZeroed
@@ -583,7 +584,7 @@ pub const SLOW_PATH_REASONS: [&str; SLOW_PATH_COUNT] = [
     // ViewportDepthFlip
     "viewport depth range flipped in the shader",
     // VaryingsBeyondLimit
-    { "program refused: more stage values than the back end has" },
+    "program refused: more stage values than the back end has",
     // AtomicsThroughBuffer
     "storage texture atomics run through a buffer",
     // NormAsInteger
@@ -607,15 +608,15 @@ pub const SLOW_PATH_REASONS: [&str; SLOW_PATH_COUNT] = [
     // EarlyTestsInShader
     "early depth and stencil tests run in the shader",
     // EarlyTestsPerPrimitive
-    { "early depth and stencil tests run one primitive at a time" },
+    "early depth and stencil tests run one primitive at a time",
     // MinLodClamp
-    { "resource minimum lod clamp applied by samplers and the shader" },
+    "resource minimum lod clamp applied by samplers and the shader",
     // ViewportInShader
     "fractional or oversized viewport applied in the shader",
     // StagingRefreshed
     "staging resource read back before a write-only map",
     // AttachmentsFitted
-    { "attachments of different sizes fitted through temporaries" },
+    "attachments of different sizes fitted through temporaries",
     // IndexBufferTwin
     "buffer kept twice for indices and other data",
     // IndexTwinReadBack
@@ -635,7 +636,7 @@ pub const SLOW_PATH_REASONS: [&str; SLOW_PATH_COUNT] = [
     // DrawBaseFromArguments
     "draw bases read from indirect arguments",
     // StorageFormatThroughBuffer
-    { "storage texture of an unstorable format run through a buffer" },
+    "storage texture of an unstorable format run through a buffer",
     // MultisampleCopyResolved
     "multisampled copy made from the resolved source",
     // AliasCopied
@@ -673,17 +674,17 @@ pub const SLOW_PATH_REASONS: [&str; SLOW_PATH_COUNT] = [
     // CaptureExpanded
     "captured draw expanded into points in list order",
     // CopyWithinTexture
-    { "copy within one subresource made through a temporary buffer or texture" },
+    "copy within one subresource made through a temporary buffer or texture",
     // PixelInvocationsCounted
-    { "pixel shader invocations counted by drawing again" },
+    "pixel shader invocations counted by drawing again",
     // SwizzleInShader
     "view component mapping applied in the program",
     // AtomicExchangeLoop
-    { "atomic minimum or maximum made by a compare-exchange loop" },
+    "atomic minimum or maximum made by a compare-exchange loop",
     // SequentialBuffersCopied
     "swap chain buffers moved by copies at present",
     // IndirectFetchPastEnd
-    { "indirect draw skipped whole if it fetches past a vertex buffer's end" },
+    "indirect draw skipped whole if it fetches past a vertex buffer's end",
     // StorageOffsetInShader
     STORAGE_OFFSET_IN_SHADER,
     // FloatBitsClearByDraw
@@ -720,58 +721,3 @@ pub const NO_SLOW_PATHS: SlowPaths = SlowPaths {
     counts: [0; SLOW_PATH_COUNT],
     unwarned: Vec::new(),
 };
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_lists_every_reason_in_order() {
-        for (i, p) in SLOW_PATHS.iter().enumerate() {
-            assert_eq!(*p as usize, i);
-        }
-        let mut names: Vec<_> = SLOW_PATH_REASONS.to_vec();
-        names.sort();
-        names.dedup();
-        assert_eq!(names.len(), SLOW_PATH_COUNT);
-    }
-
-    /// Every reason keeps the number it had when it was added, the place serialised caches read.
-    #[test]
-    fn reasons_keep_their_numbers() {
-        const HELD: &str = "\
-            FanConverted LoopConverted ReadBackWait PipelineMiss WriteSplitPass ReinterpretCopy \
-            GeometryAsCompute GeometryAsReplay TessellationAsCompute StreamOutAsCompute \
-            VertexStorageAsCompute RestartRewrite ProvokingRewrite DepthBiasInShader \
-            BorderInShader LogicOpInShader FillModeConverted TexelBufferAsStorage StoragePacked \
-            SamplerPairsExpanded ClipDepthRewrite VertexFormatConverted FormatConverted \
-            TexelBufferAsTexture BaseVertexRebind IndirectReadBack IndirectCountExpanded \
-            MappedUploadWhole ImmediatesSpilled MultiviewSerial MultiViewportSplit PointsAsQuads \
-            F64Emulated PredicationWait DepthReadByDraw StencilFacesSplit MirrorOnceInShader \
-            InstanceRateInShader OcclusionCountReplay TimestampSplitPass UnalignedBufferEdge \
-            TargetsSplit FilterInShader StreamOutRepacked TargetReadPerPrimitive LayerSplit \
-            VertexFetchZeroed BindingsBeyondLimit VertexPulledInShader ConstantsAsStorage \
-            ConstantsAsTexture BlockDecoded HostCopyReadBack LodBiasInShader ViewportDepthFlip \
-            VaryingsBeyondLimit AtomicsThroughBuffer NormAsInteger BlendInShader \
-            SampleMaskInShader StencilCopiedByDraw CopyThroughBuffer DepthWrittenByDraw \
-            HostCopyKept QueriesSegmented CopyWithinBuffer EarlyTestsInShader \
-            EarlyTestsPerPrimitive MinLodClamp ViewportInShader StagingRefreshed \
-            AttachmentsFitted IndexBufferTwin IndexTwinReadBack QueryResolveWait \
-            PredicationIndirect IndexWidened AdjacencyDropped TextureInfoInHelpers \
-            DrawBaseInHelpers DrawBaseFromArguments StorageFormatThroughBuffer \
-            MultisampleCopyResolved AliasCopied AntialiasedLinesAsQuads UsageScopeSplit \
-            UsageScopeCopied ClipDistanceInShader DepthClampInShader CullDistanceAsGeometry \
-            PrimitiveIdAsGeometry RowsRepacked ResolveInStoredFormat ResolveByDraw \
-            PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
-            PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
-            SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
-            StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched \
-            SharedThroughHost QuerySetSplitPass PackedTargetQuantised PackedTargetReadByBlend \
-            StorageReadWriteThroughBuffer AliasedLinesAsQuads";
-        let held: Vec<_> = HELD.split_whitespace().collect();
-        assert!(held.len() <= SLOW_PATH_COUNT);
-        for (i, name) in held.iter().enumerate() {
-            assert_eq!(alloc::format!("{:?}", SLOW_PATHS[i]), *name, "reason {i}");
-        }
-    }
-}

@@ -12,7 +12,8 @@ use naga::{
     ImageDimension, Literal, Module, ScalarKind, Span, StorageAccess, Type, TypeInner,
 };
 use wcontainers_gpu::{
-    Reflection, SLOT_KINDS, ShaderStage, SlotKind, TexelBufferRoute, VariantKey,
+    reflect::Reflection, reflect::SLOT_KINDS, reflect::SlotKind, reflect::TexelBufferRoute,
+    reflect::VariantKey, shader::ShaderStage,
 };
 
 /// One typed buffer of a module and the functions its program calls for it, stand-ins whose bodies

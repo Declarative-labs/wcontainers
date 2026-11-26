@@ -10,7 +10,10 @@
 use std::borrow::Cow;
 
 use naga::{Expression, Module};
-use wcontainers_gpu::{Reflection, SLOT_KINDS, SlotKind, SourceStage, StageExtras, VariantKey};
+use wcontainers_gpu::{
+    reflect::Reflection, reflect::SLOT_KINDS, reflect::SlotKind, reflect::SourceStage,
+    reflect::StageExtras, reflect::VariantKey,
+};
 use wcontainers_shaders::{ENTRY_POINT, cache, rewrite};
 
 /// Texels on a side of each texture, a power of two so a moved coordinate is exact.

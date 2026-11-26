@@ -4,17 +4,24 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AspectOps, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH, ClearValue,
-    ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
-    DispatchCall, DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
-    EmptyPass, Extent, FORMAT_FACTS, Features, Filter, Format, FormatKind, FormatUse, Gpu,
-    HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS,
-    Object, Origin, PassDesc, PassOps, PassTargets, Program, ReadSource, ReadState, RingKind,
-    SLOT_KINDS, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageSet, StencilOp, StepMode, StoreOp, SystemValue,
-    TEXEL_BUFFER_TEXTURE_WIDTH, Target, TargetInShader, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport as GpuViewport, WriteMode, helper_binding,
+    ClearValue, Gpu, MAX_BINDING_SETS, Object, RingKind, caps::Features, caps::FormatUse,
+    draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment, draw::DispatchCall,
+    draw::DispatchGroups, draw::DrawCall, draw::DrawRange, draw::EmptyPass, draw::IndexBinding,
+    draw::LoadOp, draw::PassDesc, draw::ScissorRect, draw::StoreOp, draw::VertexBinding,
+    draw::Viewport as GpuViewport, format::FORMAT_FACTS, format::Format, format::FormatKind,
+    occlusion::CountedDraw, passes::ColorTarget, passes::PassOps, passes::PassTargets,
+    passes::Target, reflect::CONSTANTS_TEXTURE_WIDTH, reflect::DRAW_ARGUMENTS_BINDING,
+    reflect::EARLY_DEPTH_BINDING, reflect::EARLY_STENCIL_BINDING, reflect::HELPER_SET,
+    reflect::HelperValue, reflect::Interpolation, reflect::SLOT_KINDS, reflect::SlotKind,
+    reflect::SourceStage, reflect::SystemValue, reflect::TEXEL_BUFFER_TEXTURE_WIDTH,
+    reflect::TargetInShader, reflect::VariantKey, resource::BindingEntry,
+    resource::BindingResource, resource::BufferRange, resource::Extent, resource::Filter,
+    resource::Origin, resource::ReadSource, resource::ReadState,
+    resource::SamplerDesc as GpuSampler, resource::TextureRegion, resource::TextureUsage,
+    resource::TextureViewDesc, resource::ViewDimension, resource::WriteMode, shader::Program,
+    shader::ShaderModule, shader::ShaderStage, shader::StageSet, slow::SlowPath,
+    state::IndexFormat, state::StencilOp, state::StepMode, state::Topology, state::VertexAttribute,
+    state::VertexLayoutDesc, state::VertexStream,
 };
 
 use crate::desc::{
@@ -1048,8 +1055,8 @@ impl<B: Gpu> Device<B> {
         let t = &view.texture;
         let mip = view.desc.first_mip;
         let extent = t.mip_extent(mip);
-        let desc = wcontainers_gpu::TextureDesc {
-            dimension: wcontainers_gpu::TextureDimension::D2,
+        let desc = wcontainers_gpu::resource::TextureDesc {
+            dimension: wcontainers_gpu::resource::TextureDimension::D2,
             format: view.format,
             width: extent.width,
             height: extent.height,
@@ -1322,12 +1329,12 @@ impl<B: Gpu> Device<B> {
     ) -> Result<(B::Program, Rc<DepthStencil<B>>)> {
         let per_sample = matches!(
             ps.reflection.extras,
-            wcontainers_gpu::StageExtras::Pixel {
+            wcontainers_gpu::reflect::StageExtras::Pixel {
                 per_sample: true,
                 ..
             }
         ) || ps.reflection.inputs.iter().any(|i| {
-            i.system == Some(wcontainers_gpu::SystemValue::SampleIndex)
+            i.system == Some(wcontainers_gpu::reflect::SystemValue::SampleIndex)
                 || matches!(
                     i.interpolation,
                     Interpolation::PerspectiveSample | Interpolation::LinearSample
@@ -1585,7 +1592,7 @@ impl<B: Gpu> Device<B> {
             let mips = v.desc.first_mip..v.desc.first_mip + 1;
             let layers = v.desc.first_layer..v.desc.first_layer + v.desc.layer_count;
             // A view on a twin of its texture clears the twin, copied out after.
-            let twin_desc = wcontainers_gpu::TextureDesc {
+            let twin_desc = wcontainers_gpu::resource::TextureDesc {
                 format: v.format,
                 ..v.texture.gpu_desc
             };
@@ -2482,14 +2489,14 @@ impl<B: Gpu> Device<B> {
     fn draws_triangles(&self) -> bool {
         let triangles = wcontainers_shaders::stage::TRIANGLE_VERTICES;
         if let Some((gs, _)) = self.ctx.gs.as_ref().and_then(|g| g.stage.as_ref())
-            && let wcontainers_gpu::StageExtras::Geometry {
+            && let wcontainers_gpu::reflect::StageExtras::Geometry {
                 output_vertices, ..
             } = gs.reflection.extras
         {
             return u32::from(output_vertices) == triangles;
         }
         if let Some(hs) = &self.ctx.hs
-            && let wcontainers_gpu::StageExtras::Hull {
+            && let wcontainers_gpu::reflect::StageExtras::Hull {
                 output_primitive, ..
             } = hs.reflection.extras
         {
@@ -2833,8 +2840,8 @@ impl<B: Gpu> Device<B> {
             height: rows.div_ceil(CONSTANTS_TEXTURE_WIDTH),
             depth_or_layers: 1,
         };
-        let desc = wcontainers_gpu::TextureDesc {
-            dimension: wcontainers_gpu::TextureDimension::D2,
+        let desc = wcontainers_gpu::resource::TextureDesc {
+            dimension: wcontainers_gpu::resource::TextureDimension::D2,
             format: Format::Rgba32Uint,
             width: extent.width,
             height: extent.height,
@@ -2910,7 +2917,7 @@ impl<B: Gpu> Device<B> {
                 continue;
             }
             self.backend.copy_buffer_to_texture(
-                &wcontainers_gpu::CopyBufferTexture {
+                &wcontainers_gpu::resource::CopyBufferTexture {
                     buffer,
                     offset: offset + u64::from(first * row_pitch),
                     row_pitch,
@@ -2952,18 +2959,20 @@ impl<B: Gpu> Device<B> {
             None => {
                 self.settle();
                 let height = texels.count.div_ceil(texels.width).max(1);
-                let texture = self.backend.create_texture(&wcontainers_gpu::TextureDesc {
-                    dimension: wcontainers_gpu::TextureDimension::D2,
-                    format,
-                    width: texels.width,
-                    height,
-                    depth_or_layers: 1,
-                    mip_levels: 1,
-                    samples: 1,
-                    usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
-                    cube: false,
-                    reinterpret: false,
-                });
+                let texture =
+                    self.backend
+                        .create_texture(&wcontainers_gpu::resource::TextureDesc {
+                            dimension: wcontainers_gpu::resource::TextureDimension::D2,
+                            format,
+                            width: texels.width,
+                            height,
+                            depth_or_layers: 1,
+                            mip_levels: 1,
+                            samples: 1,
+                            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+                            cube: false,
+                            reinterpret: false,
+                        });
                 let texture = self.gpu(texture)?;
                 let view = self.backend.create_view(
                     &texture,
@@ -3161,7 +3170,7 @@ impl<B: Gpu> Device<B> {
                 Some((b, offset)) => self.read_dispatch(b, offset)?,
             };
             let size = match cs.reflection.extras {
-                wcontainers_gpu::StageExtras::Compute { workgroup_size } => workgroup_size,
+                wcontainers_gpu::reflect::StageExtras::Compute { workgroup_size } => workgroup_size,
                 _ => [1; 3],
             };
             let threads = groups
@@ -3229,7 +3238,7 @@ impl<B: Gpu> Device<B> {
         let mut entries = Vec::with_capacity(merged.len() + 1);
         if !block.is_empty() {
             entries.push(BindingEntry {
-                binding: helper_binding(ShaderStage::Compute),
+                binding: wcontainers_gpu::shader::ShaderStage::helper_binding(ShaderStage::Compute),
                 stages: StageSet::COMPUTE,
                 resource: BindingResource::UniformBuffer(BufferRange {
                     buffer: &ring,
@@ -4158,7 +4167,7 @@ impl<B: Gpu> Device<B> {
         let forced = ps.is_some_and(|ps| {
             matches!(
                 ps.reflection.extras,
-                wcontainers_gpu::StageExtras::Pixel {
+                wcontainers_gpu::reflect::StageExtras::Pixel {
                     early_tests: true,
                     side_effects: true,
                     ..
@@ -4292,7 +4301,10 @@ impl<B: Gpu> Device<B> {
     }
 
     /// The raster block a draw uses: the bound state's, or its twin of `masked`'s sample mask and bias.
-    pub(crate) fn raster_desc(&self, masked: Option<RasterKey>) -> wcontainers_gpu::RasterDesc {
+    pub(crate) fn raster_desc(
+        &self,
+        masked: Option<RasterKey>,
+    ) -> wcontainers_gpu::state::RasterDesc {
         let r = self.ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
         match masked {
             Some(key) => twin_block(&r.desc, self.backend.caps(), key),
@@ -4605,7 +4617,7 @@ impl<B: Gpu> Device<B> {
         {
             if !blocks[i].is_empty() {
                 entries.push(BindingEntry {
-                    binding: helper_binding(stage),
+                    binding: wcontainers_gpu::shader::ShaderStage::helper_binding(stage),
                     stages: if i == 0 {
                         StageSet::VERTEX
                     } else {
@@ -6232,7 +6244,7 @@ fn same_kind(view: FormatKind, declared: FormatKind) -> bool {
 pub(crate) fn layout_desc(
     layout: Option<&InputLayout>,
     strides: [u32; 32],
-    inputs: &[wcontainers_gpu::StageValue],
+    inputs: &[wcontainers_gpu::reflect::StageValue],
 ) -> VertexLayoutDesc {
     let mut desc = VertexLayoutDesc {
         streams: [None; 32],
@@ -6273,10 +6285,10 @@ pub(crate) type RasterKey = (u32, bool, bool, bool);
 /// The raster block of `desc` as twin `key`.
 fn twin_block(
     desc: &crate::desc::RasterizerDesc,
-    caps: &wcontainers_gpu::Caps,
+    caps: &wcontainers_gpu::caps::Caps,
     key: RasterKey,
-) -> wcontainers_gpu::RasterDesc {
-    let mut block = wcontainers_gpu::RasterDesc {
+) -> wcontainers_gpu::state::RasterDesc {
+    let mut block = wcontainers_gpu::state::RasterDesc {
         sample_mask: key.0,
         ..crate::device::raster_block(desc, caps)
     };
@@ -6287,8 +6299,8 @@ fn twin_block(
         block.depth_bias_clamp = 0;
     }
     if key.3 {
-        block.cull = wcontainers_gpu::CullMode::None;
-        block.fill = wcontainers_gpu::FillMode::Solid;
+        block.cull = wcontainers_gpu::state::CullMode::None;
+        block.fill = wcontainers_gpu::state::FillMode::Solid;
     }
     block
 }

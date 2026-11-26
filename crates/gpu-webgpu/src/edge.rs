@@ -3,7 +3,7 @@
 //! compute program (slow path `UnalignedBufferEdge`).
 
 use wcontainers_gpu::Gpu;
-use wcontainers_gpu::SlowPath;
+use wcontainers_gpu::slow::SlowPath;
 
 use crate::{GROUP, Stream, WebGpu, with_group};
 

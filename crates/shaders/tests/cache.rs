@@ -6,7 +6,10 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
-use wcontainers_gpu::{CompareFn, DepthStencilDesc, Format, Topology, VariantKey};
+use wcontainers_gpu::{
+    format::Format, reflect::VariantKey, resource::CompareFn, state::DepthStencilDesc,
+    state::Topology,
+};
 use wcontainers_shaders::Source;
 use wcontainers_shaders::cache::{self, Cache, Kind, LoadError};
 

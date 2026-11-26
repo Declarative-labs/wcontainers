@@ -20,9 +20,11 @@ mod viewports;
 
 use libtest_mimic::{Completion, Failed, Trial};
 use wcontainers_gpu::{
-    BufferUsage, ColorAttachment, CullMode, DeviceStatus, DrawCall, DrawRange, Extent, Features,
-    FillMode, Format, Gpu, GpuError, LoadOp, Origin, PassDesc, RasterDesc, ReadSource, StepMode,
-    StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding, VertexFormat, Viewport,
+    Gpu, caps::Features, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
+    draw::PassDesc, draw::StoreOp, draw::VertexBinding, draw::Viewport, error::DeviceStatus,
+    error::GpuError, format::Format, resource::BufferUsage, resource::Extent, resource::Origin,
+    resource::ReadSource, resource::TextureRegion, resource::TextureUsage, state::CullMode,
+    state::FillMode, state::RasterDesc, state::StepMode, state::Topology, state::VertexFormat,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

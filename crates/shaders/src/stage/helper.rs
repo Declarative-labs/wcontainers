@@ -14,10 +14,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, DispatchCall,
-    DispatchGroups, DrawRange, Gpu, GpuError, IndexFormat, MAX_BINDING_SETS, MapIntent, Program,
-    ProvokingVertex, RingKind, ShaderModule, SlowPath, StageExtras, StageSet, StageValue, StepMode,
-    SystemValue, Topology, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream, Viewport,
+    Gpu, MAX_BINDING_SETS, RingKind, draw::DispatchCall, draw::DispatchGroups, draw::DrawRange,
+    draw::Viewport, error::GpuError, reflect::StageExtras, reflect::StageValue,
+    reflect::SystemValue, resource::BindingEntry, resource::BindingResource, resource::BufferDesc,
+    resource::BufferRange, resource::BufferUsage, resource::MapIntent, shader::Program,
+    shader::ShaderModule, shader::StageSet, slow::SlowPath, state::IndexFormat,
+    state::ProvokingVertex, state::StepMode, state::Topology, state::VertexAttribute,
+    state::VertexFormat, state::VertexLayoutDesc, state::VertexStream,
 };
 
 /// The API's primitive topology, adjacency included (it reaches only the geometry stage).
@@ -165,7 +168,7 @@ pub struct FinalDraw<B: Gpu> {
 /// past the tessellator's index header), as an indexed indirect draw
 /// whose arguments are at offset 0 of `arguments` ([`FinalDraw::count`] is the most indices it can
 /// draw). The domain program reads `patches` and `points`, bound read-only at
-/// [`wcontainers_gpu::DOMAIN_PATCHES_BINDING`] and [`wcontainers_gpu::DOMAIN_POINTS_BINDING`] in its
+/// [`wcontainers_gpu::reflect::DOMAIN_PATCHES_BINDING`] and [`wcontainers_gpu::reflect::DOMAIN_POINTS_BINDING`] in its
 /// helper set.
 #[derive(Debug)]
 pub struct TessellatedDraw<B: Gpu> {
@@ -751,7 +754,7 @@ impl<B: Gpu> Stages<B> {
     pub fn antialiased_lines(
         backend: &mut B,
         vertex: &Converted,
-        pixel: &wcontainers_gpu::VariantKey,
+        pixel: &wcontainers_gpu::reflect::VariantKey,
     ) -> Result<Self, StageError> {
         let programs = super::line_programs(vertex, pixel)?;
         let shader = backend.create_shader(&programs.records)?;
@@ -802,7 +805,7 @@ impl<B: Gpu> Stages<B> {
     pub fn primitive_numbered(
         backend: &mut B,
         vertex: &Converted,
-        pixel: &wcontainers_gpu::VariantKey,
+        pixel: &wcontainers_gpu::reflect::VariantKey,
     ) -> Result<Self, StageError> {
         let programs = super::primitive_programs(vertex, pixel)?;
         let shader = backend.create_shader(&programs.compute)?;
@@ -1054,7 +1057,7 @@ impl<B: Gpu> Stages<B> {
     /// Gives the final draw's flat values from the vertex `api` names of each primitive the geometry
     /// or tessellation stage makes (a strip's triangle `i` has vertices `i` to `i + 2` in the strip's
     /// order, the tessellator's are as it lists them), for a final draw that takes them from `drawn`
-    /// (its [`wcontainers_gpu::RasterDesc::provoking`]). Where the two differ each primitive is
+    /// (its [`wcontainers_gpu::state::RasterDesc::provoking`]). Where the two differ each primitive is
     /// listed turned, its winding kept and a line reversed, and a geometry stage's strips are drawn as
     /// lists ([`SlowPath::ProvokingRewrite`]). Stream output keeps a geometry stage's order and
     /// takes the tessellator's turned one, the list it reads. Both start as
@@ -2253,7 +2256,7 @@ fn geometry_parts<B: Gpu>(
             .reflection
             .inputs
             .iter()
-            .any(|v| v.system == Some(wcontainers_gpu::SystemValue::PrimitiveId)),
+            .any(|v| v.system == Some(wcontainers_gpu::reflect::SystemValue::PrimitiveId)),
     })
 }
 

@@ -1,9 +1,9 @@
 //! Scissors cut to the area every attachment of a fitted pass covers.
 
 use alloc::vec::Vec;
-use wcontainers_gpu::ScissorRect;
+use wcontainers_gpu::draw::ScissorRect;
 
-/// Cuts `scissors` to `area` (from [`wcontainers_gpu::PassTracker::before_draw`]), or gives `area`
+/// Cuts `scissors` to `area` (from [`wcontainers_gpu::passes::PassTracker::before_draw`]), or gives `area`
 /// itself for a draw without scissors.
 pub fn cut_scissors(scissors: &[ScissorRect], area: ScissorRect, out: &mut Vec<ScissorRect>) {
     out.clear();

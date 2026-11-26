@@ -5,7 +5,6 @@
 //! it. Back ends never read it: they see the program's module and the binding sets only.
 
 use crate::format::Format;
-use crate::shader::ShaderStage;
 use crate::state::VertexFormat;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -67,18 +66,9 @@ pub const SLOT_KINDS: [SlotRange; 5] = [
 ];
 
 /// The binding set that holds a converted program's helper constants (one uniform buffer per stage, at
-/// [`helper_binding`]) and the other bindings a variant adds.
+/// [`ShaderStage::helper_binding`]) and the other bindings a variant adds.
 pub const HELPER_SET: u32 = 3;
 
-/// The binding in [`HELPER_SET`] of the uniform buffer holding one stage's helper constants. Each stage
-/// of a program has its own block, laid out by that stage's own [`Reflection::helpers`], so the vertex
-/// and fragment stages of one draw never read each other's values; the front writes both blocks.
-pub const fn helper_binding(stage: ShaderStage) -> u32 {
-    match stage {
-        ShaderStage::Vertex | ShaderStage::Compute => 0,
-        ShaderStage::Fragment => 12,
-    }
-}
 /// The binding in [`HELPER_SET`] of the copy of color target 0 a program reads to blend or apply a
 /// logic operation itself ([`TargetInShader::combine`]); target n is at this plus n.
 pub const TARGET_COPY_BINDING: u32 = 1;
@@ -309,13 +299,13 @@ pub enum HelperValue {
     LodBias { sampler: u32 },
     /// A sampler's border color (four f32, or four u32 for integer textures).
     BorderColor { sampler: u32 },
-    /// The components the bound view's format has ([`crate::Format::components`], u32), for
+    /// The components the bound view's format has ([`crate::format::Format::components`], u32), for
     /// programs that apply the border in the program: a border colour is read as a texel of the
     /// view's format, so a component the format lacks reads its default (zero, one for alpha).
     TextureComponents { texture: u32 },
     /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
-    /// and the three address modes as u32 codes (the order of [`crate::Filter`]'s and
-    /// [`crate::AddressMode`]'s variants, from zero), anisotropy (u32), then the level range (two f32).
+    /// and the three address modes as u32 codes (the order of [`crate::resource::Filter`]'s and
+    /// [`crate::resource::AddressMode`]'s variants, from zero), anisotropy (u32), then the level range (two f32).
     SamplerState { sampler: u32 },
     /// The bound view's mip level count (u32), in programs made with [`VariantFlags::TEXTURE_INFO`].
     TextureLevels { texture: u32 },
@@ -350,14 +340,14 @@ pub enum HelperValue {
     /// How the program combines target n with its old value, laid out as [`TargetCombineValue`].
     TargetCombine { target: u8 },
     /// The early tests the program runs itself: depth compare, front and back stencil compare (u32
-    /// codes of [`crate::CompareFn`], zero for a test that is off), stencil reference and read mask
+    /// codes of [`crate::resource::CompareFn`], zero for a test that is off), stencil reference and read mask
     /// (u32), eight u32.
     EarlyTests,
     /// A texture's per-resource minimum level-of-detail clamp, in the view's level numbering (f32), and
     /// the view's level count (u32): loads and gathers of a level below the clamp's whole part, and every
     /// access when the clamp passes the last level, read zero.
     MinLod { texture: u32 },
-    /// The viewport a front's API gives (fractional, or past [`crate::Viewport`]'s bounds) within the
+    /// The viewport a front's API gives (fractional, or past [`crate::draw::Viewport`]'s bounds) within the
     /// whole-pixel one the back end draws with: scale and offset of
     /// clip x and y (four f32), applied to the last vertex stage's position.
     ViewportAdjust,
@@ -373,11 +363,11 @@ pub enum HelperValue {
     /// the fragment's depth to.
     DepthRange,
     /// The target array layer the draw's run renders into (u32), which a fragment program reads as its
-    /// layer: the run's layer under [`crate::SlowPath::LayerSplit`], zero where no earlier stage
+    /// layer: the run's layer under [`crate::slow::SlowPath::LayerSplit`], zero where no earlier stage
     /// writes one.
     Layer,
     /// The viewport the draw's run uses (u32), which a fragment program reads as its viewport index:
-    /// the run's viewport under [`crate::SlowPath::MultiViewportSplit`], zero where no earlier stage
+    /// the run's viewport under [`crate::slow::SlowPath::MultiViewportSplit`], zero where no earlier stage
     /// writes one.
     Viewport,
     /// The layer count of the draw's target views (u32), which the pass-through after a geometry stage
@@ -401,7 +391,7 @@ pub struct Reflection {
     pub outputs: Vec<StageValue>,
     pub bindings: Vec<ReflectedBinding>,
     /// The helper constants the program reads, at offsets in its own stage's block (bound at
-    /// [`helper_binding`] of that stage), and the size of that block in bytes (zero for none). The stage
+    /// [`ShaderStage::helper_binding`] of that stage), and the size of that block in bytes (zero for none). The stage
     /// helper fills the blocks of the programs it makes from geometry, hull and domain shaders itself.
     pub helpers: Vec<HelperSlot>,
     pub helper_size: u32,
@@ -411,89 +401,89 @@ pub struct Reflection {
     pub extras: StageExtras,
     /// Slow paths the program takes by itself, whatever its variant; the front counts and warns of each
     /// when it uses the program.
-    pub slow_paths: Vec<crate::SlowPath>,
+    pub slow_paths: Vec<crate::slow::SlowPath>,
 }
 
 bitflags! {
     /// Whole-program rewrites a variant applies.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
     pub struct VariantFlags: u32 {
-        /// Clip depth rewritten as `2z - w` ([`crate::SlowPath::ClipDepthRewrite`]).
+        /// Clip depth rewritten as `2z - w` ([`crate::slow::SlowPath::ClipDepthRewrite`]).
         const CLIP_DEPTH_REWRITE = 1 << 0;
         /// Clip depth rewritten as `w - z` for a swapped depth range
-        /// ([`crate::SlowPath::ViewportDepthFlip`]).
+        /// ([`crate::slow::SlowPath::ViewportDepthFlip`]).
         const VIEWPORT_DEPTH_FLIP = 1 << 1;
-        /// Flat values taken from the last vertex ([`crate::SlowPath::ProvokingRewrite`]).
+        /// Flat values taken from the last vertex ([`crate::slow::SlowPath::ProvokingRewrite`]).
         const PROVOKING_LAST = 1 << 2;
-        /// Depth bias added to the fragment's depth ([`crate::SlowPath::DepthBiasInShader`]).
+        /// Depth bias added to the fragment's depth ([`crate::slow::SlowPath::DepthBiasInShader`]).
         const DEPTH_BIAS = 1 << 3;
         /// The fragment stage writes 1.0 to target 0 (alpha kept for alpha to coverage) and nothing
-        /// else, for the occlusion counting replay ([`crate::SlowPath::OcclusionCountReplay`]).
+        /// else, for the occlusion counting replay ([`crate::slow::SlowPath::OcclusionCountReplay`]).
         const COUNTING = 1 << 4;
         /// The pixel shader's second output feeds dual-source blending.
         const DUAL_SOURCE = 1 << 5;
         /// The fragment stage writes the sample mask from the helper constants
-        /// ([`crate::SlowPath::SampleMaskInShader`]).
+        /// ([`crate::slow::SlowPath::SampleMaskInShader`]).
         const SAMPLE_MASK = 1 << 6;
         /// The pixel shader's early depth and stencil tests run in the program before its side effects,
         /// against the read-only attachment at [`EARLY_DEPTH_BINDING`] and [`EARLY_STENCIL_BINDING`],
         /// with the fragment's depth biased as the raster block says; a failing fragment is discarded
-        /// ([`crate::SlowPath::EarlyTestsInShader`], [`crate::SlowPath::EarlyTestsPerPrimitive`]).
+        /// ([`crate::slow::SlowPath::EarlyTestsInShader`], [`crate::slow::SlowPath::EarlyTestsPerPrimitive`]).
         const EARLY_TESTS = 1 << 7;
         /// The last vertex stage maps clip x and y by [`HelperValue::ViewportAdjust`]
-        /// ([`crate::SlowPath::ViewportInShader`]).
+        /// ([`crate::slow::SlowPath::ViewportInShader`]).
         const VIEWPORT_ADJUST = 1 << 8;
         /// Texture level and sample counts (Direct3D's `resinfo` and `sampleinfo`, `GetDimensions`)
         /// read from [`HelperValue::TextureLevels`] and [`HelperValue::TextureSamples`], which the front
         /// writes from the bound views (zero levels for an empty slot), instead of asked of the
         /// texture, and sizes read zero at a level at or past that count as Direct3D answers them:
-        /// for back ends without [`crate::Features::TEXTURE_LEVEL_QUERY`], and for empty slots
-        /// asked their size ([`crate::SlowPath::TextureInfoInHelpers`]).
+        /// for back ends without [`crate::caps::Features::TEXTURE_LEVEL_QUERY`], and for empty slots
+        /// asked their size ([`crate::slow::SlowPath::TextureInfoInHelpers`]).
         const TEXTURE_INFO = 1 << 9;
         /// The pixel shader's target 0 alpha multiplied by the line coverage the stage helper's
         /// rectangle passes in after the [`VariantKey::linked`] values
-        /// ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
+        /// ([`crate::slow::SlowPath::AntialiasedLinesAsQuads`]).
         const LINE_COVERAGE = 1 << 10;
         /// Clip distances made ordinary perspective-correct values between the stages (at
         /// [`VariantKey::linked`]), and the fragment stage discards where one is negative, or on
         /// multisampled targets ([`VariantKey::samples`]) clears the samples where one is, from each
         /// distance times the fragment position's w (affine on the screen; no `noperspective`, which
-        /// GLSL ES 3.00 lacks) ([`crate::SlowPath::ClipDistanceInShader`]).
+        /// GLSL ES 3.00 lacks) ([`crate::slow::SlowPath::ClipDistanceInShader`]).
         const CLIP_DISTANCE = 1 << 11;
         /// Depth clamped instead of clipped: the last vertex stage keeps clip z inside the clip volume
         /// and passes the unclamped z as a perspective-correct value (at [`VariantKey::linked`]), and
         /// the fragment stage writes it times the fragment position's w (z over w) as the depth,
         /// biased as the raster block says (with [`VariantFlags::DEPTH_BIAS`]) and clamped to
-        /// [`HelperValue::DepthRange`] ([`crate::SlowPath::DepthClampInShader`]).
+        /// [`HelperValue::DepthRange`] ([`crate::slow::SlowPath::DepthClampInShader`]).
         const DEPTH_CLAMP = 1 << 12;
         /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes
         /// after the [`VariantKey::linked`] values, not from the built-in
-        /// ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
+        /// ([`crate::slow::SlowPath::PrimitiveIdAsGeometry`]).
         const PRIMITIVE_ID_FROM_STAGE = 1 << 13;
         /// Every storage buffer of the program's own slots (raw and structured views; not counters,
         /// typed views or bindings a variant adds) is read from [`HelperValue::StorageOffset`] bytes
         /// into its binding, which the front binds from below the view's start
-        /// ([`crate::BindingResource::StorageBuffer`]).
+        /// ([`crate::resource::BindingResource::StorageBuffer`]).
         const STORAGE_OFFSET = 1 << 14;
         /// The layer each primitive of a geometry stage names passes to the pixel shader as a flat
         /// u32 after [`VariantKey::linked`]'s values, and the pixel shader reads its layer index from
         /// it, not from [`HelperValue::Layer`]; the geometry stage's pass-through, made so, draws a
         /// primitive naming a layer at or past [`HelperValue::LayerCount`] in the run of layer 0
-        /// ([`crate::SlowPath::LayerSplit`]). The front sets it in both programs' keys.
+        /// ([`crate::slow::SlowPath::LayerSplit`]). The front sets it in both programs' keys.
         const LAYER_FROM_STAGE = 1 << 15;
         /// A geometry shader made a vertex program run once per output vertex slot, for back ends
-        /// without [`crate::Features::COMPUTE`]: it reads the vertex stage's captured outputs from a
+        /// without [`crate::caps::Features::COMPUTE`]: it reads the vertex stage's captured outputs from a
         /// texture and writes the one vertex its slot keeps, which is captured in turn and drawn by the
-        /// geometry stage's pass-through ([`crate::SlowPath::GeometryAsReplay`]).
+        /// geometry stage's pass-through ([`crate::slow::SlowPath::GeometryAsReplay`]).
         const GEOMETRY_REPLAY = 1 << 16;
         /// The pixel shader keeps only the pixels Direct3D's aliased line rule (the diamond exit)
         /// picks for the line whose window-space ends the stage helper's rectangle passes in after
         /// the [`VariantKey::linked`] values, and discards the others; the rectangle covers every
         /// sample of each pixel it keeps. For aliased lines into a multisampled target
-        /// ([`crate::SlowPath::AliasedLinesAsQuads`]).
+        /// ([`crate::slow::SlowPath::AliasedLinesAsQuads`]).
         const LINE_DIAMOND = 1 << 17;
         /// The vertex or domain program also passes its cull distances, still culled by
-        /// ([`crate::SlowPath::CullDistanceAsGeometry`]), as perspective-correct values after
+        /// ([`crate::slow::SlowPath::CullDistanceAsGeometry`]), as perspective-correct values after
         /// [`VariantKey::linked`]'s others, and the pixel shader reads its cull distances from them,
         /// not from the built-in. The front sets it in both programs' keys.
         const CULL_DISTANCE_LINKED = 1 << 18;
@@ -501,7 +491,7 @@ bitflags! {
 }
 
 /// Where a program that needs the draw's bases reads them. The common form's `vertex_index` and
-/// `instance_index` include the bases (as WebGPU's and Vulkan's do; [`crate::DrawRange`]); an API value
+/// `instance_index` include the bases (as WebGPU's and Vulkan's do; [`crate::draw::DrawRange`]); an API value
 /// that leaves them out ([`SystemValue::VertexId`], [`SystemValue::InstanceId`]) or names them
 /// ([`SystemValue::BaseVertex`], [`SystemValue::BaseInstance`], [`SystemValue::DrawIndex`]) is made from
 /// them by the shaders crate.
@@ -513,10 +503,10 @@ pub enum DrawBaseSource {
     #[default]
     None,
     /// From [`HelperValue::DrawBase`], which the front writes for each direct draw whose bases differ
-    /// from the last ([`crate::SlowPath::DrawBaseInHelpers`]).
+    /// from the last ([`crate::slow::SlowPath::DrawBaseInHelpers`]).
     Helpers,
     /// From the indirect arguments at [`DRAW_ARGUMENTS_BINDING`], located by
-    /// [`HelperValue::DrawArguments`] ([`crate::SlowPath::DrawBaseFromArguments`]).
+    /// [`HelperValue::DrawArguments`] ([`crate::slow::SlowPath::DrawBaseFromArguments`]).
     Arguments,
 }
 
@@ -525,11 +515,11 @@ pub enum DrawBaseSource {
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub enum TexelBufferRoute {
-    /// As texel buffers, where [`crate::Features::TEXEL_BUFFERS`] is present.
+    /// As texel buffers, where [`crate::caps::Features::TEXEL_BUFFERS`] is present.
     #[default]
     Native,
     /// From storage buffers, the format decoded in the program
-    /// ([`crate::SlowPath::TexelBufferAsStorage`]): each typed buffer is a storage buffer of u32
+    /// ([`crate::slow::SlowPath::TexelBufferAsStorage`]): each typed buffer is a storage buffer of u32
     /// words at its slot's binding (read-only for a texture slot), the view's place in it and its
     /// length in [`HelperValue::TexelBufferView`], its format from [`VariantKey::texel_formats`]
     /// (texture slots) or [`VariantKey::storage_formats`] (storage slots).
@@ -537,7 +527,7 @@ pub enum TexelBufferRoute {
     /// From a 2D texture of the view's format the front copies the buffer into, laid out as
     /// [`TEXEL_BUFFER_TEXTURE_WIDTH`] says, at the slot's binding, the view's place and length in
     /// [`HelperValue::TexelBufferView`] and its format from [`VariantKey::texel_formats`]
-    /// ([`crate::SlowPath::TexelBufferAsTexture`]). Typed buffers at texture slots only.
+    /// ([`crate::slow::SlowPath::TexelBufferAsTexture`]). Typed buffers at texture slots only.
     Texture,
 }
 
@@ -561,57 +551,19 @@ pub struct TargetCombineValue {
     pub constant: [f32; BLEND_CONSTANT_COMPONENTS],
 }
 
-impl TargetCombineValue {
-    pub fn new(
-        target: &crate::RenderTargetBlend,
-        logic_op: Option<crate::LogicOp>,
-        constant: [f32; BLEND_CONSTANT_COMPONENTS],
-    ) -> TargetCombineValue {
-        use crate::{BlendComponent, BlendFactor, BlendOp};
-        let off = BlendComponent {
-            src: BlendFactor::One,
-            dst: BlendFactor::Zero,
-            op: BlendOp::Add,
-        };
-        let (color, alpha) = target.blend.unwrap_or((off, off));
-        let codes = |c: BlendComponent| [c.src as u32, c.dst as u32, c.op as u32];
-        TargetCombineValue {
-            color: codes(color),
-            alpha: codes(alpha),
-            writes: u32::from(target.writes.bits()),
-            logic_op: logic_op.unwrap_or(crate::LogicOp::Copy) as u32,
-            constant,
-        }
-    }
-
-    /// The value as the helper block holds it, little-endian.
-    pub fn bytes(&self) -> Vec<u8> {
-        let words = self
-            .color
-            .iter()
-            .chain(&self.alpha)
-            .chain([&self.writes, &self.logic_op]);
-        words
-            .copied()
-            .chain(self.constant.map(f32::to_bits))
-            .flat_map(u32::to_le_bytes)
-            .collect()
-    }
-}
-
 /// A color target the program writes itself: encoded into the guest's format where the texture is
 /// stored in another, and combined with its old value where the back end cannot blend it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TargetInShader {
     pub target: u8,
     /// The guest's format. A normalised one, which the front stores as the integer format of the same
-    /// bits, the program encodes its output into ([`crate::SlowPath::NormAsInteger`]); into any other
+    /// bits, the program encodes its output into ([`crate::slow::SlowPath::NormAsInteger`]); into any other
     /// the program writes its output's bits as the format's type, widened with zeros to the format's
     /// components, as Direct3D writes an output of another type than its target.
     pub format: Format,
     /// The program combines its output with the target's old value, read from a copy at
-    /// [`TARGET_COPY_BINDING`], by [`HelperValue::TargetCombine`] ([`crate::SlowPath::BlendInShader`],
-    /// [`crate::SlowPath::LogicOpInShader`]).
+    /// [`TARGET_COPY_BINDING`], by [`HelperValue::TargetCombine`] ([`crate::slow::SlowPath::BlendInShader`],
+    /// [`crate::slow::SlowPath::LogicOpInShader`]).
     pub combine: bool,
 }
 
@@ -654,21 +606,21 @@ pub enum ViewComponent {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VariantKey {
     pub flags: VariantFlags,
-    /// Textures filtered in the program from loads ([`crate::SlowPath::FilterInShader`]).
+    /// Textures filtered in the program from loads ([`crate::slow::SlowPath::FilterInShader`]).
     pub filter_in_shader: u128,
-    /// Samplers whose border color the program applies ([`crate::SlowPath::BorderInShader`]).
+    /// Samplers whose border color the program applies ([`crate::slow::SlowPath::BorderInShader`]).
     pub border_in_shader: u16,
     /// Samplers whose mirror-once addressing the program applies
-    /// ([`crate::SlowPath::MirrorOnceInShader`]).
+    /// ([`crate::slow::SlowPath::MirrorOnceInShader`]).
     pub mirror_once_in_shader: u16,
-    /// Samplers whose level-of-detail bias the program adds ([`crate::SlowPath::LodBiasInShader`]).
+    /// Samplers whose level-of-detail bias the program adds ([`crate::slow::SlowPath::LodBiasInShader`]).
     pub lod_bias: u16,
-    /// Constant buffers read as storage buffers ([`crate::SlowPath::ConstantsAsStorage`]).
+    /// Constant buffers read as storage buffers ([`crate::slow::SlowPath::ConstantsAsStorage`]).
     pub constants_as_storage: u16,
-    /// Constant buffers read through a texture ([`crate::SlowPath::ConstantsAsTexture`]).
+    /// Constant buffers read through a texture ([`crate::slow::SlowPath::ConstantsAsTexture`]).
     pub constants_as_texture: u16,
     /// Vertex inputs fetched in the program, by input register, with the format each is stored in
-    /// ([`crate::SlowPath::VertexPulledInShader`], [`crate::SlowPath::InstanceRateInShader`]).
+    /// ([`crate::slow::SlowPath::VertexPulledInShader`], [`crate::slow::SlowPath::InstanceRateInShader`]).
     pub pulled: Vec<(u32, VertexFormat)>,
     /// Formats of storage views the shader does not declare, by storage slot, from the bound view.
     pub storage_formats: Vec<(u32, Format)>,
@@ -680,23 +632,23 @@ pub struct VariantKey {
     /// the view's values by their bits, as Direct3D does.
     pub texel_formats: Vec<(u32, Format)>,
     /// Storage slots packed into one buffer, at offsets from the helper constants
-    /// ([`crate::SlowPath::StoragePacked`]).
+    /// ([`crate::slow::SlowPath::StoragePacked`]).
     pub storage_packed: u64,
     /// Storage texture slots read and written through a buffer of their texels, in the layout
     /// [`HelperValue::TexelLayout`] gives and the bound view's format from `storage_formats`, encoded
     /// and decoded in the program; texels narrower than 32 bits are written by compare-exchange on their
     /// word, so neighbours written at the same time are kept. For atomics
-    /// ([`crate::SlowPath::AtomicsThroughBuffer`]) and for formats the back end cannot store into
-    /// ([`crate::SlowPath::StorageFormatThroughBuffer`]).
+    /// ([`crate::slow::SlowPath::AtomicsThroughBuffer`]) and for formats the back end cannot store into
+    /// ([`crate::slow::SlowPath::StorageFormatThroughBuffer`]).
     pub texels_through_buffer: u64,
     /// Texture slots bound to textures stored as the integer format of the same bits, with the guest's
-    /// format, which the program decodes and filters from loads ([`crate::SlowPath::NormAsInteger`]).
+    /// format, which the program decodes and filters from loads ([`crate::slow::SlowPath::NormAsInteger`]).
     pub decoded: Vec<(u32, Format)>,
     /// Color targets written in another stored format, or combined in the program.
     pub targets_in_shader: Vec<TargetInShader>,
     /// Texture slots under a per-resource minimum level-of-detail clamp: sampled through the samplers at
     /// [`CLAMPED_SAMPLER_BINDING`], loaded and gathered by [`HelperValue::MinLod`]
-    /// ([`crate::SlowPath::MinLodClamp`]).
+    /// ([`crate::slow::SlowPath::MinLodClamp`]).
     pub min_lod_clamped: u128,
     /// Multisampled array texture slots, by slot, with the bound view's layer count: the front holds
     /// such a texture as a texture per layer (4.2), binds layer 0 at the slot's binding and layer n at
@@ -705,7 +657,7 @@ pub struct VariantKey {
     pub texture_layers: Vec<(u32, u32)>,
     /// Texture slots whose bound view maps its components, by slot: component i of every value read
     /// through the slot (loads, samples, and gathers of component i) is the texel's component, or the
-    /// constant, the entry names ([`crate::SlowPath::SwizzleInShader`]); views carry no mapping, so
+    /// constant, the entry names ([`crate::slow::SlowPath::SwizzleInShader`]); views carry no mapping, so
     /// every front maps in the program (Direct3D 12's component mappings, Direct3D's stencil views).
     pub swizzled: Vec<(u32, [ViewComponent; 4])>,
     /// Where the program reads the draw's bases.
@@ -726,183 +678,4 @@ pub struct VariantKey {
     /// ranges): an array the program declares without a length takes the rest of the range holding
     /// its first register. Empty for programs that declare no such array.
     pub register_ranges: Vec<(SlotKind, u32, core::ops::Range<u32>)>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn slot_ranges_follow_each_other_without_overlap() {
-        let kinds = [
-            SlotKind::Uniform,
-            SlotKind::Sampler,
-            SlotKind::Texture,
-            SlotKind::Storage,
-            SlotKind::Counter,
-        ];
-        for pair in kinds.windows(2) {
-            assert_eq!(
-                crate::SLOT_KINDS[pair[0] as usize].first_binding
-                    + crate::SLOT_KINDS[pair[0] as usize].slots,
-                crate::SLOT_KINDS[pair[1] as usize].first_binding
-            );
-        }
-        assert_eq!(
-            (127 < crate::SLOT_KINDS[SlotKind::Texture as usize].slots)
-                .then(|| crate::SLOT_KINDS[SlotKind::Texture as usize].first_binding + 127),
-            Some(159)
-        );
-        assert_eq!(
-            (128 < crate::SLOT_KINDS[SlotKind::Texture as usize].slots)
-                .then(|| crate::SLOT_KINDS[SlotKind::Texture as usize].first_binding + 128),
-            None
-        );
-        assert_eq!(
-            (63 < crate::SLOT_KINDS[SlotKind::Storage as usize].slots)
-                .then(|| crate::SLOT_KINDS[SlotKind::Storage as usize].first_binding + 63),
-            Some(223)
-        );
-        assert_eq!(
-            (0 < crate::SLOT_KINDS[SlotKind::Counter as usize].slots)
-                .then(|| crate::SLOT_KINDS[SlotKind::Counter as usize].first_binding),
-            Some(224)
-        );
-    }
-
-    #[test]
-    fn sampler_state_codes_keep_their_numbers() {
-        use crate::{AddressMode, Filter};
-        assert_eq!([Filter::Nearest, Filter::Linear].map(|f| f as u32), [0, 1]);
-        let modes = [
-            AddressMode::Repeat,
-            AddressMode::Mirror,
-            AddressMode::Clamp,
-            AddressMode::Border,
-            AddressMode::MirrorOnce,
-        ];
-        assert_eq!(modes.map(|m| m as u32), [0, 1, 2, 3, 4]);
-        use crate::CompareFn as C;
-        let compares = [
-            C::Never,
-            C::Less,
-            C::Equal,
-            C::LessEqual,
-            C::Greater,
-            C::NotEqual,
-            C::GreaterEqual,
-            C::Always,
-        ];
-        assert_eq!(compares.map(|c| c as u32), [1, 2, 3, 4, 5, 6, 7, 8]);
-    }
-
-    #[test]
-    fn a_bindings_slot_is_its_place_in_its_kinds_range() {
-        let kinds = [
-            SlotKind::Uniform,
-            SlotKind::Sampler,
-            SlotKind::Texture,
-            SlotKind::Storage,
-            SlotKind::Counter,
-        ];
-        for kind in kinds {
-            for slot in 0..crate::SLOT_KINDS[kind as usize].slots {
-                let b = ReflectedBinding {
-                    kind,
-                    space: 0,
-                    register: 0,
-                    count: 1,
-                    set: 1,
-                    binding: (slot < crate::SLOT_KINDS[kind as usize].slots)
-                        .then(|| crate::SLOT_KINDS[kind as usize].first_binding + slot)
-                        .unwrap(),
-                    added: None,
-                    stride: 0,
-                };
-                assert_eq!(
-                    b.binding - crate::SLOT_KINDS[b.kind as usize].first_binding,
-                    slot,
-                    "{kind:?}"
-                );
-            }
-            assert_eq!(
-                ((crate::SLOT_KINDS[kind as usize].slots) < crate::SLOT_KINDS[kind as usize].slots)
-                    .then(|| crate::SLOT_KINDS[kind as usize].first_binding
-                        + (crate::SLOT_KINDS[kind as usize].slots)),
-                None,
-                "{kind:?}"
-            );
-        }
-        // The ranges follow one another, and a counter has the number of its storage slot.
-        for pair in kinds.windows(2) {
-            assert_eq!(
-                crate::SLOT_KINDS[pair[0] as usize].first_binding
-                    + crate::SLOT_KINDS[pair[0] as usize].slots,
-                crate::SLOT_KINDS[pair[1] as usize].first_binding,
-                "{pair:?}"
-            );
-        }
-        assert_eq!(
-            crate::SLOT_KINDS[SlotKind::Counter as usize].slots,
-            crate::SLOT_KINDS[SlotKind::Storage as usize].slots
-        );
-    }
-
-    /// A target's combine value is laid out in the helper block as its type is.
-    #[test]
-    fn target_combine_values_are_written_as_laid_out() {
-        let target = crate::RenderTargetBlend {
-            blend: None,
-            writes: crate::ColorWrites::R | crate::ColorWrites::A,
-        };
-        let value = TargetCombineValue::new(&target, None, [0.5; 4]);
-        let bytes = value.bytes();
-        assert_eq!(bytes.len(), core::mem::size_of::<TargetCombineValue>());
-        let word = |offset: usize| {
-            u32::from_le_bytes(
-                bytes[offset..][..core::mem::size_of::<u32>()]
-                    .try_into()
-                    .unwrap(),
-            )
-        };
-        use core::mem::offset_of;
-        assert_eq!(word(offset_of!(TargetCombineValue, writes)), value.writes);
-        assert_eq!(
-            word(offset_of!(TargetCombineValue, logic_op)),
-            crate::LogicOp::Copy as u32
-        );
-        assert_eq!(
-            word(offset_of!(TargetCombineValue, alpha)),
-            crate::BlendFactor::One as u32
-        );
-        assert_eq!(
-            word(offset_of!(TargetCombineValue, constant)),
-            0.5f32.to_bits()
-        );
-    }
-
-    /// Every binding of the helper set, each a single one or a range from its base (the clamped
-    /// samplers' open-ended), meets no other.
-    #[test]
-    fn helper_set_bindings_never_meet() {
-        let pairs = u32::MAX - CLAMPED_SAMPLER_BINDING;
-        let ranges = [
-            (helper_binding(ShaderStage::Vertex), 1),
-            (helper_binding(ShaderStage::Fragment), 1),
-            (TARGET_COPY_BINDING, crate::MAX_COLOR_TARGETS as u32),
-            (EARLY_DEPTH_BINDING, 1),
-            (EARLY_STENCIL_BINDING, 1),
-            (DRAW_ARGUMENTS_BINDING, 1),
-            (DOMAIN_PATCHES_BINDING, 1),
-            (DOMAIN_POINTS_BINDING, 1),
-            (COUNTER_BINDING, 1),
-            (CLAMPED_SAMPLER_BINDING, pairs),
-        ];
-        assert_eq!(helper_binding(ShaderStage::Compute), ranges[0].0);
-        for (i, &(a, n)) in ranges.iter().enumerate() {
-            for &(b, m) in &ranges[i + 1..] {
-                assert!(a + n <= b || b + m <= a, "{a}+{n} meets {b}+{m}");
-            }
-        }
-    }
 }

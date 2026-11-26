@@ -1,7 +1,9 @@
 //! Every fast path's default, run on the recording back end, which overrides none: the recorded
 //! stream shows each is made of base calls only, and its answer is right.
 
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, resource::*, shader::*, slow::*, state::*, *,
+};
 use wcontainers_gpu_test::{Call, Id, Recorder};
 
 const PROGRAM: &str = "

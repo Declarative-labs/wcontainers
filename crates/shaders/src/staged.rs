@@ -10,7 +10,9 @@ use crate::stage::tess;
 use crate::{ConvertError, Converted, cache};
 use alloc::vec::Vec;
 use naga::{Function, GlobalVariable, Handle, Module};
-use wcontainers_gpu::{Reflection, ShaderStage, SourceStage, VariantKey};
+use wcontainers_gpu::{
+    reflect::Reflection, reflect::SourceStage, reflect::VariantKey, shader::ShaderStage,
+};
 
 /// A geometry program's input primitive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

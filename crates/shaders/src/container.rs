@@ -9,7 +9,9 @@ use md5::digest::block_api::{BlockSizeUser, OutputSizeUser, UpdateCore};
 use md5::digest::common::hazmat::SerializableState;
 use md5::digest::typenum::Unsigned;
 use serde::{Deserialize, Serialize};
-use wcontainers_gpu::{ScalarKind as ValueKind, StageValue, SystemValue};
+use wcontainers_gpu::{
+    reflect::ScalarKind as ValueKind, reflect::StageValue, reflect::SystemValue,
+};
 
 /// A chunk's tag: four characters, read as one word.
 pub type Tag = [u8; size_of::<u32>()];
@@ -907,7 +909,7 @@ mod tests {
     #[test]
     fn modules_read_in_turn_each_give_their_own_lists() {
         use crate::{Source, cache::encode, convert};
-        use wcontainers_gpu::VariantKey;
+        use wcontainers_gpu::reflect::VariantKey;
         let codes: [&[u8]; 7] = [
             include_bytes!("../tests/own/cs_images.dxil"),
             include_bytes!("../tests/own/cs_texels.dxil"),

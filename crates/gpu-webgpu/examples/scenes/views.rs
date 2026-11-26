@@ -7,8 +7,9 @@ use crate::draw;
 use crate::renames::{Kit, begin, draw_at, finish, kit};
 use anyhow::{Result, ensure};
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, DeviceStatus, Extent, Format, Gpu, Origin, StageSet,
-    TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
+    Gpu, error::DeviceStatus, format::Format, resource::BindingEntry, resource::BindingResource,
+    resource::Extent, resource::Origin, resource::TextureRegion, resource::TextureUsage,
+    resource::TextureViewDesc, resource::ViewDimension, resource::WriteMode, shader::StageSet,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

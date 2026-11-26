@@ -3,15 +3,21 @@
 
 use anyhow::{Context, Result, anyhow};
 use wcontainers_gpu::{
-    AspectOps, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp,
-    BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, ColorWrites, CompareFn,
-    CullMode, DepthAttachment, DepthStencilDesc, DrawCall, DrawRange, Extent, FORMAT_FACTS,
-    FillMode, Filter, Format, FrontFace, Gpu, GpuError, IndexBinding, IndexFormat, LoadOp,
-    MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
-    RenderTargetBlend, SamplerDesc, ShaderModule, ShaderStage, StageSet, StepMode, StoreOp,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension,
-    WriteMode,
+    Gpu, draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment, draw::DrawCall,
+    draw::DrawRange, draw::IndexBinding, draw::LoadOp, draw::PassDesc, draw::StoreOp,
+    draw::VertexBinding, error::GpuError, format::FORMAT_FACTS, format::Format,
+    resource::BindingEntry, resource::BindingResource, resource::BorderColor, resource::BufferDesc,
+    resource::BufferRange, resource::BufferUsage, resource::CompareFn, resource::Extent,
+    resource::Filter, resource::MapIntent, resource::Origin, resource::ReadSource,
+    resource::SamplerDesc, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::TextureViewDesc,
+    resource::ViewDimension, resource::WriteMode, shader::Program, shader::ShaderModule,
+    shader::ShaderStage, shader::StageSet, state::BlendComponent, state::BlendDesc,
+    state::BlendFactor, state::BlendOp, state::ColorWrites, state::CullMode,
+    state::DepthStencilDesc, state::FillMode, state::FrontFace, state::IndexFormat,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::StepMode,
+    state::Topology, state::VertexAttribute, state::VertexFormat, state::VertexLayoutDesc,
+    state::VertexStream,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -338,7 +344,7 @@ pub fn prepare(b: &mut B, which: Scene, twist: Twist) -> Result<Prepared> {
                 min: Filter::Linear,
                 mag: Filter::Linear,
                 mip: Filter::Linear,
-                address: [wcontainers_gpu::AddressMode::Repeat; 3],
+                address: [wcontainers_gpu::resource::AddressMode::Repeat; 3],
                 lod_range: [0, f32::MAX.to_bits()],
                 anisotropy: 1,
                 compare: None,
@@ -537,7 +543,8 @@ pub fn begin(b: &mut B, t: &Targets, clear: bool) {
             stencil: t
                 .depth_format
                 .filter(|f| {
-                    FORMAT_FACTS[*f as usize].kind == wcontainers_gpu::FormatKind::DepthStencil
+                    FORMAT_FACTS[*f as usize].kind
+                        == wcontainers_gpu::format::FormatKind::DepthStencil
                 })
                 .map(|_| AspectOps {
                     load: if clear {

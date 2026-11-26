@@ -2,7 +2,7 @@
 //! inter-stage locations: the values a pair of programs passes are moved onto free locations after
 //! conversion, both programs alike.
 
-use wcontainers_gpu::{ShaderModule, StageValue};
+use wcontainers_gpu::{reflect::StageValue, shader::ShaderModule};
 
 /// `D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT` and `D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT`, which
 /// the input elements' count shares from feature level 10_1 on.
@@ -219,11 +219,15 @@ mod tests {
             @vertex fn main() -> O { return O(vec4f(), vec4f(), vec4f()); }
             @fragment fn pixel(@location(32) c: vec4f, @builtin(position) p: vec4f) -> @location(0) vec4f { return c; }";
         let vertex =
-            ShaderModule::from_wgsl(source, "main", wcontainers_gpu::ShaderStage::Vertex).unwrap();
-        assert_eq!(passed_locations(&vertex), [2, 31]);
-        let pixel =
-            ShaderModule::from_wgsl(source, "pixel", wcontainers_gpu::ShaderStage::Fragment)
+            ShaderModule::from_wgsl(source, "main", wcontainers_gpu::shader::ShaderStage::Vertex)
                 .unwrap();
+        assert_eq!(passed_locations(&vertex), [2, 31]);
+        let pixel = ShaderModule::from_wgsl(
+            source,
+            "pixel",
+            wcontainers_gpu::shader::ShaderStage::Fragment,
+        )
+        .unwrap();
         assert_eq!(passed_locations(&pixel), [32]);
     }
 }

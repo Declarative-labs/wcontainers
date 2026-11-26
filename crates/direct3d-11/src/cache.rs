@@ -8,8 +8,9 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use wcontainers_gpu::{
-    BindingLayoutKey, BlendDesc, DepthStencilDesc, Gpu, MAX_BINDING_SETS, PrepareDesc, RasterDesc,
-    TargetLayout, Topology, VariantKey, VertexLayoutDesc,
+    Gpu, MAX_BINDING_SETS, PrepareDesc, reflect::VariantKey, resource::BindingLayoutKey,
+    state::BlendDesc, state::DepthStencilDesc, state::RasterDesc, state::TargetLayout,
+    state::Topology, state::VertexLayoutDesc,
 };
 use wcontainers_shaders::cache::{self as file, Cache, Kind};
 use wcontainers_shaders::{ConvertError, Converted, Source};
@@ -204,7 +205,7 @@ impl<B: Gpu> Warm<B> {
             };
             let pair = (r.vertex, r.fragment);
             if !warm.programs.contains_key(&pair) {
-                let Ok(p) = backend.create_program(&wcontainers_gpu::Program::Render {
+                let Ok(p) = backend.create_program(&wcontainers_gpu::shader::Program::Render {
                     vertex: &vertex,
                     fragment: fragment.as_ref(),
                 }) else {

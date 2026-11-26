@@ -8,11 +8,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    AddressMode, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor, ColorWrites,
-    CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace, Gpu, LogicOp,
-    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, ProvokingVertex, RasterDesc, RenderTargetBlend,
-    SamplerDesc, SlowPath, StencilFace, StencilOp, StepMode, VertexAttribute, VertexFormat,
-    VertexLayoutDesc, VertexStream,
+    Gpu, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, caps::Features, resource::AddressMode,
+    resource::BorderColor, resource::CompareFn, resource::Filter, resource::SamplerDesc,
+    slow::SlowPath, state::BlendComponent, state::BlendDesc, state::BlendFactor, state::BlendOp,
+    state::ColorWrites, state::CullMode, state::DepthStencilDesc, state::FillMode,
+    state::FrontFace, state::LogicOp, state::ProvokingVertex, state::RasterDesc,
+    state::RenderTargetBlend, state::StencilFace, state::StencilOp, state::StepMode,
+    state::VertexAttribute, state::VertexFormat, state::VertexLayoutDesc, state::VertexStream,
 };
 use wcontainers_nir::mesa::{Assembled, NearestSampler, Nir, Wrap};
 use wcontainers_shaders::stage::{STREAM_BUFFERS, StreamOutput};

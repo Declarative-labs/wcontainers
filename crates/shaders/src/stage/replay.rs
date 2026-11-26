@@ -25,13 +25,18 @@ use crate::build::{VEC4, WORD};
 use crate::{ConvertError, Converted};
 use core::mem::{offset_of, size_of};
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage, ColorWrites,
-    CopyBufferTexture, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent, Features, FillMode,
-    Format, FrontFace, Gpu, GpuError, IndexBinding, IndexFormat, MAX_BINDING_SETS,
-    MAX_COLOR_TARGETS, Object, Origin, Program, ProvokingVertex, RasterDesc, ReadSource,
-    RenderTargetBlend, RingKind, ShaderModule, ShaderStage, SlowPath, StageExtras, StageSet,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    VariantKey, VertexBinding, VertexLayoutDesc, ViewDimension, Viewport, WriteMode,
+    Gpu, MAX_BINDING_SETS, MAX_COLOR_TARGETS, Object, RingKind, caps::Features, draw::DrawCall,
+    draw::DrawRange, draw::IndexBinding, draw::VertexBinding, draw::Viewport, error::GpuError,
+    format::Format, reflect::StageExtras, reflect::VariantKey, resource::BindingEntry,
+    resource::BindingResource, resource::BufferRange, resource::BufferUsage,
+    resource::CopyBufferTexture, resource::Extent, resource::Origin, resource::ReadSource,
+    resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
+    resource::TextureUsage, resource::TextureViewDesc, resource::ViewDimension,
+    resource::WriteMode, shader::Program, shader::ShaderModule, shader::ShaderStage,
+    shader::StageSet, slow::SlowPath, state::BlendDesc, state::ColorWrites, state::CullMode,
+    state::DepthStencilDesc, state::FillMode, state::FrontFace, state::IndexFormat,
+    state::ProvokingVertex, state::RasterDesc, state::RenderTargetBlend, state::Topology,
+    state::VertexLayoutDesc,
 };
 
 /// A strip with adjacency, which the capture cannot list.

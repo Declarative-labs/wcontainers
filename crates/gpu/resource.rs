@@ -1,6 +1,6 @@
 //! Buffers, textures, views, samplers, binding sets, queries, and how bytes move in and out of them.
 
-use crate::backend::Gpu;
+use crate::Gpu;
 use crate::format::Format;
 use crate::shader::StageSet;
 use bitflags::bitflags;
@@ -10,8 +10,8 @@ bitflags! {
     /// object builds it from several. WebGL 2, where one buffer never holds both indices and other data,
     /// keeps a buffer that is both `INDEX` and anything but `COPY_SRC`, `COPY_DST` and `READ_BACK` as two
     /// GL buffers, each made when first used its way, every write from the host made to both and every
-    /// GPU write to the one it can reach (slow paths [`crate::SlowPath::IndexBufferTwin`],
-    /// [`crate::SlowPath::IndexTwinReadBack`]; plan section 4.6).
+    /// GPU write to the one it can reach (slow paths [`crate::slow::SlowPath::IndexBufferTwin`],
+    /// [`crate::slow::SlowPath::IndexTwinReadBack`]; plan section 4.6).
     ///
     /// What each use needs: `COPY_DST` to be written ([`crate::Gpu::write_buffer`], a copy's
     /// destination, [`crate::Gpu::clear_buffer`], [`crate::Gpu::resolve_queries`]); `COPY_SRC` to
@@ -117,7 +117,7 @@ pub struct TextureDesc {
     /// From one to the full chain, `floor(log2(largest side)) + 1`, where a 3D texture's depth is a
     /// side.
     pub mip_levels: u32,
-    /// One, or a count [`crate::FormatCaps::takes_samples`] gives the format. A multisampled texture
+    /// One, or a count [`crate::caps::FormatCaps::takes_samples`] gives the format. A multisampled texture
     /// is 2D with one level and one layer, never a storage texture, and its bytes move only by a draw,
     /// a resolve, or a copy of the whole subresource into another of the same sample count: never to
     /// or from a buffer, by a write or by a read back (WebGPU's rules).
@@ -129,23 +129,9 @@ pub struct TextureDesc {
     /// must choose a texture's kind at creation (WebGL 2) makes.
     pub cube: bool,
     /// Views may use other colour formats of the same block size (Direct3D's typeless textures). Views
-    /// as the sRGB twin are always allowed. Without [`crate::Features::FORMAT_REINTERPRET`], the front copies
-    /// into a texture of the other format instead (slow path [`crate::SlowPath::ReinterpretCopy`]).
+    /// as the sRGB twin are always allowed. Without [`crate::caps::Features::FORMAT_REINTERPRET`], the front copies
+    /// into a texture of the other format instead (slow path [`crate::slow::SlowPath::ReinterpretCopy`]).
     pub reinterpret: bool,
-}
-
-impl TextureDesc {
-    /// The dimension a view of the whole texture has: `Cube` for a cube texture of six layers,
-    /// `CubeArray` for more, `D2Array` for a 2D texture of several layers, otherwise `D2` or `D3`.
-    pub fn own_view(&self) -> ViewDimension {
-        match (self.dimension, self.cube, self.depth_or_layers) {
-            (TextureDimension::D3, _, _) => ViewDimension::D3,
-            (TextureDimension::D2, true, 6) => ViewDimension::Cube,
-            (TextureDimension::D2, true, _) => ViewDimension::CubeArray,
-            (TextureDimension::D2, false, 1) => ViewDimension::D2,
-            (TextureDimension::D2, false, _) => ViewDimension::D2Array,
-        }
-    }
 }
 
 /// The layers of one cube: its faces.
@@ -173,10 +159,10 @@ pub enum ViewDimension {
 /// (or one slice of a 3D level, or all layers); and views to sample or store into of a mip range of all
 /// layers in the texture's own dimension ([`TextureDesc::own_view`]) and own format or its sRGB twin.
 /// Anything else (another dimension, such as one layer of an array or a cube seen as a 2D array; a layer
-/// range; another format of the same size) needs [`crate::Features::TEXTURE_VIEWS`] or
-/// [`crate::Features::FORMAT_REINTERPRET`]. Without them the front keeps a second texture made in the
+/// range; another format of the same size) needs [`crate::caps::Features::TEXTURE_VIEWS`] or
+/// [`crate::caps::Features::FORMAT_REINTERPRET`]. Without them the front keeps a second texture made in the
 /// view's own shape and format, copied from the first whenever that changed since the last copy (slow
-/// path [`crate::SlowPath::ReinterpretCopy`]). Without [`crate::Features::TEXTURE_VIEWS`] a draw also
+/// path [`crate::slow::SlowPath::ReinterpretCopy`]). Without [`crate::caps::Features::TEXTURE_VIEWS`] a draw also
 /// binds each texture through one mip range only (WebGL 2 sets the range on the texture itself); a second
 /// range in the same draw comes from the second texture too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -190,12 +176,12 @@ pub struct TextureViewDesc {
     /// Which of depth and stencil a depth-stencil view reads: true for stencil, read as unsigned
     /// integers. Every back end serves both aspects; one whose API cannot sample stencil fills an 8-bit
     /// texture from the stencil by draws when the stencil changed (slow path
-    /// [`crate::SlowPath::StencilCopiedByDraw`]). A view of a format with both aspects that a pass
-    /// draws into ([`crate::DepthAttachment`]) holds both whatever this says.
+    /// [`crate::slow::SlowPath::StencilCopiedByDraw`]). A view of a format with both aspects that a pass
+    /// draws into ([`crate::draw::DepthAttachment`]) holds both whatever this says.
     pub stencil: bool,
 }
 
-/// Texture filtering. The numbers are the codes [`crate::HelperValue::SamplerState`] holds, which
+/// Texture filtering. The numbers are the codes [`crate::reflect::HelperValue::SamplerState`] holds, which
 /// converted programs (and so the cache) keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Filter {
@@ -204,19 +190,19 @@ pub enum Filter {
 }
 
 /// What a sampler does outside the texture. The numbers are the codes
-/// [`crate::HelperValue::SamplerState`] holds, which converted programs (and so the cache) keep.
+/// [`crate::reflect::HelperValue::SamplerState`] holds, which converted programs (and so the cache) keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AddressMode {
     Repeat = 0,
     Mirror = 1,
     Clamp = 2,
-    /// Needs [`crate::Features::BORDER_COLOR`] for colors other than transparent black. Otherwise the
+    /// Needs [`crate::caps::Features::BORDER_COLOR`] for colors other than transparent black. Otherwise the
     /// front binds a clamping sampler and a program variant applies the border (slow path
-    /// [`crate::SlowPath::BorderInShader`], [`crate::VariantKey::border_in_shader`]).
+    /// [`crate::slow::SlowPath::BorderInShader`], [`crate::reflect::VariantKey::border_in_shader`]).
     Border = 3,
-    /// Mirrored once about zero, then clamped. Needs [`crate::Features::MIRROR_ONCE`]; otherwise the
+    /// Mirrored once about zero, then clamped. Needs [`crate::caps::Features::MIRROR_ONCE`]; otherwise the
     /// front binds a clamping sampler and a program variant samples the absolute coordinate with the
-    /// original gradients, which is exact (slow path [`crate::SlowPath::MirrorOnceInShader`]).
+    /// original gradients, which is exact (slow path [`crate::slow::SlowPath::MirrorOnceInShader`]).
     MirrorOnce = 4,
 }
 
@@ -231,7 +217,7 @@ pub enum BorderColor {
 }
 
 /// A comparison, for depth and stencil tests and comparison samplers. The numbers are the codes
-/// [`crate::HelperValue::EarlyTests`] holds (zero there is a test that is off), which converted
+/// [`crate::reflect::HelperValue::EarlyTests`] holds (zero there is a test that is off), which converted
 /// programs (and so the cache) keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CompareFn {
@@ -250,7 +236,7 @@ pub enum CompareFn {
 /// There is no level-of-detail bias: neither WebGPU nor WebGL 2 samplers have one. A front whose API
 /// sets one (Direct3D's `MipLODBias`, OpenGL's `TEXTURE_LOD_BIAS`, Vulkan's `mipLodBias`) passes it in the
 /// program's helper constants and binds the variant that adds it to every sampling of that sampler (slow
-/// path [`crate::SlowPath::LodBiasInShader`], [`crate::VariantKey::lod_bias`]).
+/// path [`crate::slow::SlowPath::LodBiasInShader`], [`crate::reflect::VariantKey::lod_bias`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SamplerDesc {
     pub min: Filter,
@@ -282,20 +268,20 @@ pub struct BufferRange<H> {
 /// accesses against the range it is given.
 #[derive(Debug)]
 pub enum BindingResource<'a, B: Gpu> {
-    /// The offset is a multiple of [`crate::Limits::min_uniform_offset_alignment`] and the size at most
-    /// [`crate::Limits::max_uniform_buffer_size`]; a buffer range in a binding lies inside its buffer.
+    /// The offset is a multiple of [`crate::caps::Limits::min_uniform_offset_alignment`] and the size at most
+    /// [`crate::caps::Limits::max_uniform_buffer_size`]; a buffer range in a binding lies inside its buffer.
     /// A draw binds at least the size of the block the program declares at that binding (WebGPU's
     /// `minBindingSize`, WebGL 2's `UNIFORM_BLOCK_DATA_SIZE`); a front whose API binds less grows the
-    /// buffer ([`crate::SlowPath::ConstantBufferGrown`]).
+    /// buffer ([`crate::slow::SlowPath::ConstantBufferGrown`]).
     UniformBuffer(BufferRange<&'a B::Buffer>),
-    /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`] and the size at most
-    /// [`crate::Limits::max_storage_buffer_size`], a whole number of [`crate::STORAGE_WORD`]s
+    /// The offset is a multiple of [`crate::caps::Limits::min_storage_offset_alignment`] and the size at most
+    /// [`crate::caps::Limits::max_storage_buffer_size`], a whole number of [`crate::STORAGE_WORD`]s
     /// (WebGPU's rule; a front rounds its API's range up), and at least
     /// the size of the program's block, a runtime-sized array counted as one element. A front whose API binds at any offset binds from
     /// the largest offset below it that is a multiple of both the alignment and the program's element
-    /// stride ([`crate::ReflectedBinding::stride`]), and writes the rest into the program's helper
-    /// constants ([`crate::HelperValue::StorageOffset`]), which a program made with
-    /// [`crate::VariantFlags::STORAGE_OFFSET`] adds to its addresses.
+    /// stride ([`crate::reflect::ReflectedBinding::stride`]), and writes the rest into the program's helper
+    /// constants ([`crate::reflect::HelperValue::StorageOffset`]), which a program made with
+    /// [`crate::reflect::VariantFlags::STORAGE_OFFSET`] adds to its addresses.
     StorageBuffer {
         range: BufferRange<&'a B::Buffer>,
         writable: bool,
@@ -305,19 +291,19 @@ pub enum BindingResource<'a, B: Gpu> {
         view: &'a B::TextureView,
         writable: bool,
     },
-    /// A sampler that compares ([`crate::SamplerDesc::compare`] set) exactly where the program compares
+    /// A sampler that compares ([`crate::resource::SamplerDesc::compare`] set) exactly where the program compares
     /// through that binding. One any of whose filters is linear is never paired in the program with a
-    /// texture whose view's format lacks [`crate::FormatUse::FILTER`]; the front binds the program
-    /// variant that filters that texture itself ([`crate::SlowPath::FilterInShader`]).
+    /// texture whose view's format lacks [`crate::caps::FormatUse::FILTER`]; the front binds the program
+    /// variant that filters that texture itself ([`crate::slow::SlowPath::FilterInShader`]).
     Sampler(&'a B::Sampler),
     /// A buffer read as typed texels (Direct3D's typed buffer views, OpenGL's buffer textures), where
-    /// [`crate::Features::TEXEL_BUFFERS`] is present.
+    /// [`crate::caps::Features::TEXEL_BUFFERS`] is present.
     TexelBuffer {
         range: BufferRange<&'a B::Buffer>,
         format: Format,
         writable: bool,
     },
-    /// A big resource table, where [`crate::Features::RESOURCE_TABLES`] is present.
+    /// A big resource table, where [`crate::caps::Features::RESOURCE_TABLES`] is present.
     Table(&'a B::ResourceTable),
 }
 
@@ -348,7 +334,7 @@ pub struct BindingLayoutKey {
 #[derive(Debug)]
 pub struct BindingEntry<'a, B: Gpu> {
     /// The binding number the shader converter gave this slot (see the plan, section 6). A texture the
-    /// program pairs with a sampler lies in [`crate::SlotKind::Texture`]'s range, 32 to 159, so that
+    /// program pairs with a sampler lies in [`crate::reflect::SlotKind::Texture`]'s range, 32 to 159, so that
     /// [`BindingLayoutKey`] has its bit; the other kinds' ranges are the fronts' numbering, which no
     /// back end relies on (the helper set's own bindings lie outside them).
     pub binding: u32,
@@ -397,11 +383,11 @@ pub struct CopyBufferTexture<'a, B: Gpu> {
     pub buffer: &'a B::Buffer,
     /// Where the first block is, any multiple of the block size (as Vulkan and WebGPU require). A
     /// back end whose API needs more (WebGPU: multiples of 4 for depth and stencil) copies the rows
-    /// through a buffer ([`crate::SlowPath::RowsRepacked`]).
+    /// through a buffer ([`crate::slow::SlowPath::RowsRepacked`]).
     pub offset: u64,
     /// Bytes from one row of blocks to the next, any multiple of the block size. A back end whose API
     /// needs larger pitches (WebGPU: multiples of 256) copies the rows through a buffer at its own pitch
-    /// ([`crate::SlowPath::RowsRepacked`]).
+    /// ([`crate::slow::SlowPath::RowsRepacked`]).
     pub row_pitch: u32,
     /// Rows of blocks from one layer or slice to the next.
     pub rows_per_layer: u32,
@@ -435,10 +421,10 @@ pub enum QueryKind {
     /// Zero when no sample passed every per-fragment test, otherwise non-zero. Every back end has it.
     OcclusionAny,
     /// The exact number of samples that passed every per-fragment test. Needs
-    /// [`crate::Features::OCCLUSION_COUNT`]; without it fronts count by replaying the query's draws into
-    /// a counting target (plan section 4.12, slow path [`crate::SlowPath::OcclusionCountReplay`]).
+    /// [`crate::caps::Features::OCCLUSION_COUNT`]; without it fronts count by replaying the query's draws into
+    /// a counting target (plan section 4.12, slow path [`crate::slow::SlowPath::OcclusionCountReplay`]).
     Occlusion,
-    /// GPU time in nanoseconds, where [`crate::Features::TIMESTAMPS`] is present;
+    /// GPU time in nanoseconds, where [`crate::caps::Features::TIMESTAMPS`] is present;
     /// [`crate::Gpu::timestamps_disjoint`] says when a stretch of them is meaningless.
     Timestamp,
 }

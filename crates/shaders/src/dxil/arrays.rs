@@ -13,7 +13,7 @@ use naga::{
     Handle, ImageClass, ImageDimension, ImageQuery, Literal, LocalVariable, Module, Range,
     ResourceBinding, SampleLevel, Span, Statement, SwitchCase, SwitchValue, Type, TypeInner,
 };
-use wcontainers_gpu::VariantKey;
+use wcontainers_gpu::reflect::VariantKey;
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -580,7 +580,7 @@ pub(super) fn array_length(
     };
     let kind =
         super::slot_kind(class).ok_or_else(|| ConvertError::Malformed(super::NO_CLASS.into()))?;
-    if n > wcontainers_gpu::SLOT_KINDS[kind as usize].slots {
+    if n > wcontainers_gpu::reflect::SLOT_KINDS[kind as usize].slots {
         return Err(ConvertError::Unsupported(
             crate::refusal::BINDINGS_BEYOND_LIMIT,
         ));
@@ -605,7 +605,7 @@ fn unbounded_length(variant: &VariantKey, class: u32, space: u32, register: u32)
         .ok_or(ConvertError::Unsupported(
             crate::refusal::UNBOUNDED_RESOURCE_ARRAY,
         ))?;
-    if length > wcontainers_gpu::SLOT_KINDS[kind as usize].slots {
+    if length > wcontainers_gpu::reflect::SLOT_KINDS[kind as usize].slots {
         return Err(ConvertError::Unsupported(
             crate::refusal::BINDINGS_BEYOND_LIMIT,
         ));

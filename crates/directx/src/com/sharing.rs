@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use wcontainers_direct3d_11::WARNING_PREFIX;
 use wcontainers_direct3d_11::desc::{self, BufferDesc, SubresourceData, TextureDesc};
 use wcontainers_direct3d_11::object::{Buffer, Resource, Texture};
-use wcontainers_gpu::SlowPath;
+use wcontainers_gpu::slow::SlowPath;
 use windows::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, E_INVALIDARG,
     HANDLE, WAIT_ABANDONED, WAIT_TIMEOUT,

@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use serde::{Deserialize, Serialize};
-use wcontainers_gpu::{Reflection, ShaderModule, ShaderStage, VariantKey};
+use wcontainers_gpu::{
+    reflect::Reflection, reflect::VariantKey, shader::ShaderModule, shader::ShaderStage,
+};
 use zerocopy::IntoBytes;
 
 use crate::container::DxilViews;

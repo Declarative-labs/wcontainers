@@ -3,9 +3,10 @@
 //! tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
-    BufferDesc, BufferUsage, CopyBufferTexture, DeviceStatus, Extent, FORMAT_FACTS, Format, Gpu,
-    MapIntent, Origin, ReadSource, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    WriteMode,
+    Gpu, error::DeviceStatus, format::FORMAT_FACTS, format::Format, resource::BufferDesc,
+    resource::BufferUsage, resource::CopyBufferTexture, resource::Extent, resource::MapIntent,
+    resource::Origin, resource::ReadSource, resource::TextureDesc, resource::TextureDimension,
+    resource::TextureRegion, resource::TextureUsage, resource::WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 

@@ -26,7 +26,7 @@ pub use swapchain::{
     DEFAULT_LATENCY, MAX_BUFFERS, Model, SwapChain, SwapChainDesc, SwapChainError,
 };
 
-use wcontainers_gpu::Caps;
+use wcontainers_gpu::caps::Caps;
 
 /// The adapters a factory enumerates: the one the back end draws on.
 pub fn adapters(caps: &Caps) -> [AdapterDesc; 1] {

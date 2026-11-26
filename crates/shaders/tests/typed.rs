@@ -8,7 +8,9 @@ mod forms;
 use forms::{TYPED_TEXELS, typed_texels};
 use naga::{AddressSpace, ImageClass, TypeInner};
 use std::path::Path;
-use wcontainers_gpu::{Format, HelperValue, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{
+    format::Format, reflect::HelperValue, reflect::TexelBufferRoute, reflect::VariantKey,
+};
 use wcontainers_shaders::typed::{self, TypedBuffer};
 use wcontainers_shaders::{ConvertError, Converted, Source, convert, refusal};
 

@@ -12,7 +12,7 @@ use naga::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use wcontainers_gpu::{CUBE_FACES, ReflectedBinding, SlotKind};
+use wcontainers_gpu::{reflect::ReflectedBinding, reflect::SlotKind, resource::CUBE_FACES};
 
 /// The knob of the seed of every input filled in (and of the corpus's sample), and its value when
 /// unset.

@@ -11,7 +11,10 @@ mod kit;
 
 use rand::RngCore;
 use std::path::{Path, PathBuf};
-use wcontainers_gpu::*;
+use wcontainers_gpu::{
+    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
+    resource::*, shader::*, slow::*, state::*, *,
+};
 use wcontainers_gpu_webgl::Gl;
 use wcontainers_graphics_test::{check, compare, load, save, scene::CLEAR};
 
