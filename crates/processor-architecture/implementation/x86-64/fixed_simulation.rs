@@ -49,6 +49,11 @@ pub(super) fn execute_fixed(
             processor.flags = processor.flags.difference(Flags::STATUS).union(carry);
             Ok(())
         }
+        FixedOutcome::OutsideTransaction => {
+            let zero = if is_active(Bug::TransactionTestClearsZero) { Flags::empty() } else { Flags::ZERO };
+            processor.flags = processor.flags.difference(Flags::STATUS).union(zero);
+            Ok(())
+        }
         FixedOutcome::TouchesByte => {
             let access = if is_active(Bug::FlushChecksWrite) { Access::Write } else { Access::Read };
             check_access(processor.flags, memory, locate(processor, decoded), 1, access)

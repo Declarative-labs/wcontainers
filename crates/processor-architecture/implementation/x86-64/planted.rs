@@ -1053,6 +1053,8 @@ pub enum Bug {
     DotBfloat16SumNanFirst,
     /// XEND outside a transaction completes as no operation.
     TransactionEndCompletes,
+    /// XTEST outside a transaction clears ZF, as inside one.
+    TransactionTestClearsZero,
     /// VFIXUPIMM takes the token of +1 for -1 as well.
     FixupOneIgnoresSign,
     /// VFMULCPH and VFCMULCPH (and their accumulating forms) swap which part's second product is negated.
@@ -1548,6 +1550,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RoundScaleSuppressionIgnored, "VRNDSCALE, VREDUCE", Family::Evex(|form| is_special(form, SpecialOperation::RoundScale) || is_special(form, SpecialOperation::Reduce)), Origin::EvexRest),
     row(Bug::DotBfloat16LowerPairFirst, "VDPBF16PS", Family::Evex(|form| form.operation == EvexOperation::DotBfloat16), Origin::EvexRest),
     row(Bug::DotBfloat16SumNanFirst, "VDPBF16PS", Family::Evex(|form| form.operation == EvexOperation::DotBfloat16), Origin::EvexRest),
+    row(Bug::TransactionTestClearsZero, "XTEST", Family::Forms(&[Instruction::Xtest]), Origin::EvexRest),
     row(Bug::TransactionEndCompletes, "XEND", Family::Forms(&[Instruction::Xend]), Origin::EvexRest),
     row(Bug::MoveWordKeepsUpperBits, "VMOVSH, VMOVW", Family::Evex(|form| form.operation == EvexOperation::MoveScalar && !form.reads_first_source()), Origin::EvexRest),
     row(Bug::FixupOneIgnoresSign, "VFIXUPIMM", Family::Evex(|form| is_special(form, SpecialOperation::Fixup)), Origin::EvexRest),
