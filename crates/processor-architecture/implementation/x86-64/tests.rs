@@ -67,6 +67,9 @@ fn simulate(
         high_vector_registers: expected.high_vector_registers,
         opmask_registers: expected.opmask_registers,
         exception: expected.exception,
+        data_segments: expected.data_segments,
+        code_segment: expected.code_segment,
+        pkru: expected.pkru,
     };
     (processor, after.memory_mutations[start..].to_vec())
 }

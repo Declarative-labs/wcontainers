@@ -63,6 +63,18 @@ mod mmx_simulation;
 mod x87_simulation;
 #[path = "stack_simulation.rs"]
 mod stack_simulation;
+#[path = "string_simulation.rs"]
+mod string_simulation;
+#[path = "system_simulation.rs"]
+mod system_simulation;
+#[path = "mmx_convert_simulation.rs"]
+mod mmx_convert_simulation;
+#[path = "descriptor_simulation.rs"]
+mod descriptor_simulation;
+#[path = "reciprocal_simulation.rs"]
+mod reciprocal_simulation;
+#[path = "segment_simulation.rs"]
+mod segment_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -82,6 +94,7 @@ impl Simulator<X86_64> for PreciseInstruction {
         memory: MemorySnapshot<'_, '_, X86_64>,
         mutation_hook: &mut impl MemorySink<X86_64>,
     ) -> Result<ProcessorExpectation, Infallible> {
+        let start = processor;
         let mut processor = processor.clone();
         let before = processor.instruction_pointer;
         simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
@@ -91,6 +104,12 @@ impl Simulator<X86_64> for PreciseInstruction {
         if undecided && processor.exception.is_none() {
             let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
             for number in crate::fixed::list_undecided_registers(&decoded) {
+                expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
+            }
+        }
+        if let (PreciseInstruction::Descriptor(instruction), None) = (self, processor.exception) {
+            let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
+            if let Some(number) = descriptor_simulation::find_undecided_register(*instruction, start, memory.mutations, &decoded) {
                 expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
             }
         }
@@ -118,7 +137,7 @@ fn simulate_processor(
         Ok(()) => {
             *processor = changed;
             // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
-            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. }) {
+            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. } | PreciseInstruction::System { .. } | PreciseInstruction::Segment { .. }) {
                 processor.instruction_pointer = decoded.next_ip();
             }
             processor.exception = None;
@@ -141,6 +160,18 @@ fn simulate_processor(
             // An MMX store that faults leaves the TOP it cleared first.
             if matches!(behavior, PreciseInstruction::Mmx { .. }) {
                 processor.x87.status = changed.x87.status;
+            }
+            // A form that names an MMX register leaves the x87 state in MMX's use when it then faults.
+            if matches!(behavior, PreciseInstruction::MmxConvert { .. }) {
+                processor.x87 = changed.x87;
+            }
+            // SYSCALL leaves RCX and R11 written when it enters the kernel.
+            if exception == Exception::SystemCall {
+                processor.general_purpose_registers = changed.general_purpose_registers;
+            }
+            // A repeated string form that faults leaves the registers it wrote as 32-bit ones first.
+            if matches!(behavior, PreciseInstruction::String { .. }) {
+                processor.general_purpose_registers = changed.general_purpose_registers;
             }
             if exception.is_trap() {
                 processor.instruction_pointer = decoded.next_ip();
@@ -259,6 +290,22 @@ fn apply(
         }
         PreciseInstruction::EvexInteger { instruction, across_fault } => {
             avx512_integer::execute_evex_integer(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::String { instruction, behavior } => {
+            string_simulation::execute_string(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::System { instruction, behavior } => {
+            system_simulation::execute_system(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::Descriptor(instruction) => descriptor_simulation::execute_descriptor(instruction, processor, memory, decoded),
+        PreciseInstruction::Segment { instruction, behavior } => {
+            segment_simulation::execute_segment(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::Reciprocal { instruction, table } => {
+            reciprocal_simulation::execute_reciprocal(instruction, table, processor, memory, decoded)
+        }
+        PreciseInstruction::MmxConvert { instruction, behavior } => {
+            mmx_convert_simulation::execute_mmx_convert(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS

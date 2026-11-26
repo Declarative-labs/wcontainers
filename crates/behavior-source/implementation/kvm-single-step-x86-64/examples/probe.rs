@@ -11,7 +11,8 @@
 //! the parked machine spends its time. With `X86_PROBE_WHOLE` set to a number of passes it does only this: each pass
 //! runs the provided `measure_instructions` over the whole list on the parked machine with incremental loading, then
 //! the provided `measure_instruction` on every listed form, timing the states' making and the chip; then it replays
-//! the provided method's loop once to split a state's time into making it, simulating, the chip and comparing.
+//! the provided method's loop once to split a state's time into making it, simulating, the chip and comparing. With
+//! `X86_PROBE_TRACE` set it names each state on standard error before the chip runs it to list disagreements.
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
@@ -313,7 +314,25 @@ mod on_chip {
     /// Prints, for a form no behavior agrees with, each behavior's disagreements and the first states of the closest.
     fn explain(machine: &mut SingleStepMachine, instruction: Instruction, behaviors: &[PreciseInstruction]) {
         let states: Vec<State> = GENERATOR.generate_states(instruction).collect();
-        let executed: Vec<Result<State, String>> = states.iter().map(|state| execute(machine, state)).collect();
+        let trace = std::env::var("X86_PROBE_TRACE").is_ok();
+        let executed: Vec<Result<State, String>> = states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                if trace {
+                    let values: Vec<String> = state
+                        .memory_mutations
+                        .iter()
+                        .filter_map(|change| match change {
+                            MemoryDelta::ValueAssignment { start, bytes } if bytes.len() <= 64 => Some(format!("{start:#x}: {:02x?}", &bytes[..])),
+                            _ => None,
+                        })
+                        .collect();
+                    eprintln!("TRACE state {index}: {} {values:?}", render(&state.processor));
+                }
+                execute(machine, state)
+            })
+            .collect();
         let differs = |behavior: PreciseInstruction, before: &State, after: &Result<State, String>| {
             !after.as_ref().is_ok_and(|after| after.meets_expectations(&simulate(behavior, before)))
         };

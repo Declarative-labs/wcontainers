@@ -42,7 +42,7 @@ pub const KERNEL_DATA: u16 = 0x18;
 pub const USER_DATA: u16 = 0x2B;
 pub const USER_CODE: u16 = 0x33;
 pub const TASK_STATE: u16 = 0x40;
-pub const DESCRIPTOR_ENTRIES: u64 = 10;
+pub const DESCRIPTOR_ENTRIES: u64 = 16;
 
 // Page table entry bits.
 pub const PRESENT: u64 = 1 << 0;
@@ -76,6 +76,8 @@ pub struct Registers {
     pub stack_segment: u64,
     pub fs_base: u64,
     pub gs_base: u64,
+    /// ES, DS, FS and GS's selectors.
+    pub data_segments: [u64; 4],
 }
 
 /// The image XSAVE64 writes and XRSTOR64 reads in the standard form, of the components [`SAVED_COMPONENTS`] names.
@@ -129,8 +131,10 @@ pub const XSAVE_OPMASK: usize = 1088;
 pub const XSAVE_ZMM_HIGH_256: usize = 1152;
 /// ZMM16 to ZMM31, at the offset of subleaf 7.
 pub const XSAVE_HIGH_16_ZMM: usize = 1664;
-/// The legacy area, the header, the AVX area and AVX-512's three, which end on the image's alignment.
-pub const XSAVE_IMAGE_BYTES: usize = 2688;
+/// PKRU, at the offset of subleaf 9.
+pub const XSAVE_PKRU: usize = 2688;
+/// The legacy area, the header, the AVX area, AVX-512's three and PKRU's, to the image's alignment.
+pub const XSAVE_IMAGE_BYTES: usize = 2752;
 /// XCR0's bits: x87, SSE, AVX, then the opmask, ZMM_Hi256 and Hi16_ZMM components of AVX-512, then PKRU.
 pub const X87_COMPONENT: u64 = 1 << 0;
 pub const SSE_COMPONENT: u64 = 1 << 1;
@@ -144,7 +148,7 @@ pub const PKRU_COMPONENT: u64 = 1 << 9;
 /// a system call kvm-ioctls does not make.
 pub const EXTENDED_CONTROL_0: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
 /// The components the handler loads and saves: those the state holds.
-pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS;
+pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
 
 const _: () = assert!(SLOT + size_of::<Slot>() as u64 <= STACK_TOP - PAGE_BYTES);
 
@@ -163,7 +167,8 @@ const fn to_segment(access: u64, flags: u64) -> u64 {
     0xFFFF | (access << 40) | (0xF << 48) | (flags << 52)
 }
 
-/// The global descriptor table's entries: null, Linux's kernel and user segments, then the task state segment.
+/// The global descriptor table's entries, as Linux lays out its 16: null, Linux's kernel and user segments, the task
+/// state segment, empty entries, and the per-CPU segment.
 pub fn list_descriptors() -> [u64; DESCRIPTOR_ENTRIES as usize] {
     const LONG: u64 = 0b1010;
     const BIG: u64 = 0b1100;
@@ -181,6 +186,15 @@ pub fn list_descriptors() -> [u64; DESCRIPTOR_ENTRIES as usize] {
         0,
         tss_low,
         tss >> 32,
+        // The LDT's entry, an unused one and the three TLS entries, empty as Linux leaves them in a program that never
+        // set them.
+        0,
+        0,
+        0,
+        0,
+        0,
+        // The per-CPU segment: read-only expand-down data, DPL 3, whose limit Linux makes the CPU's number.
+        0xF5 << 40 | 0b0100 << 52,
     ]
 }
 

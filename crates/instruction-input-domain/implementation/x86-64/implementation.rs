@@ -37,6 +37,12 @@ use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
 use wcontainers_processor_architecture_x86_64::sse::find_sse_form;
 use wcontainers_processor_architecture_x86_64::avx512_integer::find_evex_integer_form;
 use wcontainers_processor_architecture_x86_64::opmask::find_opmask_form;
+use wcontainers_processor_architecture_x86_64::string::find_string_form;
+use wcontainers_processor_architecture_x86_64::system::find_system_form;
+use wcontainers_processor_architecture_x86_64::mmx_convert::find_mmx_convert_form;
+use wcontainers_processor_architecture_x86_64::descriptor::find_descriptor_form;
+use wcontainers_processor_architecture_x86_64::reciprocal::find_reciprocal_form;
+use wcontainers_processor_architecture_x86_64::segment::find_segment_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -46,17 +52,24 @@ use wcontainers_processor_architecture_x86_64::{
 pub mod avx;
 pub mod avx512_integer;
 pub mod branch;
+pub mod descriptor;
 pub mod evex;
 pub mod extension;
 pub mod fixed;
 pub mod float;
 pub mod integer;
 pub mod mmx;
+pub mod mmx_convert;
 pub mod opmask;
+pub mod reciprocal;
+pub mod segment;
 pub mod sse;
 pub mod stack;
+pub mod string;
+pub mod system;
 pub mod vector;
 pub mod x87;
+pub mod x87_arithmetic;
 #[cfg(test)]
 mod tests;
 
@@ -225,6 +238,44 @@ pub enum OperandType {
     /// The value of a ZMM register that has a role in the form (the first source's is `Implicit(1)`), or of the
     /// memory its last source reads.
     ZmmValue(Role, avx512_integer::ZmmValues),
+    /// Where a string form's source and destination elements lie, for a form that reaches each, of `bytes` each.
+    StringLayout { source: bool, destination: bool, bytes: u64 },
+    /// A repeated string form's count.
+    StringCount,
+    /// The accumulator or the elements a string form stores or compares.
+    StringData(string::StringDataSet),
+    /// Where the stack access of PUSHF, POPF or ENTER lies, of `bytes`, or how the code lies.
+    SystemLayout { bytes: u64 },
+    /// The flags PUSHF pushes.
+    SystemFlags,
+    /// The image POPF pops.
+    PoppedFlags,
+    /// ENTER's frame size and nesting level.
+    EnterOperands,
+    /// The source lanes of a conversion between MMX and XMM registers, or MASKMOVQ's mask.
+    ConvertSource(mmx_convert::ConvertSet),
+    /// FCW, FSW and the operands of an x87 arithmetic form together.
+    X87Case(x87_arithmetic::X87CaseSet),
+    /// The selector LAR to VERW read.
+    Selector,
+    /// The four lanes RCPPS to RSQRTSS read.
+    ReciprocalSource,
+    /// The segment register MOV writes and the selector together.
+    SegmentLoad,
+    /// The selector a segment load takes.
+    SegmentSelector,
+    /// The far pointer a far CALL, JMP or RET takes.
+    FarPointer,
+    /// The slots IRET pops.
+    IretFrame,
+    /// Where the far CALL pushes.
+    CallStack,
+    /// Where IRET's stack access of `bytes` lies.
+    FrameLayout { bytes: u64 },
+    /// The hypercall number VMCALL reads in RAX.
+    HypercallNumber,
+    /// PKRU with EAX, ECX and EDX for RDPKRU and WRPKRU.
+    KeyRights,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -405,6 +456,18 @@ pub enum OperandValue {
     Writemask(avx512_integer::Writemask),
     LaneBroadcast(bool),
     Zmm([u128; 4]),
+    StringLayout(string::StringLayout),
+    /// Two values of a string form: the accumulator and the destination element, or the source and destination
+    /// elements.
+    StringData { first: u64, second: u64 },
+    SystemLayout(system::SystemLayout),
+    EnterOperands { allocation: u16, level: u8 },
+    X87Case(x87_arithmetic::X87Case),
+    FarPointer { offset: u64, selector: u16 },
+    SegmentLoad { segment: usize, selector: u16 },
+    KeyRights { pkru: u32, accumulator: u64, counter: u64, data: u64 },
+    IretFrame(segment::IretFrame),
+    CallStack(segment::CallStack),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -463,6 +526,24 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_evex_integer_form(instruction) {
             return avx512_integer::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_string_form(instruction) {
+            return string::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_system_form(instruction) {
+            return system::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_mmx_convert_form(instruction) {
+            return mmx_convert::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_descriptor_form(instruction) {
+            return descriptor::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_reciprocal_form(instruction) {
+            return reciprocal::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_segment_form(instruction) {
+            return segment::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -689,7 +770,25 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::Writemask { zeroing } => avx512_integer::generate_maskings(zeroing),
             OperandType::LaneBroadcast => [false, true].map(OperandValue::LaneBroadcast).to_vec(),
             OperandType::ZmmValue(_, values) => avx512_integer::generate_zmm_values(values),
-        };
+            OperandType::StringLayout { source, destination, bytes } => string::generate_layouts(source, destination, bytes),
+            OperandType::StringCount => string::generate_counts(),
+            OperandType::StringData(set) => string::generate_data(set),
+            OperandType::SystemLayout { bytes } => system::generate_layouts(bytes),
+            OperandType::SystemFlags => system::generate_flags(),
+            OperandType::PoppedFlags => system::generate_popped(),
+            OperandType::EnterOperands => system::generate_enter_operands(),
+            OperandType::ConvertSource(set) => mmx_convert::generate_sources(set),
+            OperandType::X87Case(set) => x87_arithmetic::generate_cases(set),
+            OperandType::Selector => descriptor::generate_selectors(),
+            OperandType::ReciprocalSource => reciprocal::generate_sources(),
+            OperandType::SegmentLoad => segment::generate_segment_loads(),
+            OperandType::SegmentSelector => segment::generate_selectors(),
+            OperandType::FarPointer => segment::generate_far_pointers(),
+            OperandType::IretFrame => segment::generate_frames(),
+            OperandType::CallStack => segment::generate_call_stacks(),
+            OperandType::FrameLayout { bytes } => segment::generate_frame_layouts(bytes),
+            OperandType::HypercallNumber => system::generate_hypercall_numbers(),
+            OperandType::KeyRights => system::generate_key_rights(),        };
         values.into_iter()
     }
 
@@ -755,6 +854,24 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_evex_integer_form(instruction) {
             return avx512_integer::build_state(form, &typed);
+        }
+        if let Some(form) = find_string_form(instruction) {
+            return string::build_state(form, &typed);
+        }
+        if let Some(form) = find_system_form(instruction) {
+            return system::build_state(form, &typed);
+        }
+        if let Some(form) = find_mmx_convert_form(instruction) {
+            return mmx_convert::build_state(form, &typed);
+        }
+        if let Some(form) = find_descriptor_form(instruction) {
+            return descriptor::build_state(form, &typed);
+        }
+        if let Some(form) = find_reciprocal_form(instruction) {
+            return reciprocal::build_state(form, &typed);
+        }
+        if let Some(form) = find_segment_form(instruction) {
+            return segment::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -931,6 +1048,12 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_privileged_codes(instruction).is_some()
         || find_opmask_form(instruction).is_some()
         || find_evex_integer_form(instruction).is_some()
+        || find_string_form(instruction).is_some()
+        || find_system_form(instruction).is_some()
+        || find_mmx_convert_form(instruction).is_some()
+        || find_descriptor_form(instruction).is_some()
+        || find_reciprocal_form(instruction).is_some()
+        || find_segment_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

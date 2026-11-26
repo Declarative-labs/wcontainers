@@ -8,8 +8,8 @@ use std::mem::offset_of;
 
 use iced_x86::BlockEncoderOptions;
 use iced_x86::code_asm::{
-    AsmRegister64, CodeAssembler, CodeLabel, cr2, cr3, dr6, eax, edx, ptr, qword_ptr, r8, r9, r10, r11, r12, r13,
-    r14, r15, rax, rbp, rbx, rcx, rdi, rdx, rsi, rsp,
+    AsmRegister64, AsmRegisterSegment, CodeAssembler, CodeLabel, ax, cr2, cr3, dr6, ds, eax, edx, es, fs, gs, ptr,
+    qword_ptr, r8, r9, r10, r11, r12, r13, r14, r15, rax, rbp, rbx, rcx, rdi, rdx, rsi, rsp,
 };
 
 use crate::layout::{
@@ -35,15 +35,27 @@ const LOADED: [(usize, AsmRegister64); 15] = [
     (15, r15),
 ];
 const STACK_POINTER: usize = 4;
+/// ES, DS, FS and GS, in the slot's order.
+const DATA_SEGMENTS: [AsmRegisterSegment; 4] = [es, ds, fs, gs];
 /// DR6 as reset: no condition recorded.
 const DEBUG_STATUS_RESET: u32 = 0xFFFF_0FF0;
 pub const VECTORS: usize = 256;
+
+/// The vector the save records for SYSCALL's entry, past every interrupt vector.
+pub const SYSTEM_CALL_VECTOR: u64 = VECTORS as u64;
+/// The kernel's code segment SYSCALL loads, which IA32_STAR names.
+pub const KERNEL_CODE_SELECTOR: u64 = 0x10;
+/// Linux's user segments, which the frame of a SYSCALL entry names.
+const USER_CODE_SELECTOR: i32 = 0x33;
+const USER_DATA_SELECTOR: i32 = 0x2B;
 
 /// The handler's bytes, to be placed at [`HANDLER`], and the kernel addresses of its parts.
 pub struct Handler {
     pub bytes: Vec<u8>,
     pub entry: u64,
     pub stubs: [u64; VECTORS],
+    /// SYSCALL's entry, which IA32_LSTAR names.
+    pub system_call: u64,
     /// PROBE-COST TIMING: a halt that halts again when resumed.
     pub floor: u64,
 }
@@ -76,6 +88,7 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     let mut entry = a.create_label();
     let mut save = a.create_label();
     let mut floor = a.create_label();
+    let mut system_call = a.create_label();
     let mut stubs: Vec<CodeLabel> = (0..VECTORS).map(|_| a.create_label()).collect();
 
     a.set_label(&mut entry)?;
@@ -85,6 +98,11 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.mov(eax, SAVED_COMPONENTS as u32)?;
     a.xor(edx, edx)?;
     a.xrstor64(ptr(to_slot(offset_of!(Slot, before_xsave))))?;
+    // The selectors first, as loading FS and GS replaces their bases.
+    for (index, segment) in DATA_SEGMENTS.into_iter().enumerate() {
+        a.mov(rax, qword_ptr(to_before(offset_of!(Registers, data_segments) + index * size_of::<u64>())))?;
+        a.mov(segment, ax)?;
+    }
     a.mov(rax, qword_ptr(to_before(offset_of!(Registers, fs_base))))?;
     a.wrfsbase(rax)?;
     a.mov(rax, qword_ptr(to_before(offset_of!(Registers, gs_base))))?;
@@ -113,6 +131,20 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
         a.jmp(save)?;
     }
 
+    // SYSCALL's entry: on the kernel's stack, the frame an exception from ring 3 would push, with the program's RSP,
+    // R11's RFLAGS and RCX's address, then the vector.
+    a.set_label(&mut system_call)?;
+    a.mov(qword_ptr(to_after(to_general(STACK_POINTER))), rsp)?;
+    a.mov(rsp, to_kernel(STACK_TOP) as i64)?;
+    a.push(USER_DATA_SELECTOR)?;
+    a.push(qword_ptr(to_after(to_general(STACK_POINTER))))?;
+    a.push(r11)?;
+    a.push(USER_CODE_SELECTOR)?;
+    a.push(rcx)?;
+    a.push(0_i32)?;
+    a.push(SYSTEM_CALL_VECTOR as i32)?;
+    a.jmp(save)?;
+
     a.set_label(&mut save)?;
     for (number, register) in LOADED {
         a.mov(qword_ptr(to_after(to_general(number))), register)?;
@@ -140,6 +172,10 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.mov(qword_ptr(to_after(offset_of!(Registers, fs_base))), rax)?;
     a.rdgsbase(rax)?;
     a.mov(qword_ptr(to_after(offset_of!(Registers, gs_base))), rax)?;
+    for (index, segment) in DATA_SEGMENTS.into_iter().enumerate() {
+        a.mov(eax, segment)?;
+        a.mov(qword_ptr(to_after(offset_of!(Registers, data_segments) + index * size_of::<u64>())), rax)?;
+    }
     a.mov(eax, SAVED_COMPONENTS as u32)?;
     a.xor(edx, edx)?;
     a.xsave64(ptr(to_slot(offset_of!(Slot, after_xsave))))?;
@@ -161,5 +197,6 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
         entry: assembled.label_ip(&entry)?,
         stubs: addresses,
         floor: assembled.label_ip(&floor)?,
+        system_call: assembled.label_ip(&system_call)?,
     })
 }

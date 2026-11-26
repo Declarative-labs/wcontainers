@@ -9,6 +9,8 @@
 //! leaves its memory to the next machine made, zeroed first, so that making machines does not grow the process. Every
 //! read and write of it here goes through `VolatileBytes`, never a slice.
 //!
+//! A repeated string form steps one iteration, as the architecture's model of it does.
+//!
 //! A state the source cannot hold is refused, with a [`Refusal`] that names why, before anything of it is written:
 //! memory outside the program's addresses (where the source keeps its own pages), RFLAGS bits a program cannot set,
 //! and the instructions it cannot step (see [`check_steppable`]). A run that ends otherwise than the model has it is
@@ -26,7 +28,8 @@ use std::time::{Duration, Instant};
 use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
 use kvm_bindings::{
-    KVM_MAX_CPUID_ENTRIES, kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
+    KVM_CAP_DISABLE_QUIRKS2, KVM_MAX_CPUID_ENTRIES, KVM_X86_QUIRK_FIX_HYPERCALL_INSN, Msrs, kvm_enable_cap, kvm_msr_entry,
+    kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
 };
 use kvm_ioctls::{Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 use wcontainers_behavior_source::BehaviorSource;
@@ -36,17 +39,17 @@ use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot
 use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
-    PagePermission, Processor, VECTOR_REGISTERS, X86_64,
+    CODE_SEGMENT, PagePermission, Processor, STACK_POINTER, VECTOR_REGISTERS, X86_64,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
 
-use crate::handler::{Handler, VECTORS};
+use crate::handler::{Handler, KERNEL_CODE_SELECTOR, SYSTEM_CALL_VECTOR, VECTORS};
 use crate::layout::{
     ACCESSED, ADDRESS_MASK, ARENA, AVX_COMPONENT, DESCRIPTOR_ENTRIES, DIRTY, ENTRIES, ENTRY_BYTES,
     EXTENDED_CONTROL_0, FAULT_STACK_TOP, FX_MXCSR, FX_VECTOR_REGISTERS, GLOBAL,
     GLOBAL_DESCRIPTOR_TABLE, HIGH_16_ZMM_COMPONENT, OPMASK_COMPONENT, SAVED_COMPONENTS, SSE_COMPONENT, XSAVE_AVX,
-    XSAVE_HEADER, XSAVE_HIGH_16_ZMM, XSAVE_IMAGE_BYTES, XSAVE_OPMASK, XSAVE_ZMM_HIGH_256, XsaveImage,
+    XSAVE_HEADER, XSAVE_HIGH_16_ZMM, XSAVE_IMAGE_BYTES, XSAVE_OPMASK, XSAVE_PKRU, XSAVE_ZMM_HIGH_256, XsaveImage, PKRU_COMPONENT,
     ZMM_HIGH_256_COMPONENT,
     HANDLER, HANDLER_BYTES, INTERRUPT_DESCRIPTOR_TABLE, KERNEL_CODE, KERNEL_DATA, KERNEL_DIRECTORY,
     KERNEL_DIRECTORY_POINTERS, KERNEL_ENTRY, KERNEL_PAGES, KERNEL_TABLE, LEVELS, MEMORY_BYTES, NO_EXECUTE,
@@ -212,6 +215,13 @@ const INTERRUPT_ENABLE: u64 = 1 << 9;
 const IO_PRIVILEGE: u64 = 0b11 << 12;
 const RESUME: u64 = 1 << 16;
 const VIRTUAL_8086: u64 = 1 << 17;
+/// IA32_STAR, IA32_LSTAR and IA32_FMASK, and the RFLAGS bits SYSCALL clears.
+const SYSTEM_CALL_TARGET: u32 = 0xC000_0081;
+const LONG_MODE_SYSTEM_CALL_TARGET: u32 = 0xC000_0082;
+const SYSTEM_CALL_FLAG_MASK: u32 = 0xC000_0084;
+const SYSTEM_CALL_MASKED_FLAGS: u64 = TRAP | INTERRUPT_ENABLE | 1 << 10 | IO_PRIVILEGE | 1 << 14 | RESUME | 1 << 18;
+/// R11, where SYSCALL saves RFLAGS.
+const SAVED_FLAGS: usize = 11;
 /// DR6.BS: the #DB is the trap after a single step.
 const SINGLE_STEP: u64 = 1 << 14;
 /// DR6 as reset.
@@ -298,6 +308,10 @@ impl SingleStepMachine {
         machine
             .set_tss_address(0xFFFB_D000)
             .map_err(|error| refused("placing KVM's real mode task state", error))?;
+        // KVM would rewrite a guest's VMMCALL into VMCALL in the guest's own code; without the quirk it raises #UD, as
+        // an Intel chip does.
+        let quirks = kvm_enable_cap { cap: KVM_CAP_DISABLE_QUIRKS2, args: [u64::from(KVM_X86_QUIRK_FIX_HYPERCALL_INSN), 0, 0, 0], ..kvm_enable_cap::default() };
+        machine.enable_cap(&quirks).map_err(|error| refused("disabling KVM's hypercall rewriting", error))?;
         let memory = PooledMemory(give_memory(&machine)?);
         let cpu = machine.create_vcpu(0).map_err(|error| refused("making a virtual CPU", error))?;
         let mut cpuid = kvm
@@ -312,12 +326,24 @@ impl SingleStepMachine {
             }
         }
         cpu.set_cpuid2(&cpuid).map_err(|error| refused("setting CPUID", error))?;
+        let handler = handler::assemble();
+        // SYSCALL enters the handler's own entry on the kernel's code segment, with TF, IF, DF, IOPL, NT, RF and AC
+        // masked so that nothing steps or interrupts it.
+        let entries: Vec<kvm_msr_entry> = [
+            (SYSTEM_CALL_TARGET, KERNEL_CODE_SELECTOR << 32),
+            (LONG_MODE_SYSTEM_CALL_TARGET, handler.system_call),
+            (SYSTEM_CALL_FLAG_MASK, SYSTEM_CALL_MASKED_FLAGS),
+        ]
+        .map(|(index, data)| kvm_msr_entry { index, data, ..kvm_msr_entry::default() })
+        .to_vec();
+        let msrs = Msrs::from_entries(&entries).map_err(|error| refused("listing SYSCALL's MSRs", format!("{error:?}")))?;
+        cpu.set_msrs(&msrs).map_err(|error| refused("setting SYSCALL's MSRs", error))?;
         let mut executor = Self {
             cpu,
             _machine: machine,
             memory,
             page: vec![0; PAGE_BYTES as usize],
-            handler: handler::assemble(),
+            handler,
             options,
             parked: false,
             next_free_page: ARENA.start,
@@ -784,6 +810,31 @@ impl SingleStepMachine {
         Ok(())
     }
 
+    /// Clears TF in the image a completed PUSHF wrote: the source sets TF to step, where a program's PUSHF pushes it
+    /// clear.
+    fn hide_pushed_trap_flag(&mut self, processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
+        let bytes: [u8; 15] = read_bytes(memory, processor.instruction_pointer);
+        let decoded = Decoder::with_ip(64, &bytes, processor.instruction_pointer, DecoderOptions::NONE).decode();
+        let size = match decoded.code() {
+            Code::Pushfw => 2,
+            Code::Pushfq => 8,
+            _ => return,
+        };
+        let vector = self.read_entry(SLOT + offset_of!(Slot, vector) as u64);
+        let status = self.read_entry(SLOT + offset_of!(Slot, debug_status) as u64);
+        if !(vector == DEBUG_VECTOR && status & SINGLE_STEP != 0) {
+            return;
+        }
+        // TF is bit 8 of the image, bit 0 of its second byte.
+        let address = processor.general_purpose_registers[STACK_POINTER].wrapping_sub(size).wrapping_add(1);
+        let page = address & !(PAGE_BYTES - 1);
+        if let Some(frame) = self.writable.iter().find(|writable| writable.page == page).map(|writable| writable.frame) {
+            let at = frame + (address - page);
+            let byte = self.read_bytes(at, 1)[0];
+            self.write_bytes(at, &[byte & !1]);
+        }
+    }
+
     /// The address of the last-level entry of a page under a top-level table, making the tables that lead to it.
     fn find_leaf_entry(&mut self, next_free_page: &mut u64, top: u64, page: u64) -> u64 {
         let mut table = top;
@@ -898,12 +949,14 @@ impl BehaviorSource for SingleStepMachine {
         let held = self.load(processor, memory);
         let Some(mut held) = held else {
             self.run()?;
+            self.hide_pushed_trap_flag(processor, memory);
             return self.read_back(processor, |mutation| mutation_hook.on_memory_mutated(mutation));
         };
         if self.options.loading == MemoryLoading::Checked && !self.check_guest_holds(memory) {
             self.check_mismatches += 1;
         }
         self.run()?;
+        self.hide_pushed_trap_flag(processor, memory);
         self.read_back(processor, |mutation| {
             held.push(mutation.clone().into_owned());
             mutation_hook.on_memory_mutated(mutation);
@@ -923,6 +976,7 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         stack_segment: u64::from(USER_DATA),
         fs_base: processor.fs_base,
         gs_base: processor.gs_base,
+        data_segments: processor.data_segments.map(u64::from),
     };
     let mut image = XsaveImage { bytes: [0; XSAVE_IMAGE_BYTES] };
     x87_image::write_x87(&mut image.bytes, &processor.x87);
@@ -947,6 +1001,7 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
     }
     // Every saved component is loaded from the image rather than put in its initial state, but an AVX-512 component
     // that holds zeros, whose initial state is the same.
+    image.bytes[XSAVE_PKRU..XSAVE_PKRU + size_of::<u32>()].copy_from_slice(&processor.pkru.to_le_bytes());
     image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&to_loaded_components(processor).to_le_bytes());
     Slot {
         before_xsave: image,
@@ -974,7 +1029,8 @@ fn to_loaded_components(processor: &Processor) -> u64 {
 /// The bytes of the image up to the end of the last component the header names, AVX's at least.
 fn to_image_end(components: u64) -> usize {
     match components {
-        _ if components & HIGH_16_ZMM_COMPONENT != 0 => XSAVE_IMAGE_BYTES,
+        _ if components & PKRU_COMPONENT != 0 => XSAVE_PKRU + size_of::<u64>(),
+        _ if components & HIGH_16_ZMM_COMPONENT != 0 => XSAVE_PKRU,
         _ if components & ZMM_HIGH_256_COMPONENT != 0 => XSAVE_HIGH_16_ZMM,
         _ if components & OPMASK_COMPONENT != 0 => XSAVE_ZMM_HIGH_256,
         _ => XSAVE_AVX + VECTOR_REGISTERS * VECTOR_HALF_BYTES,
@@ -1018,6 +1074,12 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if processor.mxcsr > u32::from(u16::MAX) {
         return Err(Refusal::MxcsrReservedBits(processor.mxcsr));
     }
+    if processor.code_segment != CODE_SEGMENT {
+        return Err(Refusal::NotModeled("CS other than Linux's 64-bit code segment, which every state holds"));
+    }
+    if !processor.data_segments.iter().all(|selector| is_loadable(*selector)) {
+        return Err(Refusal::NotModeled("a data segment selector no program can load under Linux"));
+    }
     if !x87_image::is_holdable(&processor.x87) {
         return Err(Refusal::NotModeled(
             "an x87 register wider than 80 bits, an opcode wider than 11 bits, a reserved bit of FCW, or FSW's ES or B not an unmasked flag",
@@ -1042,13 +1104,12 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 ///
 /// # Errors
 ///
-/// For MOV SS (it steps two instructions), a REP string form (it steps one iteration), POPF and IRET (they can
-/// change TF), PUSHF (it pushes the source's TF), SYSCALL and SYSENTER (they enter ring 0 at MSRs the source does
-/// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
-/// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
-/// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
-/// on the page says why: UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
-/// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's.
+/// For a MOV SS that loads SS (it steps two instructions) and SYSENTER (it enters ring 0 at MSRs the source does not
+/// set as Linux does). VMCALL runs, which KVM answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk
+/// that rewrites it is off. Then for each instruction whose result under Linux differs from the source's guest, the table of settings
+/// on the page says why: UMWAIT and TPAUSE, XGETBV, the
+/// XSAVE family, INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
+/// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
     let bytes: [u8; 15] = read_bytes(memory, address);
@@ -1065,49 +1126,18 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
     if decoded.is_invalid() || !fetchable {
         return Ok(());
     }
-    let is_string = (0..decoded.op_count()).any(|operand| {
-        matches!(
-            decoded.op_kind(operand),
-            OpKind::MemorySegSI
-                | OpKind::MemorySegESI
-                | OpKind::MemorySegRSI
-                | OpKind::MemoryESDI
-                | OpKind::MemoryESEDI
-                | OpKind::MemoryESRDI
-        )
-    });
-    // PUSH FS and PUSH GS name the register they read first.
-    let writes_segment = decoded.op_count() > 0
-        && decoded.mnemonic() != Mnemonic::Push
-        && decoded.op0_kind() == OpKind::Register
-        && decoded.op0_register().is_segment_register();
-    let far = matches!(
-        decoded.code(),
-        Code::Call_m1616 | Code::Call_m1632 | Code::Call_m1664 | Code::Jmp_m1616 | Code::Jmp_m1632 | Code::Jmp_m1664
-    );
+    // MOV SS and POP SS hold off the trap until after the next instruction once they load SS, which only Linux's own
+    // 0x2B does at ring 3.
+    let loads_stack_segment = matches!(decoded.code(), Code::Mov_Sreg_r32m16 | Code::Mov_Sreg_r64m16)
+        && decoded.op0_register() == Register::SS
+        && read_source_selector(processor, memory, &decoded) == Some(STACK_SEGMENT_SELECTOR);
     let reason = match decoded.mnemonic() {
-        Mnemonic::Mov if writes_segment && decoded.op0_register() == Register::SS => {
-            Some("it steps two instructions")
-        }
-        _ if is_string && (decoded.has_rep_prefix() || decoded.has_repne_prefix()) => {
-            Some("it steps one iteration")
-        }
-        Mnemonic::Popf | Mnemonic::Popfq | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq => {
-            Some("it can change TF, which steps it")
-        }
-        Mnemonic::Pushf | Mnemonic::Pushfq => Some("it pushes the TF that steps it"),
-        Mnemonic::Syscall => Some("it enters ring 0 at an LSTAR the source does not set"),
+        _ if loads_stack_segment => Some("it loads SS, which holds off the trap until after the next instruction"),
         // Linux sets IA32_SYSENTER_CS, so a 64-bit SYSENTER enters its kernel; the source leaves it 0, where it faults.
         Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
-        Mnemonic::Retf => Some("it changes CS"),
-        _ if far => Some("it changes CS"),
-        Mnemonic::Lss | Mnemonic::Lfs | Mnemonic::Lgs => Some("it writes a selector, which is not modeled"),
-        _ if writes_segment => Some("it writes a selector, which is not modeled"),
-        Mnemonic::Vmcall | Mnemonic::Vmmcall => Some("KVM answers it as a hypercall"),
         // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
         // IA32_TSC_AUX and the random source decide.
         Mnemonic::Umwait | Mnemonic::Tpause => Some("its result depends on the time, which is not in the state"),
-        Mnemonic::Rdpkru | Mnemonic::Wrpkru => Some("PKRU is not modeled, and Linux starts it at 0x55555554"),
         Mnemonic::Xgetbv => Some("XCR0 under Linux also enables AMX's tiles, and XINUSE is not in the state"),
         Mnemonic::Xsave
         | Mnemonic::Xsave64
@@ -1117,12 +1147,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         | Mnemonic::Xsavec64
         | Mnemonic::Xrstor
         | Mnemonic::Xrstor64 => Some("it reaches components the state does not hold, under an XCR0 that is not Linux's"),
-        Mnemonic::Lar | Mnemonic::Lsl | Mnemonic::Verr | Mnemonic::Verw => {
-            Some("it answers from the source's descriptor table, not Linux's")
-        }
-        Mnemonic::Sgdt | Mnemonic::Sidt | Mnemonic::Smsw => {
-            Some("Linux answers it after the chip's #GP with values of its own")
-        }
         Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
             Some("Linux takes it as a 32-bit system call")
         }
@@ -1153,7 +1177,9 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     if slot.vector == NOT_RUN {
         return Err(Refusal::SlotNotRun);
     }
-    if !(after.code_segment == u64::from(USER_CODE) && after.stack_segment == u64::from(USER_DATA)) {
+    // A far transfer may leave Linux's 32-bit code segment in CS, at ring 3 too.
+    let at_ring_3 = after.code_segment == u64::from(USER_CODE) || after.code_segment == USER_32_BIT_CODE;
+    if !(at_ring_3 && after.stack_segment == u64::from(USER_DATA)) {
         return Err(Refusal::NotFromRing3 {
             vector: slot.vector,
             error_code: slot.error_code,
@@ -1194,7 +1220,11 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     });
     let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & SINGLE_STEP != 0;
     let exception = if completed { None } else { Some(to_exception(slot)?) };
-    let general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
+    let mut general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
+    // R11 holds the RFLAGS SYSCALL saw, with the TF the source steps by.
+    if slot.vector == SYSTEM_CALL_VECTOR {
+        general_purpose_registers[SAVED_FLAGS] &= !TRAP;
+    }
     Ok(Processor {
         general_purpose_registers,
         instruction_pointer: after.instruction_pointer,
@@ -1209,6 +1239,13 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         high_vector_registers,
         opmask_registers,
         exception,
+        data_segments: after.data_segments.map(|selector| selector as u16),
+        pkru: if saved & PKRU_COMPONENT == 0 {
+            0
+        } else {
+            u32::from_le_bytes(after_x87[XSAVE_PKRU..XSAVE_PKRU + size_of::<u32>()].try_into().expect("four bytes"))
+        },
+        code_segment: after.code_segment as u16,
     })
 }
 
@@ -1256,8 +1293,44 @@ fn to_exception(slot: &Slot) -> Result<Exception, Refusal> {
         20 => Exception::Virtualization,
         21 => Exception::ControlProtection { error_code },
         vector @ 32..=255 => Exception::SoftwareInterrupt { vector: vector as u8 },
+        SYSTEM_CALL_VECTOR => Exception::SystemCall,
         vector => return Err(Refusal::UnexpectedVector(vector)),
     })
+}
+
+/// The only selector ring 3 can load into SS: Linux's 0x2B.
+const STACK_SEGMENT_SELECTOR: u16 = 0x2B;
+
+/// The selector MOV to a segment register reads: its register's low 16 bits, or two bytes of the state's memory.
+fn read_source_selector(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>], decoded: &iced_x86::Instruction) -> Option<u16> {
+    if decoded.op1_kind() == OpKind::Register {
+        let number = decoded.op1_register().full_register().number();
+        return Some(processor.general_purpose_registers[number] as u16);
+    }
+    let address = decoded.virtual_address(1, 0, |register, _, _| {
+        let value = match register {
+            Register::FS => processor.fs_base,
+            Register::GS => processor.gs_base,
+            Register::ES | Register::CS | Register::SS | Register::DS => 0,
+            register if register.is_gpr64() => processor.general_purpose_registers[register.number()],
+            register if register.is_gpr32() => processor.general_purpose_registers[register.full_register().number()] & u64::from(u32::MAX),
+            Register::RIP => processor.instruction_pointer,
+            _ => return None,
+        };
+        Some(value)
+    })?;
+    let bytes: [u8; 2] = read_bytes(memory, address);
+    Some(u16::from_le_bytes(bytes))
+}
+
+/// Linux's 32-bit code segment, which a far transfer may leave in CS.
+const USER_32_BIT_CODE: u64 = 0x23;
+
+/// Whether a program can hold the selector in a data segment register under Linux: null, or naming one of the
+/// segments of Linux's descriptor table that ring 3 reaches.
+fn is_loadable(selector: u16) -> bool {
+    const TABLE_INDICATOR: u16 = 1 << 2;
+    selector & !3 == 0 || (selector & TABLE_INDICATOR == 0 && matches!(selector >> 3, 4 | 5 | 6 | 15))
 }
 
 /// The vector Linux gives ring 3 for 32-bit system calls.

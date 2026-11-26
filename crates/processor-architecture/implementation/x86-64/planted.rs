@@ -47,6 +47,8 @@ pub enum Origin {
     Avx512Integer,
     /// The sync onto the owner's expectations, for RDRAND and RDSEED.
     Expectations,
+    /// The family of the forms every x86-64 chip has that were left, and of the forms the chip source refused.
+    Mandatory,
 }
 
 /// The forms a bug shows on.
@@ -79,6 +81,8 @@ pub enum Family {
     Opmask(fn(OpmaskOperation) -> bool),
     /// The EVEX integer forms the test accepts.
     EvexInteger(fn(&EvexIntegerForm) -> bool),
+    /// The string forms the test accepts.
+    String(fn(&crate::string::StringForm) -> bool),
 }
 
 /// One planted bug.
@@ -115,6 +119,7 @@ impl PlantedBug {
             Family::Avx(test) => find_avx_form(instruction).is_some_and(test),
             Family::Opmask(test) => find_opmask_form(instruction).is_some_and(|form| test(form.operation)),
             Family::EvexInteger(test) => find_evex_integer_form(instruction).is_some_and(test),
+            Family::String(test) => crate::string::find_string_form(instruction).is_some_and(test),
         }
     }
 }
@@ -1020,6 +1025,108 @@ pub enum Bug {
     RandomLeavesStatusFlags,
     /// RDRAND and RDSEED clear CF, as if the random source had no value ready.
     RandomClearsCarry,
+    /// A string form moves RSI and RDI up whatever DF holds.
+    StringDirectionIgnored,
+    /// A repeated string form leaves the instruction pointer past it after one iteration, as if it were done.
+    RepeatEndsAfterOneIteration,
+    /// REPE stops where the elements are equal.
+    RepeatWhileEqualReversed,
+    /// Under the 0x67 prefix a string form keeps the upper halves of RSI, RDI and RCX.
+    StringNarrowKeepsUpperHalves,
+    /// SCAS and CMPS subtract the first element from the second.
+    StringCompareOperandsSwapped,
+    /// MOVS checks its destination before it reads its source.
+    MoveChecksDestinationFirst,
+    /// A string form reads its source through DS whatever segment overrides it.
+    StringSourceSegmentIgnored,
+    /// A repeated string form whose count is zero still runs one iteration.
+    RepeatCountZeroRuns,
+    /// REPE and REPNE write the status flags after an iteration that leaves the repetition going on.
+    RepeatFlagsWrittenEachIteration,
+    /// CMPS reads its source element before its destination element.
+    CompareReadsSourceFirst,
+    /// PUSHF pushes IF clear, and SYSCALL saves it clear in R11.
+    PushFlagsOmitsInterrupt,
+    /// The 16-bit POPF changes the flags above bit 15 too.
+    PopFlagsSixteenReachesUpper,
+    /// POPF leaves AC as it was.
+    PopFlagsKeepsAlignmentCheck,
+    /// ENTER takes its whole nesting level rather than modulo 32.
+    EnterNestingUnreduced,
+    /// ENTER does not check the stack at its final RSP.
+    EnterProbeSkipped,
+    /// The conversions between MMX and XMM registers and MASKMOVQ run while an x87 exception is pending.
+    MmxConvertIgnoresPendingException,
+    /// CVTPD2PI and CVTTPD2PI from memory take a misaligned operand.
+    MmxConvertMisalignedNoFault,
+    /// CVTPI2PS zeroes the destination's upper quadword.
+    ConvertToSinglesZeroesUpperHalf,
+    /// CVTPI2PS and CVTPI2PD from memory put the x87 state in MMX's use.
+    ConvertFromMemoryEntersMmx,
+    /// MASKMOVQ writes every byte whatever its mask holds.
+    MaskedQuadwordWritesEveryByte,
+    /// The conversions that name an MMX register put the x87 state in MMX's use only once #XM cannot stop them.
+    MmxConvertEntersMmxLast,
+    /// Of two NaNs of one kind the x87 arithmetic gives the one with the smaller significand.
+    X87NanSmallerSignificandWins,
+    /// The x87 arithmetic raises no DE for a denormal operand.
+    X87DenormalOperandIgnored,
+    /// FSUBR and FDIVR compute as FSUB and FDIV.
+    X87ReverseIgnored,
+    /// FLDPI to FLDLN2 load their constants cut to 64 bits whatever the rounding.
+    X87ConstantsTruncated,
+    /// The x87 arithmetic rounds to 64 bits whatever FCW's precision control holds.
+    X87PrecisionControlIgnored,
+    /// The x87 arithmetic and FST to memory find a result tiny where it lies below the smallest normal before rounding.
+    X87TinyBeforeRounding,
+    /// FPREM and FPREM1 complete the remainder whatever the exponents' difference.
+    X87RemainderNeverPartial,
+    /// FXSAVE and FXRSTOR take an area not aligned to 16.
+    X87AreaMisalignedNoFault,
+    /// FXRSTOR loads an MXCSR with reserved bits set.
+    X87RestoreTakesReservedMxcsr,
+    /// FNSTENV and FNSAVE leave the 16-bit environment's selector words as they were.
+    X87EnvironmentSkipsSelectors,
+    /// FNSTENV to FRSTOR take a misaligned area under AC.
+    X87EnvironmentAlignmentUnchecked,
+    /// FXSAVE and FXRSTOR report a page fault from the area's first byte.
+    X87AreaFaultsAtFirstByte,
+    /// LAR to VERW read a selector's table indicator as if it named the GDT.
+    DescriptorTableIndicatorIgnored,
+    /// LAR to VERW fail a selector whose RPL is below 3.
+    DescriptorRequestedPrivilegeChecked,
+    /// LSL gives the limit in pages.
+    SegmentLimitInPages,
+    /// VERW succeeds for a readable code segment.
+    VerifyWriteTakesCode,
+    /// SYSCALL writes its own address into RCX.
+    SystemCallReturnsToItself,
+    /// RCP reads the table's entry after the source's.
+    ReciprocalTableNeighbor,
+    /// RSQRT reads an odd exponent's entries for an even exponent and the other way round.
+    RootParitySwapped,
+    /// IRET runs with NT set.
+    InterruptReturnIgnoresNestedTask,
+    /// Loading FS or GS keeps its base.
+    SegmentLoadKeepsBase,
+    /// Loading a null selector into FS or GS keeps its base.
+    NullLoadKeepsBase,
+    /// A far RET or IRET takes a CS whose RPL is below 3.
+    ReturnToInnerPrivilegeAllowed,
+    /// A far transfer takes a target outside its code segment.
+    FarTargetUnchecked,
+    /// POP FS and POP GS read their whole slot.
+    SelectorPopReadsWholeSlot,
+    /// A transfer into compatibility mode keeps RSP whole.
+    CompatibilityKeepsWholeStackPointer,
+    /// A far return and IRET read their slots from the lowest.
+    StackSlotsReadInOrder,
+    /// The far CALL checks its target before it pushes.
+    CallFarChecksTargetFirst,
+    /// VMCALL under KVM answers 0.
+    HypervisorCallAnswersZero,
+    /// WRPKRU takes a nonzero EDX.
+    WritePkruIgnoresEdx,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1486,6 +1593,120 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CompareIgnoresWritemask, "compares and tests into masks", Family::EvexInteger(EvexIntegerForm::writes_mask), Avx512Integer),
     row(Bug::RandomLeavesStatusFlags, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
     row(Bug::RandomClearsCarry, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
+    row(Bug::StringDirectionIgnored, "string forms", Family::String(|form| form.reads_source() || form.reaches_destination()), Origin::Mandatory),
+    row(Bug::RepeatEndsAfterOneIteration, "repeated string forms", Family::String(|form| form.is_repeated()), Origin::Mandatory),
+    row(Bug::RepeatWhileEqualReversed, "REPE SCAS, REPE CMPS", Family::String(|form| form.repetition == crate::string::Repetition::WhileEqual), Origin::Mandatory),
+    row(Bug::StringNarrowKeepsUpperHalves, "string forms", Family::String(|form| form.reads_source() || form.reaches_destination()), Origin::Mandatory),
+    row(Bug::StringCompareOperandsSwapped, "SCAS, CMPS", Family::String(|form| form.compares()), Origin::Mandatory),
+    row(Bug::MoveChecksDestinationFirst, "MOVS", Family::String(|form| form.operation == crate::string::StringOperation::Move), Origin::Mandatory),
+    row(Bug::StringSourceSegmentIgnored, "LODS, MOVS, CMPS", Family::String(|form| form.reads_source()), Origin::Mandatory),
+    row(Bug::RepeatCountZeroRuns, "repeated string forms", Family::String(|form| form.is_repeated()), Origin::Mandatory),
+    row(Bug::RepeatFlagsWrittenEachIteration, "REPE and REPNE SCAS and CMPS", Family::String(|form| form.is_repeated() && form.compares()), Origin::Mandatory),
+    row(Bug::CompareReadsSourceFirst, "CMPS", Family::String(|form| form.operation == crate::string::StringOperation::Compare), Origin::Mandatory),
+    row(Bug::PushFlagsOmitsInterrupt, "PUSHF, SYSCALL", Family::Forms(&[Instruction::Pushf, Instruction::Pushfq, Instruction::Syscall]), Origin::Mandatory),
+    row(Bug::PopFlagsSixteenReachesUpper, "POPF", Family::Forms(&[Instruction::Popf]), Origin::Mandatory),
+    row(Bug::PopFlagsKeepsAlignmentCheck, "POPF", Family::Forms(&[Instruction::Popf, Instruction::Popfq]), Origin::Mandatory),
+    row(Bug::EnterNestingUnreduced, "ENTER", Family::Forms(&[Instruction::EnterImmwImmb]), Origin::Mandatory),
+    row(Bug::EnterProbeSkipped, "ENTER", Family::Forms(&[Instruction::EnterImmwImmb]), Origin::Mandatory),
+    row(Bug::MmxConvertIgnoresPendingException, "CVTPI2PS to CVTTPD2PI, MASKMOVQ", Family::Forms(MMX_CONVERTS), Origin::Mandatory),
+    row(Bug::MmxConvertMisalignedNoFault, "CVTPD2PI, CVTTPD2PI", Family::Forms(&[Instruction::Cvtpd2piMmxqMempd, Instruction::Cvttpd2piMmxqMempd]), Origin::Mandatory),
+    row(Bug::ConvertToSinglesZeroesUpperHalf, "CVTPI2PS", Family::Forms(&[Instruction::Cvtpi2psXmmqMmxq, Instruction::Cvtpi2psXmmqMemq]), Origin::Mandatory),
+    row(Bug::ConvertFromMemoryEntersMmx, "CVTPI2PS, CVTPI2PD", Family::Forms(&[Instruction::Cvtpi2psXmmqMemq, Instruction::Cvtpi2pdXmmpdMemq]), Origin::Mandatory),
+    row(Bug::MaskedQuadwordWritesEveryByte, "MASKMOVQ", Family::Forms(&[Instruction::MaskmovqMmxqMmxq]), Origin::Mandatory),
+    row(Bug::MmxConvertEntersMmxLast, "CVTPI2PS to CVTTPD2PI, MASKMOVQ", Family::Forms(MMX_CONVERTS), Origin::Mandatory),
+    row(Bug::X87NanSmallerSignificandWins, "FADD to FDIVR", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87DenormalOperandIgnored, "FADD to FDIVR", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87ReverseIgnored, "FSUBR, FDIVR", Family::Forms(&[Instruction::FsubrSt0X87, Instruction::FdivrX87St0, Instruction::FsubrSt0Memmem32real, Instruction::FidivrSt0Memmem16int]), Origin::Mandatory),
+    row(Bug::X87ConstantsTruncated, "FLDPI to FLDLN2", Family::Forms(&[Instruction::Fldpi, Instruction::Fldl2e, Instruction::Fldl2t, Instruction::Fldlg2, Instruction::Fldln2]), Origin::Mandatory),
+    row(Bug::X87PrecisionControlIgnored, "FADD to FDIVR, FSQRT", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87TinyBeforeRounding, "FADD to FDIVR, FST", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87RemainderNeverPartial, "FPREM, FPREM1", Family::Forms(&[Instruction::Fprem, Instruction::Fprem1]), Origin::Mandatory),
+    row(Bug::X87AreaMisalignedNoFault, "FXSAVE, FXRSTOR", Family::Forms(X87_EXTENDED_AREAS), Origin::Mandatory),
+    row(Bug::X87RestoreTakesReservedMxcsr, "FXRSTOR", Family::Forms(&[Instruction::FxrstorMemmfpxenv, Instruction::Fxrstor64Memmfpxenv]), Origin::Mandatory),
+    row(Bug::X87EnvironmentSkipsSelectors, "FNSTENV, FNSAVE", Family::Forms(&[Instruction::FnstenvMemmem14, Instruction::FnsaveMemmem94]), Origin::Mandatory),
+    row(Bug::X87EnvironmentAlignmentUnchecked, "FNSTENV to FRSTOR", Family::Forms(X87_ENVIRONMENTS), Origin::Mandatory),
+    row(Bug::X87AreaFaultsAtFirstByte, "FNSTENV to FRSTOR, FXSAVE, FXRSTOR", Family::Forms(X87_ENVIRONMENTS), Origin::Mandatory),
+    row(Bug::DescriptorTableIndicatorIgnored, "LAR, LSL, VERR, VERW", Family::Forms(DESCRIPTOR_QUERIES), Origin::Mandatory),
+    row(Bug::DescriptorRequestedPrivilegeChecked, "LAR, LSL, VERR, VERW", Family::Forms(DESCRIPTOR_QUERIES), Origin::Mandatory),
+    row(Bug::SegmentLimitInPages, "LSL", Family::Forms(&[Instruction::LslGprvGprz, Instruction::LslGprvMemw]), Origin::Mandatory),
+    row(Bug::VerifyWriteTakesCode, "VERW", Family::Forms(&[Instruction::VerwGpr16, Instruction::VerwMemw]), Origin::Mandatory),
+    row(Bug::SystemCallReturnsToItself, "SYSCALL", Family::Forms(&[Instruction::Syscall]), Origin::Mandatory),
+    row(Bug::ReciprocalTableNeighbor, "RCPPS, RCPSS", Family::Forms(&[Instruction::RcppsXmmpsXmmps, Instruction::RcppsXmmpsMemps, Instruction::RcpssXmmssXmmss, Instruction::RcpssXmmssMemss]), Origin::Mandatory),
+    row(Bug::InterruptReturnIgnoresNestedTask, "IRET", Family::Forms(&[Instruction::Iret, Instruction::Iretd, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::SegmentLoadKeepsBase, "MOV to FS and GS, POP FS, POP GS, LFS, LGS", Family::Forms(SEGMENT_LOADS), Origin::Mandatory),
+    row(Bug::NullLoadKeepsBase, "MOV to FS and GS, POP FS, POP GS, LFS, LGS", Family::Forms(SEGMENT_LOADS), Origin::Mandatory),
+    row(Bug::ReturnToInnerPrivilegeAllowed, "RET far, IRET", Family::Forms(&[Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iret, Instruction::Iretd, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::SelectorPopReadsWholeSlot, "POP FS, POP GS", Family::Forms(&[Instruction::PopFs, Instruction::PopGs]), Origin::Mandatory),
+    row(Bug::CompatibilityKeepsWholeStackPointer, "CALL far, JMP far, RET far, IRET", Family::Forms(&[Instruction::CallFarMemp2, Instruction::JmpFarMemp2, Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::StackSlotsReadInOrder, "RET far, IRET", Family::Forms(&[Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iret, Instruction::Iretd, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::WritePkruIgnoresEdx, "WRPKRU", Family::Forms(&[Instruction::Wrpkru]), Origin::Mandatory),
+    row(Bug::HypervisorCallAnswersZero, "VMCALL", Family::Forms(&[Instruction::Vmcall]), Origin::Mandatory),
+    row(Bug::CallFarChecksTargetFirst, "CALL far", Family::Forms(&[Instruction::CallFarMemp2]), Origin::Mandatory),
+    row(Bug::FarTargetUnchecked, "CALL far, JMP far, RET far, IRET", Family::Forms(&[Instruction::CallFarMemp2, Instruction::JmpFarMemp2, Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::RootParitySwapped, "RSQRTPS, RSQRTSS", Family::Forms(&[Instruction::RsqrtpsXmmpsXmmps, Instruction::RsqrtpsXmmpsMemps, Instruction::RsqrtssXmmssXmmss, Instruction::RsqrtssXmmssMemss]), Origin::Mandatory),
+];
+
+const SEGMENT_LOADS: &[Instruction] = &[
+    Instruction::MovSegGpr16,
+    Instruction::MovSegMemw,
+    Instruction::PopFs,
+    Instruction::PopGs,
+    Instruction::LfsGprvMemp2,
+    Instruction::LgsGprvMemp2,
+];
+
+const DESCRIPTOR_QUERIES: &[Instruction] = &[
+    Instruction::LarGprvGprv,
+    Instruction::LarGprvMemw,
+    Instruction::LslGprvGprz,
+    Instruction::LslGprvMemw,
+    Instruction::VerrGpr16,
+    Instruction::VerrMemw,
+    Instruction::VerwGpr16,
+    Instruction::VerwMemw,
+];
+
+const X87_EXTENDED_AREAS: &[Instruction] = &[
+    Instruction::FxsaveMemmfpxenv,
+    Instruction::Fxsave64Memmfpxenv,
+    Instruction::FxrstorMemmfpxenv,
+    Instruction::Fxrstor64Memmfpxenv,
+];
+
+const X87_ENVIRONMENTS: &[Instruction] = &[
+    Instruction::FnstenvMemmem14,
+    Instruction::FnstenvMemmem28,
+    Instruction::FldenvMemmem14,
+    Instruction::FldenvMemmem28,
+    Instruction::FnsaveMemmem94,
+    Instruction::FnsaveMemmem108,
+    Instruction::FrstorMemmem94,
+    Instruction::FrstorMemmem108,
+    Instruction::FxsaveMemmfpxenv,
+    Instruction::FxrstorMemmfpxenv,
+];
+
+const X87_ARITHMETIC_SAMPLE: &[Instruction] = &[
+    Instruction::FaddSt0X87,
+    Instruction::FsubX87St0,
+    Instruction::FmulpX87St0,
+    Instruction::FdivSt0Memm64real,
+    Instruction::FdivrSt0Memmem32real,
+    Instruction::FiaddSt0Memmem32int,
+    Instruction::FstMemmem32realSt0,
+    Instruction::FstpMemm64realSt0,
+    Instruction::Fsqrt,
+];
+
+const MMX_CONVERTS: &[Instruction] = &[
+    Instruction::Cvtpi2psXmmqMmxq,
+    Instruction::Cvtpi2pdXmmpdMmxq,
+    Instruction::Cvtps2piMmxqXmmq,
+    Instruction::Cvtps2piMmxqMemq,
+    Instruction::Cvttps2piMmxqXmmq,
+    Instruction::Cvtpd2piMmxqXmmpd,
+    Instruction::Cvtpd2piMmxqMempd,
+    Instruction::MaskmovqMmxqMmxq,
 ];
 
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];

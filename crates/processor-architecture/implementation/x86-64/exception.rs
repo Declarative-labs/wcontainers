@@ -3,7 +3,6 @@
 /// After a fault the instruction pointer is the instruction's own; after a trap (a breakpoint, a software interrupt)
 /// it is the next instruction's.
 ///
-/// TODO: temporary placeholder until every ending is listed: SYSCALL's entry to the kernel is not one yet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Exception {
     /// #DE.
@@ -49,6 +48,8 @@ pub enum Exception {
     ControlProtection { error_code: u32 },
     /// INT n through a gate a program may use, such as Linux's 0x80.
     SoftwareInterrupt { vector: u8 },
+    /// SYSCALL's entry to the kernel, after it wrote the next instruction's address into RCX and RFLAGS into R11.
+    SystemCall,
 }
 
 /// What the access that faulted was doing.
@@ -65,7 +66,7 @@ impl Exception {
     pub const fn is_trap(self) -> bool {
         matches!(
             self,
-            Self::Breakpoint | Self::Overflow | Self::SoftwareInterrupt { .. } | Self::Debug { .. }
+            Self::Breakpoint | Self::Overflow | Self::SoftwareInterrupt { .. } | Self::Debug { .. } | Self::SystemCall
         )
     }
 }

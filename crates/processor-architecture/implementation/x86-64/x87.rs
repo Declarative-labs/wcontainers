@@ -71,6 +71,40 @@ pub enum X87Operation {
     Compare { ordering: Ordering, source: Source, pops: u8, to_flags: bool },
     /// FIST and FISTP: ST(0) rounded to an integer by FCW's rounding control.
     StoreInteger { pop: bool },
+    /// FADD to FDIVR and their pops and integer forms: the destination (ST(0), or ST(i) where the form names it
+    /// first) and the source combined, the source first for a reversed form, by [`crate::x87_arithmetic`].
+    Arithmetic { operation: crate::x87_arithmetic::Arithmetic, source: Source, reverse: bool, pop: bool },
+    /// FST and FSTP to memory in single or double precision: ST(0) rounded by FCW's rounding.
+    StoreFloat { pop: bool },
+    /// FLDPI, FLDL2E, FLDL2T, FLDLG2 and FLDLN2: the constant's significand cut to 64 bits, rounded up under FCW's
+    /// rounding where `above_half` says what the bits beyond hold; none of the five is exact there.
+    LoadRoundedConstant { truncated: u128, above_half: bool },
+    /// FSQRT.
+    SquareRoot,
+    /// FRNDINT: ST(0) rounded to an integer by FCW's rounding, whatever its precision control.
+    RoundToIntegral,
+    /// FSCALE.
+    Scale,
+    /// FXTRACT: ST(0) replaced by its exponent, then its significand pushed.
+    Extract,
+    /// FPREM and, `nearest`, FPREM1.
+    PartialRemainder { nearest: bool },
+    /// FBLD.
+    LoadDecimal,
+    /// FBSTP.
+    StoreDecimal,
+    /// FNSTENV: the environment stored, then every exception masked.
+    StoreEnvironment,
+    /// FLDENV.
+    LoadEnvironment,
+    /// FNSAVE: the environment and the registers stored, then FNINIT.
+    SaveState,
+    /// FRSTOR.
+    RestoreState,
+    /// FXSAVE and, `wide`, FXSAVE64.
+    SaveExtended { wide: bool },
+    /// FXRSTOR and, `wide`, FXRSTOR64.
+    RestoreExtended { wide: bool },
 }
 
 /// Which NaNs make a comparison invalid.
@@ -124,14 +158,23 @@ pub enum PointerUpdate {
     OnUnmaskedException,
 }
 
-/// An x87 form's behavior: its undefined condition codes, when it records its opcode and data address, and what a
-/// store that faults part-way writes.
+/// What FXSAVE and FXRSTOR raise for an area not aligned to 16 while AC is set, which the manual leaves to the chip:
+/// #GP(0) always, or #AC.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MisalignedArea {
+    GeneralProtection,
+    AlignmentCheck,
+}
+
+/// An x87 form's behavior: its undefined condition codes, when it records its opcode and data address, what a
+/// store that faults part-way writes, and for FXSAVE and FXRSTOR what a misaligned area raises under AC.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct X87Behavior {
     pub codes: UndefinedCodes,
     pub opcode: PointerUpdate,
     pub data: PointerUpdate,
     pub across_fault: StoreAcrossFault,
+    pub misaligned_area: MisalignedArea,
 }
 
 pub const TOP_SHIFT: u16 = 11;
@@ -166,6 +209,12 @@ impl X87Form {
                 | X87Operation::StoreStatus
                 | X87Operation::StoreControl
                 | X87Operation::LoadControl
+                | X87Operation::StoreEnvironment
+                | X87Operation::LoadEnvironment
+                | X87Operation::SaveState
+                | X87Operation::RestoreState
+                | X87Operation::SaveExtended { .. }
+                | X87Operation::RestoreExtended { .. }
         )
     }
 
@@ -178,6 +227,10 @@ impl X87Form {
                 | X87Operation::Initialize
                 | X87Operation::StoreStatus
                 | X87Operation::StoreControl
+                | X87Operation::StoreEnvironment
+                | X87Operation::SaveState
+                | X87Operation::SaveExtended { .. }
+                | X87Operation::RestoreExtended { .. }
         )
     }
 
@@ -189,7 +242,14 @@ impl X87Form {
             | X87Operation::LegacyNoOperation
             | X87Operation::Initialize
             | X87Operation::Examine
-            | X87Operation::Compare { .. } => 0,
+            | X87Operation::Compare { .. }
+            | X87Operation::PartialRemainder { .. }
+            | X87Operation::StoreEnvironment
+            | X87Operation::LoadEnvironment
+            | X87Operation::SaveState
+            | X87Operation::RestoreState
+            | X87Operation::SaveExtended { .. }
+            | X87Operation::RestoreExtended { .. } => 0,
             X87Operation::StoreInteger { .. } => C0 | C2 | C3,
             X87Operation::ClearExceptions
             | X87Operation::StoreStatus
@@ -214,16 +274,31 @@ impl X87Form {
                     | X87Operation::StoreControl
                     | X87Operation::StoreExtended
                     | X87Operation::StoreInteger { .. }
+                    | X87Operation::StoreFloat { .. }
+                    | X87Operation::StoreDecimal
+                    | X87Operation::StoreEnvironment
+                    | X87Operation::SaveState
+                    | X87Operation::SaveExtended { .. }
             )
     }
 
     /// The bytes of the memory operand.
     pub fn memory_bytes(&self) -> u64 {
         match self.code {
-            Code::Fld_m80fp | Code::Fstp_m80fp => 10,
+            Code::Fld_m80fp | Code::Fstp_m80fp | Code::Fbld_m80bcd | Code::Fbstp_m80bcd => 10,
+            Code::Fldenv_m14byte | Code::Fnstenv_m14byte => 14,
+            Code::Fldenv_m28byte | Code::Fnstenv_m28byte => 28,
+            Code::Fnsave_m94byte | Code::Frstor_m94byte => 94,
+            Code::Fnsave_m108byte | Code::Frstor_m108byte => 108,
+            Code::Fxsave_m512byte | Code::Fxsave64_m512byte | Code::Fxrstor_m512byte | Code::Fxrstor64_m512byte => 512,
             Code::Fild_m64int | Code::Fld_m64fp | Code::Fcom_m64fp | Code::Fcomp_m64fp | Code::Fistp_m64int => 8,
             Code::Fild_m32int | Code::Fld_m32fp | Code::Fcom_m32fp | Code::Fcomp_m32fp | Code::Ficom_m32int
             | Code::Ficomp_m32int | Code::Fist_m32int | Code::Fistp_m32int => 4,
+            Code::Fadd_m64fp | Code::Fsub_m64fp | Code::Fsubr_m64fp | Code::Fmul_m64fp | Code::Fdiv_m64fp | Code::Fdivr_m64fp
+            | Code::Fst_m64fp | Code::Fstp_m64fp => 8,
+            Code::Fadd_m32fp | Code::Fsub_m32fp | Code::Fsubr_m32fp | Code::Fmul_m32fp | Code::Fdiv_m32fp | Code::Fdivr_m32fp
+            | Code::Fst_m32fp | Code::Fstp_m32fp | Code::Fiadd_m32int | Code::Fisub_m32int | Code::Fisubr_m32int
+            | Code::Fimul_m32int | Code::Fidiv_m32int | Code::Fidivr_m32int => 4,
             _ => 2,
         }
     }
@@ -397,14 +472,23 @@ pub(crate) fn list_x87_behaviors(instruction: Instruction) -> Vec<PreciseInstruc
         c1.iter().flat_map(|&c1| others.iter().map(move |&others| UndefinedCodes { c1, others })).collect();
     let opcode: &[PointerUpdate] = if form.is_control() { &POINTERS[..1] } else { &POINTERS };
     let data: &[PointerUpdate] = if form.is_control() || !form.has_memory_operand() { &POINTERS[..1] } else { &POINTERS };
-    let across: &[StoreAcrossFault] = if form.writes_memory() { &ACROSS_FAULT } else { &ACROSS_FAULT[..1] };
+    // An environment, a save area or FXSAVE's area is checked whole before any of it is written.
+    let image = matches!(form.operation, X87Operation::StoreEnvironment | X87Operation::SaveState | X87Operation::SaveExtended { .. });
+    let across: &[StoreAcrossFault] = if form.writes_memory() && !image { &ACROSS_FAULT } else { &ACROSS_FAULT[..1] };
+    let area: &[MisalignedArea] = if matches!(form.operation, X87Operation::SaveExtended { .. } | X87Operation::RestoreExtended { .. }) {
+        &[MisalignedArea::GeneralProtection, MisalignedArea::AlignmentCheck]
+    } else {
+        &[MisalignedArea::GeneralProtection]
+    };
     let mut behaviors = Vec::new();
     for &across_fault in across {
         for &codes in &codes {
             for &opcode in opcode {
                 for &data in data {
-                    let behavior = X87Behavior { codes, opcode, data, across_fault };
-                    behaviors.push(PreciseInstruction::X87 { instruction, behavior });
+                    for &misaligned_area in area {
+                        let behavior = X87Behavior { codes, opcode, data, across_fault, misaligned_area };
+                        behaviors.push(PreciseInstruction::X87 { instruction, behavior });
+                    }
                 }
             }
         }
@@ -596,7 +680,97 @@ pub static X87_FORMS: &[X87Form] = &[
     x87(Instruction::FistpMemmem16intSt0, StoreInteger { pop: true }, Memory, Code::Fistp_m16int),
     x87(Instruction::FistpMemmem32intSt0, StoreInteger { pop: true }, Memory, Code::Fistp_m32int),
     x87(Instruction::FistpMemm64intSt0, StoreInteger { pop: true }, Memory, Code::Fistp_m64int),
+    arithmetic(Instruction::FaddSt0X87, Add, Source::Register, false, false, Register, Code::Fadd_st0_sti),
+    arithmetic(Instruction::FaddX87St0, Add, Source::Register, false, false, Register, Code::Fadd_sti_st0),
+    arithmetic(Instruction::FaddpX87St0, Add, Source::Register, false, true, Register, Code::Faddp_sti_st0),
+    arithmetic(Instruction::FaddMemmem32real, Add, Source::Single, false, false, Memory, Code::Fadd_m32fp),
+    arithmetic(Instruction::FaddMemm64real, Add, Source::Double, false, false, Memory, Code::Fadd_m64fp),
+    arithmetic(Instruction::FiaddSt0Memmem16int, Add, Source::Integer, false, false, Memory, Code::Fiadd_m16int),
+    arithmetic(Instruction::FiaddSt0Memmem32int, Add, Source::Integer, false, false, Memory, Code::Fiadd_m32int),
+    arithmetic(Instruction::FsubSt0X87, Subtract, Source::Register, false, false, Register, Code::Fsub_st0_sti),
+    arithmetic(Instruction::FsubX87St0, Subtract, Source::Register, false, false, Register, Code::Fsub_sti_st0),
+    arithmetic(Instruction::FsubpX87St0, Subtract, Source::Register, false, true, Register, Code::Fsubp_sti_st0),
+    arithmetic(Instruction::FsubSt0Memmem32real, Subtract, Source::Single, false, false, Memory, Code::Fsub_m32fp),
+    arithmetic(Instruction::FsubSt0Memm64real, Subtract, Source::Double, false, false, Memory, Code::Fsub_m64fp),
+    arithmetic(Instruction::FisubSt0Memmem16int, Subtract, Source::Integer, false, false, Memory, Code::Fisub_m16int),
+    arithmetic(Instruction::FisubSt0Memmem32int, Subtract, Source::Integer, false, false, Memory, Code::Fisub_m32int),
+    arithmetic(Instruction::FsubrSt0X87, Subtract, Source::Register, true, false, Register, Code::Fsubr_st0_sti),
+    arithmetic(Instruction::FsubrX87St0, Subtract, Source::Register, true, false, Register, Code::Fsubr_sti_st0),
+    arithmetic(Instruction::FsubrpX87St0, Subtract, Source::Register, true, true, Register, Code::Fsubrp_sti_st0),
+    arithmetic(Instruction::FsubrSt0Memmem32real, Subtract, Source::Single, true, false, Memory, Code::Fsubr_m32fp),
+    arithmetic(Instruction::FsubrSt0Memm64real, Subtract, Source::Double, true, false, Memory, Code::Fsubr_m64fp),
+    arithmetic(Instruction::FisubrSt0Memmem16int, Subtract, Source::Integer, true, false, Memory, Code::Fisubr_m16int),
+    arithmetic(Instruction::FisubrSt0Memmem32int, Subtract, Source::Integer, true, false, Memory, Code::Fisubr_m32int),
+    arithmetic(Instruction::FmulSt0X87, Multiply, Source::Register, false, false, Register, Code::Fmul_st0_sti),
+    arithmetic(Instruction::FmulX87St0, Multiply, Source::Register, false, false, Register, Code::Fmul_sti_st0),
+    arithmetic(Instruction::FmulpX87St0, Multiply, Source::Register, false, true, Register, Code::Fmulp_sti_st0),
+    arithmetic(Instruction::FmulSt0Memmem32real, Multiply, Source::Single, false, false, Memory, Code::Fmul_m32fp),
+    arithmetic(Instruction::FmulSt0Memm64real, Multiply, Source::Double, false, false, Memory, Code::Fmul_m64fp),
+    arithmetic(Instruction::FimulSt0Memmem16int, Multiply, Source::Integer, false, false, Memory, Code::Fimul_m16int),
+    arithmetic(Instruction::FimulSt0Memmem32int, Multiply, Source::Integer, false, false, Memory, Code::Fimul_m32int),
+    arithmetic(Instruction::FdivSt0X87, Divide, Source::Register, false, false, Register, Code::Fdiv_st0_sti),
+    arithmetic(Instruction::FdivX87St0, Divide, Source::Register, false, false, Register, Code::Fdiv_sti_st0),
+    arithmetic(Instruction::FdivpX87St0, Divide, Source::Register, false, true, Register, Code::Fdivp_sti_st0),
+    arithmetic(Instruction::FdivSt0Memmem32real, Divide, Source::Single, false, false, Memory, Code::Fdiv_m32fp),
+    arithmetic(Instruction::FdivSt0Memm64real, Divide, Source::Double, false, false, Memory, Code::Fdiv_m64fp),
+    arithmetic(Instruction::FidivSt0Memmem16int, Divide, Source::Integer, false, false, Memory, Code::Fidiv_m16int),
+    arithmetic(Instruction::FidivSt0Memmem32int, Divide, Source::Integer, false, false, Memory, Code::Fidiv_m32int),
+    arithmetic(Instruction::FdivrSt0X87, Divide, Source::Register, true, false, Register, Code::Fdivr_st0_sti),
+    arithmetic(Instruction::FdivrX87St0, Divide, Source::Register, true, false, Register, Code::Fdivr_sti_st0),
+    arithmetic(Instruction::FdivrpX87St0, Divide, Source::Register, true, true, Register, Code::Fdivrp_sti_st0),
+    arithmetic(Instruction::FdivrSt0Memmem32real, Divide, Source::Single, true, false, Memory, Code::Fdivr_m32fp),
+    arithmetic(Instruction::FdivrSt0Memm64real, Divide, Source::Double, true, false, Memory, Code::Fdivr_m64fp),
+    arithmetic(Instruction::FidivrSt0Memmem16int, Divide, Source::Integer, true, false, Memory, Code::Fidivr_m16int),
+    arithmetic(Instruction::FidivrSt0Memmem32int, Divide, Source::Integer, true, false, Memory, Code::Fidivr_m32int),
+    x87(Instruction::FstMemmem32realSt0, X87Operation::StoreFloat { pop: false }, Memory, Code::Fst_m32fp),
+    x87(Instruction::FstMemm64realSt0, X87Operation::StoreFloat { pop: false }, Memory, Code::Fst_m64fp),
+    x87(Instruction::FstpMemmem32realSt0, X87Operation::StoreFloat { pop: true }, Memory, Code::Fstp_m32fp),
+    x87(Instruction::FstpMemm64realSt0, X87Operation::StoreFloat { pop: true }, Memory, Code::Fstp_m64fp),
+    constant(Instruction::Fldpi, 0x4000_C90F_DAA2_2168_C234, true, Code::Fldpi),
+    constant(Instruction::Fldl2e, 0x3FFF_B8AA_3B29_5C17_F0BB, true, Code::Fldl2e),
+    constant(Instruction::Fldl2t, 0x4000_D49A_784B_CD1B_8AFE, false, Code::Fldl2t),
+    constant(Instruction::Fldlg2, 0x3FFD_9A20_9A84_FBCF_F798, true, Code::Fldlg2),
+    constant(Instruction::Fldln2, 0x3FFE_B172_17F7_D1CF_79AB, true, Code::Fldln2),
+    x87(Instruction::Fsqrt, X87Operation::SquareRoot, Register, Code::Fsqrt),
+    x87(Instruction::Frndint, X87Operation::RoundToIntegral, Register, Code::Frndint),
+    x87(Instruction::Fscale, X87Operation::Scale, Register, Code::Fscale),
+    x87(Instruction::Fxtract, X87Operation::Extract, Register, Code::Fxtract),
+    x87(Instruction::Fprem, X87Operation::PartialRemainder { nearest: false }, Register, Code::Fprem),
+    x87(Instruction::Fprem1, X87Operation::PartialRemainder { nearest: true }, Register, Code::Fprem1),
+    x87(Instruction::FbldSt0Memmem80dec, X87Operation::LoadDecimal, Memory, Code::Fbld_m80bcd),
+    x87(Instruction::FbstpMemmem80decSt0, X87Operation::StoreDecimal, Memory, Code::Fbstp_m80bcd),
+    x87(Instruction::FnstenvMemmem14, X87Operation::StoreEnvironment, Memory, Code::Fnstenv_m14byte),
+    x87(Instruction::FnstenvMemmem28, X87Operation::StoreEnvironment, Memory, Code::Fnstenv_m28byte),
+    x87(Instruction::FldenvMemmem14, X87Operation::LoadEnvironment, Memory, Code::Fldenv_m14byte),
+    x87(Instruction::FldenvMemmem28, X87Operation::LoadEnvironment, Memory, Code::Fldenv_m28byte),
+    x87(Instruction::FnsaveMemmem94, X87Operation::SaveState, Memory, Code::Fnsave_m94byte),
+    x87(Instruction::FnsaveMemmem108, X87Operation::SaveState, Memory, Code::Fnsave_m108byte),
+    x87(Instruction::FrstorMemmem94, X87Operation::RestoreState, Memory, Code::Frstor_m94byte),
+    x87(Instruction::FrstorMemmem108, X87Operation::RestoreState, Memory, Code::Frstor_m108byte),
+    x87(Instruction::FxsaveMemmfpxenv, X87Operation::SaveExtended { wide: false }, Memory, Code::Fxsave_m512byte),
+    x87(Instruction::Fxsave64Memmfpxenv, X87Operation::SaveExtended { wide: true }, Memory, Code::Fxsave64_m512byte),
+    x87(Instruction::FxrstorMemmfpxenv, X87Operation::RestoreExtended { wide: false }, Memory, Code::Fxrstor_m512byte),
+    x87(Instruction::Fxrstor64Memmfpxenv, X87Operation::RestoreExtended { wide: true }, Memory, Code::Fxrstor64_m512byte),
 ];
+
+const fn arithmetic(
+    instruction: Instruction,
+    operation: crate::x87_arithmetic::Arithmetic,
+    source: Source,
+    reverse: bool,
+    pop: bool,
+    place: OperandPlace,
+    code: Code,
+) -> X87Form {
+    X87Form { instruction, operation: X87Operation::Arithmetic { operation, source, reverse, pop }, place, code }
+}
+
+/// A constant's form: its significand cut to 64 bits, and whether the bits beyond lie above a half.
+const fn constant(instruction: Instruction, truncated: u128, above_half: bool, code: Code) -> X87Form {
+    X87Form { instruction, operation: X87Operation::LoadRoundedConstant { truncated, above_half }, place: OperandPlace::Register, code }
+}
+
+use crate::x87_arithmetic::Arithmetic::{Add, Divide, Multiply, Subtract};
 
 const fn compare(ordering: Ordering, source: Source, pops: u8, to_flags: bool) -> X87Operation {
     Compare { ordering, source, pops, to_flags }
