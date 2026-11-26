@@ -117,6 +117,10 @@ pub(crate) fn list_stack_behaviors(instruction: Instruction) -> Vec<PreciseInstr
     let mut behaviors = Vec::new();
     for &across_fault in across {
         for &segment_push in segment {
+            // A selector's two bytes alone never straddle a page in a state, so both rules of a fault are one there.
+            if segment_push == SegmentPush::SelectorOnly && across_fault != ACROSS_FAULT[0] {
+                continue;
+            }
             behaviors.push(PreciseInstruction::Stack { instruction, behavior: StackBehavior { across_fault, segment_push } });
         }
     }
