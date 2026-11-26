@@ -18,7 +18,7 @@ use wcontainers_component_object_model::structures::Hmodule;
 use wcontainers_direct3d_11::enumerations::{CreateDeviceFlag, Map, Usage};
 use wcontainers_direct3d_11::structures::{BufferDesc, Texture2DDesc};
 use wcontainers_direct3d_11::{Device as _, DeviceContext as _, Direct3D11 as _, ResourceRef};
-use wcontainers_direct3d_11_hostile::{self as hostile, Driven, Lie, LyingBytes, Objects, Site, Way, When, drive, make_all};
+use wcontainers_direct3d_11_hostile::{self as hostile, Driven, Fuzzed, Lie, LyingBytes, Objects, Rng, Site, Way, When, drive, fuzz, make_all};
 use wcontainers_direct3d_common::enumerations::{DriverType, FeatureLevel};
 use wcontainers_directx_graphics_infrastructure::enumerations::Format;
 use wcontainers_directx_graphics_infrastructure::structures::SampleDesc;
@@ -61,7 +61,18 @@ fn within<R>(what: &str, limit: Duration, body: impl FnOnce() -> R) -> R {
 fn world() -> Objects {
     let mut objects = Objects::new();
     make_all(&mut objects);
-    let made = objects.device().map(|device| (device.create_buffer(&buffer_desc(), None).ok(), device.create_texture_2d(&texture_desc(), &[]).ok()));
+    seed_resources(&mut objects);
+    make_all(&mut objects);
+    objects
+}
+
+/// Gives a buffer and a texture of valid descriptions where none is held.
+fn seed_resources(objects: &mut Objects) {
+    let made = objects.device().map(|device| {
+        let buffer = if objects.buffer().is_none() { device.create_buffer(&buffer_desc(), None).ok() } else { None };
+        let texture = if objects.texture_2d().is_none() { device.create_texture_2d(&texture_desc(), &[]).ok() } else { None };
+        (buffer, texture)
+    });
     if let Some((buffer, texture)) = made {
         if let Some(buffer) = buffer {
             objects.put_buffer(buffer);
@@ -70,8 +81,6 @@ fn world() -> Objects {
             objects.put_texture_2d(texture);
         }
     }
-    make_all(&mut objects);
-    objects
 }
 
 fn texture_desc() -> Texture2DDesc {
@@ -483,4 +492,61 @@ fn the_bytes_a_map_lends_lie() {
     println!("LIE Map's bytes, never return: blocked {met} times, every other Map ended");
     drop((buffer, context, device, objects));
     settle("Map's bytes", before);
+}
+
+/// Fuzzing every method the calling glue carries, through both glues, with random arguments: values with edges,
+/// structures of random bytes, slices of one length per call, objects held or none, the caller's bytes of lengths that
+/// change; each round of 50,000 calls under a lie of the hostile implementation picked at random (one round in three
+/// honest), some objects dropped and made again every 4096 calls. FUZZ_SEED and FUZZ_CALLS choose the run.
+#[test]
+#[ignore = "a long run: FUZZ_SEED and FUZZ_CALLS"]
+fn fuzz_every_method() {
+    quiet();
+    let number = |name: &str, default: u64| std::env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(default);
+    let seed = number("FUZZ_SEED", 1);
+    let calls = number("FUZZ_CALLS", 100_000);
+    let before = hostile::live();
+    let mut rng = Rng::new(seed);
+    let mut lies = Rng::new(seed ^ 0x5eed_0f11e5);
+    let mut objects = world();
+    hostile::on_reentry(Some(Arc::new(|| {
+        let objects = Objects::new();
+        let _ = objects.api.create_device(None, DriverType(1), Hmodule(0), CreateDeviceFlag(0), &LEVELS, SDK_VERSION);
+    })));
+    let mut total = Fuzzed::default();
+    let mut told = 0;
+    let mut done = 0;
+    let started = Instant::now();
+    while done < calls {
+        let round = (calls - done).min(50_000);
+        if lies.below(3) == 0 {
+            hostile::plan(None);
+        } else {
+            let site = [Site::Method, Site::Drop, Site::Mapped][lies.below(3)];
+            let way = [Way::Panic, Way::Reenter][lies.below(2)];
+            plan(site, way, When::Every(7 + lies.step() % 500));
+        }
+        let fuzzed = within("a fuzzing round", OTHERS_WITHIN * 5, || fuzz(&mut objects, &mut rng, round, &seed_resources));
+        told += hostile::lies_told();
+        total.driven.called += fuzzed.driven.called;
+        total.driven.skipped += fuzzed.driven.skipped;
+        total.driven.panicked += fuzzed.driven.panicked;
+        total.remade += fuzzed.remade;
+        done += round;
+    }
+    hostile::plan(None);
+    hostile::on_reentry(None);
+    println!(
+        "FUZZ seed {seed}: calls {calls} in {:?}; called {}, skipped {}, panicked back {}; lies told {told}; objects made again {} times; kinds held at the end {}",
+        started.elapsed(),
+        total.driven.called,
+        total.driven.skipped,
+        total.driven.panicked,
+        total.remade,
+        objects.kinds_held()
+    );
+    drop(objects);
+    // A Map the fuzzer never unmapped keeps its context and resource alive for the memory lent, as the system would.
+    println!("FUZZ seed {seed}: mappings of the system never unmapped {}", wcontainers_direct3d_11_direct::foreign_lent_outstanding());
+    settle(&format!("fuzz seed {seed}"), before);
 }

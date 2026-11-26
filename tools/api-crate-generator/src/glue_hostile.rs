@@ -478,6 +478,103 @@ impl Driven {
 fn made<T>(make: impl FnOnce() -> Option<T>) -> Option<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(make)).ok().flatten()
 }
+
+/// The fuzzer's numbers: splitmix64 of a seed.
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Rng {
+        Rng(seed)
+    }
+
+    pub fn step(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// A number below `bound` (0 for 0).
+    pub fn below(&mut self, bound: usize) -> usize {
+        let bound = u64::try_from(bound).unwrap_or(u64::MAX).max(1);
+        usize::try_from(self.step() % bound).unwrap_or(0)
+    }
+
+    pub fn coin(&mut self) -> bool {
+        self.step() & 1 == 1
+    }
+
+    /// A value of a type, mostly small, sometimes an edge.
+    pub fn value<T: FromRng>(&mut self) -> T {
+        T::from_rng(self)
+    }
+
+    /// `count` random bytes.
+    pub fn bytes(&mut self, count: usize) -> Vec<u8> {
+        (0..count).map(|_| self.step().to_le_bytes()[0]).collect()
+    }
+
+    /// A number with an edge one time in four: 0, the most, or one past a small power of two.
+    fn edged(&mut self) -> u64 {
+        match self.below(8) {
+            0 => 0,
+            1 => u64::MAX,
+            2 => 1 << self.below(40),
+            3 => (1 << self.below(16)) + 1,
+            _ => self.step() % 64,
+        }
+    }
+}
+
+/// A type the fuzzer can make a value of.
+pub trait FromRng {
+    fn from_rng(rng: &mut Rng) -> Self;
+}
+
+macro_rules! from_rng {
+    ($($type:ty),*) => {$(
+        impl FromRng for $type {
+            fn from_rng(rng: &mut Rng) -> $type {
+                let wide = rng.edged();
+                <$type>::try_from(wide).unwrap_or_else(|_| <$type>::try_from(wide % 251).unwrap_or_default())
+            }
+        }
+    )*};
+}
+
+from_rng!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+
+impl FromRng for bool {
+    fn from_rng(rng: &mut Rng) -> bool {
+        rng.coin()
+    }
+}
+
+impl FromRng for f32 {
+    fn from_rng(rng: &mut Rng) -> f32 {
+        [0.0, 1.0, -1.0, f32::NAN, f32::INFINITY, 1.0e30][rng.below(6)]
+    }
+}
+
+impl FromRng for f64 {
+    fn from_rng(rng: &mut Rng) -> f64 {
+        [0.0, 1.0, -1.0, f64::NAN, f64::INFINITY, 1.0e300][rng.below(6)]
+    }
+}
+
+/// The caller's bytes for a fuzzed call: a length that changes on every call, most often small.
+pub fn random_bytes(rng: &mut Rng) -> LyingBytes {
+    let lengths: Vec<u64> = (0..1 + rng.below(3)).map(|_| [0, 1, 4, 8, 16, 64, 256, 4096, 1 << 20, u64::MAX][rng.below(10)]).collect();
+    LyingBytes::lengths(&lengths)
+}
+
+/// What a fuzzing run did.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Fuzzed {
+    pub driven: Driven,
+    pub remade: usize,
+}
 "#;
 
 /// What a type of a trait signature is, for the driver.
@@ -602,6 +699,99 @@ impl Writer<'_, '_> {
         Some(format!("{reference}Default::default()"))
     }
 
+    /// The expression of one random argument, with the lines that bind what it needs (each leaving the call with `false`
+    /// when an object is missing); none when the fuzzer cannot make it. Slices of one call share the length `count`.
+    fn argument_random(&self, ty: &str, scope: &[usize], codecs: &Codecs, prelude: &mut String, counter: &mut usize) -> Option<String> {
+        let t = ty.trim();
+        if t.contains("VolatileBytes") {
+            *counter += 1;
+            let var = format!("b{counter}");
+            let _ = writeln!(prelude, "        let {var} = random_bytes(r);");
+            return Some(if t.starts_with("Option<") { format!("if r.coin() {{ Some(&{var}) }} else {{ None }}") } else { format!("&{var}") });
+        }
+        if let Some(inner) = t.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
+            let inner = inner.trim();
+            if let Shape::Object { kind, by_ref: true } = self.shape(inner, scope) {
+                return Some(format!("o.k{kind}.as_ref().filter(|_| r.coin())"));
+            }
+            let mut inner_prelude = String::new();
+            let expr = self.argument_random(inner, scope, codecs, &mut inner_prelude, counter)?;
+            if inner_prelude.contains("return false") {
+                return Some("None".to_string());
+            }
+            prelude.push_str(&inner_prelude);
+            *counter += 1;
+            let var = format!("v{counter}");
+            let _ = writeln!(prelude, "        let {var} = if r.coin() {{ Some({expr}) }} else {{ None }};");
+            return Some(var);
+        }
+        if t.contains(';') && (t.starts_with("&[") || t.starts_with('[')) {
+            return Some(if t.starts_with('&') { "&Default::default()" } else { "Default::default()" }.to_string());
+        }
+        if let Some(element) = t.strip_prefix("&[").or_else(|| t.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']')) {
+            let element = element.trim();
+            let value = if let Some(object) = element.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
+                match self.shape(object.trim(), scope) {
+                    Shape::Object { kind, by_ref: true } => format!("o.k{kind}.as_ref().filter(|_| r.coin())"),
+                    _ => return Some("&[]".to_string()),
+                }
+            } else {
+                let mut element_prelude = String::new();
+                let expr = self.argument_random(element, scope, codecs, &mut element_prelude, counter)?;
+                if !element_prelude.is_empty() || expr.starts_with('&') {
+                    return Some("&[]".to_string());
+                }
+                expr
+            };
+            *counter += 1;
+            let var = format!("s{counter}");
+            let _ = writeln!(prelude, "        let {var}: Vec<_> = (0..count).map(|_| {value}).collect();");
+            return Some(format!("{var}.as_slice()"));
+        }
+        if t == "&str" {
+            return Some("\"\"".to_string());
+        }
+        match self.shape(t, scope) {
+            Shape::Object { kind, by_ref } => {
+                *counter += 1;
+                let var = format!("v{counter}");
+                let _ = writeln!(prelude, "        let Some({var}) = o.k{kind}.as_ref() else {{ return false; }};");
+                return Some(if by_ref { var } else { format!("{var}.clone()") });
+            }
+            Shape::Ref { path, kinds } => {
+                if kinds.is_empty() {
+                    return None;
+                }
+                *counter += 1;
+                let var = format!("v{counter}");
+                let pushes: String = kinds.iter().map(|&k| format!(" if let Some(x) = o.k{k}.as_ref() {{ choices.push({path}::{}(x)); }}", self.g.kinds[k].name)).collect();
+                let _ = writeln!(prelude, "        let {var} = {{ let mut choices = Vec::new();{pushes} if choices.is_empty() {{ return false; }} let at = r.below(choices.len()); choices.swap_remove(at) }};");
+                return Some(var);
+            }
+            Shape::Unknown { .. } | Shape::Unmakeable => return None,
+            Shape::Other => {}
+        }
+        let bare = t.trim_start_matches('&').trim();
+        let reference = if t.starts_with('&') { "&" } else { "" };
+        if bare.contains("::structures::") {
+            if bare.ends_with("::Guid") || codecs.defaults.contains(bare) {
+                return Some(format!("{reference}Default::default()"));
+            }
+            let (module, ident, size) = codecs.decoders.get(bare)?;
+            return Some(format!("{reference}{module}::decode_{ident}(&r.bytes({size}))"));
+        }
+        if bare.contains("::enumerations::") {
+            return Some(format!("{reference}{bare}(r.value())"));
+        }
+        if ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize", "bool", "f32", "f64"].contains(&bare) {
+            return Some(format!("{reference}r.value::<{bare}>()"));
+        }
+        if bare.contains("Foreign") || bare.contains("impl ") || bare.contains("dyn ") {
+            return None;
+        }
+        Some(format!("{reference}Default::default()"))
+    }
+
     /// The kinds in the driver's reach from API `api`: its own and those of the APIs it extends.
     fn driver_scope(&self, api: usize) -> Vec<usize> {
         let spec = self.g.apis[api];
@@ -675,6 +865,27 @@ impl Writer<'_, '_> {
         for (name, ty) in inputs {
             let iid = riid.filter(|(riid_name, _)| riid_name == name).map(|(_, iid)| iid);
             args.push(self.argument(name, ty, scope, codecs, &mut prelude, &mut counter, skip, iid)?);
+        }
+        let call = format!("<{receiver_type} as {trait_path}>::{rust_name}({receiver}{})", args.iter().map(|a| format!(", {a}")).collect::<String>());
+        Some((prelude, call))
+    }
+
+    /// One fuzzed call: the receiver bound as `driven_call` binds it, every argument random.
+    fn fuzzed_call(&self, bind: Option<usize>, receiver_type: &str, trait_path: &str, rust_name: &str, inputs: &[(String, String)], scope: &[usize], codecs: &Codecs) -> Option<(String, String)> {
+        let mut prelude = String::new();
+        let receiver = match bind {
+            Some(kind) => {
+                let _ = writeln!(prelude, "        let Some(this) = o.k{kind}.as_ref() else {{ return false; }};");
+                "this"
+            }
+            None => "&o.api",
+        };
+        // Every slice of one call has this length, so that the arrays a count covers agree.
+        prelude.push_str("        let count = r.below(4);\n");
+        let mut counter = 0;
+        let mut args = Vec::new();
+        for (_, ty) in inputs {
+            args.push(self.argument_random(ty, scope, codecs, &mut prelude, &mut counter)?);
         }
         let call = format!("<{receiver_type} as {trait_path}>::{rust_name}({receiver}{})", args.iter().map(|a| format!(", {a}")).collect::<String>());
         Some((prelude, call))
@@ -756,6 +967,7 @@ impl Writer<'_, '_> {
         }
         let _ = writeln!(text, "}}\n");
         let mut calls: Vec<(String, String, String)> = Vec::new();
+        let mut fuzzed: Vec<(String, String, String)> = Vec::new();
         let mut makers: Vec<Maker> = Vec::new();
         for &k in &scope {
             for (interface_key, trait_path, sig_api, method, glued) in self.kind_methods(k) {
@@ -771,6 +983,9 @@ impl Writer<'_, '_> {
                 if let Some((prelude, call)) = self.driven_call(Some(k), &system(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
                     calls.push((format!("{place} on {}", g.kinds[k].name), prelude, call));
                 }
+                if let Some((prelude, call)) = self.fuzzed_call(Some(k), &system(k), &trait_path, &rust_name, &inputs, &scope, codecs) {
+                    fuzzed.push((format!("{place} on {}", g.kinds[k].name), prelude, call));
+                }
                 makers.extend(self.makers_of(&place, Some(k), &system(k), &trait_path, &rust_name, &inputs, &result, &glued, &scope, codecs));
             }
         }
@@ -785,6 +1000,9 @@ impl Writer<'_, '_> {
             let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
             if let Some((prelude, call)) = self.driven_call(None, "Api", &top_trait, &rust_name, &inputs, &scope, codecs, "false", None) {
                 calls.push((function.name.clone(), prelude, call));
+            }
+            if let Some((prelude, call)) = self.fuzzed_call(None, "Api", &top_trait, &rust_name, &inputs, &scope, codecs) {
+                fuzzed.push((function.name.clone(), prelude, call));
             }
             makers.extend(self.makers_of(&function.name, None, "Api", &top_trait, &rust_name, &inputs, &result, &glued, &scope, codecs));
         }
@@ -808,7 +1026,23 @@ impl Writer<'_, '_> {
         for (place, prelude, call) in &calls {
             let _ = writeln!(text, "    // {place}\n    driven.attempt(|| {{\n{prelude}        let _ = {call};\n        true\n    }});");
         }
-        let _ = writeln!(text, "    driven\n}}");
+        let _ = writeln!(text, "    driven\n}}\n");
+        // The fuzzer: each method a function of random arguments, picked at random; objects dropped and made again.
+        for (index, (place, prelude, call)) in fuzzed.iter().enumerate() {
+            let _ = writeln!(text, "/// {place}, of random arguments.\nfn fuzz_{index}(o: &Objects, r: &mut Rng) -> bool {{\n{prelude}        let _ = {call};\n        true\n}}\n");
+        }
+        // Kinds a maker of the library's exports makes are kept: zeros make none of them again.
+        let kept: BTreeSet<usize> = makers.iter().filter(|maker| !maker.prelude.contains("let this")).flat_map(|maker| maker.stores.iter().map(|(k, _)| *k)).collect();
+        let _ = writeln!(text, "/// Drops each object but those the library's exports made, one time in `one_in`.\nfn drop_some(o: &mut Objects, r: &mut Rng, one_in: usize) {{");
+        for &k in scope.iter().filter(|k| !kept.contains(k)) {
+            let _ = writeln!(text, "    if r.below(one_in) == 0 {{\n        o.k{k} = None;\n    }}");
+        }
+        let _ = writeln!(text, "}}\n");
+        let _ = writeln!(text, "/// Calls `calls` methods picked at random, each of random arguments; every 4096 calls drops some objects and makes\n/// them again (`reseed` gives those of valid descriptions the makers cannot make). A call that panics back (the caller's own lie) is counted.\npub fn fuzz(o: &mut Objects, r: &mut Rng, calls: u64, reseed: &dyn Fn(&mut Objects)) -> Fuzzed {{\n    let mut fuzzed = Fuzzed::default();\n    for n in 0..calls {{\n        if n % 4096 == 4095 {{\n            drop_some(o, r, 4);\n            make_all(o);\n            reseed(o);\n            make_all(o);\n            fuzzed.remade += 1;\n        }}\n        let objects = &*o;\n        match r.below({}) {{", fuzzed.len().max(1));
+        for index in 0..fuzzed.len() {
+            let _ = writeln!(text, "            {index} => fuzzed.driven.attempt(|| fuzz_{index}(objects, r)),");
+        }
+        let _ = writeln!(text, "            _ => {{}}\n        }}\n    }}\n    fuzzed\n}}");
         (text, calls.len(), makers.len())
     }
 }
