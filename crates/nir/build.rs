@@ -72,6 +72,29 @@ const LIBRARIES: &[(&str, &str)] = &[
     ("src/c11/impl", "mesa_util_c11"),
 ];
 
+/// Mesa's BLAKE3 library. Its inner C functions (`blake3_hash_many_neon`,
+/// `blake3_compress_in_place_portable`, ...) have the names the blake3 crate's own C and assembly
+/// code exports, so it is linked from a copy in which they carry `RENAMED_PREFIX`, their calls among
+/// themselves renamed with them. Its outer functions, which Mesa's other libraries call and the crate
+/// does not define, keep their names.
+const MESA_BLAKE3: &str = "blake3";
+const RENAMED_BLAKE3: &str = "wcontainers_nir_mesa_blake3";
+const RENAMED_PREFIX: &str = "wcontainers_nir_mesa_";
+const INNER_PREFIX: &str = "blake3_";
+const OUTER_PREFIXES: &[&str] = &["blake3_hasher_", "blake3_version"];
+/// The tools that list an archive's symbols and rename them, and the variables that may name others.
+const NM: &str = "nm";
+const NM_VARIABLE: &str = "NM";
+const OBJCOPY: &str = "objcopy";
+const OBJCOPY_VARIABLE: &str = "OBJCOPY";
+/// Every defined global symbol of an archive, one line each, its name first.
+const NM_ARGUMENTS: &[&str] = &["--defined-only", "--extern-only", "--format=posix"];
+const REDEFINE_FLAG: &str = "--redefine-syms=";
+const RENAMES_FILE: &str = "mesa_blake3_renames.txt";
+const TARGET_ENV_VARIABLE: &str = "CARGO_CFG_TARGET_ENV";
+const MSVC_ENV: &str = "msvc";
+const OUT_DIR_VARIABLE: &str = "OUT_DIR";
+
 /// What those libraries take from the system, beyond the dependencies Meson found for Mesa.
 const SYSTEM_LIBRARIES: &[&str] = &["stdc++", "m", "dl"];
 
@@ -168,7 +191,15 @@ fn main() {
     }
     glsl.compile(GLSL_LIBRARY);
 
+    // The Visual C++ tools have no nm or objcopy; there Mesa's BLAKE3 is linked as Meson built it.
+    let msvc = env::var(TARGET_ENV_VARIABLE).is_ok_and(|e| e == MSVC_ENV);
     for (folder, name) in LIBRARIES {
+        if *name == MESA_BLAKE3 && !msvc {
+            let renamed = renamed_blake3(&build.join(folder));
+            println!("{LINK_SEARCH}{}", renamed.display());
+            println!("{LINK_STATIC}{RENAMED_BLAKE3}");
+            continue;
+        }
         println!("{LINK_SEARCH}{}", build.join(folder).display());
         println!("{LINK_STATIC}{name}");
     }
@@ -184,6 +215,54 @@ fn main() {
         "{RUSTC_ENV}{EGL_VARIABLE}{ASSIGN}{}",
         target_file(build, EGL_TARGET).display()
     );
+}
+
+/// Writes the copy of Mesa's BLAKE3 library in `folder` whose inner functions carry
+/// `RENAMED_PREFIX` into the build script's output folder, and returns that folder.
+fn renamed_blake3(folder: &Path) -> PathBuf {
+    let archive = folder.join(format!("{LIBRARY_PREFIX}{MESA_BLAKE3}.{STATIC_EXTENSION}"));
+    println!("{RERUN_IF_CHANGED}{}", archive.display());
+    let out = PathBuf::from(env::var_os(OUT_DIR_VARIABLE).expect("cargo names the output folder"));
+    let listed = std::process::Command::new(tool(NM_VARIABLE, NM))
+        .args(NM_ARGUMENTS)
+        .arg(&archive)
+        .output()
+        .expect("nm runs");
+    assert!(listed.status.success(), "nm lists {}", archive.display());
+    let mut inner: Vec<&str> = std::str::from_utf8(&listed.stdout)
+        .expect("symbol names are text")
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| {
+            name.starts_with(INNER_PREFIX) && !OUTER_PREFIXES.iter().any(|p| name.starts_with(p))
+        })
+        .collect();
+    inner.sort_unstable();
+    inner.dedup();
+    assert!(!inner.is_empty(), "Mesa's BLAKE3 defines its inner functions");
+    let renames: String = inner
+        .iter()
+        .map(|name| format!("{name} {RENAMED_PREFIX}{name}\n"))
+        .collect();
+    let renames_file = out.join(RENAMES_FILE);
+    std::fs::write(&renames_file, renames).expect("the renames are written");
+    let renamed = out.join(format!(
+        "{LIBRARY_PREFIX}{RENAMED_BLAKE3}.{STATIC_EXTENSION}"
+    ));
+    let status = std::process::Command::new(tool(OBJCOPY_VARIABLE, OBJCOPY))
+        .arg(format!("{REDEFINE_FLAG}{}", renames_file.display()))
+        .arg(&archive)
+        .arg(&renamed)
+        .status()
+        .expect("objcopy runs");
+    assert!(status.success(), "objcopy renames {}", archive.display());
+    out
+}
+
+/// The tool a variable names, else its usual name.
+fn tool(variable: &str, name: &str) -> std::ffi::OsString {
+    println!("{RERUN_IF_ENV_CHANGED}{variable}");
+    env::var_os(variable).unwrap_or_else(|| name.into())
 }
 
 /// BLAKE3 of every file under `CONVERTER_SOURCES`, each path then its bytes, in path order.
