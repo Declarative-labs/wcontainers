@@ -276,8 +276,6 @@ pub enum OperandType {
     HypercallNumber,
     /// PKRU with EAX, ECX and EDX for RDPKRU and WRPKRU.
     KeyRights,
-    /// JCXZ's encoding, which no byte string gives in 64-bit mode, so it has no value and the form no state.
-    Unencodable,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -790,9 +788,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::CallStack => segment::generate_call_stacks(),
             OperandType::FrameLayout { bytes } => segment::generate_frame_layouts(bytes),
             OperandType::HypercallNumber => system::generate_hypercall_numbers(),
-            OperandType::KeyRights => system::generate_key_rights(),
-            OperandType::Unencodable => Vec::new(),
-        };
+            OperandType::KeyRights => system::generate_key_rights(),        };
         values.into_iter()
     }
 

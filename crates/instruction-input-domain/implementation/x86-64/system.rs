@@ -34,11 +34,6 @@ pub struct SystemLayout {
 /// The operand types of a form of this family, in the order the build reads them.
 pub fn list_operand_types(form: &SystemForm) -> Vec<OperandType> {
     let mut types = Vec::new();
-    // No byte string encodes JCXZ in 64-bit mode, so it has no state.
-    if form.operation == SystemOperation::JumpIfCountZero {
-        types.push(OperandType::Unencodable);
-        return types;
-    }
     if form.codes.len() == 2 {
         types.push(OperandType::OperandSize(OperandSizes::WithoutThirtyTwo));
     }
@@ -48,7 +43,6 @@ pub fn list_operand_types(form: &SystemForm) -> Vec<OperandType> {
         SystemOperation::PushFlags => types.push(OperandType::SystemFlags),
         SystemOperation::PopFlags => types.extend([OperandType::Flags(FlagSet::Unread), OperandType::PoppedFlags]),
         SystemOperation::Enter => types.extend([OperandType::Flags(FlagSet::Unread), OperandType::EnterOperands]),
-        SystemOperation::JumpIfCountZero => {}
         SystemOperation::SystemCall => {
             types.clear();
             types.extend([OperandType::Encoding(0), OperandType::SystemFlags]);
@@ -190,7 +184,6 @@ pub fn build_state(form: &SystemForm, operands: &[(OperandType, OperandValue)]) 
             }
             encoded.push(if form.operation == SystemOperation::PushFlags { 0x9C } else { 0x9D });
         }
-        SystemOperation::JumpIfCountZero => unreachable!("JCXZ has no state"),
         SystemOperation::SystemCall => encoded.extend([0x0F, 0x05]),
         SystemOperation::HypervisorCall => encoded.extend([0x0F, 0x01, 0xC1]),
         SystemOperation::ReadKeyRights => encoded.extend([0x0F, 0x01, 0xEE]),

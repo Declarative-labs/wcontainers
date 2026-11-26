@@ -4,7 +4,7 @@
 use iced_x86::{Code, Instruction as Decoded, Register};
 use wcontainers_processor_architecture::MemoryDelta;
 
-use super::{Memory, MemoryOperand, check_access, expect_code, is_canonical, read_value, store, write_register};
+use super::{Memory, MemoryOperand, check_access, expect_code, read_value, store, write_register};
 use crate::planted::{Bug, is_active};
 use crate::system::{FrameProbe, SystemBehavior, SystemOperation, find_system_form};
 use crate::{Access, Exception, Flags, Instruction, Processor, STACK_POINTER, X86_64};
@@ -106,16 +106,6 @@ pub(super) fn execute_system(
         SystemOperation::HypervisorCall => {
             let answer = if is_active(Bug::HypervisorCallAnswersZero) { 0 } else { HYPERCALL_REFUSED };
             processor.general_purpose_registers[0] = answer;
-        }
-        SystemOperation::JumpIfCountZero => {
-            let target = decoded.near_branch_target();
-            if processor.general_purpose_registers[1] & 0xFFFF == 0 {
-                if !is_canonical(target) {
-                    return Err(Exception::GeneralProtection { error_code: 0 });
-                }
-                processor.instruction_pointer = target;
-                return Ok(());
-            }
         }
     }
     processor.instruction_pointer = decoded.next_ip();
