@@ -6,7 +6,7 @@
 #[cfg(target_os = "macos")]
 mod host;
 
-/// A pass that clears `view` to `color`, given as the bits of its four floats, and stores it.
+/// Returns a pass that clears `view` to `color`, given as the bits of its four floats, and stores it.
 #[cfg(target_os = "macos")]
 fn clearing<'a, B: wcontainers_gpu::Gpu>(
     view: &'a B::TextureView,

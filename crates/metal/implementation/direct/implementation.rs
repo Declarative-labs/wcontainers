@@ -167,8 +167,9 @@ pub mod reach {
 
 /// The labels of the checks, each naming the call and what its check refuses.
 ///
-/// The fuzzer's reach table names each site by its label. Every label is declared by `sites!`, which lists it in `ALL`
-/// from the same entry, so that no site is declared and left out of the list.
+/// Every label is declared by `sites!`, which lists it in `ALL` from the same entry, so that no site is left out of the
+/// list; a constant declared outside `sites!` and checked nowhere is dead code, which this module refuses.
+#[deny(dead_code)]
 mod site {
     /// Declares each entry's label as a constant and lists every entry, by name and label, in `ALL`.
     macro_rules! sites {
@@ -5750,28 +5751,154 @@ fn primitive_type_of(primitive_type: PrimitiveType) -> MTLPrimitiveType {
 mod tests {
     use std::collections::BTreeMap;
 
-    /// Fails when a check's site is not listed, a listed site is not checked once, or two sites share a name or label.
+    /// The bytes of the marks that open and close a block comment, `/*` and `*/`.
     ///
-    /// A constant of `site` declared outside `sites!` is either checked nowhere, which the dead code lint refuses, or
-    /// checked, which the assertion in `refuses!` and `found!` refuses as the crate is built, and which this test finds
-    /// too. The source is read without its spaces and line breaks, so that no formatting changes what it finds.
-    #[test]
-    fn every_site_checked_is_listed_and_every_listed_site_is_checked_once() {
-        let source: String = include_str!("implementation.rs")
-            .split_whitespace()
-            .collect();
-        let mut checked: BTreeMap<&str, usize> = BTreeMap::new();
+    /// https://doc.rust-lang.org/reference/comments.html
+    const COMMENT_MARK: usize = "/*".len();
+
+    /// The bytes of an escape's backslash and the character after it, at the least.
+    ///
+    /// https://doc.rust-lang.org/reference/tokens.html#character-escapes
+    const ESCAPE: usize = "\\n".len();
+
+    /// The bytes of the two quotes around a character literal.
+    ///
+    /// https://doc.rust-lang.org/reference/tokens.html#character-literals
+    const QUOTES: usize = "''".len();
+
+    /// Returns Rust source with its comments taken out and its string and character literals emptied.
+    ///
+    /// Line, doc and block comments (nested too) go; a string, raw string or character literal keeps its quotes and
+    /// loses what is between them. A lifetime is kept as it is.
+    fn code_of(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let at = |i: usize| bytes.get(i).copied();
+        let identifier = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut code = Vec::with_capacity(bytes.len());
+        let mut i = usize::MIN;
+        while let Some(b) = at(i) {
+            let next = at(i.saturating_add(1));
+            if b == b'/' && next == Some(b'/') {
+                while at(i).is_some_and(|c| c != b'\n') {
+                    i = i.saturating_add(1);
+                }
+            } else if b == b'/' && next == Some(b'*') {
+                let mut depth = usize::MIN;
+                while let Some(c) = at(i) {
+                    let after = at(i.saturating_add(1));
+                    if c == b'/' && after == Some(b'*') {
+                        depth = depth.saturating_add(1);
+                        i = i.saturating_add(COMMENT_MARK);
+                    } else if c == b'*' && after == Some(b'/') {
+                        depth = depth.saturating_sub(1);
+                        i = i.saturating_add(COMMENT_MARK);
+                        if depth == usize::MIN {
+                            break;
+                        }
+                    } else {
+                        i = i.saturating_add(1);
+                    }
+                }
+            } else if b == b'r'
+                && !i
+                    .checked_sub(1)
+                    .and_then(at)
+                    .is_some_and(|before| identifier(before) && before != b'b')
+                && {
+                    let mut j = i.saturating_add(1);
+                    while at(j) == Some(b'#') {
+                        j = j.saturating_add(1);
+                    }
+                    at(j) == Some(b'"')
+                }
+            {
+                let mut hashes = usize::MIN;
+                i = i.saturating_add(1);
+                while at(i) == Some(b'#') {
+                    hashes = hashes.saturating_add(1);
+                    i = i.saturating_add(1);
+                }
+                i = i.saturating_add(1);
+                code.extend_from_slice(b"\"\"");
+                loop {
+                    match at(i) {
+                        None => break,
+                        Some(b'"')
+                            if (1..=hashes).all(|k| at(i.saturating_add(k)) == Some(b'#')) =>
+                        {
+                            i = i.saturating_add(hashes).saturating_add(1);
+                            break;
+                        }
+                        Some(_) => i = i.saturating_add(1),
+                    }
+                }
+            } else if b == b'"' {
+                i = i.saturating_add(1);
+                code.extend_from_slice(b"\"\"");
+                while let Some(c) = at(i) {
+                    i = i.saturating_add(if c == b'\\' { ESCAPE } else { 1 });
+                    if c == b'"' {
+                        break;
+                    }
+                }
+            } else if b == b'\'' {
+                // A character literal is a quote, one character or an escape, and a quote; a lifetime is not closed.
+                let rest = source.get(i.saturating_add(1)..).unwrap_or_default();
+                let mut chars = rest.chars();
+                let length = match chars.next() {
+                    Some('\\') => rest
+                        .get(ESCAPE..)
+                        .and_then(|after| after.find('\''))
+                        .map(|end| end.saturating_add(ESCAPE)),
+                    Some(c) if chars.next() == Some('\'') => Some(c.len_utf8()),
+                    _ => None,
+                };
+                match length {
+                    Some(length) => {
+                        code.extend_from_slice(b"\'\'");
+                        i = i.saturating_add(length).saturating_add(QUOTES);
+                    }
+                    None => {
+                        code.push(b);
+                        i = i.saturating_add(1);
+                    }
+                }
+            } else {
+                code.push(b);
+                i = i.saturating_add(1);
+            }
+        }
+        String::from_utf8_lossy(&code).into_owned()
+    }
+
+    /// Returns how often each site is checked in Rust source: its checks outside comments and literals, by site name.
+    ///
+    /// The code is read without its spaces and line breaks, so that no formatting changes what it finds.
+    fn checks_in(source: &str) -> BTreeMap<String, usize> {
+        let code: String = code_of(source).split_whitespace().collect();
+        let mut checked: BTreeMap<String, usize> = BTreeMap::new();
         // Spelled in parts, so that this test is not a check.
         for needle in [concat!("refuses", "!(site::"), concat!("found", "!(site::")] {
-            for (at, _) in source.match_indices(needle) {
-                let rest = source
+            for (at, _) in code.match_indices(needle) {
+                let rest = code
                     .get(at.saturating_add(needle.len())..)
                     .unwrap_or_default();
                 let name = rest.split(',').next().unwrap_or_default();
-                let count = checked.entry(name).or_default();
+                let count = checked.entry(name.to_owned()).or_default();
                 *count = count.saturating_add(1);
             }
         }
+        checked
+    }
+
+    /// Fails when a check's site is not listed, a listed site is not checked once, or two sites share a name or label.
+    ///
+    /// A constant of `site` declared outside `sites!` is either checked nowhere, which `site`'s denial of dead code
+    /// refuses as the crate is built, or checked, which the assertion in `refuses!` and `found!` refuses as the crate is
+    /// built, and which this test finds too. A check in a comment or a literal is not a check.
+    #[test]
+    fn every_site_checked_is_listed_and_every_listed_site_is_checked_once() {
+        let checked = checks_in(include_str!("implementation.rs"));
         let listed: BTreeMap<&str, &str> = crate::site::ALL.iter().copied().collect();
         let labels: std::collections::BTreeSet<&str> =
             crate::site::ALL.iter().map(|(_, label)| *label).collect();
@@ -5785,24 +5912,52 @@ mod tests {
             crate::site::ALL.len(),
             "a label given to two sites"
         );
-        let unlisted: Vec<&&str> = checked
+        let unlisted: Vec<&String> = checked
             .keys()
-            .filter(|name| !listed.contains_key(*name))
+            .filter(|name| !listed.contains_key(name.as_str()))
             .collect();
         assert!(unlisted.is_empty(), "checked but not listed: {unlisted:?}");
         let unchecked: Vec<&&str> = listed
             .keys()
-            .filter(|name| !checked.contains_key(*name))
+            .filter(|name| !checked.contains_key(**name))
             .collect();
         assert!(
             unchecked.is_empty(),
             "listed but checked nowhere: {unchecked:?}"
         );
-        let twice: Vec<(&&str, &usize)> = checked.iter().filter(|(_, count)| **count > 1).collect();
+        let twice: Vec<(&String, &usize)> =
+            checked.iter().filter(|(_, count)| **count > 1).collect();
         assert!(
             twice.is_empty(),
             "checked at more than one place: {twice:?}"
         );
+    }
+
+    /// Source with checks hidden in comments and literals, and two real ones after a quote character and a lifetime.
+    const HIDDEN_CHECKS: &str = r##"
+fn hidden(a: bool, b: Option<u8>) {
+    // refuses!(site::IN_A_LINE_COMMENT, a);
+    /* found!(site::IN_A_BLOCK_COMMENT, b) /* nested */ refuses!(site::AFTER_A_NESTED_COMMENT, a) */
+    /// refuses!(site::IN_A_DOC_COMMENT, a)
+    let _ = "refuses!(site::IN_A_STRING, a) \" found!(site::PAST_AN_ESCAPED_QUOTE, b)";
+    let _ = r#"found!(site::IN_A_RAW_STRING, b) " refuses!(site::IN_THE_SAME_RAW_STRING, a)"#;
+    let _ = br"refuses!(site::IN_A_RAW_BYTE_STRING, a)";
+    let _ = '"'; if refuses!(site::AFTER_A_QUOTE_CHARACTER, a) {}
+    let _: &'static str = ""; let _ = found!(site::AFTER_A_LIFETIME, b);
+}
+"##;
+
+    /// Fails when a check written in a comment or a literal is counted as a check.
+    #[test]
+    fn a_check_in_a_comment_or_a_literal_is_not_counted() {
+        let checked = checks_in(HIDDEN_CHECKS);
+        let expected: BTreeMap<String, usize> = [
+            (String::from("AFTER_A_QUOTE_CHARACTER"), 1),
+            (String::from("AFTER_A_LIFETIME"), 1),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(checked, expected);
     }
 
     /// Fails when the constant check that every site is listed would take a label that is not.

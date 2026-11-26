@@ -55,7 +55,7 @@ fn reference() -> Recorder {
     Recorder::new(RecorderConfig { caps: Some(caps) }).expect("a recorder opens")
 }
 
-/// What the reference says of the calls so far: the state of its device, which a broken rule loses.
+/// Returns what the reference says of the calls so far: the state of its device, which a broken rule loses.
 fn why(r: &mut Recorder) -> String {
     format!("{:?}", r.status())
 }
