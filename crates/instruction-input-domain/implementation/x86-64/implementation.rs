@@ -27,6 +27,7 @@ use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::extension::find_extension_form;
 use wcontainers_processor_architecture_x86_64::fixed::find_fixed_form;
 use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
+use wcontainers_processor_architecture_x86_64::x87::find_x87_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -42,6 +43,7 @@ pub mod fixed;
 pub mod float;
 pub mod integer;
 pub mod mmx;
+pub mod x87;
 pub mod vector;
 #[cfg(test)]
 mod tests;
@@ -161,6 +163,12 @@ pub enum OperandType {
     MmxValue(Role, vector::VectorValues),
     /// The x87 state MMX shares: its stack, tags, control and status words and pointers.
     X87Environment,
+    /// ST(i)'s index in an x87 form.
+    StackRegister,
+    /// The x87 state around an x87 form's operands.
+    X87Stack,
+    /// The value of ST(0) (the destination) or ST(i) (the source) of an x87 form, or of its memory operand.
+    X87Value(Role, x87::X87ValueSet),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -224,6 +232,8 @@ pub enum ValueSet {
     BitField,
     /// PDEP's and PEXT's mask: none, one bit at each end of 32 and 64 bits, alternating bits and bytes, and all.
     Mask,
+    /// FLDCW's source: FNINIT's, none, all, every defined bit, and some of each field.
+    ControlWord,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -284,6 +294,7 @@ pub enum OperandValue {
     AddressSize(AddressSize),
     SampleEncoding,
     X87(mmx::X87Environment),
+    X87Stack(x87::X87Stack),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -312,6 +323,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_mmx_form(instruction) {
             return mmx::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_x87_form(instruction) {
+            return x87::list_operand_types(form).into_iter();
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::list_operand_types(form).into_iter();
@@ -392,6 +406,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                         values.push(ABOVE_INDEX & !0xFFFF | 4 | (8 << 8));
                         bits(&values)
                     }
+                    ValueSet::ControlWord => bits(&[0x037F, 0x0000, 0xFFFF, 0x1F7F, 0x0C7E, 0x027F, 0x0040]),
                     ValueSet::Mask => bits(&[
                         0,
                         1,
@@ -505,6 +520,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
             OperandType::MmxValue(_, values) => mmx::generate_mmx_values(values),
             OperandType::X87Environment => mmx::X87_ENVIRONMENTS.map(OperandValue::X87).to_vec(),
+            OperandType::StackRegister => x87::STACK_INDICES.map(OperandValue::Register).to_vec(),
+            OperandType::X87Stack => x87::X87_STACKS.map(OperandValue::X87Stack).to_vec(),
+            OperandType::X87Value(_, set) => x87::generate_x87_values(set),
         };
         values.into_iter()
     }
@@ -541,6 +559,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_mmx_form(instruction) {
             return mmx::build_state(form, &typed);
+        }
+        if let Some(form) = find_x87_form(instruction) {
+            return x87::build_state(form, &typed);
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::build_state(form, &typed);
@@ -715,6 +736,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_extension_form(instruction).is_some()
         || find_fixed_form(instruction).is_some()
         || find_mmx_form(instruction).is_some()
+        || find_x87_form(instruction).is_some()
         || find_vector_form(instruction).is_some()
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()

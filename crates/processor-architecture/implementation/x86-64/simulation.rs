@@ -45,6 +45,8 @@ mod extension_simulation;
 mod fixed_simulation;
 #[path = "mmx_simulation.rs"]
 mod mmx_simulation;
+#[path = "x87_simulation.rs"]
+mod x87_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -202,6 +204,9 @@ fn apply(
             }
         }
         PreciseInstruction::Fixed(instruction) => fixed_simulation::execute_fixed(instruction, processor, memory, decoded),
+        PreciseInstruction::X87 { instruction, behavior } => {
+            x87_simulation::execute_x87(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Mmx { instruction, behavior } => {
             mmx_simulation::execute_mmx(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }

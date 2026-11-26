@@ -45,6 +45,7 @@ use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::extension::{ExtensionForm, find_extension_form};
 use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
+use wcontainers_processor_architecture_x86_64::x87::find_x87_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -106,7 +107,11 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                 let counts = data_operands
                     .iter()
                     .map(|&index| match types[index] {
-                        OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..) if in_part => {
+                        OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..)
+                        | OperandType::X87Value(..)
+                        | OperandType::X87Stack
+                            if in_part =>
+                        {
                             values[index].len()
                         }
                         _ => 1,
@@ -119,7 +124,11 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                             .iter()
                             .zip(&data_operands)
                             .map(|(&value, &index)| match types[index] {
-                                OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..) if in_part => {
+                                OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..)
+                                | OperandType::X87Value(..)
+                                | OperandType::X87Stack
+                                    if in_part =>
+                                {
                                     value
                                 }
                                 _ => to_representative(types[index], values[index].len()),
@@ -199,7 +208,9 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::CpuidSubleaf
         | OperandType::CpuidUpperHalves
         | OperandType::MmxValue(..)
-        | OperandType::X87Environment => true,
+        | OperandType::X87Environment
+        | OperandType::X87Stack
+        | OperandType::X87Value(..) => true,
         _ => false,
     }
 }
@@ -209,6 +220,9 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
     use OpCodeOperandKind as Kind;
     if let Some(form) = find_mmx_form(instruction) {
         return (form.place != OperandPlace::Register).then_some(AccessShape { write: form.writes_memory(), alignment: None });
+    }
+    if let Some(form) = find_x87_form(instruction) {
+        return form.has_memory_operand().then_some(AccessShape { write: form.writes_memory(), alignment: None });
     }
     if let Some(form) = find_extension_form(instruction) {
         return (form.place != OperandPlace::Register).then_some(AccessShape {
@@ -253,6 +267,9 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
         _ => None,
     });
     if let Some(form) = find_mmx_form(instruction) {
+        return form.memory_bytes();
+    }
+    if let Some(form) = find_x87_form(instruction) {
         return form.memory_bytes();
     }
     if let Some(form) = find_extension_form(instruction) {

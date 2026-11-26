@@ -745,6 +745,20 @@ pub enum Bug {
     MmxShuffleBytesIndexFourBits,
     /// An MMX store that faults leaves TOP as it was.
     MmxStoreFaultKeepsTop,
+    /// x87 forms run with an exception pending.
+    X87IgnoresPendingException,
+    /// FLDCW keeps the reserved bits it loads.
+    LoadControlKeepsEveryBit,
+    /// x87 forms leave FIP as it was.
+    X87InstructionPointerKept,
+    /// A push onto a register in use raises no stack fault.
+    X87PushIgnoresOverflow,
+    /// FLD ST(i) reports an overflow before an underflow.
+    X87OverflowBeforeUnderflow,
+    /// An 80-bit operand is not checked for alignment.
+    ExtendedAlignmentUnchecked,
+    /// FSTP m80 stores its ten bytes at once.
+    ExtendedStoreWhole,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1083,8 +1097,16 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::MmxUnpackHighFromLowHalves, "PUNPCKH of MMX", Family::Forms(&[Instruction::PunpckhbwMmxqMmxd, Instruction::PunpckhdqMmxqMemq]), Origin::IntegerX87Mmx),
     row(Bug::MmxShuffleBytesIndexFourBits, "PSHUFB of MMX", Family::Forms(&[Instruction::PshufbMmxqMmxq]), Origin::IntegerX87Mmx),
     row(Bug::MmxStoreFaultKeepsTop, "MMX stores", Family::Forms(&[Instruction::MovqMemqMmxq0f7f, Instruction::MovntqMemqMmxq]), Origin::IntegerX87Mmx),
+    row(Bug::X87IgnoresPendingException, "x87", Family::Forms(X87_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::LoadControlKeepsEveryBit, "FLDCW", Family::Forms(&[Instruction::FldcwMemmem16]), Origin::IntegerX87Mmx),
+    row(Bug::X87InstructionPointerKept, "x87", Family::Forms(X87_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::X87OverflowBeforeUnderflow, "FLD ST(i)", Family::Forms(&[Instruction::FldSt0X87]), Origin::IntegerX87Mmx),
+    row(Bug::ExtendedStoreWhole, "FSTP m80", Family::Forms(&[Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
+    row(Bug::ExtendedAlignmentUnchecked, "FLD m80, FSTP m80", Family::Forms(&[Instruction::FldSt0Memmem80real, Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
+    row(Bug::X87PushIgnoresOverflow, "x87 pushes", Family::Forms(&[Instruction::FldSt0X87, Instruction::Fld1, Instruction::FildSt0Memmem16int]), Origin::IntegerX87Mmx),
 ];
 
+const X87_SAMPLE: &[Instruction] = &[Instruction::Fnop, Instruction::FxchSt0X87, Instruction::FldSt0Memmem80real, Instruction::Fchs];
 const MMX_SAMPLE: &[Instruction] = &[
     Instruction::PaddbMmxqMmxq,
     Instruction::PsllqMmxqImmb,
