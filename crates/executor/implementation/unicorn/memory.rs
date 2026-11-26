@@ -193,10 +193,15 @@ enum FaultRun {
 /// The most bytes one guest store moves, which QEMU hands its store hook as one value.
 const LARGEST_STORE: usize = size_of::<u64>();
 
-/// Copies the bytes a guest store is about to write through one view to every other view of the same shared bytes.
+/// Copies the bytes a guest store is about to write through one view to every other view of the same shared bytes that
+/// the guest may store to.
 ///
 /// Unicorn calls its store hook before the store, with the value, and a write through its interface also drops what it
-/// translated from the bytes written, so code run through another view is the code stored.
+/// translated from the bytes written, so code run through another view is the code stored. A view the guest may not store
+/// to is left as it is until the turn ends, when the shared pages take the store and the view takes them before the next
+/// turn: unicorn's write to a region that refuses stores makes the region writable and back, which empties its TLB while
+/// the store holds an entry of it (MEASURED: the host process ended with SIGSEGV storing a byte one below the page stored
+/// to), and rebuilds its memory map, too slow to do at each store (MEASURED: a test spent minutes in it).
 fn copy_store_to_other_views(
     unicorn: &mut Unicorn<'_, Stopped>,
     address: u64,
@@ -215,10 +220,9 @@ fn copy_store_to_other_views(
         }
         let shared = source.offset + (cut.start - source.addresses.start)
             ..source.offset + (cut.end - source.addresses.start);
-        for target in views
-            .iter()
-            .filter(|view| view.pages == source.pages && view.addresses != source.addresses)
-        {
+        for target in views.iter().filter(|view| {
+            view.pages == source.pages && view.addresses != source.addresses && view.writable
+        }) {
             let shown =
                 target.offset..target.offset + (target.addresses.end - target.addresses.start);
             let both = shared.start.max(shown.start)..shared.end.min(shown.end);
