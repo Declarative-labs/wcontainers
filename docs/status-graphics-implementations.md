@@ -51,12 +51,63 @@ run named here are in the scratch folder graphics-implementations/.
 - Found, not caused by this: on ARM64 nir's tests do not link with Mesa on (ld.bfd: `_mesa_reference_shader` and
   others defined in both libmesa and Mesa's glsl standalone scaffolding). The graphics tests had only ever run on
   x86-64. Left for GI8.
-- Next: `StandaloneGpu` (D4), then the interface crate made by the tool (D2), PLAN.md group 3 steps 5 and 6.
-- The Metal implementation on `graphics-metal` must add the same six methods when it is merged.
+- Step 2 done (decision D4, second run): `StandaloneGpu: Gpu` with `type Config`, `type NewError: Debug` and
+  `fn new(config) -> Result<Self, Self::NewError>`. Implemented by the recorder (`RecorderConfig { caps }`, its
+  default the full caps, never fails), WebGpu (`WebGpuConfig { adapter, device, queue }`, never fails) and Gl
+  (`GlConfig { angle, off }` natively, `{ context, off }` in the browser; the error is ANGLE's text). The inherent
+  constructors stay until GI4 moves every caller onto the suite. Two tests build a recorder from its config.
+- Both machines, after main e6672b3eb was merged in: every graphics package checks with `--all-targets` exactly as
+  after GI1 (gpu-webgl's library 166 errors, 165 of them `unsafe`; shaders only through it; its library exits 0);
+  gpu 37, gpu-test 204 (202 and the 2 new), shader-converters linked 7 and contained 7,
+  directx-graphics-infrastructure 13, graphics-test 16, direct3d-11 69 pass; clippy `-D warnings` and fmt of gpu,
+  gpu-test, gpu-webgpu exit 0; Mesa builds (120 s ARM64, 132 s x86-64); in the scratch copy shaders 157 (5 ignored),
+  gpu-webgl 17, opengl 11 pass, nir 41 (2 ignored) on x86-64 and does not link on ARM64 as before; wasm32 exits 0;
+  WebGPU on lavapipe 124 passed, 4 failed, 2 ignored, the same four as GI2.
+- Cargo.lock: main's lock lacks the two observation-collector packages; cargo adds them (15 lines), the same on both
+  machines. No graphics package's version changed.
+- Next: steps 5 and 6, the crate made by the tool's layout (`[lib] path = "interface.rs"`): the trait, its data and
+  constants in interface.rs and `pub mod` data files; the shared code (`Helpers`, `PassTracker`,
+  `OcclusionCounter`, the inherent methods of `FormatCaps`, `TextureDesc`, `ShaderModule`) as split impl blocks in
+  sibling files, each `stray_source` they raise listed; the three free functions become methods
+  (`generate_mips_by_draws` of `Helpers`, `color_target_bytes` and `helper_binding` of their data types). Public
+  paths move into the data modules, so the users' imports change: 34 files outside gpu use those three functions and
+  about 230 files import from the crate; each front hunk is an import or path only.
+
+## The second run (2026-11-25)
+
+- ORCHESTRATOR RULINGS taken in: the graphics API crates track owns the OpenGL ES with EGL crate and the Mesa
+  compiler crate, so this track writes no glue and no marked `unsafe`. What each trait must offer, call by call,
+  with what is lent and for how long, is in the scratch folder's graphics-implementations/NEEDED-FROM-API-CRATES.md
+  (A: OpenGL ES, 145 GL ES calls of gpu-webgl, 10 extension calls, the EGL calls, the browser route, the reference
+  renderer's desktop GL and Vulkan for the API track to place; B: Mesa's compiler, its 45 bridge functions, 43 in
+  mesa.rs and 2 in direct.rs, and the flat form). Where code that implements no trait lives is not the owner's question: shaders stays a plain library crate;
+  its `stray_source` findings stay listed below.
+- What does not build under `forbid` until those traits exist, and why: gpu-webgl's library (every glow call is an
+  `unsafe fn`, and so are the EGL calls taking pointers and the extension calls; no safe route exists without the
+  OpenGL ES crate), shaders' tests and directx's `webgl` feature through it, and with Mesa on nir's library (59
+  errors: mesa.rs and direct.rs's bridge calls) and opengl through it. They are not hidden behind a feature or a
+  lowered lint.
+- The check's other blocking and non-blocking points were not found: neither this file nor any page of the scratch
+  folder holds them (searched for the branch name, GI1 and the check's folder, which holds only its job logs). Its
+  logs show only what is known (gpu-webgl and shaders under `forbid`). They are repaired when the orchestrator
+  passes them on.
+- Linter da55b9d7 (x86-64 machine, no model key, so the model's rules report unanswered): layout findings in the
+  nine crates are as at GI1 (stray_source 169, conformance_missing 7, crate_not_member 1; also
+  depends_on_implementation 14, shader-converters' conformance_untested_method 1, test-window's 6, none from this
+  run). The new code adds no layout finding; its text findings are the model's unanswered summaries and names,
+  which need the key on the Mac.
+- For the Metal track (`graphics-metal`, `MetalGpu<M>`): add the six required methods (`dispatch`,
+  `capture_vertices`, `create_resource_table`, `write_resource_table`, `write_timestamp`, `timestamps_disjoint`),
+  answering `GpuError::Absent` where it lacks one; implement `StandaloneGpu` with a plain-data config holding its
+  Metal value (`MetalGpuConfig<M> { metal: M }`, `NewError = Infallible`); after GI3's steps 5 and 6 change its
+  imports to the data modules; at GI4 move to `crates/gpu/implementation/metal`, export only `MetalGpu` and its
+  config, drop the inherent `new`, and run the conformance crate's `tests!` from its suite.
 
 ## SECURITY
 
 - Lines with unsafe, unchanged from graphics-layout: gpu-webgl 160, opengl 353, nir 113, shaders 71, gpu-webgpu 19,
   test-window 12, shader-converters 5; gpu and gpu-test 0.
 - Marked exceptions in crates with their own deny table: shader-converters linked 5, test-window appkit 8 and win32 4.
+- Second run: unchanged (733 lines in the nine crates; this run added none and removed none). No marked exception is
+  written by this track any more (ruling of 2026-11-25).
 - No new dependency. No hostile-guest suite exists.
