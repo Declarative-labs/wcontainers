@@ -31,6 +31,11 @@ pub(crate) const OFFER: Offer = Offer {
     counter: CounterAccess::Trapped,
 };
 
+/// Tuning number: the translations kept for their code at most; all are let go when one more is made, as each compiled
+/// module holds mappings of its own and a process may map only so many (a single instruction's translation is one
+/// module, and the agreement test makes millions).
+const KEPT_TRANSLATIONS: usize = 1 << 16;
+
 /// The translator's progress count, which bounds a run by the slice of its configuration.
 pub(crate) const PROGRESS: ProgressCount = ProgressCount::Kept;
 
@@ -138,7 +143,11 @@ impl Shared {
             modules,
             read: translation.read,
         });
-        self.kept().insert(key, translated.clone());
+        let mut kept = self.kept();
+        if kept.len() >= KEPT_TRANSLATIONS {
+            kept.clear();
+        }
+        kept.insert(key, translated.clone());
         Some(translated)
     }
 
