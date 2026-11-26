@@ -27,10 +27,13 @@ use wcontainers_processor_architecture::{
 };
 use wcontainers_processor_architecture_arm64::encoding::{IMM16, RN};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
+use wcontainers_processor_architecture_arm64::system_register::{
+    NEOVERSE_V2_SYSTEM_REGISTERS, simulate_system_register_move,
+};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
     INSTRUCTION_SIZE, Instruction, InstructionFetch, PagePermission, Processor, User,
-    WaitInstruction,
+    WaitInstruction, ZERO_PROCESSOR,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -998,10 +1001,40 @@ fn to_exception(
 fn to_undefined_exception(word: u32, pc: u64) -> Result<Exception, Unsupported> {
     if word == WAIT_FOR_INTERRUPT {
         Ok(Exception::WaitTrapped(WaitInstruction::WaitForInterrupt))
+    } else if let Some(direction) = to_register_move_direction(word) {
+        // QEMU raises an access EL1 traps and an undefined one alike; what EL0 reaches of each register, as the
+        // architecture lists it, tells them apart. An access the list lets complete stays a refusal.
+        let mut processor = ZERO_PROCESSOR;
+        match simulate_system_register_move(
+            &mut processor,
+            word,
+            direction,
+            NEOVERSE_V2_SYSTEM_REGISTERS,
+        ) {
+            Err(
+                exception @ (Exception::SystemAccessTrapped(_) | Exception::UndefinedInstruction),
+            ) => Ok(exception),
+            _ => Err(Unsupported::TrapOrUndefined { pc, word }),
+        }
     } else if word & SYSTEM_INSTRUCTION_MASK == SYSTEM_INSTRUCTION_VALUE {
         Err(Unsupported::TrapOrUndefined { pc, word })
     } else {
         Ok(Exception::UndefinedInstruction)
+    }
+}
+
+/// The direction of an MRS (a read) or MSR (register) word (a write), none for another word.
+fn to_register_move_direction(word: u32) -> Option<AccessDirection> {
+    let matches = |instruction: Instruction<Infallible>| {
+        let fixed = instruction.to_fixed_bits();
+        word & fixed.mask == fixed.value
+    };
+    if matches(Instruction::Mrs) {
+        Some(AccessDirection::Read)
+    } else if matches(Instruction::MsrRegister) {
+        Some(AccessDirection::Write)
+    } else {
+        None
     }
 }
 
@@ -1348,7 +1381,7 @@ fn check_block(block: &SharedPages, offset: u64, length: usize) -> Result<(), Cp
 mod tests {
     use wcontainers_abi::{Cpu, PAGE_SIZE, Permissions};
 
-    use super::{SPACE_32_BIT, StandIn};
+    use super::{Processor, SPACE_32_BIT, StandIn};
 
     /// The stand-in and its spaces may move to another host thread, though unicorn's instances may not.
     #[test]
@@ -1392,6 +1425,73 @@ mod tests {
             .expect("the shown byte read");
         assert_eq!(read, [u8::MAX]);
         assert_eq!(stand_in.take_refused().len(), 1, "the refusals");
+    }
+
+    /// A read of the virtual counter at EL0 traps to EL1, so the kernel answers it from its own clock.
+    #[test]
+    fn a_counter_read_traps() {
+        use wcontainers_abi::{Access, SystemCallRequest};
+        use wcontainers_executor::memory_space::{MemorySpace, PageTable};
+        use wcontainers_executor::{
+            Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse,
+            SystemCallResponse, TrapHandler,
+        };
+        use wcontainers_processor_architecture_arm64::{
+            AccessDirection, Exception, SystemAccess, ZERO_PROCESSOR,
+        };
+        use wcontainers_volatile_bytes::VolatileBytes;
+
+        /// Ends the execution at any trap a handler is given.
+        struct Ending;
+        impl TrapHandler for Ending {
+            fn handle_system_call(&mut self, _: SystemCallRequest) -> SystemCallResponse {
+                SystemCallResponse::Terminate
+            }
+            fn handle_memory_fault(&mut self, _: u64, _: Access) -> MemoryFaultResponse {
+                MemoryFaultResponse::Terminate
+            }
+            fn handle_interrupt(&mut self) -> InterruptResponse {
+                InterruptResponse::Terminate
+            }
+        }
+
+        /// [MRS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-)
+        /// of X0 from CNTVCT_EL0, op0 3, op1 3, CRn 14, CRm 0, op2 2.
+        const READ_VIRTUAL_COUNTER: u32 = 0xD53B_E040;
+        let mut stand_in = StandIn::with_space(SPACE_32_BIT);
+        let (memory, mut table) = stand_in.create_guest_memory().expect("a memory");
+        let code = PAGE_SIZE..PAGE_SIZE * 2;
+        table
+            .set_permissions(code.clone(), Permissions::READ | Permissions::EXECUTE)
+            .expect("the code's page allowed");
+        memory
+            .borrow(code.start..code.start + super::INSTRUCTION_SIZE)
+            .expect("the code's word")
+            .write(&READ_VIRTUAL_COUNTER.to_le_bytes());
+        let start = Processor {
+            program_counter: code.start,
+            ..ZERO_PROCESSOR
+        };
+        let (execution, _interrupter) = stand_in.prepare_execution(start.clone(), &memory);
+        let ExecutionStop::Terminated(stopped) = execution.run(&mut Ending) else {
+            panic!("the stand-in never waits");
+        };
+        let trapped = Exception::SystemAccessTrapped(SystemAccess {
+            op0: 3,
+            op1: 3,
+            crn: 14,
+            crm: 0,
+            op2: 2,
+            rt: 0,
+            direction: AccessDirection::Read,
+        });
+        assert_eq!(
+            stopped,
+            Processor {
+                exception: Some(trapped),
+                ..start
+            }
+        );
     }
 
     /// Two memories that show one block see each other's writes, the guest's among them.
