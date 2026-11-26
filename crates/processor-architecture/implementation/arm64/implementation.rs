@@ -158,9 +158,19 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
                 .is_met_by(u64::from(observed.condition_flags.bits()))
             && observed.stack_pointer == expected.stack_pointer
             && observed.program_counter == expected.program_counter
-            && observed.vector_registers == expected.vector_registers
-            && observed.predicate_registers == expected.predicate_registers
-            && observed.first_fault_register == expected.first_fault_register
+            && observed
+                .vector_registers
+                .iter()
+                .zip(&expectation.vector_registers)
+                .all(|(value, register)| register.is_met_by(*value))
+            && observed
+                .predicate_registers
+                .iter()
+                .zip(&expectation.predicate_registers)
+                .all(|(value, register)| register.is_met_by(*value))
+            && expectation
+                .first_fault_register
+                .is_met_by(observed.first_fault_register)
             && observed.floating_point_control == expected.floating_point_control
             && observed.floating_point_status == expected.floating_point_status
             && observed.software_thread_id == expected.software_thread_id
@@ -171,23 +181,24 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
 
 /// What a behavior expects one register to hold after an instruction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RegisterValueExpectation {
-    Deterministic(u64),
-    /// The state before does not decide the value, as with a read of [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number), so it is not compared.
+pub enum RegisterValueExpectation<Value = u64> {
+    Deterministic(Value),
+    /// The state before does not decide the value, as with a read of [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number) or an SVE lane the manual leaves UNKNOWN, so it is not compared.
     NonDeterministic,
 }
 
-impl RegisterValueExpectation {
-    pub const fn is_met_by(self, observed: u64) -> bool {
+impl<Value: PartialEq> RegisterValueExpectation<Value> {
+    pub fn is_met_by(&self, observed: Value) -> bool {
         match self {
-            Self::Deterministic(value) => value == observed,
+            Self::Deterministic(value) => *value == observed,
             Self::NonDeterministic => true,
         }
     }
 }
 
-/// What a behavior expects the processor to hold after an instruction: the general-purpose registers and NZCV each as
-/// a value expectation, the only registers an instruction may leave undecided, and every other value in `processor`.
+/// What a behavior expects the processor to hold after an instruction: the general-purpose registers, NZCV and the SVE
+/// registers each as a value expectation, the only registers an instruction may leave undecided, and every other value
+/// in `processor`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ProcessorExpectation<LevelSpecific> {
     /// The processor the behavior leaves, read for every value not expected below.
@@ -195,6 +206,10 @@ pub struct ProcessorExpectation<LevelSpecific> {
     pub general_purpose_registers: [RegisterValueExpectation; GENERAL_PURPOSE_REGISTERS],
     /// [NZCV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/NZCV--Condition-Flags), its flags at their bits of the register.
     pub condition_flags: RegisterValueExpectation,
+    /// Z0 to Z31, whole, as `Processor::vector_registers` holds them.
+    pub vector_registers: [RegisterValueExpectation<u128>; VECTOR_REGISTERS],
+    pub predicate_registers: [RegisterValueExpectation<u16>; PREDICATE_REGISTERS],
+    pub first_fault_register: RegisterValueExpectation<u16>,
 }
 
 impl<LevelSpecific> ProcessorExpectation<LevelSpecific> {
@@ -207,6 +222,15 @@ impl<LevelSpecific> ProcessorExpectation<LevelSpecific> {
             condition_flags: RegisterValueExpectation::Deterministic(u64::from(
                 processor.condition_flags.bits(),
             )),
+            vector_registers: processor
+                .vector_registers
+                .map(RegisterValueExpectation::Deterministic),
+            predicate_registers: processor
+                .predicate_registers
+                .map(RegisterValueExpectation::Deterministic),
+            first_fault_register: RegisterValueExpectation::Deterministic(
+                processor.first_fault_register,
+            ),
             processor,
         }
     }
