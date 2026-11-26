@@ -1,5 +1,6 @@
-//! The third check's cases of format usages, step rates and captures, the cases of calls inside a pass, and the ninth
-//! check's cases of attachments marked Discard, counts and captures across a call inside a pass (k1 to k5).
+//! The checks' hostile cases: format usages, step rates, captures, and calls inside a pass.
+//!
+//! The ninth check's cases (k1 to k5) keep attachments marked Discard, counts and captures across a call inside a pass.
 //!
 //! The calls inside a pass are those that would wait for, commit or nest work while a pass is open.
 //! Each prints a line starting HOSTILE with what the device did and what the reference did. The capture after a draw
@@ -1398,7 +1399,7 @@ const FAR_DEPTH: f32 = 1.0;
 /// The vertices of one half in `HALVES`, a strip of two triangles.
 const HALF_VERTICES: u32 = 4;
 /// The bytes of one occlusion result.
-const RESULT_BYTES: u64 = size_of::<u64>() as u64;
+const OCCLUSION_RESULT_BYTES: u64 = size_of::<u64>() as u64;
 /// The samples of the multisampled target of k3.
 const K3_SAMPLES: u32 = 4;
 
@@ -1588,7 +1589,7 @@ fn k2_occlusion_count_spanning_a_call_inside_the_pass() {
         };
         let h = halves(&mut b);
         let set = b.create_query_set(kind, 2).expect("query set");
-        let results = buffer(&mut b, 2 * RESULT_BYTES, BufferUsage::empty());
+        let results = buffer(&mut b, 2 * OCCLUSION_RESULT_BYTES, BufferUsage::empty());
         let mut pass = color_pass::<MetalGpu<DirectMetal>>(&h.view);
         pass.occlusion = Some(&set);
         b.begin_pass(&pass);
@@ -1602,11 +1603,11 @@ fn k2_occlusion_count_spanning_a_call_inside_the_pass() {
         b.submit();
         let alive = ok(&mut b);
         let bytes = if alive {
-            read_bytes(&mut b, &results, 2 * RESULT_BYTES)
+            read_bytes(&mut b, &results, 2 * OCCLUSION_RESULT_BYTES)
         } else {
-            vec![0; 2 * RESULT_BYTES as usize]
+            vec![0; 2 * OCCLUSION_RESULT_BYTES as usize]
         };
-        let (first, second) = bytes.split_at(RESULT_BYTES as usize);
+        let (first, second) = bytes.split_at(OCCLUSION_RESULT_BYTES as usize);
         let unused = u64::from_le_bytes(first.try_into().expect("a result"));
         let counted = u64::from_le_bytes(second.try_into().expect("a result"));
         let want = u64::from(CASE_TEXTURE_SIDE * CASE_TEXTURE_SIDE);

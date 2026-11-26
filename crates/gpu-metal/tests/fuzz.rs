@@ -342,8 +342,9 @@ mod driver {
         }
     }
 
-    /// Prints how often each of gpu-metal's places found a pass open, and returns how many places lack an outcome and
-    /// how many places were counted that the list does not hold.
+    /// Prints how often each of gpu-metal's places found a pass open, and returns its holes and its unknown places.
+    ///
+    /// A hole is a place that lacks an outcome; an unknown place is one counted that the list does not hold.
     ///
     /// The table goes to `FUZZ_PLACE_TABLE` too, if it is set.
     fn report_places(places: &std::collections::BTreeMap<String, [u64; 2]>) -> (usize, usize) {
@@ -373,8 +374,9 @@ mod driver {
         (holes, unknown.len())
     }
 
-    /// Prints how often each check site of `direct` refused and passed, and returns how many sites lack an outcome and
-    /// how many were counted that `direct`'s list does not hold.
+    /// Prints how often each check site of `direct` refused and passed, and returns its holes and its unknown sites.
+    ///
+    /// An unknown site is one counted that `direct`'s list does not hold.
     ///
     /// A site that never refused, or never passed, is a hole; a site named twice in the list counts as a hole too. The
     /// table goes to `FUZZ_REACH_TABLE` too, if it is set.
