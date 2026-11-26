@@ -749,7 +749,8 @@ fn generate_gathers(data: Lane, index: Lane) -> Vec<AvxData> {
 }
 
 /// Builds the state of a gather: the destination at ModRM.reg, the indices at the VSIB index the pair's other
-/// register names, the mask at VEX.vvvv, the base RBX at the lower data page.
+/// register names (another where the pair names one), the mask at VEX.vvvv in the lowest other register but XMM0,
+/// the base RBX at the lower data page.
 fn build_gather_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
     use crate::{LOWER_DATA_ADDRESS, UPPER_DATA_ADDRESS, to_data_byte};
     let mut processor = Processor {
@@ -772,7 +773,11 @@ fn build_gather_state(form: &AvxForm, operands: &[(OperandType, OperandValue)]) 
         }
     }
     let chosen = chosen.expect("a gather's data");
-    let mask = to_vvvv(registers);
+    // The destination, index and mask registers are three, as iced-x86 decodes no other gather.
+    if registers[0] == registers[1] {
+        registers[1] = (registers[0] + 8) % 16;
+    }
+    let mask = (0..16).find(|number| !registers.contains(number) && *number != 0).expect("a free register");
     let lane_bits = to_lane_bits(form);
     for (number, value) in [(registers[0], chosen.vectors[0]), (mask, chosen.vectors[2]), (registers[1], chosen.vectors[1])] {
         processor.vector_registers[number] = value;
