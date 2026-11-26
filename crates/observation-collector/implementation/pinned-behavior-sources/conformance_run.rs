@@ -3,6 +3,8 @@
 use std::convert::Infallible;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
@@ -93,20 +95,7 @@ impl BehaviorSource for SimulatedCore {
         memory: MemorySnapshot<'_, '_, AccumulatorMachineProcessorArchitecture>,
         mutation_hook: &mut impl MemorySink<AccumulatorMachineProcessorArchitecture>,
     ) -> Result<(), Refusal> {
-        let address = u64::from(processor.program_counter);
-        let opcode = memory
-            .mutations
-            .iter()
-            .rev()
-            .find_map(|mutation| match mutation {
-                MemoryDelta::ValueAssignment { start, bytes } => address
-                    .checked_sub(*start)
-                    .and_then(|offset| bytes.get(usize::try_from(offset).ok()?).copied()),
-                MemoryDelta::PermissionAssignment { .. } => None,
-            });
-        let instruction = opcode
-            .and_then(|opcode| INSTRUCTIONS.get(usize::from(opcode)).copied())
-            .ok_or(Refusal)?;
+        let instruction = read_instruction(processor, &memory).ok_or(Refusal)?;
         if self.refused == Some(instruction) {
             return Err(Refusal);
         }
@@ -115,6 +104,25 @@ impl BehaviorSource for SimulatedCore {
         *processor = after;
         Ok(())
     }
+}
+
+/// Returns the instruction whose opcode the memory holds at the program counter.
+fn read_instruction(
+    processor: &Processor,
+    memory: &MemorySnapshot<'_, '_, AccumulatorMachineProcessorArchitecture>,
+) -> Option<Instruction> {
+    let address = u64::from(processor.program_counter);
+    let opcode = memory
+        .mutations
+        .iter()
+        .rev()
+        .find_map(|mutation| match mutation {
+            MemoryDelta::ValueAssignment { start, bytes } => address
+                .checked_sub(*start)
+                .and_then(|offset| bytes.get(usize::try_from(offset).ok()?).copied()),
+            MemoryDelta::PermissionAssignment { .. } => None,
+        })?;
+    INSTRUCTIONS.get(usize::from(opcode)).copied()
 }
 
 const GENERATOR: CriticalValueProduct<AccumulatorMachineInstructionInputDomain> =
@@ -174,6 +182,84 @@ fn a_failed_instruction_fails_the_collection() {
             error: MeasureInstructionError::ExecutionFailed { instruction, .. },
         }) => assert!(core.design == CoreDesign::Reference && instruction == refused),
         _ => panic!("the collection did not fail on the refused instruction"),
+    }
+}
+
+/// How long a core waits before it refuses an instruction that must fail after another.
+const LATE: Duration = Duration::from_millis(50);
+
+/// The instructions each revision refuses and how long it waits first, so that the failures come in another order
+/// than the listed one: the second revision's first instruction fails before any of the first revision's, and the
+/// first revision's last instruction before its third.
+const REFUSALS: [(CoreRevision, Instruction, Duration); 3] = [
+    (CoreRevision::First, Instruction::Increment, LATE),
+    (CoreRevision::First, Instruction::ShiftLeft, Duration::ZERO),
+    (
+        CoreRevision::Second,
+        Instruction::NoOperation,
+        Duration::ZERO,
+    ),
+];
+
+/// Collections run in a row to show that each gives the same failure.
+const COLLECTIONS: usize = 20;
+
+/// A core that refuses the instructions `REFUSALS` gives its revision, after their wait, and runs the others.
+struct LateRefusingCore {
+    revision: CoreRevision,
+}
+
+impl BehaviorSource for LateRefusingCore {
+    type Architecture = AccumulatorMachineProcessorArchitecture;
+    type Error = Refusal;
+
+    fn execute_single_instruction_in_place(
+        &mut self,
+        processor: &mut Processor,
+        memory: MemorySnapshot<'_, '_, AccumulatorMachineProcessorArchitecture>,
+        mutation_hook: &mut impl MemorySink<AccumulatorMachineProcessorArchitecture>,
+    ) -> Result<(), Refusal> {
+        let instruction = read_instruction(processor, &memory).ok_or(Refusal)?;
+        let refusal = REFUSALS
+            .iter()
+            .find(|(revision, refused, _)| *revision == self.revision && *refused == instruction);
+        if let Some((_, _, wait)) = refusal {
+            thread::sleep(*wait);
+            return Err(Refusal);
+        }
+        SimulatedCore {
+            revision: self.revision,
+            refused: None,
+        }
+        .execute_single_instruction_in_place(processor, memory, mutation_hook)
+    }
+}
+
+/// Checks that, whichever run fails first, the collection gives the failure of the kind listed first at its earliest
+/// listed instruction, every time.
+#[test]
+fn the_failure_is_the_first_kinds_at_its_first_failed_instruction() {
+    for collection in 0..COLLECTIONS {
+        let collector = PinnedBehaviorSourcesObservationCollector::new(
+            AlternatingRevisionCores,
+            |core: CoreIdentity| {
+                Ok::<_, Infallible>(LateRefusingCore {
+                    revision: core.revision,
+                })
+            },
+            GENERATOR,
+        );
+        match collector.collect_samples() {
+            Err(CollectSamplesError::MeasurementFailed {
+                core,
+                error: MeasureInstructionError::ExecutionFailed { instruction, .. },
+            }) => assert!(
+                core.revision == CoreRevision::First && instruction == Instruction::Increment,
+                "collection {collection} gave the failure of {:?} on {instruction:?}",
+                core.revision
+            ),
+            _ => panic!("collection {collection} did not fail on a refused instruction"),
+        }
     }
 }
 

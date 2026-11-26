@@ -1,10 +1,12 @@
 //! A collector that runs on every core a behavior source made on that core, the cores of one kind sharing one queue.
 //!
-//! Each run measures the next instruction of its kind's queue on every generated state until the queue is empty. The
-//! first failure stops every run before its next instruction.
+//! Each run measures the next instruction of its kind's queue on every generated state until the queue is empty. When
+//! runs fail, the collection gives the failure of the kind listed first, at the instruction listed first: a run stops
+//! before its next instruction once a run of an earlier kind, or of its kind at an earlier instruction, has failed, and
+//! every run measuring an earlier instruction goes on, so two collections on one machine give the same failure.
 
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
@@ -71,7 +73,12 @@ enum RunFailure<MakeSourceError, Architecture: ProcessorArchitecture, ExecutionE
     MeasurementFailed(MeasureInstructionError<Architecture, ExecutionError>),
 }
 
-/// The queue of each kind of core: its identity and the position in the listed instructions its runs take next.
+/// Where a run failed: the place of its kind among the kinds as the cores list them, then the listed position of the
+/// instruction, none for the making of the source, which comes before every instruction.
+type FailurePlace = (usize, Option<usize>);
+
+/// The queue of each kind of core, in the order the cores list the kinds: its identity and the position in the listed
+/// instructions its runs take next.
 type Queues<CoreIdentity> = Mutex<Vec<(CoreIdentity, Arc<AtomicUsize>)>>;
 
 impl<Cores, MakeSource, Source, MakeSourceError, Generator> ObservationCollector
@@ -96,16 +103,21 @@ where
         &self,
     ) -> Result<Vec<CoreSample<Source::Architecture, Cores::CoreIdentity>>, Self::Error> {
         let instructions: Vec<_> = Source::Architecture::list_instructions().collect();
+        let listed = self
+            .cores
+            .list_cores()
+            .map_err(CollectSamplesError::CoresNotListed)?;
         let queues = Queues::new(Vec::new());
-        let failed = AtomicBool::new(false);
+        for (_, core) in &listed {
+            join_queue(&queues, core);
+        }
+        let lowest_failure = Mutex::new(None);
         let runs = self
             .cores
             .run_on_all_cores(|core| {
-                let queue = join_queue(&queues, &core);
-                let measured = self.measure_from_queue(&core, &instructions, &queue, &failed);
-                if measured.is_err() {
-                    failed.store(true, Ordering::Relaxed);
-                }
+                let (kind, queue) = join_queue(&queues, &core);
+                let measured =
+                    self.measure_from_queue(&core, kind, &instructions, &queue, &lowest_failure);
                 (core, measured)
             })
             .map_err(|error| match error {
@@ -115,21 +127,30 @@ where
                 RunOnAllCoresError::CoreNotHeld(error) => CollectSamplesError::CoreNotHeld(error),
             })?;
         let mut kinds: Vec<(Cores::CoreIdentity, Vec<(usize, _)>)> = Vec::new();
+        let mut failure: Option<(FailurePlace, Cores::CoreIdentity, RunFailure<_, _, _>)> = None;
         for (core, measured) in runs {
-            let measured = measured.map_err(|failure| match failure {
-                RunFailure::SourceNotMade(error) => CollectSamplesError::SourceNotMade {
-                    core: core.clone(),
-                    error,
+            match measured {
+                Ok(measured) => match kinds.iter_mut().find(|(kind, _)| *kind == core) {
+                    Some((_, kind_measured)) => kind_measured.extend(measured),
+                    None => kinds.push((core, measured)),
                 },
-                RunFailure::MeasurementFailed(error) => CollectSamplesError::MeasurementFailed {
-                    core: core.clone(),
-                    error,
-                },
-            })?;
-            match kinds.iter_mut().find(|(kind, _)| *kind == core) {
-                Some((_, kind_measured)) => kind_measured.extend(measured),
-                None => kinds.push((core, measured)),
+                // Of failures at one place, only making a source can give more than one: the first core's is kept.
+                Err((place, run_failure)) => {
+                    if failure.as_ref().is_none_or(|(lowest, ..)| place < *lowest) {
+                        failure = Some((place, core, run_failure));
+                    }
+                }
             }
+        }
+        if let Some((_, core, run_failure)) = failure {
+            return Err(match run_failure {
+                RunFailure::SourceNotMade(error) => {
+                    CollectSamplesError::SourceNotMade { core, error }
+                }
+                RunFailure::MeasurementFailed(error) => {
+                    CollectSamplesError::MeasurementFailed { core, error }
+                }
+            });
         }
         // Every run of a kind ends only when its queue is empty, so its positions are each listed position once.
         Ok(kinds
@@ -151,19 +172,25 @@ where
 impl<Cores, MakeSource, Generator>
     PinnedBehaviorSourcesObservationCollector<Cores, MakeSource, Generator>
 {
-    /// Measures queued instructions with their listed positions until none is left or another run has failed.
+    /// Measures queued instructions with their listed positions until none is left or a run has failed before them.
+    ///
+    /// A failure comes with its place, which it also leaves in `lowest_failure` if no run failed before it.
     fn measure_from_queue<Source, MakeSourceError>(
         &self,
         core: &Cores::CoreIdentity,
+        kind: usize,
         instructions: &[<Source::Architecture as ProcessorArchitecture>::Instruction],
         queue: &AtomicUsize,
-        failed: &AtomicBool,
+        lowest_failure: &Mutex<Option<FailurePlace>>,
     ) -> Result<
         Vec<(
             usize,
             <Source::Architecture as ProcessorArchitecture>::PreciseInstruction,
         )>,
-        RunFailure<MakeSourceError, Source::Architecture, Source::Error>,
+        (
+            FailurePlace,
+            RunFailure<MakeSourceError, Source::Architecture, Source::Error>,
+        ),
     >
     where
         Cores: ProcessorCores,
@@ -173,32 +200,58 @@ impl<Cores, MakeSource, Generator>
             Simulator<Source::Architecture, Error = Infallible>,
         Generator: DistinguishingStateGenerator<Source::Architecture>,
     {
-        let mut source = (self.make_source)(core.clone()).map_err(RunFailure::SourceNotMade)?;
+        let fail = |place: FailurePlace| {
+            let mut lowest = lowest_failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if lowest.is_none_or(|lowest| place < lowest) {
+                *lowest = Some(place);
+            }
+            place
+        };
         let mut measured = Vec::new();
-        while !failed.load(Ordering::Relaxed) {
+        let making = (kind, None);
+        if is_preceded(lowest_failure, making) {
+            return Ok(measured);
+        }
+        let mut source = (self.make_source)(core.clone())
+            .map_err(|error| (fail(making), RunFailure::SourceNotMade(error)))?;
+        loop {
             let position = queue.fetch_add(1, Ordering::Relaxed);
             let Some(&instruction) = instructions.get(position) else {
                 break;
             };
+            let place = (kind, Some(position));
+            if is_preceded(lowest_failure, place) {
+                break;
+            }
             let precise = source
                 .measure_instruction(instruction, &self.generator)
-                .map_err(RunFailure::MeasurementFailed)?;
+                .map_err(|error| (fail(place), RunFailure::MeasurementFailed(error)))?;
             measured.push((position, precise));
         }
         Ok(measured)
     }
 }
 
-/// Returns the queue of the core's kind, made with no instruction taken for the first run of the kind.
+/// Whether a run has failed at a place before this one, so that what happens here cannot be the collection's failure.
+fn is_preceded(lowest_failure: &Mutex<Option<FailurePlace>>, place: FailurePlace) -> bool {
+    lowest_failure
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_some_and(|lowest| lowest < place)
+}
+
+/// Returns the place of the core's kind and its queue, made with no instruction taken for the first core of the kind.
 fn join_queue<CoreIdentity: Clone + Eq>(
     queues: &Queues<CoreIdentity>,
     core: &CoreIdentity,
-) -> Arc<AtomicUsize> {
+) -> (usize, Arc<AtomicUsize>) {
     let mut queues = queues.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((_, queue)) = queues.iter().find(|(kind, _)| kind == core) {
-        return Arc::clone(queue);
+    if let Some(place) = queues.iter().position(|(kind, _)| kind == core) {
+        return (place, Arc::clone(&queues[place].1));
     }
     let queue = Arc::new(AtomicUsize::new(usize::MIN));
     queues.push((core.clone(), Arc::clone(&queue)));
-    queue
+    (queues.len() - 1, queue)
 }
