@@ -512,7 +512,7 @@ before `clear_used`. MEASURED with it applied in a scratch copy of this branch:
 |---|---|---|
 | LTP, the kernel track's 30 | 6 match, 24 hang | 30 of 30 verdicts match the reference |
 | sharedmap | 1 of 2 | 2 of 2 |
-| python, one seed (`SCHEDULE_SEEDS=1`) | 0 of 3 (exit 139, all three seeds' first run, MEASURED on this branch at `af5897634`'s parent) | system program and language test modules pass; system test modules did not end in 5,400 s |
+| python, one seed (`SCHEDULE_SEEDS=1`) | 0 of 3 (exit 139 at seed 1 of each, MEASURED on `c4113f822` with the code-write fix, three seeds asked) | system program and language test modules pass; system test modules did not end in 5,400 s |
 | LTP, all 4,226 (`LTP_JOBS=12`, limit 600 s) | not run (the 30 above hang already) | 4,144 verdicts match, 82 differ: 25 hang, 8 slower than the limit, 32 wrong answers, 17 parts not built |
 
 The 82 (scratch `executor-restart/x3-ltp/ltpall/compare.txt`): hangs include sched starvation and hackbench01/02,
