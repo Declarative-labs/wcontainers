@@ -23,7 +23,11 @@ byte-identical to it (MEASURED, `git diff --quiet FETCH_HEAD HEAD` per file; the
 crates/kvm and crates/linux-socket-options, are not on his main). origin/executor-wasmtime does not exist yet (MEASURED,
 `git fetch origin`). The merged kernel does not compile: running.rs:197 builds `Processor` without the two fields
 executor-restart's arm64 merge added (MEASURED, E0063); that file is the kernel track's, so every run below applied a
-throwaway fill in the machine's copy only, never committed (For the orchestrator, line 4).
+throwaway fill in the machine's copy only, never committed. Later the same day origin/kernel-port 36bf10eed (which had
+merged this branch at 93637d42e and fills those fields) merged here without conflict (deba6c650): the tip builds as
+committed, and the final bar below ran with no fill. After it the 77 top-level files of his interface folders are
+byte-identical to his main (MEASURED). origin/executor-wasmtime appeared (ee26ae9f9) but its status still reads "X2: not
+started", so it is not merged.
 
 ## RT0: done (results in SCRATCH/runtime-restart/results-main, results-agents)
 
@@ -155,6 +159,11 @@ Built (orchestrator rulings 1 and 2):
   reader moved behind them: `LocalSystem::output_end`, `error_end`, `give_input(reader)`, `give_terminal(reader?)`; the
   reader starts when the container is made. The runtime's own `System` lost `standard` and `on_stop_flag_made`; the
   arrivals no longer raise a stop flag.
+- Fitted to kernel-port 36bf10eed (7d6d0e11e): the kernel now bounds its spaces only by the start's ceiling, so the runtime
+  gives `ceiling: Some(end of the executor's space)` (with `None`, every `fork` failed: "sh: can't fork: Bad address",
+  MEASURED); and its runner now goes on to the next turn after an execution's interrupt, leaving `run` only while one of
+  the kernel's calls waits for its lock, so ending a run also calls the kernel (`suspend_tasks(&[])`, which takes no task)
+  until no runner is inside `run` (without it the interrupt test hung, MEASURED). Asked as owner/orchestrator line 5.
 - Interrupts go through the executor's own `ExecutionInterrupter` (brief question 1, the new path): every executor is
   wrapped in `Interruptible<E>` (interruptible.rs: an `Executor`, `BehaviorSource`, `Cpu` and `PerThreadWatch` passing
   every call to `E`), whose `prepare_execution` keeps a share of each execution's interrupter in a slot. The container's
@@ -179,8 +188,9 @@ The numbers that were linked falsely, each now derived or a parameter (none has 
 - BLOCKS_AT_A_TIME: each decoding step is `BlockDecodingStrategy::UptoBytes(buffer.len())`, the caller's buffer.
 - RUNNERS (a constant `NonZeroUsize::MIN`): `RuntimeConfig::runners`.
 
-Bar (MEASURED, rustc 1.99.0, `-j 12`; logs SCRATCH/runtime-restart/rt2/bar-arm.log, bar-x86.log, final-*.log; every
-run with the throwaway kernel fill above):
+Bar at 7d6d0e11e, with no fill (MEASURED, rustc 1.99.0, `-j 12`, jobs runtime-restart/20261126-123615-2816384 ARM64
+load 25, 20261126-123610-775590 x86-64 load 49-54; logs SCRATCH/runtime-restart/rt2/final4-*.log; the same table held at
+e7f605981 before the kernel merge, with the fill, final2-*.log). `cargo metadata --locked` exits 0 on both.
 
 | | ARM64 | x86-64 |
 |---|---|---|
@@ -197,12 +207,11 @@ The seven tests: a container runs to its end; a finished container stays finishe
 guest in `while :; do :; done` ended by `Interrupter::interrupt` from another thread, twice; an interrupt before a run
 ends that run alone; a pipeline of 2 or 5 processes; a host thread panicking inside a run (the system's standard output
 panics on its first write) ends the container as `Panicked` for every later run. Planted (MEASURED, ARM64): with the
-container's interrupter raising no executor's slot, `an_interrupt_from_another_thread_stops_a_run` runs past 300 s at 1
-and at 4 runners (exit 124) and the other six pass. The image: alpine:3.22 for linux/arm64 from `docker export`.
+container's interrupter raising no executor's slot (before the kernel merge), and again at 7d6d0e11e with it ending no
+run, `an_interrupt_from_another_thread_stops_a_run` runs past the timeout at 1 and at 4 runners (exit 124). The image: alpine:3.22 for linux/arm64 from `docker export`.
 
 RT2 IS NOT CLAIMED: its bar also asks the suite, the interrupt test and the harness verdicts on wasmtime (X2 is not on
-origin), the kernel harness at full, none and bounded against j5f's lists, and LTP; and every run above needed the
-throwaway kernel fill, so the merged tip does not build as committed.
+origin), the kernel harness at full, none and bounded against j5f's lists, and LTP.
 
 Linter (`cargo reviewable check`, ARM64, reviewable-rust da55b9d7, no model key; MEASURED at the tree before the last
 two small fixes): single-kernel 403, suite 39, policy 68. `magic_literal` 0 and `number_constant_without_link` 0 in all
@@ -217,9 +226,9 @@ grammar_unclear 10, summary_unclear 8.
 
 ## Next
 
-- RT2: waits on (a) the kernel track fixing kernel running.rs:197 on kernel-port (line 4), (b) X2 on
-  origin/executor-wasmtime, to merge and run the suite, the interrupt test and the harness on wasmtime, and (c) the
-  harness `--features runtime` at full, none and bounded against j5f's lists and LTP, which need wasmtime too.
+- RT2: waits on X2: the executor track's status saying a commit of origin/executor-wasmtime is ready, to merge it and run
+  the suite, the interrupt test and the harness `--features runtime` at full, none and bounded against j5f's lists and
+  LTP on wasmtime.
 - RT3: waits on KP2 and X4.
 
 ## For the orchestrator (one line each)
@@ -230,10 +239,12 @@ grammar_unclear 10, summary_unclear 8.
    + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>> + Send + 'static`; wasmtime is given through `RuntimeConfig
    { make_executor, make_runner_executor, runners, idle_poll }` and run through `Runtime::make_container`; wcon takes its
    endpoints from `LocalSystem::output_end`, `error_end`, `give_input`, `give_terminal`.
-3. Kernel track: kernel-port can merge this branch: the 21 errors it measured in single-kernel are main's old copy of the
-   crate; this branch's builds against KS (MEASURED above, with line 4's fill).
-4. Kernel track: crates/kernel/implementation/linux/running.rs:197 `to_processor` lacks `predicate_registers:
-   Default::default(), first_fault_register: 0,` since executor-restart's arm64 merge (E0063).
+3. Kernel track: the 21 errors measured in single-kernel were main's old copy of the crate; kernel-port has since merged
+   this branch and this branch merged kernel-port 36bf10eed back; both build (MEASURED above).
+4. Kernel track: done on kernel-port (789862313): running.rs fills the processor's predicate fields.
+5. Kernel track (and question 3 of the brief): the runner leaves `run` only while one of the kernel's calls waits for its
+   lock, so an embedder's interrupt needs a call that does nothing (`suspend_tasks(&[])`); an execution interrupt that
+   ends `run` as `Interrupted` when the embedder asks (as at d176769a7) would let the runtime drop that loop.
 
 For the owner (his files unchanged):
 1. A system has no constructor. Before (crates/system/interface.rs:26):
