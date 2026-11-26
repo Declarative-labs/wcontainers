@@ -4,7 +4,7 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use core::arch::x86_64::{__m128i, _mm_castps_si128, _mm_castsi128_ps, _mm_rcp_ps, _mm_rsqrt_ps};
+use safe_arch::{m128, reciprocal_m128, reciprocal_sqrt_m128};
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasm_encoder::{
     CodeSection, ExportKind, ExportSection, Function, FunctionSection, MemArg, MemorySection,
@@ -88,14 +88,15 @@ fn module() -> Vec<u8> {
     module.finish()
 }
 
-/// The CPU's answer for four inputs.
+/// Returns the CPU's `rcpps` or `rsqrtps` of four inputs, through safe_arch's safe calls.
 fn native(inputs: [u32; 4], sqrt: bool) -> [u32; 4] {
-    // SAFETY: SSE is part of x86-64; the conversions only reinterpret 128 bits.
-    unsafe {
-        let v = _mm_castsi128_ps(core::mem::transmute::<[u32; 4], __m128i>(inputs));
-        let r = if sqrt { _mm_rsqrt_ps(v) } else { _mm_rcp_ps(v) };
-        core::mem::transmute::<__m128i, [u32; 4]>(_mm_castps_si128(r))
+    let v = m128::from_bits(inputs);
+    if sqrt {
+        reciprocal_sqrt_m128(v)
+    } else {
+        reciprocal_m128(v)
     }
+    .to_bits()
 }
 
 #[test]

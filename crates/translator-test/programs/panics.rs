@@ -1,7 +1,6 @@
 // Rust panics: caught at every depth with their messages, unwinding drops on the way. The stand-in kernel
-// answers only five system calls, so the C library calls `main` directly (the standard library's own start
-// asks for more), and the program allocates from a static area (the stand-in has no mmap).
-#![no_main]
+// answers five calls, so the C library calls `entry` as `main` (named so by the build), and the standard
+// library allocates each panic's message and exception from a static area (the stand-in has no mmap).
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::{Cell, UnsafeCell};
@@ -58,8 +57,8 @@ fn dive(n: u32) -> u32 {
     dive(n - 1) + 1
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn main(_: i32, _: *const *const u8) -> i32 {
+// The program, called by the C library with the arguments' count and values.
+pub extern "C" fn entry(_: i32, _: *const *const u8) -> i32 {
     panic::set_hook(Box::new(|_| {}));
     let mut caught = 0;
     for i in 0..32 {

@@ -1,0 +1,453 @@
+//! The ways of running the native output's code: where its jumps find their slots and how it calls the floor
+//! (docs/native.md section 3.2, docs/native-without-virtual-machine.md sections 3.1 and 3.2).
+
+use wcontainers_abi::RegisterBlock;
+
+use crate::mirror::{self, SLOT_MOVED_BITS, SLOT_SHIFT};
+use crate::thread_state::{COUNT, PAGE, Register, RegisterPage, SCRATCH, WITHHELD};
+
+/// A way of running, part of a translation's cache key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Way {
+    /// In a virtual machine: the entry mirror, and `brk` into the inside.
+    #[default]
+    Machine,
+    /// Each guest process a host process: the slot table at [`PROCESS_SLOTS`], and calls into the floor's entries
+    /// at [`PROCESS_ENTRIES`].
+    Process,
+    /// The kernel in process: the guest process in slot `slot`'s window, its host address [`window_base`] plus
+    /// its guest address, every access checked and cut to the window, calls into the floor's entries at
+    /// [`IN_PROCESS_ENTRIES`]. `displaced`: code for a thread whose stack pointer is outside the window (rule e of
+    /// section 3.2), which holds the guest's own stack pointer and checks and cuts every access through it, and whose
+    /// exits all reach the floor. `kept`: the registers its code keeps u and the window's base in, [`Kept::USUAL`]
+    /// between pieces; a piece that names those keeps them in two it does not name ([`Way::for_piece`]).
+    ///
+    /// [`window_base`]: Way::window_base
+    InProcess {
+        slot: u16,
+        displaced: bool,
+        kept: Kept,
+    },
+}
+
+/// The two registers the in-process way's code keeps from the guest: u, which its window check writes, and the
+/// window's base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Kept {
+    pub check: Register,
+    pub base: Register,
+}
+
+impl Kept {
+    /// The two between pieces, whose guest values are the first two words after the register page: the general
+    /// registers named least after the other ways' three by real programs' code (docs/native.md section 3.3: x15
+    /// 29.2 and x24 30.3 per 1000).
+    pub const USUAL: Self = Self {
+        check: CHECK,
+        base: BASE,
+    };
+}
+
+/// Guest addresses below 2^`PROCESS_REACH_BITS` have a slot in the process way: its ceiling.
+pub const PROCESS_REACH_BITS: u32 = 44;
+/// The process way's slot table: the slot of guest address `g` at `PROCESS_SLOTS | g << SLOT_SHIFT`.
+pub const PROCESS_SLOTS: u64 = 1 << 46;
+/// The floor's first entry in a host process; the entry of a call with code `c` is `c` entries further.
+pub const PROCESS_ENTRIES: u64 = (1 << 45) + 16;
+/// The bytes of one floor entry.
+pub const PROCESS_ENTRY_BYTES: u64 = 16;
+
+/// The bits of a guest address in the in-process way's window: its ceiling.
+pub const WINDOW_BITS: u32 = u32::BITS;
+/// Slot `k` of the in-process way starts at `k << SLOT_BITS`: its window, then as many bytes never mapped.
+pub const SLOT_BITS: u32 = WINDOW_BITS + 1;
+/// The most slots of the in-process way: every slot's window is below 2^[`PROCESS_REACH_BITS`].
+pub const IN_PROCESS_SLOTS: u16 = (1 << (PROCESS_REACH_BITS - SLOT_BITS)) - 1;
+/// The floor's first entry in process, past the process way's zygote; the entry of code `c` is `c` entries further.
+pub const IN_PROCESS_ENTRIES: u64 = (1 << 45) + (1 << 32) + PROCESS_ENTRY_BYTES;
+/// The in-process way's displaced code's slot table: that of slot 0's window, which is no guest's, so it is never
+/// mapped, and every exit of displaced code reaches the floor as a fault there.
+pub const DISPLACED_SLOTS: u64 = PROCESS_SLOTS;
+/// Where a window's never mapped bytes start, this many bytes past its base.
+pub const OUTSIDE: u64 = 1 << WINDOW_BITS;
+/// The in-process way's mark, past the window's base: translated code reads this byte when an access's address or a
+/// new stack pointer is outside the window, so that the floor finds the instruction's own fault or takes the stack
+/// pointer outside its window. It lies further into the never mapped bytes than an access that crosses the window's
+/// top reaches (Arm's largest is 64 bytes), so that such an access's own fault is never taken for the mark.
+pub const MARK: u64 = OUTSIDE + MARK_OFFSET;
+/// The mark past [`OUTSIDE`]: the largest offset of a byte load's unsigned immediate (Arm ARM, LDRB (immediate),
+/// imm12).
+pub const MARK_OFFSET: u64 = (1 << 12) - 1;
+
+/// The in-process way's second scratch register u between pieces, which its window check writes.
+pub const CHECK: Register = 15;
+/// The in-process way's register holding the window's base between pieces.
+pub const BASE: Register = 24;
+/// Where the in-process way keeps the guest values of [`CHECK`] and [`BASE`], then those of the two a piece keeps
+/// in their place: just after the page.
+pub const IN_PROCESS_WITHHELD_AT: usize = size_of::<RegisterPage>();
+/// The words after the page the in-process way keeps guest values in.
+pub const AFTER_PAGE_WORDS: usize = 4;
+/// The general registers, x0 to x30.
+const GENERAL: Register = RegisterBlock::ZERO.x.len() as Register;
+/// The link register, which a call into the floor keeps and uses.
+const LINK: Register = GENERAL - 1;
+/// Registers a piece never keeps in place of [`CHECK`] and [`BASE`]: those every way withholds, the two, and the link
+/// register.
+const NEVER_KEPT: [Register; 6] = [COUNT, SCRATCH, PAGE, CHECK, BASE, LINK];
+
+const _: () = assert!(PROCESS_SLOTS.trailing_zeros() >= PROCESS_REACH_BITS + SLOT_SHIFT);
+// A slot's moves build a piece's address under the slot's own top bits (mirror::SLOT_MOVED_BITS).
+const _: () = assert!(PROCESS_SLOTS >> SLOT_MOVED_BITS == PROCESS_ENTRIES >> SLOT_MOVED_BITS);
+const _: () = assert!(PROCESS_SLOTS >> SLOT_MOVED_BITS == IN_PROCESS_ENTRIES >> SLOT_MOVED_BITS);
+
+impl Way {
+    /// Guest addresses below 2^this have a slot.
+    pub const fn reach_bits(self) -> u32 {
+        match self {
+            Self::Machine => mirror::REACH_BITS,
+            Self::Process => PROCESS_REACH_BITS,
+            Self::InProcess { .. } => WINDOW_BITS,
+        }
+    }
+
+    /// Where the slots start: every slot's address is this with the guest address shifted in. In process, the
+    /// slots of the window's host addresses.
+    pub const fn slot_table(self) -> u64 {
+        match self {
+            Self::Machine => mirror::MIRROR,
+            Self::Process => PROCESS_SLOTS,
+            Self::InProcess {
+                displaced: false, ..
+            } => PROCESS_SLOTS | self.window_base() << SLOT_SHIFT,
+            Self::InProcess {
+                displaced: true, ..
+            } => DISPLACED_SLOTS,
+        }
+    }
+
+    /// The address of the entry slot of guest address `guest`.
+    pub const fn slot(self, guest: u64) -> u64 {
+        self.slot_table() | guest << SLOT_SHIFT
+    }
+
+    /// The guest address whose slot is at `slot`.
+    pub const fn slot_target(self, slot: u64) -> u64 {
+        (slot & !self.slot_table()) >> SLOT_SHIFT
+    }
+
+    /// The host address of guest address 0: the window's base in process, 0 in the other ways.
+    pub const fn window_base(self) -> u64 {
+        match self {
+            Self::Machine | Self::Process => 0,
+            Self::InProcess { slot, .. } => (slot as u64) << SLOT_BITS,
+        }
+    }
+
+    /// The host stack pointer less the guest's: the window's base in process, unless displaced.
+    pub const fn stack_base(self) -> u64 {
+        match self {
+            Self::InProcess {
+                displaced: true, ..
+            } => 0,
+            _ => self.window_base(),
+        }
+    }
+
+    /// The registers translated code keeps from the guest: the ways' three, then in process u and the base.
+    pub const fn withheld(self) -> Withheld {
+        match self {
+            Self::Machine | Self::Process => Withheld {
+                registers: [WITHHELD[0], WITHHELD[1], WITHHELD[2], 0, 0],
+                len: WITHHELD.len(),
+            },
+            Self::InProcess { kept, .. } => Withheld {
+                registers: [WITHHELD[0], WITHHELD[1], WITHHELD[2], kept.check, kept.base],
+                len: WITHHELD.len() + 2,
+            },
+        }
+    }
+
+    /// The register u is kept in (in process).
+    pub const fn check(self) -> Register {
+        match self {
+            Self::InProcess { kept, .. } => kept.check,
+            _ => CHECK,
+        }
+    }
+
+    /// The register the window's base is kept in (in process).
+    pub const fn base(self) -> Register {
+        match self {
+            Self::InProcess { kept, .. } => kept.base,
+            _ => BASE,
+        }
+    }
+
+    /// The way for a piece that names the general registers in `named` (bits by register number): in process,
+    /// [`CHECK`] or [`BASE`] where it names one of them is kept in the highest register it names none of, so that
+    /// no instruction of it pays a stand-in for them; where it names nearly all, it keeps [`Kept::USUAL`].
+    pub fn for_piece(self, named: u32) -> Self {
+        let Self::InProcess {
+            slot,
+            displaced: false,
+            kept,
+        } = self
+        else {
+            return self;
+        };
+        let names = |r: Register| named >> r & 1 != 0;
+        let mut free = (0..GENERAL)
+            .rev()
+            .filter(|&r| !NEVER_KEPT.contains(&r) && !names(r));
+        let mut keep = |usual: Register| {
+            if names(usual) {
+                free.next()
+            } else {
+                Some(usual)
+            }
+        };
+        match (keep(kept.check), keep(kept.base)) {
+            (Some(check), Some(base)) => Self::InProcess {
+                slot,
+                displaced: false,
+                kept: Kept { check, base },
+            },
+            _ => self,
+        }
+    }
+
+    /// Whether code naming the general registers in `named` reaches one of them through a stand-in for u or the
+    /// base (in process).
+    pub fn stands_in(self, named: u32) -> bool {
+        matches!(self, Self::InProcess { kept, .. }
+            if (named >> kept.check | named >> kept.base) & 1 != 0)
+    }
+
+    #[cfg(feature = "translate")]
+    /// The way of each part of a piece whose parts name the general registers in `named`, given its loops as
+    /// ranges of parts: [`Self::for_piece`] of the whole where no register stands in for u or the base there;
+    /// otherwise, outermost first, each loop not inside one chosen already that is written without a stand-in for
+    /// its own, and the other parts for theirs. Loops that share a part without one holding the other (a rotated
+    /// loop's turns, a nest whose inner loop is entered past its head) are taken as one, their union.
+    pub fn for_parts(self, named: &[u32], loops: &[core::ops::Range<usize>]) -> Vec<Self> {
+        let union = |parts: &[u32]| parts.iter().fold(0, |b, &n| b | n);
+        let whole = self.for_piece(union(named));
+        if !whole.stands_in(union(named)) {
+            return vec![whole; named.len()];
+        }
+        let mut chosen: Vec<Option<Self>> = vec![None; named.len()];
+        let mut outermost: Vec<_> = loops.to_vec();
+        let crossing = |x: &core::ops::Range<usize>, y: &core::ops::Range<usize>| {
+            let holds = |a: &core::ops::Range<usize>, b: &core::ops::Range<usize>| {
+                a.start <= b.start && b.end <= a.end
+            };
+            x.start < y.end && y.start < x.end && !holds(x, y) && !holds(y, x)
+        };
+        while let Some((x, y)) = (outermost.iter())
+            .flat_map(|x| outermost.iter().map(move |y| (x, y)))
+            .find(|(x, y)| crossing(x, y))
+            .map(|(x, y)| (x.clone(), y.clone()))
+        {
+            outermost.retain(|l| *l != x && *l != y);
+            outermost.push(x.start.min(y.start)..x.end.max(y.end));
+        }
+        outermost.sort_by_key(|l| core::cmp::Reverse(l.len()));
+        for l in outermost {
+            if chosen[l.clone()].iter().any(Option::is_some) {
+                continue;
+            }
+            let own = union(&named[l.clone()]);
+            let way = self.for_piece(own);
+            if !way.stands_in(own) {
+                chosen[l].fill(Some(way));
+            }
+        }
+        let rest = (named.iter().zip(&chosen))
+            .filter(|(_, c)| c.is_none())
+            .fold(0, |b, (&n, _)| b | n);
+        let rest = self.for_piece(rest);
+        chosen.into_iter().map(|c| c.unwrap_or(rest)).collect()
+    }
+
+    /// The way between pieces: in process, u and the base in [`Kept::USUAL`].
+    pub const fn usual(self) -> Self {
+        match self {
+            Self::InProcess {
+                slot, displaced, ..
+            } => Self::InProcess {
+                slot,
+                displaced,
+                kept: Kept::USUAL,
+            },
+            _ => self,
+        }
+    }
+
+    /// Whether a piece keeps u or the base in another register than between pieces.
+    pub fn moves_kept(self) -> bool {
+        matches!(self, Self::InProcess { kept, .. } if kept != Kept::USUAL)
+    }
+}
+
+/// The registers a way withholds from the guest, in the order their guest values are kept.
+#[derive(Clone, Copy, Debug)]
+pub struct Withheld {
+    registers: [Register; 5],
+    len: usize,
+}
+
+impl core::ops::Deref for Withheld {
+    type Target = [Register];
+
+    fn deref(&self) -> &[Register] {
+        &self.registers[..self.len]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WAY: Way = Way::InProcess {
+        slot: 1,
+        displaced: false,
+        kept: Kept::USUAL,
+    };
+
+    fn named(registers: &[Register]) -> u32 {
+        registers.iter().fold(0, |b, &r| b | 1 << r)
+    }
+
+    fn kept(way: Way) -> (Register, Register) {
+        (way.check(), way.base())
+    }
+
+    #[test]
+    fn a_piece_naming_neither_keeps_the_usual_two() {
+        assert_eq!(WAY.for_piece(named(&[0, 1, 29, 30])), WAY);
+        assert!(!WAY.for_piece(named(&[0, 1, 29, 30])).moves_kept());
+    }
+
+    #[test]
+    fn a_piece_naming_one_keeps_it_in_the_highest_it_does_not_name() {
+        assert_eq!(kept(WAY.for_piece(named(&[CHECK]))), (29, BASE));
+        assert_eq!(kept(WAY.for_piece(named(&[BASE, 29]))), (CHECK, 27));
+        let both = WAY.for_piece(named(&[CHECK, BASE, 29, 27]));
+        assert_eq!(kept(both), (26, 25));
+        assert!(both.moves_kept());
+        assert_eq!(both.usual(), WAY);
+        assert_eq!(&*both.withheld(), &[COUNT, SCRATCH, PAGE, 26, 25]);
+    }
+
+    #[test]
+    fn a_piece_naming_nearly_all_keeps_the_usual_two() {
+        let all = (0..GENERAL).fold(0, |b, r| b | 1 << r);
+        assert_eq!(WAY.for_piece(all), WAY);
+        let one_free = all & !(1 << 3);
+        assert_eq!(WAY.for_piece(one_free), WAY);
+        assert_eq!(kept(WAY.for_piece(one_free & !(1 << 5))), (5, 3));
+    }
+
+    /// Every general register but the link register: a part naming these stands in for u and the base.
+    #[cfg(feature = "translate")]
+    fn crowded() -> u32 {
+        (0..LINK).fold(0, |b, r| b | 1 << r)
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn a_piece_with_no_stand_in_has_one_way() {
+        let parts = [named(&[CHECK, 3]), named(&[4]), named(&[BASE])];
+        let ways = WAY.for_parts(&parts, core::slice::from_ref(&(1..3)));
+        let whole = WAY.for_piece(named(&[CHECK, BASE, 3, 4]));
+        assert!(whole.moves_kept());
+        assert_eq!(ways, vec![whole; 3]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn a_loop_that_leaves_room_has_its_own_way_in_a_crowded_piece() {
+        let parts = [
+            crowded(),
+            named(&[CHECK, 1, 2]),
+            named(&[CHECK, 3]),
+            crowded(),
+        ];
+        let ways = WAY.for_parts(&parts, core::slice::from_ref(&(1..3)));
+        let own = WAY.for_piece(named(&[CHECK, 1, 2, 3]));
+        assert_eq!(kept(own), (29, BASE));
+        assert_eq!(ways, vec![WAY, own, own, WAY]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn the_outermost_loop_that_leaves_room_is_chosen() {
+        // The outer loop leaves room: the inner one inside it takes the outer's way.
+        let parts = [
+            crowded(),
+            named(&[CHECK, 1]),
+            named(&[BASE, 2]),
+            named(&[3]),
+        ];
+        let ways = WAY.for_parts(&parts, &[2..3, 1..4]);
+        let outer = WAY.for_piece(named(&[CHECK, BASE, 1, 2, 3]));
+        assert_eq!(ways, vec![WAY, outer, outer, outer]);
+        // The outer loop is crowded: the inner one is chosen alone.
+        let parts = [named(&[0]), crowded(), named(&[CHECK, 1]), named(&[2])];
+        let ways = WAY.for_parts(&parts, &[2..3, 1..4]);
+        let inner = WAY.for_piece(named(&[CHECK, 1]));
+        assert!(inner.moves_kept());
+        assert_eq!(ways, vec![WAY, WAY, inner, WAY]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn loops_sharing_a_part_are_one_loop() {
+        // A nest whose outer loop's branch back is in the inner loop's first part: 1 to 3 and 3 to 5 share part 3,
+        // and the inner loop's turns would cross between two ways if each were chosen alone.
+        let parts = [
+            crowded(),
+            named(&[CHECK, 1]),
+            named(&[2]),
+            named(&[3]),
+            named(&[4]),
+            named(&[5]),
+        ];
+        let ways = WAY.for_parts(&parts, &[1..4, 3..6]);
+        let nest = WAY.for_piece(named(&[CHECK, 1, 2, 3, 4, 5]));
+        assert!(nest.moves_kept());
+        assert_eq!(ways, vec![WAY, nest, nest, nest, nest, nest]);
+    }
+
+    #[cfg(feature = "translate")]
+    #[test]
+    fn other_ways_keep_theirs_in_every_part() {
+        let displaced = Way::InProcess {
+            slot: 1,
+            displaced: true,
+            kept: Kept::USUAL,
+        };
+        for way in [Way::Machine, Way::Process, displaced] {
+            assert_eq!(
+                way.for_parts(
+                    &[crowded(), named(&[CHECK])],
+                    core::slice::from_ref(&(1..2))
+                ),
+                [way; 2]
+            );
+        }
+    }
+
+    #[test]
+    fn other_ways_and_displaced_code_keep_theirs() {
+        let displaced = Way::InProcess {
+            slot: 1,
+            displaced: true,
+            kept: Kept::USUAL,
+        };
+        for way in [Way::Machine, Way::Process, displaced] {
+            assert_eq!(way.for_piece(named(&[CHECK, BASE])), way);
+        }
+    }
+}

@@ -17,6 +17,7 @@ pub mod progress;
 pub mod reference;
 pub mod runner;
 pub mod seeded;
+pub mod state_memory;
 
 /// What a run on the guest's CPU itself, not through a translation, is called in the tools' commands and
 /// reports.

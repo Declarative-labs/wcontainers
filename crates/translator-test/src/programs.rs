@@ -403,7 +403,33 @@ fn build_flagged<G: GuestTest>(
     flatten(&elf, &own, stem)
 }
 
+/// The function a Rust program starts at, which the C library calls as `main`.
+const RUST_ENTRY: &str = "entry";
+/// The crate name a Rust program is built under, as the library its program links.
+const RUST_CRATE: &str = "program";
+/// The root of the program that links that library and holds nothing else.
+const RUST_ROOT: &str = "#![no_main]\nextern crate program;\n";
+/// The flags rustc takes for the library.
+const RUST_LIBRARY_FLAGS: &[&str] = &["--crate-type", "rlib", "--crate-name", RUST_CRATE];
+/// The flags rustc takes for the root.
+const RUST_ROOT_FLAGS: &[&str] = &["--crate-type", "bin", "--crate-name", "start"];
+/// The flag rustc takes for a library a crate links, followed by the crate's name, `=` and its file.
+const RUST_EXTERN_FLAG: &str = "--extern";
+/// The flag rustc takes for a code generation option.
+const RUST_CODEGEN_FLAG: &str = "-C";
+/// The code generation option that defines a linker symbol, followed by its name, `=` and its value.
+const RUST_DEFINE_SYMBOL: &str = "link-arg=--defsym=";
+/// What the file name of a library rustc takes starts with.
+const RUST_LIBRARY_PREFIX: &str = "lib";
+/// What the file name of a library rustc takes ends with.
+const RUST_LIBRARY_SUFFIX: &str = ".rlib";
+/// What a symbol in Rust's own mangling starts with (https://doc.rust-lang.org/rustc/symbol-mangling/v0.html).
+const RUST_MANGLED_PREFIX: &str = "_R";
+
 /// Build a Rust program with its standard library, statically, linked with `script`.
+///
+/// The source is built as a library, whose public `entry` keeps a global symbol, and a root that links it is
+/// linked with that symbol as `main`, so the program needs no unmangled name of its own.
 fn rust<G: GuestTest>(
     source: &Path,
     elf: &Path,
@@ -412,26 +438,96 @@ fn rust<G: GuestTest>(
     position: Position,
 ) {
     let level = optimisation.trim_start_matches("-O");
-    let status = Command::new("rustc")
-        .args(["--edition", "2024", "--target", G::REFERENCE.rust_target])
-        .args(["-C", &format!("opt-level={level}")])
-        .args(["-C", "panic=unwind"])
-        .args(position.rust_flags())
-        .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
+    let rustc = || {
+        let mut command = Command::new("rustc");
+        command
+            .args(["--edition", "2024", "--target", G::REFERENCE.rust_target])
+            .args([RUST_CODEGEN_FLAG, &format!("opt-level={level}")])
+            .args([RUST_CODEGEN_FLAG, "panic=unwind"])
+            .args(position.rust_flags());
+        command
+    };
+    let run = |command: &mut Command| {
+        let status = command.status().expect("run rustc (from the Nix shell)");
+        assert!(status.success(), "rustc {} failed", source.display());
+    };
+    let stem = elf.file_stem().unwrap().to_str().unwrap();
+    let library = elf.with_file_name([RUST_LIBRARY_PREFIX, stem, RUST_LIBRARY_SUFFIX].concat());
+    run(rustc()
+        .args(RUST_LIBRARY_FLAGS)
+        .arg(OUTPUT_FLAG)
+        .arg(&library)
+        .arg(source));
+    let entry = library_symbol(&library, RUST_CRATE, RUST_ENTRY);
+    let extension = SOURCES
+        .iter()
+        .find(|(_, language)| *language == Language::Rust)
+        .unwrap()
+        .0;
+    let root = elf.with_extension(extension);
+    std::fs::write(&root, RUST_ROOT).unwrap();
+    let assignment = DEFINITION_ASSIGNMENT.to_string();
+    let library_text = library.to_str().unwrap();
+    run(rustc()
+        .args(RUST_ROOT_FLAGS)
+        .arg(RUST_EXTERN_FLAG)
+        .arg([RUST_CRATE, &assignment, library_text].concat())
         .args([
-            "-C",
+            RUST_CODEGEN_FLAG,
+            "linker-flavor=ld.lld",
+            RUST_CODEGEN_FLAG,
+            "linker=rust-lld",
+        ])
+        .args([
+            RUST_CODEGEN_FLAG,
             "link-self-contained=yes",
-            "-C",
+            RUST_CODEGEN_FLAG,
             "link-arg=--build-id=none",
         ])
-        .arg("-C")
+        .arg(RUST_CODEGEN_FLAG)
+        .arg([RUST_DEFINE_SYMBOL, MAIN, &assignment, &entry].concat())
+        .arg(RUST_CODEGEN_FLAG)
         .arg(format!("link-arg=-T{}", script.display()))
         .arg(OUTPUT_FLAG)
         .arg(elf)
-        .arg(source)
-        .status()
-        .expect("run rustc (from the Nix shell)");
-    assert!(status.success(), "rustc {} failed", source.display());
+        .arg(&root));
+}
+
+/// Finds the global symbol of the function `name` at the root of the Rust library `crate_name` at `library`.
+fn library_symbol(library: &Path, crate_name: &str, name: &str) -> String {
+    use object::read::archive::ArchiveFile;
+    use object::{Object, ObjectSymbol};
+    // In Rust's own mangling the path ends in the crate's name and then the function's, each after its length.
+    let ending = [
+        crate_name.len().to_string(),
+        crate_name.to_string(),
+        name.len().to_string(),
+        name.to_string(),
+    ]
+    .concat();
+    let bytes = std::fs::read(library).unwrap();
+    let archive = ArchiveFile::parse(&*bytes).expect("an rlib");
+    let mut found = Vec::new();
+    for member in archive.members() {
+        let member = member.unwrap();
+        // The library's metadata is a member too, and is not an object file.
+        let Ok(file) = object::File::parse(member.data(&*bytes).unwrap()) else {
+            continue;
+        };
+        found.extend(
+            file.symbols()
+                .filter(|s| s.is_global() && s.is_definition())
+                .filter_map(|s| s.name().ok().map(String::from))
+                .filter(|s| s.starts_with(RUST_MANGLED_PREFIX) && s.ends_with(&ending)),
+        );
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "one {name} in {}: {found:?}",
+        library.display()
+    );
+    found.pop().unwrap()
 }
 
 /// The symbol of a program's main function.
