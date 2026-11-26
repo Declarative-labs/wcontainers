@@ -32,14 +32,16 @@ build=$work/build
 rm -rf "$build"; mkdir -p "$build/crates"
 cp -r "$work/first/crates/." "$build/crates/"
 for crate in volatile-bytes byte-sink byte-source; do cp -r "$repository/crates/$crate" "$build/crates/"; done
-rm -rf "$build/crates/volatile-bytes/implementation" "$build/crates/volatile-bytes/conformance"
+# The owner's pointer crate is what the direct crates copy bytes with; his other implementation is not needed.
+rm -rf "$build/crates/volatile-bytes/implementation/shared-mapping"
 mkdir -p "$build/.cargo"; cp "$repository/.cargo/config.toml" "$build/.cargo/"
 cp "$repository/rust-toolchain.toml" "$build/"
 {
     echo '[workspace]'
     echo 'resolver = "3"'
-    echo 'members = ["crates/*"]'
+    echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*"]'
     echo
+    sed -n '/^\[workspace.package\]/,/^$/p' "$repository/Cargo.toml"
     echo '[workspace.metadata.reviewable]'
     echo 'prefix = "wcontainers"'
     echo '# The two rule sets that ask a hosted model: no key is on this machine, and nothing of this goes out.'
@@ -51,6 +53,14 @@ cat "$build/Cargo.toml"
 (cd "$build" && CARGO_TARGET_DIR=$work/target cargo check -j "${ARM_JOBS:-12}" --workspace 2>&1 | grep -E '^(warning|error)' | sort | uniq -c | sort -rn | head -40; echo "check status ${PIPESTATUS[0]}")
 (cd "$build" && CARGO_TARGET_DIR=$work/target cargo check -j "${ARM_JOBS:-12}" --workspace --message-format short 2>&1 | grep -E ': (warning|error)' | head -60)
 (cd "$build" && CARGO_TARGET_DIR=$work/target cargo clippy -j "${ARM_JOBS:-12}" --workspace -- -D warnings 2>&1 | grep -E '^(warning|error)' | sort | uniq -c | sort -rn | head -30; echo "clippy status ${PIPESTATUS[0]}")
+
+step "the direct crates' own tests, each under a time limit"
+(cd "$build" && CARGO_TARGET_DIR=$work/target timeout 600 cargo test -j "${ARM_JOBS:-12}" --release -p wcontainers-component-object-model-direct 2>&1 | grep -E '^test |test result|panicked|error'; echo "test status ${PIPESTATUS[0]}")
+
+step "unsafe lines per crate written (the root manifest's way: lines naming unsafe, comments included)"
+(cd "$work/first/crates" && for crate in $(find . -name Cargo.toml -exec dirname {} \; | sort); do
+    echo "$(find "$crate" -name '*.rs' -not -path "$crate/implementation/*" -exec grep -c unsafe /dev/null {} + | awk -F: '{s+=$NF} END {print s+0}') $crate"
+done)
 
 if [ -n "${LINTER:-}" ]; then
     step "the linter on the crates written (no rule loosened; the two model rule sets off: no key here)"

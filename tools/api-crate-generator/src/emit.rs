@@ -1454,6 +1454,9 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
         }
         let _ = writeln!(manifest, "\n[lints]\nworkspace = true");
         std::fs::write(folder.join("Cargo.toml"), manifest).map_err(|error| error.to_string())?;
+        if api == 0 {
+            crate::runtime::write(&folder)?;
+        }
         let interfaces = generator.interface_api.values().filter(|&&a| a == api).count();
         let methods: usize = generator
             .interface_api

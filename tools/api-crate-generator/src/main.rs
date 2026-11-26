@@ -10,6 +10,7 @@ mod layout;
 mod mapping;
 mod metadata;
 mod names;
+mod runtime;
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
