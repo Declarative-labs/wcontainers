@@ -230,3 +230,16 @@ pub trait MemorySpace: Sized {
   build, with the stand-in of the executor track's X3. Other tracks' crates that call the old drive
   or implement `Host` for the kernel: the runtime (single-kernel), seeded-test-policy, and the
   hardware-virtualization executors.
+
+## 2026-11-26: his main `ac696ea19` (`prepare_execution`, `Execution::run`)
+
+- Merge `b60df9441`: no conflict; 100 files in the interface folders byte-identical to his main.
+- Fit (`4bea40c2f`): the turn is a loop of "prepare the execution, run it until the next trap,
+  which the handler ends it at"; an `ExecutionStop::Waiting` is polled to its end and the execution
+  prepared again from the processor state it stopped at (INFERRED from the interface: `run`
+  consumes the execution), each new interrupter handed to the kernel's lock. The unit-test
+  executor's execution is the uninhabited `Absent`.
+- MEASURED, ARM64 and x86-64, `--jobs 12`: metadata `--locked`, rustfmt `--check`, `--lib` check and
+  clippy `--no-deps -D warnings` of both kernel crates exit 0; 0 `unsafe` lines; unit tests 30
+  passed on both (then one test-only doc comment shortened, rechecked on ARM64). Linter, the
+  kernel's own crates: 31,319 (31,322 before this fit). Logs: SCRATCH/kernel-port/exec-1126/.
