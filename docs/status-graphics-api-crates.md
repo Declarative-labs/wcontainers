@@ -470,6 +470,12 @@ unless it names another commit. His main (ac696ea19) was already in the branch (
   an out-parameter an entry would leave unwritten): 39 arrays out, 16 structures holding a pointer, 14 counts passed by
   pointer, 11 bytes in, 9 PSTR and 5 PWSTR by value, 9 `void` returns of other forms, 7 void pointers, 6 arrays whose
   count is no parameter, the rest one or two each. The calling glue answers E_NOTIMPL for all 139.
+  CORRECTED 2026-11-26 (the check of 49bc737b7): three statements of this item were false. The calling glue answered
+  E_NOTIMPL only where the method's result is a `Result`; 44 methods returning a plain value had an `unimplemented!`
+  body, so safe code calling them panicked. The 100 methods "refused by a null entry" were not refused: C calling one
+  jumps to address 0. RSSetViewports, RSSetScissorRects and DiscardView1 take const arrays with a count, not structures by
+  value. The report line and this item were written by emit.rs from a list, not from what glue_call.rs wrote. Repaired
+  below (AC3, repaired after the check of 49bc737b7).
 - **(3) The conformance suite** (`crates/<api>/conformance/suite.rs`, from the driver): generic over the top trait, it
   makes an object of every kind it can, calls every method and export, and checks each answer (a failure negative, an
   object equal to its clone); run by the recorder and the hostile implementation through `tests!` (conformance_run.rs).
@@ -515,6 +521,88 @@ Left of AC3: the conformance run through both glues (the calling glue's not-glue
 refused by a null entry (glue for arrays out and counts by pointer), the byte forms' mirrors for magic_literal, the
 direct crates' cross-crate surface for public_outside_interface (a layout question when no narrowing is left), and
 conformance_untested_method.
+
+## AC3, repaired after the check of 49bc737b7 (2026-11-26; logs in wcontainers-scratch/graphics-api-crates/ac3w/)
+
+His main (ac696ea19) was already in the branch: `git fetch` of his checkout's main, `git rev-list --count HEAD..FETCH_HEAD`
+0 (MEASURED). Every bar below is MEASURED at de137e0e1 (pushed), x86-64 job gac6/20261126-191343-3657339, log
+ac3w/tip-de137e0e1/final.log, reports and the whole set's linter output beside it.
+
+- **No null entry, no panicking body.** A method no form of the glue carries gets an entry (src/glue.rs `refusal`) with
+  C's types by calling convention only (a pointer, an interface pointer, a GUID by value, a value; a structure by value
+  only when it is all integers and 1, 2, 4 or 8 bytes, which both x64 conventions pass as one integer; a PSTR or PWSTR as
+  a pointer; a callback as an address). It reads nothing, calls nothing, writes COM's null through each out-pointer to one
+  object or pointer and zeros through each value out of a fixed size (nothing through arrays and bytes: no count of them
+  is trusted), and answers E_NOTIMPL, or for a method with no result nothing. A parameter whose convention it does not
+  know fails the generator: no null entry can be written. The calling glue's refused methods answer E_NOTIMPL, no result,
+  no object, or a value that holds nothing (zero bytes decoded for a structure); a type of which none can be written fails
+  the generator, and the recorder's two `unimplemented!` fallbacks are gone the same way. The `Absent` type is removed.
+- **The check** (src/complete.rs, run on every set written): every file of every direct and recorder crate is read; a
+  table field `None`, an `Absent` field, or `unimplemented!`, `todo!`, `panic!`, `unreachable!` fails the generator; 3 unit
+  tests. Result: "COMPLETE: 31 files of the direct and recorder crates; null entries 0, panicking bodies 0". Controls (same
+  job, plant4.sh): a generator copy writing `None` for the refused entries: status 1, "COMPLETE FAILED: 189 findings"; one
+  writing `unimplemented!` for the refused calling bodies: status 1, 104 findings; one writing 1 instead of 0 through the
+  refusals' value outs: generator status 0, the C caller's honest test status 101 (its new assertion).
+- **The report is printed from what each glue wrote** (src/glue.rs `Outcome`, recorded when each entry's and each calling
+  method's text is emitted): per method not glued, its reason, what the serving entry does and what the calling method
+  answers. Whole set: "GLUED 575", "NOT GLUED 68", "NULL ENTRIES 0", "CALLING GLUE METHODS THAT DO NOT CALL THE SYSTEM 89"
+  (refused by kinds, by form, or pinned). The 68 by entry: 28 answer E_NOTIMPL writing nothing, 11 no result writing
+  nothing, 4 zero, 1 null; 24 write COM's null or zeros through their out-pointers (ac3w/tip-de137e0e1/report-direct3d-11-glue.txt).
+- **Glued, of the forms that are plain to carry** (both glues, the C caller, the recorder and the hostile set): const arrays
+  of structures with a count (RSSetViewports, RSSetScissorRects, DiscardView1, ClearView's rectangles: structures copied
+  as C lays them out, passed in aligned words); fixed arrays by `CountConst` in and out (ClearRenderTargetView,
+  ClearUnorderedAccessViewFloat and Uint, OMSetBlendState, ClearView, OMGetBlendState); bytes in with a count (the seven
+  Create*Shader, SetPrivateData of the four interfaces, the video extensions; copied once, as decided); arrays out with a
+  count by value, of values and of objects (the 30 *Get{ConstantBuffers,Samplers,ShaderResources,UnorderedAccessViews}
+  and *GetConstantBuffers1, SOGetTargets, OMGetRenderTargets, OMGetRenderTargetsAndUnorderedAccessViews, IAGetVertexBuffers,
+  VideoProcessorGetStreamPalette, ReclaimResources, ReclaimResources1, CreateSurface); arrays of values out counted by
+  pointer when they are the method's one out (RSGetViewports, RSGetScissorRects, GetDisplayModeList, GetDisplayModeList1:
+  the serving glue reads the room once, writes no more than it and the number written; the calling glue asks how many,
+  then passes that much room, none past the glue's limit); a GUID out (4). GLUED 504 -> 575. Not glued, each with its
+  reason in the report: objects out counted by pointer (the six *GetShader), bytes out counted by pointer (GetPrivateData
+  of three interfaces, the info queues' messages and filters: 9), PSTR/PWSTR by value (14), structures holding a pointer
+  (16 + 6 arrays), void pointers (7), objects out of several kinds (2), and 8 single forms.
+- **A leak found and fixed** (MEASURED): at 6fc6df5a2 the whole set's C caller fuzzing ended with 1 and 5 implementation
+  objects alive (seeds 11, 13): an array out's objects were served one by one while the implementation's extra objects
+  (more than the room) were dropped after, and a `Drop` that panicked lost the references already served. The serving
+  glue now drops every object no array out hands over before it serves any (de72bb484); seeds 11 and 13 then 0 alive.
+  The fuzzing test now fails when an object outlives the run.
+- **The hostile C caller over every entry** (643 entries and exports, 0 absent: the 100 formerly null entries are called,
+  each refusing one with out-buffers of exactly the size it writes, checked to be null or zeros after the call). Honest run
+  default and AddressSanitizer: status 0, refused 6,198 calls, refused_wrong 0. Fuzzing 3 seeds x 10M per set under
+  AddressSanitizer: 6 of 6 status 0, 0 reports, implementation objects alive 0 (before 0) in each; whole set about 5.3M
+  successes per seed. Control: the serving glue's element limit removed at 4 places: AddressSanitizer report, status 101.
+- **The conformance suite through both glues** (`conformance_through_glues`, the suite run on `served(implementation)`:
+  the calling glue over the serving glue's exports): Direct3D 11 65 kinds, 843 of 847 calls made, 0 panics; DXGI 16
+  kinds, 211 of 211; on the recorder and the hostile implementation, default and AddressSanitizer: 8 of 8 runs status 0, 0
+  reports (d3dcommon has no exports, so no `served`: its kinds are made by Direct3D 11's methods). The direct runs as
+  before: 10 of 10 default, 10 of 10 AddressSanitizer.
+- **conformance_untested_method 643 -> 65** (whole set). Measured first (two experiments on a copy of the tip's output):
+  moving every call of DXGI's suite out of its closure into a named function left DXGI's 197 findings at 197; writing the
+  calls as `Trait::method(this, ..)` instead of `<<A as Top>::Kind as Trait>::method(this, ..)` took them to 27. So the
+  qualified self type hid the calls, not the closures. The generator now writes every driven and suite call by the trait's
+  path (de137e0e1). The 65 left are methods the suite cannot make an argument for (structures holding pointers, the
+  methods not glued).
+- Kept at de137e0e1: the three sets written twice IDENTICAL; check, clippy -D warnings and clippy --all-targets status 0
+  on both glue sets; generator 17 tests (3 new); whole set's 47 hostile tests and probes, default and AddressSanitizer;
+  slice harness 75 of 75; the lie tests both sets default and AddressSanitizer; the hostile set's fuzzing 3 seeds x 10M per
+  set under AddressSanitizer 6 of 6 status 0, 0 reports, 0 hangs; the effects tests 4 of 4 (23 groups each) and their
+  control (status 101); the once-check's negative control and planted defect fail as before.
+- **Linter, whole set with its glue, per rule** (ac3w/tip-de137e0e1/linter-direct3d-11-glue.txt; the copies of
+  volatile-bytes, byte-sink and byte-source counted apart, 56): 14,719 findings; magic_literal 7,869 (was 6,916: the 71
+  methods glued and the refusals' sizes), public_outside_interface 5,486, implementation_folder 288, conformance_not_run
+  227, literal_restates_constant 170, summary_not_one_line 139, summary_too_long 93, number_constant_without_link 86,
+  conformance_untested_method 65, constant_defined_twice 63, trait_not_implemented 58, the rest below 33 each. Not done in
+  this run: the `#[repr(C)]` mirror with `offset_of!` and `size_of` that removes the byte forms' offsets and sizes
+  (data.rs, serve.rs, call.rs), the main cause of magic_literal.
+- Marks (the generator's count): whole set 2,613 -> 3,032, slice 356 -> 475, COM 35 (the new glue and the refusals'
+  writes, each one operation with its reason matched, 0 unmatched). Lines naming `unsafe` (MEASURED, tip.sh's count),
+  c285c1292 -> de137e0e1: direct3d-11 direct 5,459 -> 6,656, DXGI direct 2,353 -> 2,534, d3dcommon direct 57 -> 63, COM
+  direct 91 -> 90; 0 outside the direct crates. Costs were not measured again (no change on the measured paths).
+
+Left of AC3: the linter's magic_literal by the repr(C) mirror; public_outside_interface (the direct crates' cross-crate
+surface, a layout question once no narrowing is left); the 68 methods not glued (objects out counted by pointer, bytes
+out counted by pointer, strings by value, structures holding pointers).
 
 ## The merge of graphics-layout (asked for AC4): stopped
 
