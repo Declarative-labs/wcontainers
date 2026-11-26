@@ -3166,15 +3166,38 @@ machine (each install recorded in the status file). The same translated benchmar
 and Chrome on the Mac (an ARM host, so with the NaN fix-ups), reported without a native ratio. The load
 probe reads `/proc/loadavg` on Linux and `sysctl -n vm.loadavg` on macOS, and is recorded with every time.
 
-## 8. Memory ordering between parallel guest threads (the one open question)
+## 8. Memory ordering between parallel guest threads
 
 x86 promises total store order to programs; WebAssembly's plain loads and stores on an ARM host promise
-less. Until guest threads run in parallel on several host threads, one guest thread runs at a time and the
-ordering holds for free. A measurement of what atomic accesses cost is under way elsewhere. **Question for
-the owner, not decided here**: when guest threads run in parallel, how x86's ordering is kept (for example
-every guest store and load as a WebAssembly atomic, only some of them, or x86 guests kept to one running
-thread). Nothing in this plan depends on the answer: the interface will gain a "memory model" property of
-the guest when it is decided.
+less. One guest thread at a time keeps the order for free. For threads in parallel (threads plan decision 5,
+2026-11-25) the translator takes an `AccessOrdering`, a form of its own in the description section and the
+cache key:
+- `Unordered`: every access as written, the default.
+- `Ordered(kind)`: every guest load and store an ordered access, for x86 guests run `Parallel` on hosts that
+  order memory more weakly. An aligned access is one atomic access of its width; a 16-byte one is two 8-byte
+  ones in address order; a misaligned one inside one aligned 8-byte word is an atomic load of that word and a
+  shift, or a compare and exchange of the word for a store; one that runs into the next word is two such word
+  operations in address order; `rep movs` and `rep stos` on the bulk path have a fence before and after.
+- `LoadsOrdered(kind)`: every guest load ordered and every store plain, for x86 guests run `Parallel` on x86
+  hosts, whose own stores keep the order, while no engine may merge two loads of one address (threads plan
+  7.6). Used until an engine promises not to merge plain loads.
+- In both ordered forms a locked instruction and `xchg` with memory are one compare and exchange retried until
+  it holds (an aligned operand at its width, a misaligned one inside a word on that word). A locked operand
+  across a word, and `lock cmpxchg16b`, no WebAssembly atomic makes: counted and warned as "locked access
+  across an 8-byte word or of 16 bytes", whose handler must hold the process's other threads before it returns
+  (no `Parallel` form for a process that runs one, until the threads plan's group stop exists).
+
+`kind` today is `SequentiallyConsistent`, the threads proposal's atomics every engine has; acquire and release
+accesses become a kind when engines ship them, behind a start-up probe.
+
+Differences of the ordered forms from x86, each with the smallest program that could see it:
+- A misaligned access that crosses an 8-byte boundary inside one cache line may be seen torn by another
+  thread; x86 makes it one access (Intel SDM Vol. 3A, 10.1.1). Program: 16 bytes at a 64-byte boundary,
+  zero; thread 1 `mov qword [x+4], rax` with rax all ones; thread 2 `mov rbx, qword [x+4]`. rbx of
+  0x00000000ffffffff or 0xffffffff00000000 is one x86 never gives.
+- One that crosses a cache line may be torn too, as on x86 without a lock prefix: no difference.
+- In `LoadsOrdered`, a misaligned load across a word is two word loads, so the same program with thread 2's
+  load may see it torn where the x86 host's own load would not.
 
 ## 9. Milestones and pass bars
 

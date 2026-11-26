@@ -91,6 +91,68 @@ XF2, locked instructions (4a2cd7347):
   locked forms at none and full hold a compare and exchange on the guest's memory in the ordered form and none in
   the unordered form, every module valid.
 
+Second run, 2026-11-25 evening (owner's main e6672b3eb merged in at 02b6c43d5: five commits, none in this track's
+crates or the instruction interfaces they use). The orchestrator ruled the brief's two questions (not the owner):
+- Misaligned ordered accesses (built in `operand.rs`): one inside an aligned 8-byte word is an atomic load of the
+  word and a shift, or a compare and exchange of the word for a store; one that runs into the next word is two such
+  word operations in address order (a written difference, plan section 8, with its smallest program). A locked one
+  inside a word is a compare and exchange of the word, made only while the operand still holds the value read; one
+  across a word, and `lock cmpxchg16b`, warn first as `Reason::LockedAccessNeedsGroupStop` (renamed from
+  `LockedAccessNotAligned`, same number), then read again and write. **For the executor track (XF4)**: that
+  warning's handler must hold the process's other threads before it returns, and from then on not run the process
+  `Parallel`, until the threads plan's group stop exists.
+- x86 hosts: `AccessOrdering::LoadsOrdered(kind)`, description byte 2, ordered loads and plain stores (locked
+  instructions atomic as in `Ordered`), never plain loads. `AccessOrdering::loads` and `stores` say what each
+  access becomes. The executor chooses it (XF4).
+- Locked `cmpxchg8b` in an ordered form is one 8-byte compare and exchange.
+- Tests: `src/ordered.rs` holds the scan and the validity check; `tests/output.rs` walks every set in a given form
+  and `ordered_modules_make_only_ordered_accesses_x86_64` scans every code module of the benchmark set and the nine
+  binaries in both ordered forms (the thread module, whose one memory is the thread's state, is left out);
+  `Machine::order_accesses` sets a machine's form; `measure_ordered_forms_x86_64` times the three forms in
+  alternating rounds with no native run; layer 1 draws `lock` in half the cases of a form `lock` may precede with
+  its memory destination (`LOCKED`).
+
+Second run's measurements (code at 04081b4bc; logs and lists in scratch `x86-front-end/r2/`; MEASURED):
+- Default output, the seven amd64 binaries that need images (rg, git, node, python, bun, java, go), none, bounded
+  and full, both settings, description cut, this branch against 9c4e000ee with the same `tests/output.rs`
+  (rented x86-64 machine, 12 jobs each, load 25 to 49, 1,144 s and 1,139 s): 261 modules, 0 differ. With the
+  first run's 965 ARM64 and 327 x86 modules, every default-form list of the bar is equal but for the description.
+- `ordered_modules_make_only_ordered_accesses_x86_64` (x86-64 machine, none, bounded and full, both settings):
+  `Ordered`: 608 code modules, 62,628,041 functions, 1,193,860,091 atomic guest accesses (bench 53,756 to
+  bun 551,790,235), 149,030 bulk operations, 0 plain loads or stores, 0 bulk operations outside two fences, every
+  module valid; `LoadsOrdered`: 599 modules, the same functions, 0 plain loads, plain stores only (bench 9,616 to
+  bun 59,114,352), 0 wrong; 5,151 s, load 20 to 50.
+- Layer 1 on the x86-64 machine, seed 1, 12 at once, load 27 to 56: the lockable forms (125 of the default list)
+  at 1,000 cases a form fail all 125 in each of the three forms, every one first on a 5-level paging case (the
+  reference's page fault above bit 47 against the translation's general protection). A scratch copy that counts
+  those answers as agreeing (`x86-front-end/diag-5level.py`, never in the repository) gives 0 failing in all three
+  forms, with 2,316 such cases set aside in each. Every default form at 64 cases: 1,125 failing in each form as
+  measured, and with the copy 5 failing in each, the same five (`iretq`, `sldt`, `smsw` twice, `str`), 2,135 set
+  aside.
+- `xstore` (layer 1's unoffered forms, 4 cases, two forms): 0 failing: illegal instruction, as on the CPU.
+- Layer 2, 10,000 programs, seed 25112502, ordered form (x86-64 machine, 3,132 s): 0 failing; 3,442 faulted and
+  1,104 left to an address at full, as before.
+- Layer 3, cases 0 to 1,199, seed 1, ordered form (x86-64 machine, 6 at once, load 9 to 35, about 4,680 s): 1,023
+  compared, 177 did not end in time on Linux, 0 failing, the default form's counts (READ status-translator.md).
+- XF1's bar holds by these measurements and the first run's; XF2's one-thread bar holds with the 5-level paging
+  answers set aside by the scratch copy (its verdict on a 48-bit CPU is not possible: the laptop is not used).
+- `tests/valid.rs` (ARM64 machine): 16 of 16, the scan of 32,128 cases now in all three forms, and locked
+  `cmpxchg8b` among the locked forms; unit tests of x86, guest-cpu and translator 95 passed; clippy `-D warnings`
+  of the five packages and the browser crate for both guests: exit 0.
+- Cost of the forms, `measure_ordered_forms_x86_64`, 7 alternating rounds, median ratio to the default form within
+  a round, geometric mean over the eight workloads (the most in brackets):
+
+  | host | `Ordered` | `LoadsOrdered` |
+  |---|---|---|
+  | rented ARM64 machine, load 17 to 24 | 1.096 (1.279 fib) | 1.052 (1.314 matrix) |
+  | rented x86-64 machine, load 18 to 47 | 2.019 (6.270 fib) | 1.048 (1.281 matrix) |
+
+  On x86 a sequentially consistent store is an exchange, which is why `Ordered` is never used there. The cost of
+  the x86 hosts' form, `LoadsOrdered`, is 1.048 on the benchmark set (0.904 to 1.281 by workload).
+- Linter (`cargo reviewable check`, the translator track's build on the x86-64 machine), this track's five crates:
+  12,188 findings before this run's changes, 12,255 after them, then their new summaries rewritten (most of
+  the rest are the codebase's own kinds: magic 0s, names without an answer as no model key is on the machine).
+
 Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime` is now
 `wcontainers-executor-wasmtime` (crates/executor/implementation/wasmtime), `wcontainers-runtime` is
 `wcontainers-runtime-single-kernel` (crates/runtime/implementation/single-kernel), `wcontainers-kernel` is
