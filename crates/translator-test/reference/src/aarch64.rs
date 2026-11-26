@@ -60,7 +60,7 @@ impl Cpu {
     pub(crate) const RUNNER: core::ops::Range<u64> = aarch64::RUNNER;
     /// The instruction and the address after a `svc` there.
     pub(crate) const WINDOW: u64 = 8;
-    /// seccomp's architecture of this CPU's own system calls; a call of any other raises SIGSYS.
+    /// The seccomp architecture of this CPU's own system calls; a call of any other raises SIGSYS.
     pub(crate) const AUDIT_ARCH: u32 = AUDIT_ARCH_AARCH64;
     /// The state's fields, in wire order.
     pub(crate) const FIELDS: &'static [&'static str] = &[
@@ -135,9 +135,10 @@ impl Cpu {
         "fpcr",
     ];
 
-    /// Keep the runner's own state from the frame and put the case's in its place (with the single-step
-    /// trap set, where that is how the CPU stops), and the case's thread pointers. `Err` names what Linux
-    /// refused to set up; the frame and the thread pointers are then the runner's, untouched.
+    /// Keeps the runner's state from the frame and puts the case's state and thread pointers in its place.
+    ///
+    /// The single-step trap is set where that is how the CPU stops. `Err` names what Linux refused to set up;
+    /// the frame and the thread pointers are then the runner's, untouched.
     pub(crate) unsafe fn enter(
         uc: *mut libc::ucontext_t,
         state: &[u128],
@@ -161,8 +162,10 @@ impl Cpu {
         Ok(())
     }
 
-    /// Read the frame back into a state after giving the runner its own thread pointers back, and put the
-    /// runner's own state back into the frame. `code` is the instruction and `start` the state it ran from.
+    /// Reads the frame back into a state and puts the runner's own state back into the frame.
+    ///
+    /// The runner gets its own thread pointers back first. `code` is the instruction and `start` the state it
+    /// ran from.
     pub(crate) unsafe fn leave(
         _: &[u8],
         _: &[u128],
@@ -189,7 +192,7 @@ impl Cpu {
         }
     }
 
-    /// Whether this stop leaves the instruction `code` unfinished, so the runner steps on.
+    /// Tells whether this stop leaves the instruction `code` unfinished, so the runner steps on.
     pub(crate) unsafe fn unfinished(
         _: &[u8],
         _: *const libc::ucontext_t,
@@ -198,12 +201,12 @@ impl Cpu {
         false
     }
 
-    /// How many steps an unfinished instruction may take from `state`.
+    /// Gives how many steps an unfinished instruction may take from `state`.
     pub(crate) fn limit(_: &[u8], _: &[u128]) -> u64 {
         0
     }
 
-    /// Make code just written at `address` visible to instruction fetch.
+    /// Makes code just written at `address` visible to instruction fetch.
     pub(crate) fn synchronise(address: u64, length: u64) {
         let mut line = address & !63;
         while line < address + length {

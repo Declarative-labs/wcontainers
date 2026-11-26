@@ -64,11 +64,11 @@ impl<G: Guest> Layout<G> {
     pub(crate) const F_DISPATCH: u32 = Self::F_HOOKS + G::HOOKS.len() as u32;
     pub(crate) const F_UNWIND: u32 = Self::F_DISPATCH + 1;
     pub(crate) const F_EXACT: u32 = Self::F_DISPATCH + 2;
-    pub(crate) const F_SAVE: u32 = Self::F_DISPATCH + 3;
-    pub(crate) const F_PERMISSION: u32 = Self::F_DISPATCH + 4;
+    pub(crate) const F_SAVE: u32 = Self::F_EXACT + 1;
+    pub(crate) const F_PERMISSION: u32 = Self::F_SAVE + 1;
     /// The functions that work out the flags word on the way to the runner: one for flags in locals, then
     /// one for each of the guest's shapes; none for a guest without flags.
-    pub(crate) const F_FLAGS_WORD: u32 = Self::F_DISPATCH + 5;
+    pub(crate) const F_FLAGS_WORD: u32 = Self::F_PERMISSION + 1;
     pub(crate) const FLAGS_WORDS: u32 = if G::FLAGS.is_empty() {
         0
     } else {

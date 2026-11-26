@@ -301,22 +301,22 @@ pub fn run(
     }
 }
 
-/// Every bit of format `F`.
+/// Gives every bit of format `F`.
 fn mask<F: Float>() -> u128 {
     u128::MAX >> (u128::BITS - F::BITS as u32)
 }
 
-/// The quiet bit of a not-a-number of format `F`.
+/// Gives the quiet bit of a not-a-number of format `F`.
 fn quiet_bit<F: Float>() -> u128 {
     1 << (F::PRECISION - 2)
 }
 
-/// The fraction bits of format `F`.
+/// Gives the fraction bits of format `F`.
 fn fraction_mask<F: Float>() -> u128 {
     (1 << (F::PRECISION - 1)) - 1
 }
 
-/// The sign bit of format `F`.
+/// Gives the sign bit of format `F`.
 fn sign_bit<F: Float>() -> u128 {
     1 << (F::BITS - 1)
 }

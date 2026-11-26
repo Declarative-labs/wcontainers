@@ -291,22 +291,22 @@ struct Context {
     flags: u32,
 }
 
-/// The sign bit of format `F`.
+/// Gives the sign bit of format `F`.
 fn sign_bit<F: Float>() -> u128 {
     1 << (F::BITS - 1)
 }
 
-/// The quiet bit of a not-a-number of format `F`.
+/// Gives the quiet bit of a not-a-number of format `F`.
 fn quiet_bit<F: Float>() -> u128 {
     1 << (F::PRECISION - 2)
 }
 
-/// The fraction bits of format `F`.
+/// Gives the fraction bits of format `F`.
 fn fraction_mask<F: Float>() -> u128 {
     (1 << (F::PRECISION - 1)) - 1
 }
 
-/// Every bit of format `F`.
+/// Gives every bit of format `F`.
 fn mask<F: Float>() -> u128 {
     if F::BITS == u128::BITS as usize {
         u128::MAX
@@ -320,7 +320,7 @@ fn default_nan<F: Float>() -> u128 {
     (mask::<F>() >> 1) & !(fraction_mask::<F>() >> 1)
 }
 
-/// A double rounded to nearest in format `F`.
+/// Rounds a double to nearest in format `F`.
 fn from_double<F: Float>(d: Double) -> F
 where
     Double: FloatConvert<F>,

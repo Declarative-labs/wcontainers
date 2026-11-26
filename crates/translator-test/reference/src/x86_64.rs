@@ -264,7 +264,7 @@ impl Cpu {
     pub(crate) const RUNNER: core::ops::Range<u64> = crate::x86_64::RUNNER;
     /// The longest instruction and the `syscall` after it.
     pub(crate) const WINDOW: u64 = 16 + 2;
-    /// seccomp's architecture of this CPU's own system calls; a call of any other raises SIGSYS.
+    /// The seccomp architecture of this CPU's own system calls; a call of any other raises SIGSYS.
     pub(crate) const AUDIT_ARCH: u32 = AUDIT_ARCH_X86_64;
     /// The state's fields, in wire order.
     pub(crate) const FIELDS: &'static [&'static str] = &[
@@ -461,7 +461,7 @@ impl Cpu {
         }
     }
 
-    /// Make code just written at `address` visible to instruction fetch.
+    /// Makes code just written at `address` visible to instruction fetch.
     pub(crate) fn synchronise(_: u64, _: u64) {}
 
     /// Every general register zero but rsp, rflags 0x202, MXCSR 0x1F80, the x87 control word 0x37F, the

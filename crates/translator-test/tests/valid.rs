@@ -34,7 +34,7 @@ fn told(v3: bool) -> Offer {
 /// Both forms of the output, without and with the progress count.
 const COUNTS: [ProgressCount; 2] = [ProgressCount::Absent, ProgressCount::Kept];
 
-/// The progress count kept or not, as drawn.
+/// Gives the progress count kept or not, as drawn.
 fn count(kept: bool) -> ProgressCount {
     if kept {
         ProgressCount::Kept
