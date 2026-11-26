@@ -502,8 +502,13 @@ impl SingleStepMachine {
             }
             MemoryLoading::Incremental | MemoryLoading::Checked => Some(self.prepare(memory)),
         };
-        let slot = to_slot(processor, self.read_slot().page_table);
-        self.write_bytes(SLOT, slot.as_bytes());
+        let slot = to_slot(processor, self.read_page_table());
+        // The handler reads the image before (up to its last component loaded) and the fields up to the registers
+        // before; it writes the rest.
+        let end = to_image_end(to_loaded_components(processor));
+        self.write_bytes(SLOT, &slot.before_xsave.as_bytes()[..end]);
+        let inputs = offset_of!(Slot, page_table)..offset_of!(Slot, after);
+        self.write_bytes(SLOT + inputs.start as u64, &slot.as_bytes()[inputs]);
         self.time_loading += started.elapsed();
         held
     }
@@ -764,7 +769,7 @@ impl SingleStepMachine {
         mut on_memory_mutated: impl FnMut(MemoryDelta<'_, X86_64>),
     ) -> Result<(), Refusal> {
         let started = Instant::now();
-        let slot = self.read_slot();
+        let slot = self.read_slot_outputs();
         *processor = to_processor(&slot).inspect_err(|_| self.renew_machine = true)?;
         let mut after = std::mem::take(&mut self.page);
         for writable in &self.writable {
@@ -802,9 +807,26 @@ impl SingleStepMachine {
         page
     }
 
-    fn read_slot(&self) -> Slot {
+    fn read_page_table(&self) -> u64 {
+        self.read_entry(SLOT + offset_of!(Slot, page_table) as u64)
+    }
+
+    /// The slot as a run leaves it, as far as [`to_processor`] reads it: the image before's legacy area up to the
+    /// vector registers, the image after, and the fields from the vector on.
+    fn read_slot_outputs(&self) -> Slot {
         let mut slot = Slot::new_zeroed();
-        self.read_into(SLOT, slot.as_mut_bytes());
+        let after = offset_of!(Slot, after_xsave);
+        let bytes = slot.as_mut_bytes();
+        for range in [0..FX_VECTOR_REGISTERS, after..after + to_image_end(0), offset_of!(Slot, vector)..size_of::<Slot>()] {
+            self.read_into(SLOT + range.start as u64, &mut bytes[range]);
+        }
+        // The AVX-512 areas only where the header says XSAVE wrote them.
+        let header = u64::from_le_bytes(bytes[after + XSAVE_HEADER..after + XSAVE_HEADER + 8].try_into().expect("eight bytes"));
+        let end = to_image_end(header);
+        if end > to_image_end(0) {
+            let range = after + to_image_end(0)..after + end;
+            self.read_into(SLOT + range.start as u64, &mut bytes[range]);
+        }
         slot
     }
 
@@ -921,8 +943,9 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         let at = area + index * VECTOR_HALF_BYTES;
         image.bytes[at..at + VECTOR_HALF_BYTES].copy_from_slice(&value.to_le_bytes());
     }
-    // Every saved component is loaded from the image rather than put in its initial state.
-    image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&SAVED_COMPONENTS.to_le_bytes());
+    // Every saved component is loaded from the image rather than put in its initial state, but an AVX-512 component
+    // that holds zeros, whose initial state is the same.
+    image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&to_loaded_components(processor).to_le_bytes());
     Slot {
         before_xsave: image,
         after_xsave: image,
@@ -934,6 +957,25 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         before: registers,
         after: registers,
         reserved: [0; 7],
+    }
+}
+
+/// The components the handler loads from the image: every saved one but each AVX-512 component that holds zeros.
+fn to_loaded_components(processor: &Processor) -> u64 {
+    let zero = |held: bool, component: u64| if held { 0 } else { component };
+    SAVED_COMPONENTS
+        & !zero(processor.opmask_registers.iter().any(|value| *value != 0), OPMASK_COMPONENT)
+        & !zero(processor.zmm_upper_halves.iter().flatten().any(|part| *part != 0), ZMM_HIGH_256_COMPONENT)
+        & !zero(processor.high_vector_registers.iter().flatten().any(|part| *part != 0), HIGH_16_ZMM_COMPONENT)
+}
+
+/// The bytes of the image up to the end of the last component the header names, AVX's at least.
+fn to_image_end(components: u64) -> usize {
+    match components {
+        _ if components & HIGH_16_ZMM_COMPONENT != 0 => XSAVE_IMAGE_BYTES,
+        _ if components & ZMM_HIGH_256_COMPONENT != 0 => XSAVE_HIGH_16_ZMM,
+        _ if components & OPMASK_COMPONENT != 0 => XSAVE_ZMM_HIGH_256,
+        _ => XSAVE_AVX + VECTOR_REGISTERS * VECTOR_HALF_BYTES,
     }
 }
 
