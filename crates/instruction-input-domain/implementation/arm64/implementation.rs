@@ -64,6 +64,7 @@ mod memory_tagging;
 mod scalable;
 mod scalable_element_access;
 mod structure;
+pub mod sve_remaining;
 #[cfg(test)]
 mod tests;
 
@@ -302,6 +303,8 @@ pub enum OperandType {
     PredicateNumber(Field),
     /// The value of the P register the field names.
     ScalablePredicateValue(Field),
+    /// An immediate split over fields, the most significant first, which takes every value it can hold.
+    EveryValue(&'static [Field]),
     /// The Z register of offsets of an SVE access, its elements of `element_bits` holding offsets of `offset_bits`,
     /// in elements of memory where scaled.
     ElementOffsets {
@@ -321,6 +324,8 @@ pub enum OperandType {
     ScalableStructurePlacement,
     /// Where an SVE access of elements of more than one byte lies: also across the boundary inside an element.
     ElementPlacement,
+    /// An operand of an SVE instruction of the architecture's `sve_remaining` module that has a kind of its own.
+    Remaining(sve_remaining::RemainingOperand),
 }
 
 /// What the elements of a Z register an SVE instruction reads hold.
@@ -437,6 +442,7 @@ impl Arm64InputDomain {
         word: u32,
     ) -> bool {
         scalable::is_value_of_word(instruction, operand_type, value, word)
+            && sve_remaining::is_value_of_word(instruction, operand_type, value, word)
     }
 
     /// The numbers of ordinary registers of the operand's kind enough for every register operand of an instruction to
@@ -473,6 +479,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
     ) -> vec::IntoIter<OperandType> {
         use OperandType::{RegisterNumber, SignedImmediate, UnsignedImmediate};
         if let Some(operand_types) = advanced_simd::list_operand_types(instruction) {
+            return operand_types.into_iter();
+        }
+        if let Some(operand_types) = sve_remaining::list_operand_types(instruction) {
             return operand_types.into_iter();
         }
         if let Some(scalable) = to_scalable_instruction(instruction) {
@@ -565,6 +574,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 .collect(),
             OperandType::Word(word) => [OperandValue::Bits(u64::from(word))].to_vec(),
             OperandType::AdvancedSimd(operand) => advanced_simd::generate_critical_values(operand),
+            OperandType::Remaining(operand) => sve_remaining::generate_critical_values(operand),
             OperandType::SoftwareThreadId => to_register_values(RegisterWidth::Bits64),
             OperandType::VectorValue { bytes, .. }
             | OperandType::ListedVectorValue { bytes, .. } => to_vector_values(bytes),
@@ -772,6 +782,10 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             }
             OperandType::PredicateNumber(_) => [0, 1].map(OperandValue::RegisterNumber).to_vec(),
             OperandType::ScalablePredicateValue(_) => scalable::to_predicate_values(),
+            OperandType::EveryValue(fields) => {
+                let width: u32 = fields.iter().map(|field| field.width).sum();
+                (0..1 << width).map(OperandValue::Bits).collect()
+            }
             OperandType::DataPagePermission(_) => {
                 let mapped = |data_access| PagePermission::Mapped {
                     data_access,
@@ -861,6 +875,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         let mut upper = PagePermission::Unmapped;
         let mut register_values = Vec::new();
         let mut simd_values = Vec::new();
+        let mut remaining_values = Vec::new();
         let mut next_vector_values = Vec::new();
         for (operand_type, operand) in typed {
             match operand_type {
@@ -936,6 +951,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 OperandType::AdvancedSimd(simd_operand) => {
                     simd_values.push((simd_operand, operand))
                 }
+                OperandType::Remaining(remaining) => remaining_values.push((remaining, operand)),
                 OperandType::ScalableVectorValue { field, offset, .. } => {
                     let (OperandValue::Vector(value)
                     | OperandValue::ScalableVector { bits: value, .. }) = operand
@@ -970,6 +986,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 // `encode_word` has put them in the word.
                 OperandType::ScalableVectorNumber { .. }
                 | OperandType::PredicateNumber(_)
+                | OperandType::EveryValue(_)
                 | OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
                 | OperandType::PredicateRegisterNumber(_)
@@ -1064,6 +1081,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         }
         for (simd_operand, value) in simd_values {
             advanced_simd::apply(simd_operand, value, word, &mut processor);
+        }
+        for (remaining, value) in remaining_values {
+            sve_remaining::apply(remaining, value, word, &mut processor);
         }
         for (field, value) in next_vector_values {
             let number = (field.read(word) as usize + 1) % VECTOR_REGISTERS;
@@ -1254,8 +1274,13 @@ pub fn encode_word(
             ) => word |= field.to_bits(bits as u32),
             (OperandType::Word(_), OperandValue::Bits(bits)) => word = bits as u32,
             (OperandType::AdvancedSimd(simd_operand), _) => deferred.push((simd_operand, operand)),
+            (OperandType::Remaining(remaining), _) => {
+                word |= sve_remaining::encode(remaining, operand)
+            }
             (
-                OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields),
+                OperandType::ProgramCounterOffset(fields)
+                | OperandType::SplitImmediate(fields)
+                | OperandType::EveryValue(fields),
                 OperandValue::Bits(bits),
             ) => {
                 let mut remaining = bits;
@@ -1271,6 +1296,7 @@ pub fn encode_word(
                 | OperandType::Pattern(_)
                 | OperandType::ScalableVectorNumber { .. }
                 | OperandType::PredicateNumber(_)
+                | OperandType::EveryValue(_)
                 | OperandType::VectorListNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)

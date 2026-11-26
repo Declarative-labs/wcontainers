@@ -821,6 +821,10 @@ fn every_modeled_instruction_has_its_operands_in_fields_beside_its_fixed_bits() 
         if crate::scalable::list_scalable_operands(instruction).is_some() {
             continue;
         }
+        // So are those of `sve_remaining`, by the fields its domain lists.
+        if crate::sve_remaining::to_remaining_operation(instruction).is_some() {
+            continue;
+        }
         let mut covered = record.fixed_bits.mask | record.should_be.mask;
         for operand in record.operands {
             let fields: Vec<Field> = match *operand {

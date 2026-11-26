@@ -61,6 +61,7 @@ use core::convert::Infallible;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_instruction_input_domain_arm64::advanced_simd::{self, SimdRole};
+use wcontainers_instruction_input_domain_arm64::sve_remaining;
 use wcontainers_instruction_input_domain_arm64::{
     AccessPlacement, Arm64InputDomain, CodePlacement, DataPage, OperandType, OperandValue,
     encode_word,
@@ -260,6 +261,7 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ProgramCounterOffset(_)
         | OperandType::SplitImmediate(_)
         | OperandType::Pattern(_)
+        | OperandType::EveryValue(_)
         | OperandType::Word(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
@@ -289,6 +291,11 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::MemoryFill
         | OperandType::WrittenFirstFault => Group::Written,
         OperandType::AdvancedSimd(operand) => match operand.to_role() {
+            SimdRole::Field => Group::Field,
+            SimdRole::Data => Group::Data,
+            SimdRole::Written => Group::Written,
+        },
+        OperandType::Remaining(operand) => match operand.to_role() {
             SimdRole::Field => Group::Field,
             SimdRole::Data => Group::Data,
             SimdRole::Written => Group::Written,
@@ -735,6 +742,20 @@ impl Cut {
                             advanced_simd::is_nonfinite(operand, value, facts.word);
                         facts.subnormal_source |=
                             advanced_simd::is_subnormal(operand, value, facts.word);
+                    }
+                    // The same of an operand of the SVE instructions of `sve_remaining` that has a kind of its own.
+                    for (index, operand_type) in self.types.iter().enumerate() {
+                        let OperandType::Remaining(operand) = *operand_type else {
+                            continue;
+                        };
+                        if facts.held & (1 << index) == 0 {
+                            continue;
+                        }
+                        let value = self.values[index][chosen[index]];
+                        facts.nonfinite_source |=
+                            sve_remaining::is_nonfinite(operand, value, facts.word);
+                        facts.subnormal_source |=
+                            sve_remaining::is_subnormal(operand, value, facts.word);
                     }
                 }
                 Group::Predicate => {

@@ -198,7 +198,9 @@ fn read_operand(
             state.processor.vector_registers[field.read(word) as usize]
                 & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),
         )),
-        OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields) => {
+        OperandType::ProgramCounterOffset(fields)
+        | OperandType::SplitImmediate(fields)
+        | OperandType::EveryValue(fields) => {
             Some(OperandValue::Bits(fields.iter().fold(0, |bits, field| {
                 (bits << field.width) | u64::from(field.read(word))
             })))
@@ -295,6 +297,9 @@ fn read_operand(
                 CodePlacement::PageEnd
             },
         )),
+        OperandType::Remaining(operand) => {
+            crate::sve_remaining::read_back(operand, word, &state.processor)
+        }
         OperandType::AdvancedSimd(operand) => {
             crate::advanced_simd::read_back(operand, word, &state.processor)
         }
@@ -508,7 +513,10 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 // An Advanced SIMD operand reads back as the first of its values that builds the same register.
                 if asked == held
                     || placements
-                    || matches!(operand_types.get(index), Some(OperandType::AdvancedSimd(_)))
+                    || matches!(
+                        operand_types.get(index),
+                        Some(OperandType::AdvancedSimd(_) | OperandType::Remaining(_))
+                    )
                 {
                     continue;
                 }

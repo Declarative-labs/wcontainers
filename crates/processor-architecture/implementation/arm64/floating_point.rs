@@ -34,6 +34,7 @@ pub const INEXACT: u64 = 1 << 4;
 pub const INPUT_DENORMAL: u64 = 1 << 7;
 
 pub mod scalable_elements;
+pub mod sve_remaining_elements;
 
 /// The bits of the fraction of a half-precision value, which Rust's stable types do not name.
 const HALF_FRACTION_BITS: u32 = 10;

@@ -28,6 +28,8 @@ pub enum PlantedBy {
     /// The SVE gathers, scatters, prefetches of vector addresses and first-fault and non-fault loads, numbered from
     /// 3501.
     ScalableLoadsAndStores,
+    /// The SVE floating-point and SVE2 instructions of `sve_remaining`, whose bugs are numbered from 3201 and 3101.
+    ScalableRemaining,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
