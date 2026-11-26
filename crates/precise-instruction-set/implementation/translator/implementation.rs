@@ -45,8 +45,8 @@ pub fn keeps_translator_choices(behavior: &PreciseInstruction<Infallible>) -> bo
 
 /// Returns whether a load or store keeps the translator's three answers in the cases it has.
 ///
-/// They are: a misaligned stack pointer faults, a store that partly faults writes nothing, and a load into its own
-/// base keeps the loaded value over the writeback.
+/// They are: a misaligned stack pointer faults, a store that partly faults writes nothing, and a post-indexed load
+/// into its own base ends with the written-back address, not the loaded value.
 fn keeps_load_store_choices(choices: &LoadStoreChoices) -> bool {
     choices
         .misaligned_stack_pointer
