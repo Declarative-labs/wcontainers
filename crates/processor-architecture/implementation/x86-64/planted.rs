@@ -1034,6 +1034,8 @@ pub enum Bug {
     DotUnsignedBytesSigned,
     /// VPDPBUSDS and VPDPWSSDS wrap the products' sum to 32 bits before adding the destination.
     DotProductsWrappedFirst,
+    /// XSAVES and XRSTORS check their memory operand's page before the privilege level.
+    SupervisorSaveChecksOperandFirst,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1510,6 +1512,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     ),
     row(Bug::DotSaturationWraps, "VPDPBUSDS, VPDPWSSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { saturate: true, .. })), Origin::VexSecondPass),
     row(Bug::DotUnsignedBytesSigned, "VPDPBUSD, VPDPBUSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { words: false, .. })), Origin::VexSecondPass),
+    row(Bug::SupervisorSaveChecksOperandFirst, "XSAVES, XRSTORS", Family::Forms(SUPERVISOR_SAVES), Origin::VexSecondPass),
     row(Bug::DotProductsWrappedFirst, "VPDPBUSDS, VPDPWSSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { saturate: true, .. })), Origin::VexSecondPass),
 ];
 
@@ -1521,6 +1524,8 @@ fn writes_vector_register(form: &AvxForm) -> bool {
         || matches!(form.operation, AvxOperation::ZeroUpper | AvxOperation::ZeroAll)
 }
 
+const SUPERVISOR_SAVES: &[Instruction] =
+    &[Instruction::XsavesMemmxsave, Instruction::Xsaves64Memmxsave, Instruction::XrstorsMemmxsave, Instruction::Xrstors64Memmxsave];
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];
 
 const X87_SAMPLE: &[Instruction] = &[Instruction::Fnop, Instruction::FxchSt0X87, Instruction::FldSt0Memmem80real, Instruction::Fchs];
