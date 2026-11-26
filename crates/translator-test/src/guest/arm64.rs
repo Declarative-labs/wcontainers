@@ -316,6 +316,9 @@ impl GuestTest for Arm64 {
         exit: 93,
         exit_group: 94,
         brk: 214,
+        // https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+        mmap: 222,
+        munmap: 215,
         // ARM64 sets its thread pointer without the kernel.
         set_base: None,
     };

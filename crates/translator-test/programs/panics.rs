@@ -1,42 +1,9 @@
-// Rust panics: caught at every depth with their messages, unwinding drops on the way. The stand-in kernel
-// answers five calls, so the C library calls `entry` as `main` (named so by the build), and the standard
-// library allocates each panic's message and exception from a static area (the stand-in has no mmap).
+// Rust panics: caught at every depth with their messages, unwinding drops on the way. The C library calls
+// `entry` as `main` (named so by the build), and the standard library allocates each panic's message and
+// exception through it, from pages the stand-in kernel maps.
 
-use std::alloc::{GlobalAlloc, Layout};
-use std::cell::{Cell, UnsafeCell};
+use std::cell::Cell;
 use std::panic;
-
-struct Area {
-    bytes: UnsafeCell<[u8; 1 << 20]>,
-    used: Cell<usize>,
-}
-
-// One thread only.
-unsafe impl Sync for Area {}
-
-unsafe impl GlobalAlloc for Area {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let base = self.bytes.get() as usize;
-        // Aligned as malloc aligns everything (C's max_align_t, 16 bytes like u128): the unwinder writes its
-        // exception objects, which Rust allocates with a smaller alignment, with aligned vector stores.
-        let align = layout.align().max(align_of::<u128>());
-        let start = (base + self.used.get()).next_multiple_of(align);
-        let end = start + layout.size();
-        if end > base + (1 << 20) {
-            return std::ptr::null_mut();
-        }
-        self.used.set(end - base);
-        start as *mut u8
-    }
-
-    unsafe fn dealloc(&self, _: *mut u8, _: Layout) {}
-}
-
-#[global_allocator]
-static AREA: Area = Area {
-    bytes: UnsafeCell::new([0; 1 << 20]),
-    used: Cell::new(0),
-};
 
 thread_local!(static DROPPED: Cell<u32> = const { Cell::new(0) });
 

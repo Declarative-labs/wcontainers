@@ -20,9 +20,15 @@ pub enum SetUserMemoryRegionError {
     Refused(#[from] kvm_ioctls::Error),
 }
 
+/// Why KVM refused memory given again.
+#[derive(Debug, Error)]
+#[error("KVM refused the memory slot: {0}")]
+pub struct SetUserMemoryRegionAgainError(#[from] kvm_ioctls::Error);
+
 impl Kvm for DirectKvm {
     type GuestMemory = SharedMapping;
     type SetUserMemoryRegionError = SetUserMemoryRegionError;
+    type SetUserMemoryRegionAgainError = SetUserMemoryRegionAgainError;
 
     /// Maps fresh anonymous memory and keeps one view of it for good, so that it is never unmapped.
     fn set_user_memory_region(
@@ -43,6 +49,25 @@ impl Kvm for DirectKvm {
         mem::forget(memory.part(0..memory.len()));
         register(machine, region)?;
         Ok(memory)
+    }
+
+    /// Keeps one more view of the memory for good, so that it stays mapped whatever made it, and registers it.
+    fn set_user_memory_region_again(
+        machine: &VmFd,
+        slot: u32,
+        guest_physical_address: u64,
+        memory: &SharedMapping,
+    ) -> Result<(), SetUserMemoryRegionAgainError> {
+        let region = kvm_userspace_memory_region {
+            slot,
+            flags: 0,
+            guest_phys_addr: guest_physical_address,
+            memory_size: memory.len(),
+            userspace_addr: memory.address() as u64,
+        };
+        mem::forget(memory.part(0..memory.len()));
+        register(machine, region)?;
+        Ok(())
     }
 }
 

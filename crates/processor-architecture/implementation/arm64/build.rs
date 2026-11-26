@@ -307,6 +307,23 @@ fn render_operands(fields: &[ListField], syntax: &str) -> Vec<String> {
                 &fields[extend],
                 doubleword.map(|index| &fields[index]),
             ));
+            // A quadword's selector covers the whole option: option<1>, which neither the extension nor option<0>
+            // holds, is an immediate of its own, unallocated at zero.
+            if let Some(index) = doubleword
+                && let [run] = fields[index].runs.as_slice()
+            {
+                let covered: Vec<u32> = fields[extend].runs.iter().map(|run| run.low).collect();
+                for bit in (run.low + 1..=run.high).filter(|bit| !covered.contains(bit)) {
+                    operands.push(format!(
+                        "Operand::UnsignedImmediate({})",
+                        Run {
+                            high: bit,
+                            low: bit
+                        }
+                        .render()
+                    ));
+                }
+            }
             continue;
         }
         if token == BASE_REGISTER
@@ -364,8 +381,16 @@ fn render_register_offset(
         [shift] => ("None".to_owned(), shift.render()),
         _ => return "Operand::Unmodeled".to_owned(),
     };
+    // A quadword's selector covers the whole option, whose lowest bit is option<0>.
     let doubleword = match doubleword.map(|field| field.runs.as_slice()) {
-        Some([run]) => format!("Some({})", run.render()),
+        Some([run]) => format!(
+            "Some({})",
+            Run {
+                high: run.low,
+                low: run.low
+            }
+            .render()
+        ),
         _ => "None".to_owned(),
     };
     format!(
@@ -555,8 +580,8 @@ fn render_operand(members: &[&ListField]) -> String {
         (
             1,
             "movimm32_imm" | "imm0_15" | "imm0_31" | "imm0_63" | "imm32_0_15" | "imm32_0_31"
-            | "uimm6" | "uimm8_32b" | "uimm8_64b" | "timm32_0_65535" | "uimm16" | "barrier_op"
-            | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63",
+            | "uimm6" | "uimm6s16" | "uimm8_32b" | "uimm8_64b" | "timm32_0_65535" | "uimm16"
+            | "barrier_op" | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63",
         ) => match single_run(first) {
             Some(field) => format!("Operand::UnsignedImmediate({field})"),
             // An arrangement split over Q and size.
@@ -568,8 +593,8 @@ fn render_operand(members: &[&ListField]) -> String {
         },
         (
             1,
-            "simm9" | "uimm12s1" | "uimm12s2" | "uimm12s4" | "uimm12s8" | "uimm12s16" | "simm7s4"
-            | "simm7s8" | "simm7s16",
+            "simm9" | "simm9s16" | "uimm12s1" | "uimm12s2" | "uimm12s4" | "uimm12s8" | "uimm12s16"
+            | "simm7s4" | "simm7s8" | "simm7s16",
         ) => {
             let Some(field) = single_run(first) else {
                 return unmodeled;
@@ -610,6 +635,15 @@ fn render_operand(members: &[&ListField]) -> String {
             Some(field) => format!("Operand::UnsignedImmediate({field})"),
             None => unmodeled,
         },
+        // LDRAA's offset, S:imm9 in doublewords.
+        (1, "simm10Scaled") => {
+            let fields: Vec<String> = first.runs.iter().map(Run::render).collect();
+            format!(
+                "Operand::SplitAddressOffset {{ fields: &[{}], scale: {} }}",
+                fields.join(", "),
+                u64::BITS.trailing_zeros() - u8::BITS.trailing_zeros()
+            )
+        }
         (1, "simm8_32b" | "simm8_64b") => match single_run(first) {
             Some(field) => format!("Operand::SignedImmediate({field})"),
             None => unmodeled,

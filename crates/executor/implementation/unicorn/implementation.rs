@@ -6,6 +6,7 @@
 // so of its own with return type notation.
 #![cfg_attr(feature = "harness", feature(return_type_notation))]
 
+mod engine;
 mod memory;
 pub mod space;
 pub mod standin;

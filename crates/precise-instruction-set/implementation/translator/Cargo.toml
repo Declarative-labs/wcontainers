@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-precise-instruction-set-translator"
-description = "The behaviors the WebAssembly translator gives every ARM64 instruction."
+description = "The choices the WebAssembly translator makes for ARM64, which its measured behaviors must keep."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,10 +12,16 @@ publish = false
 path = "implementation.rs"
 
 [dependencies]
-wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The CTR_EL0 value the translator presents.
 wcontainers-arm64 = { path = "../../../arm64", default-features = false }
+
+[dev-dependencies]
+wcontainers-behavior-source = { path = "../../../behavior-source" }
+wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 
 [lints]
 workspace = true

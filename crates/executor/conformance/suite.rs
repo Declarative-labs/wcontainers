@@ -99,15 +99,106 @@ const CHANGE_SEPARATOR: &str = "; ";
 const CODE_PERMISSIONS: Permissions = Permissions::READ.union(Permissions::EXECUTE);
 const DATA_PERMISSIONS: Permissions = Permissions::READ.union(Permissions::WRITE);
 
+/// How many executors the instruction agreement runs at once, each on a host thread of its own: the share of a build
+/// machine one job takes.
+pub const AGREEMENT_EXECUTORS: usize = 12;
+
+/// What one instruction's states gave in the instruction agreement.
+#[derive(Default)]
+struct InstructionOutcome {
+    executed: usize,
+    refused: usize,
+    /// The line of the refusals, when there were any or the instruction was not compared.
+    refusal: Option<String>,
+    /// The line of the disagreement, when there was one.
+    disagreement: Option<String>,
+}
+
 /// Checks that on every state the generator makes for every instruction the executor ends where the set says.
 ///
 /// The executor's state must meet the behavior's expectation, memory by the bytes and permissions it ends with, not
 /// the list of changes: an executor reports a store of the bytes already there as no change, where a simulation may.
+///
+/// A state the executor gives an error for is its refusal: counted and listed on the standard error, and not compared.
+/// The instructions are shared out among [`AGREEMENT_EXECUTORS`] executors `make_executor` makes.
 pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
-    mut executor: Chip,
+    make_executor: impl Fn() -> Chip + Sync,
     set: Set,
     generator: Generator,
 ) where
+    Chip: Executor,
+    <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Chip::Architecture, Error = Infallible>,
+    <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,
+    <Chip::Architecture as ProcessorArchitecture>::ProcessorStateExpectation: Debug,
+    <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug + Send + Sync,
+    <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
+    Set: PreciseInstructionSet<Chip::Architecture> + Sync,
+    Generator: DistinguishingStateGenerator<Chip::Architecture> + Sync,
+{
+    let instructions: Vec<_> = Chip::Architecture::list_instructions().collect();
+    let mut outcomes: Vec<(usize, InstructionOutcome)> = thread::scope(|scope| {
+        let runs: Vec<_> = (0..AGREEMENT_EXECUTORS)
+            .map(|share| {
+                let (instructions, set, generator, make_executor) =
+                    (&instructions, &set, &generator, &make_executor);
+                scope.spawn(move || {
+                    let mut executor = make_executor();
+                    instructions
+                        .iter()
+                        .enumerate()
+                        .skip(share)
+                        .step_by(AGREEMENT_EXECUTORS)
+                        .map(|(index, instruction)| {
+                            let outcome =
+                                agree_on_instruction(&mut executor, set, generator, *instruction);
+                            (index, outcome)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .flat_map(|run| run.join().expect("an agreement run ends"))
+            .collect()
+    });
+    outcomes.sort_by_key(|(index, _)| *index);
+    let mut report = String::new();
+    let mut refusals = String::new();
+    let mut executed_states = usize::MIN;
+    let mut refused_states = usize::MIN;
+    let mut refusing_instructions = usize::MIN;
+    for (_, outcome) in outcomes {
+        executed_states += outcome.executed;
+        if outcome.refused > usize::MIN {
+            refused_states += outcome.refused;
+            refusing_instructions += 1;
+        }
+        if let Some(line) = outcome.refusal {
+            let _ = writeln!(refusals, "{line}");
+        }
+        if let Some(line) = outcome.disagreement {
+            let _ = writeln!(report, "{line}");
+        }
+    }
+    eprintln!(
+        "{executed_states} states executed; {refused_states} refused, of {refusing_instructions} instructions:\n{refusals}"
+    );
+    assert!(
+        executed_states > usize::MIN,
+        "the executor executed no state"
+    );
+    assert!(report.is_empty(), "{report}");
+}
+
+/// Runs every state the generator makes for the instruction on the executor and compares it with the set's behavior.
+fn agree_on_instruction<Chip, Set, Generator>(
+    executor: &mut Chip,
+    set: &Set,
+    generator: &Generator,
+    instruction: <Chip::Architecture as ProcessorArchitecture>::Instruction,
+) -> InstructionOutcome
+where
     Chip: Executor,
     <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
         Simulator<Chip::Architecture, Error = Infallible>,
@@ -118,49 +209,48 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     Set: PreciseInstructionSet<Chip::Architecture>,
     Generator: DistinguishingStateGenerator<Chip::Architecture>,
 {
-    let mut report = String::new();
-    for instruction in Chip::Architecture::list_instructions() {
-        // An instruction the architecture knows no behavior of has none in any set to agree with.
-        if Chip::Architecture::list_known_behaviors(instruction)
-            .next()
-            .is_none()
-        {
+    // An instruction the architecture knows no behavior of has none in any set to agree with.
+    if Chip::Architecture::list_known_behaviors(instruction)
+        .next()
+        .is_none()
+    {
+        return InstructionOutcome {
+            refusal: Some(format!("{instruction:?}: no known behavior, not compared")),
+            ..InstructionOutcome::default()
+        };
+    }
+    let precise = set.to_precise(instruction);
+    let mut outcome = InstructionOutcome::default();
+    let mut states = usize::MIN;
+    let mut disagreeing = usize::MIN;
+    let mut first = None;
+    for before in generator.generate_states(instruction) {
+        states += 1;
+        let Ok(simulated) = precise.simulate_state(before.clone());
+        let Ok(executed) = executor.execute_single_instruction(before.clone()) else {
+            outcome.refused += 1;
             continue;
-        }
-        let precise = set.to_precise(instruction);
-        let mut states = usize::MIN;
-        let mut disagreeing = usize::MIN;
-        let mut first = None;
-        for before in generator.generate_states(instruction) {
-            states += 1;
-            let Ok(simulated) = precise.simulate_state(before.clone());
-            let Ok(executed) = executor.execute_single_instruction(before.clone()) else {
-                disagreeing += 1;
-                first.get_or_insert_with(|| {
-                    format!(
-                        "  before: {:?}\n  the executor gave an error",
-                        before.processor
-                    )
-                });
-                continue;
-            };
-            if !executed.meets_expectations(&simulated) {
-                disagreeing += 1;
-                first.get_or_insert_with(|| describe(&before, &simulated, &executed));
-            }
-        }
-        assert!(
-            states > usize::MIN,
-            "the generator gives no state for {instruction:?}"
-        );
-        if let Some(first) = first {
-            let _ = writeln!(
-                report,
-                "{instruction:?}: {disagreeing} of {states} states disagree; the first:\n{first}"
-            );
+        };
+        outcome.executed += 1;
+        if !executed.meets_expectations(&simulated) {
+            disagreeing += 1;
+            first.get_or_insert_with(|| describe(&before, &simulated, &executed));
         }
     }
-    assert!(report.is_empty(), "{report}");
+    assert!(
+        states > usize::MIN,
+        "the generator gives no state for {instruction:?}"
+    );
+    if outcome.refused > usize::MIN {
+        outcome.refusal = Some(format!(
+            "{instruction:?}: the executor refused {} of {states} states",
+            outcome.refused
+        ));
+    }
+    outcome.disagreement = first.map(|first| {
+        format!("{instruction:?}: {disagreeing} of {states} states disagree; the first:\n{first}")
+    });
+    outcome
 }
 
 /// Checks that a system call answered with a value goes on after the call with the value in the result register.
@@ -1180,7 +1270,7 @@ macro_rules! tests {
     ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr) => {
         #[test]
         fn agrees_with_precise_instruction_set() {
-            $crate::agrees_with_precise_instruction_set($executor, $set, $generator);
+            $crate::agrees_with_precise_instruction_set(|| $executor, $set, $generator);
         }
 
         #[test]

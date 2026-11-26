@@ -278,6 +278,8 @@ pub struct StandIn {
     pub exit: u64,
     pub exit_group: u64,
     pub brk: u64,
+    pub mmap: u64,
+    pub munmap: u64,
     /// The call through which the C library sets its thread pointer, where the kernel sets it.
     pub set_base: Option<SetBase>,
 }

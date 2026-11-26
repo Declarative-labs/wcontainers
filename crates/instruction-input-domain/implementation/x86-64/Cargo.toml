@@ -1,0 +1,31 @@
+[package]
+name = "wcontainers-instruction-input-domain-x86-64"
+description = "The inputs of the x86-64 forms and their critical values."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-instruction-input-domain = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-x86-64 = { path = "../../../processor-architecture/implementation/x86-64" }
+# The subsets of the flags a condition reads.
+itertools.workspace = true
+# Encoding each form with its operands (MIT).
+iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "encoder", "decoder", "op_code_info"] }
+
+[dev-dependencies]
+wcontainers-instruction-input-domain-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true

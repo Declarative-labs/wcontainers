@@ -6,7 +6,7 @@ use proptest::test_runner::{Config, RngSeed};
 use wasmparser::{Validator, WasmFeatures};
 use wcontainers_arm64::{Arm64, Host};
 use wcontainers_guest_cpu::Guest;
-use wcontainers_translator::{LookAhead, Optimise, thread_module, translate};
+use wcontainers_translator::{LookAhead, Optimise, ProgressCount, thread_module, translate};
 use wcontainers_translator_test::programs::LOAD;
 use wcontainers_x86::{Offer, X86_64};
 
@@ -28,6 +28,27 @@ fn told(v3: bool) -> Offer {
         Offer::new(wcontainers_x86::V3).expect("a built list")
     } else {
         Offer::default()
+    }
+}
+
+/// Both forms of the output, without and with the progress count.
+const COUNTS: [ProgressCount; 2] = [ProgressCount::Absent, ProgressCount::Kept];
+
+/// Gives the progress count kept or not, as drawn.
+fn count(kept: bool) -> ProgressCount {
+    if kept {
+        ProgressCount::Kept
+    } else {
+        ProgressCount::Absent
+    }
+}
+
+/// Translations for size or for speed, as drawn.
+fn optimise(size: bool) -> Optimise {
+    if size {
+        Optimise::Size
+    } else {
+        Optimise::Speed
     }
 }
 
@@ -55,16 +76,16 @@ fn check(wasm: &[u8]) -> Result<(), String> {
 
 #[test]
 fn thread_module_is_valid_arm64() {
-    validate(&thread_module::<Arm64>(
-        wcontainers_translator::ProgressCount::Absent,
-    ));
+    for count in COUNTS {
+        validate(&thread_module::<Arm64>(count));
+    }
 }
 
 #[test]
 fn thread_module_is_valid_x86_64() {
-    validate(&thread_module::<X86_64>(
-        wcontainers_translator::ProgressCount::Absent,
-    ));
+    for count in COUNTS {
+        validate(&thread_module::<X86_64>(count));
+    }
 }
 
 /// The most random bytes an x86 case translates, 255: many instructions of every length.
@@ -252,39 +273,39 @@ fn a_run_of_repeated_strings_grows_linearly_x86_64() {
 proptest! {
     #![proptest_config(config())]
     #[test]
-    fn code_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64)) {
+    fn code_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), kept in any::<bool>(), size in any::<bool>()) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..words.len() as u64).map(|i| 4 * i).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::None, optimise(size), count(kept), HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
     /// Random words at full look-ahead, from the first word and from a few others.
     #[test]
-    fn full_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4)) {
+    fn full_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4), kept in any::<bool>(), size in any::<bool>()) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Full, optimise(size), count(kept), HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
     /// Random bytes translated from every byte address at look-ahead none: x86 code may start anywhere. A
     /// piece for every start but those whose instruction runs past the end of the bytes.
     #[test]
-    fn code_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), v3 in any::<bool>()) {
+    fn code_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), v3 in any::<bool>(), kept in any::<bool>(), size in any::<bool>()) {
         let starts: Vec<u64> = (0..bytes.len() as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, optimise(size), count(kept), HOST_X86_64, told(v3)).unwrap();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
         validate(&translation.modules[0].wasm);
     }
 
     /// Random bytes at full look-ahead, from the first byte and from a few others.
     #[test]
-    fn full_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4), v3 in any::<bool>()) {
+    fn full_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4), v3 in any::<bool>(), kept in any::<bool>(), size in any::<bool>()) {
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| p.index(bytes.len()) as u64));
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, optimise(size), count(kept), HOST_X86_64, told(v3)).unwrap();
         for module in &translation.modules {
             validate(&module.wasm);
         }
@@ -292,9 +313,9 @@ proptest! {
 
     /// Random bytes at bounded look-ahead of random N, from a few byte addresses: one piece in the table each.
     #[test]
-    fn bounded_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32, v3 in any::<bool>()) {
+    fn bounded_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32, v3 in any::<bool>(), kept in any::<bool>(), size in any::<bool>()) {
         let mut starts: Vec<u64> = picks.iter().map(|p| p.index(bytes.len()) as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), optimise(size), count(kept), HOST_X86_64, told(v3)).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
@@ -305,7 +326,7 @@ proptest! {
     /// link address a random byte of the code, the byte below it or the one past it: valid modules at full and
     /// at bounded look-ahead, and at full a piece at each named byte where a whole instruction starts.
     #[test]
-    fn absolute_entries_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), named in prop::collection::vec((any::<u8>(), any::<prop::sample::Index>()), 1..4), bound in 1..80u32) {
+    fn absolute_entries_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), named in prop::collection::vec((any::<u8>(), any::<prop::sample::Index>()), 1..4), bound in 1..80u32, kept in any::<bool>(), size in any::<bool>()) {
         let forms: Vec<Absolute> = named.iter().map(|&(drawn, _)| Absolute::drawn(drawn)).collect();
         let length = forms.iter().map(|f| f.length()).sum::<usize>() + bytes.len();
         let targets: Vec<i64> = named.iter().map(|(_, at)| at.index(length + 2) as i64 - 1).collect();
@@ -316,7 +337,7 @@ proptest! {
         code.extend(&bytes);
         let starts: Vec<u64> = (0..code.len() as u64).filter(|&t| X86_64::decode(&code[t as usize..]).is_some()).collect();
         for look_ahead in [LookAhead::Full, LookAhead::Bounded(bound)] {
-            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, Offer::default()).unwrap();
+            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, optimise(size), count(kept), HOST_X86_64, Offer::default()).unwrap();
             for module in &translation.modules {
                 validate(&module.wasm);
             }
@@ -331,10 +352,10 @@ proptest! {
 
     /// Random words at bounded look-ahead of random N, from a few starts: one piece in the table each.
     #[test]
-    fn bounded_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
+    fn bounded_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32, kept in any::<bool>(), size in any::<bool>()) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts: Vec<u64> = picks.iter().map(|p| 4 * p.index(words.len()) as u64).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Bounded(bound), optimise(size), count(kept), HOST, ()).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &starts);
@@ -407,19 +428,21 @@ fn every_form_is_valid_arm64() {
         let blob: Vec<u8> = chunk.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..chunk.len() as u64).map(|i| 4 * i).collect();
         for look_ahead in [LookAhead::None, LookAhead::Bounded(16), LookAhead::Full] {
-            let translation = translate::<Arm64>(
-                &blob,
-                0..blob.len() as u64,
-                None,
-                &starts,
-                look_ahead,
-                Optimise::Speed,
-                wcontainers_translator::ProgressCount::Absent,
-                HOST,
-                (),
-            )
-            .unwrap();
-            validate(&translation.modules[0].wasm);
+            for count in COUNTS {
+                let translation = translate::<Arm64>(
+                    &blob,
+                    0..blob.len() as u64,
+                    None,
+                    &starts,
+                    look_ahead,
+                    Optimise::Speed,
+                    count,
+                    HOST,
+                    (),
+                )
+                .unwrap();
+                validate(&translation.modules[0].wasm);
+            }
         }
     }
 }
@@ -456,7 +479,10 @@ fn every_form_is_valid_x86_64() {
             let one = case.code.code();
             let code = one.repeat(REPEATS);
             cases += 1;
-            for look_ahead in [LookAhead::None, LookAhead::Bounded(16), LookAhead::Full] {
+            for (look_ahead, count) in [LookAhead::None, LookAhead::Bounded(16), LookAhead::Full]
+                .into_iter()
+                .flat_map(|look_ahead| COUNTS.map(|count| (look_ahead, count)))
+            {
                 let translation = translate::<X86_64>(
                     &code,
                     0..code.len() as u64,
@@ -464,14 +490,16 @@ fn every_form_is_valid_x86_64() {
                     &[0],
                     look_ahead,
                     Optimise::Speed,
-                    wcontainers_translator::ProgressCount::Absent,
+                    count,
                     HOST_X86_64,
                     X86_64::case_offer(&case),
                 )
                 .unwrap();
                 for module in &translation.modules {
                     if let Err(error) = check(&module.wasm) {
-                        failures.push(format!("{name} {one:02x?} at {look_ahead:?}: {error}"));
+                        failures.push(format!(
+                            "{name} {one:02x?} at {look_ahead:?} {count:?}: {error}"
+                        ));
                     }
                 }
             }

@@ -53,7 +53,7 @@ wcontainers-configurable = { path = "../../../configurable", optional = true }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable", optional = true }
 # The exception classes of ESR_EL1 a stopped processor's syndrome is built from, the version the architecture uses.
 aarch64-cpu = { version = "12.0.0", optional = true }
-# Single instruction execution on any CPU side of the abi, shared with the WebAssembly executor.
+# The WebAssembly executor the `runtime` feature runs the tests on.
 wcontainers-executor-wasmtime = { path = "../wasmtime", optional = true }
 wcontainers-arm64 = { path = "../../../arm64", optional = true }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "elf_uapi", "no_std"], optional = true }
@@ -82,6 +82,7 @@ wcontainers-executor-conformance = { path = "../../conformance" }
 wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
 wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
 wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 
 [[test]]
 name = "conformance"
@@ -106,7 +107,6 @@ harness = [
     "dep:wcontainers-configurable",
     "dep:wcontainers-negative-route-advisable",
     "dep:aarch64-cpu",
-    "dep:wcontainers-executor-wasmtime",
     "dep:linux-raw-sys",
     "dep:cargo_metadata",
     "dep:libc",
@@ -123,7 +123,7 @@ harness = [
 ]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)
 # instead of the stand-in CPU, at the look-ahead `LOOK_AHEAD` names: full (also when unset), none or bounded.
-runtime = ["harness", "dep:wcontainers-arm64"]
+runtime = ["harness", "dep:wcontainers-executor-wasmtime", "dep:wcontainers-arm64"]
 
 [lints]
 workspace = true

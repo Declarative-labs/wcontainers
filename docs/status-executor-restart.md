@@ -237,3 +237,102 @@ mark. Dependencies: unicorn drops `atomic_refcell`; the harness's dependencies b
 input-domain ones; simulation adds dev-dependency `wcontainers-random-source-seeded`; the random-source
 implementations add `wcontainers-volatile-bytes` and `wcontainers-byte-source`. No outside crate added. The
 hostile-guest suite was not run.
+
+## X3 continued: the stand-in at EL0 over today's whole list (2026-11-26)
+
+Merges (normal, no conflict but the lock file, MEASURED `git merge`): `d355cb977` and `b44485e28`
+`origin/arm64-instructions` 44e944a2f then f7f80cae6 (SVE, Advanced SIMD, the rest family); `7fe9b48b1`
+`origin/translator-port` 659f657d2; `82e225ca2` `origin/runtime-restart` 93637d42e; his main `ac696ea19` was
+already in. Every file of his 29 interface folders is byte-identical to his main (MEASURED, `git diff --quiet` on
+each file at the top of each folder). `19515bf25`: the lock file as cargo writes it after the merges.
+
+What changed in the stand-in (`218b82d95`, `f159f4e59`, `c84cbab9e`):
+
+- The guest runs at EL0 under Linux's controls: PSTATE EL0t, SCTLR_EL1 UCI, UCT, DZE set and nTWI clear,
+  CPACR_EL1 FPEN and ZEN open, CPTR_EL3 EZ set (unicorn's model has EL3, which traps SVE otherwise), TCR_EL1 T0SZ 16
+  and TBI0. Written once per unicorn instance, kept in the context each turn restores.
+- The predicate registers and FFR reach the processor state: unicorn's interface has none, so a single
+  instruction runs between helper code on a scratch page after the state's pages (LDR/STR predicate, RDFFR,
+  WRFFR), the page allowing everything for the helpers and nothing for the instruction. A whole execution keeps
+  the predicates it started with (no page to pass them through).
+- A stop QEMU raises as undefined: WFI is `WaitTrapped` (nTWI clear), any other system-class word is refused as
+  `Unsupported::TrapOrUndefined` (unicorn gives no syndrome to tell a trap from undefined), anything else is
+  `UndefinedInstruction`. The unallocated FP16 three-same words QEMU's decoder asserts on (one of them ended the
+  last run, `0x0ec01dcd`) are refused as `EmulatorAborts` before unicorn sees them. A data access to a tagged
+  address whose untagged page allows it is refused as `TaggedAccess`, a branch to a tagged address as
+  `TaggedBranch`. A fault status reads the untagged address. Every exception but a supervisor call leaves the
+  program counter on its instruction (unicorn left it after a faulting SVE store).
+- The stand-in may move between threads (the kernel's bounds: `C: Send`, `GuestMemory: Send`): every unicorn
+  instance of a stand-in lives on one host thread of its own (`engine.rs`), the stand-in, its spaces and tables
+  are handles that send each call there. A table only maps or copies from a space of the same engine. Single
+  instructions reuse one cleared memory per engine. `PerThreadWatch` is implemented (refuses: the kernel watches
+  one thread itself before each turn, executing.rs:686-697).
+- The executor suite's agreement test (`crates/executor/conformance/suite.rs`): a state the executor gives an
+  error for is a refusal, counted and listed on the standard error per instruction, not compared; instructions
+  with no known behavior are listed as not compared; the test fails if no state executes. It shares the
+  instructions among 12 executors on their own threads (`AGREEMENT_EXECUTORS`). The stand-in's run takes as its
+  set the first known behavior every executed state meets (the chip picks one), measured the same way in
+  parallel, and names two refused states for the error-recovery test.
+- The kernel harness no longer pulls in wasmtime without the `runtime` feature (`5bfd6d5ad`).
+
+MEASURED, Graviton4, `-j 12` (logs: `executor-restart/x3-finish/`):
+
+| Run | Result |
+|---|---|
+| probe, every listed instruction, one by one (`probe1-out.txt`, 1,406 s) | 4,430 listed, 4,426 with a behavior, 25,783,206 states, no host abort |
+| stand-in unit tests | 7 of 7 (new: the stand-in moves to another thread) |
+| executor suite on the stand-in, all but the behavior source module | 21 of 22 (the agreement test fails) |
+| agreement test (`bar2-unicorn-tests.txt`, 46 min) | 24,505,841 states executed, 1,277,365 refused in 707 instructions, 509 instructions disagree |
+| executor suite on the simulation | 25 of 26: `measured_behavior_agrees_with_the_source` (the 4 instructions with no behavior) |
+| rustfmt `--check`, clippy `-D warnings` (stand-in lib and suite; simulation and suite all targets) | clean |
+
+What the 509 disagreements are (READ from the probe's first diff of each):
+
+- 209 instructions, one state each, the list knows only "undefined" (`Unimplemented`, no model yet) and unicorn
+  runs them: SVE dot products, indexed FMLA/FMUL/FCMLA, FADDV and the other reductions, FTMAD, FRECPE, the gathers
+  and scatters, LDFF1 and LDNF1, ADR, the SM3 and SM4 instructions. They wait on the arm64 track's models.
+- Tagged addresses: the model applies TBI0 to data and branches; unicorn faults on a tagged data address even with
+  TBI0 written (bar 1 without it and bar 2 with it gave the same counts), so those states are refused
+  (`TaggedAccess`, most of the 1.28 million) and the rest disagree (SVE loads and stores at a tagged base,
+  LDR/STR predicate and vector). Open: why QEMU's TBI does not apply here (MMU off is my guess, INFERRED).
+- Exclusive stores (STXR, STLXR, STXP, STLXP: 10) to a misaligned address: unicorn completes and fails the
+  store, the model expects an alignment fault.
+- Chip differences of unicorn's `max` model: MSR FPCR keeps more bits than a Neoverse V2 (1,440 states); MRS of
+  the cache type reads 0x8444c004, which MRS's two behaviors do not list (83 states, only `MrsCtrEl0` has it);
+  FCVTZS (scalar, fixed point, half) writes 32 bits where the model writes 16; FCMLA by element sets IDC in FPSR;
+  FJCVTZS sets Z where the model leaves NZCV 0; XPACI and XPACD strip at bit 55 differently (6 states each).
+- The refusals besides tags: MRS 124,014 and MSR 100,077 states (EL1 traps them, unicorn says undefined), WFET,
+  WFIT, DSB nXS, the hint space (1 each), FAMAX, FAMIN and FSCALE half (the decoder assertion, 1 each).
+
+Four mandatory instructions still have no known behavior on `origin/arm64-instructions` f7f80cae6: `Hint`,
+`MsrImmediate`, `Sys`, `Sysl` (MEASURED: the probe's NOBEHAVIOR lines).
+
+X3 IS NOT REACHED: the agreement test fails on the 509 instructions above, and the LTP verdicts wait on the
+kernel track's harness, which does not build (MEASURED, `cargo check -p wcontainers-executor-unicorn --lib` with a
+throwaway fill of the kernel's two new processor fields: 86 errors, in driver.rs, hooks.rs, ltp.rs, layer1.rs,
+replay.rs and the kernel's own system.rs and container.rs: the old drive `next`/`exit`/`event`, `&mut dyn Cpu`
+where the kernel now takes `&mut GuestMachine`, the `Hooks` methods' new type parameter, the runtime's removed
+`drive`, `Ending` and `System` methods, `FallbackObserver` for `TestHost`). One of them is the kernel's own:
+`running.rs:203` builds `Processor` without `predicate_registers` and `first_fault_register` since the arm64
+merge (this branch's kernel crate does not compile, MEASURED). For the kernel track's harness, from the stand-in:
+it is `Send` again, its handles and `Unsupported` variants are above; `StandIn::run`, `run_on` (asserts the space
+is the stand-in's), `restored` (same engine), `take_refused`, `Refused` and `SPACE_*` are kept.
+
+## X2: not started (what it needs, READ)
+
+The wasmtime executor implements the runtime's own `Execution` and `Executor`, which `runtime-restart` keeps
+unused (its status, RT1). After the merges its lib fails with 76 errors (MEASURED, with the kernel field filled):
+19 `expect(unsafe_code)` under the workspace's `forbid`, 14 unsafe blocks, 4 unsafe impls, and the old
+`Executor`/`MemorySpace`/`Processor` shapes. Plan for the trap path without unsafe and without leaving the
+translated code: wasmtime's `async` feature runs the guest on a fiber (`Func::call_async`), each trap hook is a
+`Func::wrap_async` whose future hands the trap to `run`'s loop and waits for the answer, so the handler is asked
+from inside the run while the guest's stack stays on the fiber, and the store's data owns its state (no erased
+lifetimes, implementation.rs:1812-1829). The custom memory (memory.rs, 39 lines) and the deserialize cache
+(implementation.rs:308) go; fork in the tests (3094) stays a stop item. Not measured yet.
+
+SECURITY: lines with `unsafe` (`git grep -n unsafe`, raw word) before (`62d137472`) and after (`c84cbab9e`):
+unicorn 26 to 26 (all in the harness files: `libc::fork` in driver.rs, the generator's text handling; the
+stand-in's files 0 to 0), wasmtime 62 to 62, simulation 0, conformance 0. No marked exception added, no UNSOUND
+mark, no lint lowered, every crate keeps `[lints] workspace = true`. Dependencies: unicorn adds dev-dependency
+`wcontainers-distinguishing-state-generator` (workspace); no outside crate added. The hostile-guest suite was
+not run (none exists; the thread-test design review is owed to the owner first).

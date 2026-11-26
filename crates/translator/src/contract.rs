@@ -129,7 +129,7 @@ pub use wcontainers_guest_cpu::PROBE;
 
 /// The function index of a code module's first piece; the pieces of `CodeModule::pieces` follow in order.
 pub const fn first_piece_function<G: Guest>() -> u32 {
-    <G as crate::layout::Layout>::F_FIRST_PIECE
+    crate::layout::Layout::<G>::F_FIRST_PIECE
 }
 
 /// With [`crate::ProgressCount::Kept`], the u64 at the stop flag's place: the thread calls the stop hook at

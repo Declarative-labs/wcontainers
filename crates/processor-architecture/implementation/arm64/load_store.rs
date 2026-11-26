@@ -5,6 +5,8 @@
 use alloc::borrow::Cow;
 use core::convert::Infallible;
 
+pub mod scalable_access;
+
 use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
 
 use crate::behavior::{
@@ -482,6 +484,11 @@ const fn to_plain_operation(instruction: Instruction<Infallible>) -> Option<(Tra
         | I::StpPreIndex64
         | I::StpPostIndex64
         | I::StnpSignedOffset64 => (Transfer::Store, DOUBLEWORD),
+        // [LDRAA](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDRAA--LDRAB--Load-register--with-pointer-authentication-)
+        // with the data keys off, so that AuthDA and AuthDB leave the base as it is.
+        I::LdraaIndexed64 | I::LdraaWriteback64 | I::LdrabIndexed64 | I::LdrabWriteback64 => {
+            (Transfer::Load(Unsigned), DOUBLEWORD)
+        }
         I::PrfmImmediateUnsignedOffset64 | I::PrfmRegister | I::PrfmLiteral | I::Prfum => {
             (Transfer::Prefetch, DOUBLEWORD)
         }
@@ -527,7 +534,8 @@ const fn to_plain_operation(instruction: Instruction<Infallible>) -> Option<(Tra
         | I::LdpSimdFpSignedOffset128
         | I::LdpSimdFpPreIndex128
         | I::LdpSimdFpPostIndex128
-        | I::LdnpSimdFpSignedOffset128 => (Transfer::Load(Unsigned), QUADWORD),
+        | I::LdnpSimdFpSignedOffset128
+        | I::LdrQLdstRegoff => (Transfer::Load(Unsigned), QUADWORD),
         I::StrSimdFpImmediateUnsignedOffset8
         | I::StrSimdFpImmediatePreIndex8
         | I::StrSimdFpImmediatePostIndex8
@@ -564,7 +572,8 @@ const fn to_plain_operation(instruction: Instruction<Infallible>) -> Option<(Tra
         | I::StpSimdFpSignedOffset128
         | I::StpSimdFpPreIndex128
         | I::StpSimdFpPostIndex128
-        | I::StnpSimdFpSignedOffset128 => (Transfer::Store, QUADWORD),
+        | I::StnpSimdFpSignedOffset128
+        | I::StrQLdstRegoff => (Transfer::Store, QUADWORD),
         _ => return None,
     })
 }
@@ -844,6 +853,19 @@ fn read_addressed<LevelSpecific>(
                 };
                 addressed.offset = value << scale;
             }
+            Operand::SplitAddressOffset { fields, scale } => {
+                let width: u32 = fields.iter().map(|field| field.width).sum();
+                let bits = fields.iter().fold(0_u64, |value, field| {
+                    (value << field.width) | u64::from(field.read(word))
+                });
+                let shift = u64::BITS - width;
+                let scale = if crate::planted::is(711) {
+                    scale - 1
+                } else {
+                    scale
+                };
+                addressed.offset = (((bits << shift) as i64 >> shift) as u64) << scale;
+            }
             Operand::RegisterOffset {
                 number,
                 signed,
@@ -863,7 +885,10 @@ fn read_addressed<LevelSpecific>(
                     field.map_or(fixed, |field| field.read(word) != 0)
                 };
                 // Where option<0> is absent the option is LSL, which takes the register whole.
-                let bits = if is_set(doubleword, true) || crate::planted::is(286) {
+                let bits = if is_set(doubleword, true)
+                    || crate::planted::is(286)
+                    || (crate::planted::is(718) && operation.bytes == QUADWORD)
+                {
                     u64::BITS
                 } else {
                     u32::BITS
@@ -1575,7 +1600,7 @@ fn write_back<LevelSpecific>(
 }
 
 /// Writes the bytes at the address, or, where a byte faults, what the behavior across a fault writes.
-fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+pub(crate) fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     address: u64,
     location: u64,
@@ -1613,7 +1638,7 @@ fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     Ok(())
 }
 
-fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+pub(crate) fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     address: u64,
     location: u64,
@@ -1635,7 +1660,7 @@ fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
 }
 
 /// Finds the lowest address of the access that its page refuses, and the fault's status.
-fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+pub(crate) fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     start: u64,
     length: u64,
@@ -1664,7 +1689,7 @@ fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermissio
 
 /// The fault address FAR_EL1 gives for a fault at `fault_location` of an access to `address`, with the tag the
 /// behavior keeps.
-fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
+pub(crate) fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
     let location = to_untagged_address(fault_location);
     let tag_bits = if crate::planted::any(&[264, 35]) {
         0

@@ -301,59 +301,64 @@ pub fn run(
     }
 }
 
-/// The raw bits of a format's parts.
-trait Bits: Float + FloatConvert<Quad> {
-    fn mask() -> u128 {
-        u128::MAX >> (u128::BITS - Self::BITS as u32)
-    }
-    fn quiet_bit() -> u128 {
-        1 << (Self::PRECISION - 2)
-    }
-    fn fraction_mask() -> u128 {
-        (1 << (Self::PRECISION - 1)) - 1
-    }
-    fn sign_bit() -> u128 {
-        1 << (Self::BITS - 1)
-    }
-    /// x86's default not-a-number: negative and quiet ("real indefinite").
-    fn default_nan() -> Self {
-        Self::from_bits(Self::mask() & !(Self::fraction_mask() >> 1))
-    }
-    fn quiet(self) -> Self {
-        Self::from_bits(self.to_bits() | Self::quiet_bit())
-    }
-    fn signed_zero(negative: bool) -> Self {
-        if negative { -Self::ZERO } else { Self::ZERO }
-    }
+/// Gives every bit of format `F`.
+fn mask<F: Float>() -> u128 {
+    u128::MAX >> (u128::BITS - F::BITS as u32)
 }
 
-impl Bits for Half {}
-impl Bits for Single {}
-impl Bits for Double {}
+/// Gives the quiet bit of a not-a-number of format `F`.
+fn quiet_bit<F: Float>() -> u128 {
+    1 << (F::PRECISION - 2)
+}
+
+/// Gives the fraction bits of format `F`.
+fn fraction_mask<F: Float>() -> u128 {
+    (1 << (F::PRECISION - 1)) - 1
+}
+
+/// Gives the sign bit of format `F`.
+fn sign_bit<F: Float>() -> u128 {
+    1 << (F::BITS - 1)
+}
+
+/// x86's default not-a-number: negative and quiet ("real indefinite").
+fn default_nan<F: Float>() -> F {
+    F::from_bits(mask::<F>() & !(fraction_mask::<F>() >> 1))
+}
+
+/// Makes a not-a-number quiet.
+fn quiet<F: Float>(v: F) -> F {
+    F::from_bits(v.to_bits() | quiet_bit::<F>())
+}
+
+/// Gives zero with the sign asked for.
+fn signed_zero<F: Float>(negative: bool) -> F {
+    if negative { -F::ZERO } else { F::ZERO }
+}
 
 /// The half precision numbers of a vector's low 64 bits.
 const HALVES_IN_LANE: usize = (u64::BITS / u16::BITS) as usize;
 
 /// A lane of `v`, of `F`'s width.
-fn lane<F: Bits>(v: u128, n: usize) -> u128 {
-    (v >> (n * F::BITS)) & F::mask()
+fn lane<F: Float + FloatConvert<Quad>>(v: u128, n: usize) -> u128 {
+    (v >> (n * F::BITS)) & mask::<F>()
 }
 
-fn with_lane<F: Bits>(v: u128, n: usize, bits: u128) -> u128 {
+fn with_lane<F: Float + FloatConvert<Quad>>(v: u128, n: usize, bits: u128) -> u128 {
     let at = n * F::BITS;
-    v & !(F::mask() << at) | (bits & F::mask()) << at
+    v & !(mask::<F>() << at) | (bits & mask::<F>()) << at
 }
 
 /// A not-a-number of one format as the other, quiet, with as much of its payload as fits.
-fn convert_nan<F: Bits, T: Bits>(v: F) -> T {
-    let bits = v.quiet().to_bits() & F::fraction_mask();
+fn convert_nan<F: Float + FloatConvert<Quad>, T: Float + FloatConvert<Quad>>(v: F) -> T {
+    let bits = quiet(v).to_bits() & fraction_mask::<F>();
     let fraction = if T::PRECISION > F::PRECISION {
         bits << (T::PRECISION - F::PRECISION)
     } else {
         bits >> (F::PRECISION - T::PRECISION)
     };
-    let sign = if v.is_negative() { T::sign_bit() } else { 0 };
-    T::from_bits(sign | (T::mask() >> 1 & !T::fraction_mask()) | fraction)
+    let sign = if v.is_negative() { sign_bit::<T>() } else { 0 };
+    T::from_bits(sign | (mask::<T>() >> 1 & !fraction_mask::<T>()) | fraction)
 }
 
 struct Context {
@@ -372,11 +377,11 @@ impl Context {
 
     /// An operand of a number: zero when it is denormal and DAZ is set, else raising denormal if `denormal`
     /// says the operation reports it.
-    fn number<F: Bits>(&mut self, v: F, denormal: bool) -> F {
+    fn number<F: Float + FloatConvert<Quad>>(&mut self, v: F, denormal: bool) -> F {
         if !v.is_denormal() {
             v
         } else if self.mxcsr & MXCSR_DENORMALS_ARE_ZERO != 0 {
-            F::signed_zero(v.is_negative())
+            signed_zero::<F>(v.is_negative())
         } else {
             if denormal {
                 self.flags |= MXCSR_DENORMAL;
@@ -387,21 +392,21 @@ impl Context {
 
     /// A not-a-number result when an operand is one: the first such operand, quieted, raising invalid for a
     /// signaling one.
-    fn nans<F: Bits>(&mut self, operands: &[F]) -> Option<F> {
+    fn nans<F: Float + FloatConvert<Quad>>(&mut self, operands: &[F]) -> Option<F> {
         if operands.iter().any(|v| v.is_signaling()) {
             self.flags |= MXCSR_INVALID;
         }
-        operands.iter().find(|v| v.is_nan()).map(|v| v.quiet())
+        operands.iter().find(|v| v.is_nan()).map(|&v| quiet(v))
     }
 
-    fn invalid<F: Bits>(&mut self) -> F {
+    fn invalid<F: Float + FloatConvert<Quad>>(&mut self) -> F {
         self.flags |= MXCSR_INVALID;
-        F::default_nan()
+        default_nan::<F>()
     }
 
     /// The exact result `q`, rounded to odd in quadruple precision, rounded once to `F` as MXCSR says, with
     /// overflow, underflow (tiny after rounding), flush to zero and precision.
-    fn finish<F: Bits>(&mut self, q: Quad) -> F
+    fn finish<F: Float + FloatConvert<Quad>>(&mut self, q: Quad) -> F
     where
         Quad: FloatConvert<F>,
     {
@@ -440,7 +445,7 @@ impl Context {
             }
             if self.mxcsr & MXCSR_FLUSH_TO_ZERO != 0 {
                 self.flags |= MXCSR_UNDERFLOW | MXCSR_PRECISION;
-                return F::signed_zero(q.is_negative());
+                return signed_zero::<F>(q.is_negative());
             }
             let r = convert(q);
             if r.status.contains(Status::INEXACT) {
@@ -479,7 +484,7 @@ impl Context {
         !unmasked
     }
 
-    fn arithmetic<F: Bits>(&mut self, op: Operation, a: F, b: F) -> F
+    fn arithmetic<F: Float + FloatConvert<Quad>>(&mut self, op: Operation, a: F, b: F) -> F
     where
         Quad: FloatConvert<F>,
     {
@@ -524,7 +529,11 @@ impl Context {
     /// `x * y + z` rounded once, with the product and the addend negated as `negate` says. A not-a-number
     /// operand gives the first one quieted, raising invalid only for a signaling one, even where the product is
     /// infinity times zero (seen on the reference).
-    fn fused<F: Bits>(&mut self, [x, y, z]: [F; FUSED_OPERANDS], negate: (bool, bool)) -> F
+    fn fused<F: Float + FloatConvert<Quad>>(
+        &mut self,
+        [x, y, z]: [F; FUSED_OPERANDS],
+        negate: (bool, bool),
+    ) -> F
     where
         Quad: FloatConvert<F>,
     {
@@ -609,7 +618,7 @@ impl Context {
     fn sqrt<F>(&mut self, v: F) -> F
     where
         Quad: FloatConvert<F>,
-        F: Bits + FloatConvert<Double>,
+        F: Float + FloatConvert<Quad> + FloatConvert<Double>,
     {
         if let Some(nan) = self.nans(&[v]) {
             return nan;
@@ -642,7 +651,7 @@ impl Context {
         self.finish(q)
     }
 
-    fn min_max<F: Bits>(&mut self, max: bool, a: F, b: F) -> F {
+    fn min_max<F: Float + FloatConvert<Quad>>(&mut self, max: bool, a: F, b: F) -> F {
         let (a, b) = (self.number(a, false), self.number(b, false));
         if a.is_nan() || b.is_nan() {
             self.flags |= MXCSR_INVALID;
@@ -654,7 +663,12 @@ impl Context {
     }
 
     /// Whether `a` and `b` are unordered, less or equal, raising invalid as `signaling` says.
-    fn compare<F: Bits>(&mut self, signaling: bool, a: F, b: F) -> Option<core::cmp::Ordering> {
+    fn compare<F: Float + FloatConvert<Quad>>(
+        &mut self,
+        signaling: bool,
+        a: F,
+        b: F,
+    ) -> Option<core::cmp::Ordering> {
         if a.is_nan() || b.is_nan() {
             if signaling || a.is_signaling() || b.is_signaling() {
                 self.flags |= MXCSR_INVALID;
@@ -665,7 +679,7 @@ impl Context {
         a.partial_cmp(&b)
     }
 
-    fn predicate<F: Bits>(&mut self, immediate: u8, a: F, b: F) -> bool {
+    fn predicate<F: Float + FloatConvert<Quad>>(&mut self, immediate: u8, a: F, b: F) -> bool {
         use Predicate as P;
         use core::cmp::Ordering as O;
         let p = PREDICATES[usize::from(immediate) % PREDICATES.len()];
@@ -686,7 +700,7 @@ impl Context {
             }
     }
 
-    fn round_integral<F: Bits>(&mut self, immediate: u8, v: F) -> F {
+    fn round_integral<F: Float + FloatConvert<Quad>>(&mut self, immediate: u8, v: F) -> F {
         if let Some(nan) = self.nans(&[v]) {
             return nan;
         }
@@ -703,7 +717,12 @@ impl Context {
         r.value
     }
 
-    fn integer_of<F: Bits>(&mut self, bits: usize, truncate: bool, v: F) -> u128 {
+    fn integer_of<F: Float + FloatConvert<Quad>>(
+        &mut self,
+        bits: usize,
+        truncate: bool,
+        v: F,
+    ) -> u128 {
         let indefinite = 1u128 << (bits - 1);
         if v.is_nan() {
             self.flags |= MXCSR_INVALID;
@@ -727,7 +746,7 @@ impl Context {
         r.value as u128 & (u128::MAX >> (u128::BITS as usize - bits))
     }
 
-    fn float_of<F: Bits>(&mut self, value: i128) -> F {
+    fn float_of<F: Float + FloatConvert<Quad>>(&mut self, value: i128) -> F {
         let r = F::from_i128_r(value, self.round());
         if r.status.contains(Status::INEXACT) {
             self.flags |= MXCSR_PRECISION;
@@ -745,8 +764,8 @@ impl Context {
     ) -> u128
     where
         Quad: FloatConvert<F> + FloatConvert<T>,
-        F: Bits + FloatConvert<Double> + FloatConvert<T>,
-        T: Bits,
+        F: Float + FloatConvert<Quad> + FloatConvert<Double> + FloatConvert<T>,
+        T: Float + FloatConvert<Quad>,
     {
         use Operation::*;
         let lanes = if scalar {
@@ -814,7 +833,7 @@ impl Context {
             Compare => {
                 for n in 0..lanes {
                     let r = if self.predicate(immediate, f(a, n), f(b, n)) {
-                        F::mask()
+                        mask::<F>()
                     } else {
                         0
                     };

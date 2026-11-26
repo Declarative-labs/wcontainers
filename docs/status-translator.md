@@ -111,7 +111,196 @@ TR1 under the orchestrator's two rulings (2026-11-25, 1b3b7578 to d714af58; 9 jo
   the allocator; 5 before, with the attribute); reference/ 86.
 - So TR1's bar does not hold by this measurement: the four allocator lines remain. TR2 is not started.
 
+Run of 2026-11-25 evening (results in scratch `translator-port/run3/`; the owner's main e295234c merged first,
+ded74452, with no conflict: none of the five crates uses an interface that changed).
+
+TR1, the stand-ins hand out memory (orchestrator's ruling: the test stays):
+- Both stand-ins (runner.rs, browser/runner.js) answer `brk`, and `mmap` and `munmap` of private anonymous
+  memory, as Linux does for what musl asks (scratch `exp1-arm.log`: brk(0), brk(+2 pages), mmap fixed
+  PROT_NONE over the first, mmap of single RW pages and munmap): the break moves up when the pages it gains and
+  the one after are free, and down to where it started; a mapping goes where `MAP_FIXED` says
+  (`MAP_FIXED_NOREPLACE` refuses a mapped page with EEXIST) or top down below the highest mapped run less
+  Linux's stack guard gap; new pages read zero; the page permissions are the table's. A shared, file or
+  grows-down mapping, and any call that would map or unmap a page a translation in use was made from, is
+  counted and warned as "system call not implemented" (ENOSYS). The page's numbers come from the Rust side
+  (linux-raw-sys's flags). f701e20d.
+- programs/mappings.c checks the edge cases against Linux (errors of zero length, unaligned offset and address
+  and an overflowing length; fixed over a mapping gives zero; NOREPLACE; a PROT_NONE and an unmapped page give
+  EFAULT to write; the break grows, shrinks and grows back with zero pages; a store to an unmapped page faults):
+  the same output and status as Linux at every look-ahead, wasmtime on both machines, Chrome on ARM64.
+- panics.rs has no allocator (716ee6b5): std allocates through musl's malloc from the stand-in's pages.
+  `unwinding_matches_linux` passes: ARM64 machine 315 s, x86-64 machine 542 s, each at every look-ahead, mixed
+  and in Chrome; the only calls not answered in it are set_tid_address and ioctl, as before.
+- The whole TR1 bar again at 716ee6b5 (scratch `run3/full-*.log`, 12 jobs):
+  - fmt, check, clippy with warnings denied over all targets and features, the browser crate's clippy for both
+    guests and the reference's clippy: exit 0 on both machines.
+  - `unsafe` outside comments: arm64 0, x86 0, guest-cpu 0, translator 0, translator-test 0; reference/ 86.
+  - ARM64's ten output lists: the same sha256 for every list as the baseline's.
+  - Layer 2, 10,000 programs, new seed 25112601, all on the CPU: ARM64 0 failing (3,377 faulted, 557 left to an
+    address); x86-64 0 failing (3,364 faulted, 1,119 left).
+  - Layer 3, cases 0 to 1,199, seed 1: ARM64 1,023 compared, 177 did not end in time on Linux, 0 failing; x86-64 1,023 compared, 177 did not end, 0 failing (4,091 s).
+  - The suite test by test against the baseline: ARM64 machine 223 passed, 50 failed, 19 ignored; every
+    outcome the baseline's (two tests' lines were cut by output written at once; the programs binary's own
+    count, 25 passed, 27 failed, 3 ignored, and its 27 names are the baseline's); the 3 tests TR1 added pass;
+    298 listed, 19 ignored, none removed. x86-64 machine 256 passed, 36 failed, 20 ignored, every outcome the
+    baseline's, the 3 added pass, 316 listed, 20 ignored, none removed.
+  - Layer 1's failing lists against the baseline, form by form: ARM64 machine `["MSR_SR_systemmove"]` at both
+    (1,215 forms, 64 a form, seed 1) and in Chrome; equal. x86-64 machine 1,126 of 2,008 forms, the unoffered forms
+    1,820 of 2,986, Chrome 41 of 2,008: all equal to the baseline's, none only before or only after.
+  - `cargo reviewable check` (59ad72ce, no model key): 12,083 in the five crates (12,070 at d714af58).
+- So TR1's bar holds by this measurement: check and clippy on both machines, 0 `unsafe` in the five crates'
+  files, the same hashes, layers 1 to 3 with no new failing form or case, the native output tests as at the
+  baseline (their outcomes are in the suite), no test removed or ignored. TR1 is ready for its check.
+
+TR2 (plan: scratch `translator-port/tr2-plan.md`):
+- `translator`'s `Layout` is `Layout<G>`, a type with the same constants and functions (8c7a3bb5); the
+  exact float paths' `Bits` traits are free functions over rustc_apfloat's `Float` (e3c12e48); `rdtsc`'s
+  answer reads `wcontainers_clock::Clock::monotonic_nanoseconds` (ce5738f8; crates/clock is a new path
+  dependency of the x86 crate and translator-test, the owner's, no license question); the four shell
+  scripts moved to scratch `translator-port/tools/` (e2e8c020; they run from any checkout as before); the
+  reference runner's `Cpu` is an inherent impl in the module its target chooses (fe6f6a68; its `unsafe`
+  lines 86 to 81, the trait's five declarations gone).
+- ARM64's ten output lists after `Layout`: the same sha256 as the baseline's. Check, clippy (crates, browser,
+  reference), fmt, and the four library crates' tests: exit 0 on both machines.
+- Not done, for the orchestrator:
+  - x86 `answer::Memory` onto `VolatileBytes`: `VolatileBytes` is a run of bytes from its start, with no
+    addresses, page permissions or fault address, which the answers need. Bridging them is a guest-memory
+    view, whose joint review the owner still owes (rule 10). Stopped.
+  - `GuestTest`: both guests run in one build (Chrome and layer 2 run both on each machine), so a cfg cannot
+    choose one, and 253 generic uses hang on it. The form proposed in the plan (each guest's items plain, the
+    harness included once per guest under a module alias) is a rewrite of the harness; it waits on the
+    orchestrator's word on that form.
+- Layout findings: the 111 in the five crates (stray_source 104, conformance_missing 5, crate_not_member 2:
+  browser/ and reference/) are the same before and after; every one is caused by question 3 (these crates
+  have no place in the interface layout). The linter flags none of the traits. Every finding at 5a5332b8:
+  12,081 in the five crates (TR1's tip 12,083); without those that need the model key (`*_unanswered`,
+  `grammar_unclear`), 24 fewer than TR1's tip, with them 2 fewer.
+- TR1's proofs again at 5a5332b8: the suite test by test the same as TR1's tip on both machines (ARM64 224
+  passed, 51 failed, 19 ignored, the two cut lines of TR1's run now whole and the baseline's; x86-64 256, 36,
+  20), 298 and 316 tests listed, none removed; layer 1's lists equal on both machines and in Chrome; ARM64's
+  ten output lists the baseline's sha256; layer 2 at seed 25112601: ARM64 the same counts as TR1 (3,377
+  faulted, 557 left, 28,716 stacks lost, 28,730 pieces forgotten, 0 failing), x86-64 the same counts as TR1 (3,364
+  faulted, 1,119 left, 23,581 stacks lost, 23,900 pieces forgotten, 0 failing); layer 3 cases 0 to 1,199:
+  1,023 compared, 177 did not end, 0 failing on both machines, as TR1.
+- So TR2's bar holds for what this track can do: no layout finding but question 3's, no exclusion, the other
+  findings fewer than TR1's (model-dependent ones apart), TR1's proofs the same. Left: `answer::Memory`
+  (stopped, the guest-memory views' review) and `GuestTest` (the orchestrator's word on its form).
+- Next: TR4 waits on `instruction-port` merged here and the executor track's X2; XN2's last tests on the
+  native track's W3. The machines hold no folder of this track (deleted at the end of this run).
+
+TR3, the carried findings:
+- C1's 1 (validity tests only without the count): no defect; the tests now also check output keeping the count
+  and made for size (drawn in the random tests, both counts in the thread module and every-form tests):
+  14 passed on both machines (5cd0d34b).
+- C1's 2 (the stop raiser stored u32 1 in the u64 limit): fixed in TR1 (de124d4a), its test failed before.
+- C1's 3 (positions across kernel transfers; the count reload at none): no defect in the test crate, whose
+  stand-ins deliver no signals; the plan and `Position::before` now say so, and that only the full emitter
+  loads the count back (`load_count` is called from full.rs alone) (db6d5ed4).
+- C1's 4 (the runtime passes `Absent`): the runtime track's code; the hand-over stands under "For the
+  orchestrator".
+- C1's 5 (the benchmark set only at SCALE=0 and N up to 256 across look-aheads): coverage, no defect; the
+  check ran both and they held.
+- XN1's four: the status wording and the counted speed (listed under "Departures from the plan (XN1)") and the
+  sgdt and sidt cases (the meaning's, x86 track's, under "Coordination") were answered by XN2 run 1 in
+  docs/status-x86-native-output.md; the repeated string under the count stays gap item 1, which needs the x86
+  in-process executor (native track's W3). No defect of this track.
+
+Run of 2026-11-26 (results in scratch `translator-port/tr4/`):
+
+The instruction port merged in:
+- 5a0a520c `origin/arm64-instructions` 44e944a2 (no conflict); 35b74b44 `origin/x86-instructions` a62c849e (two
+  conflicts, both shared suites of the port, not interface files: `behavior-source/conformance/suite.rs` and
+  `processor-architecture/conformance/suite.rs`; kept the ARM64 side, which bounds the suites by `Simulator<Error =
+  Infallible>` and `Eq`, both of which x86-64 meets, and compares states with what a known behavior leaves
+  undecided); the owner's main ac696ea1: already in both, "Already up to date".
+- The 91 files of his 29 interface folders (all but `implementation/`, `conformance/`, `foreign_implementation/`)
+  are byte-identical to his main (`git diff --quiet` on each). The 30th `interface.rs`, `crates/kvm`, is the
+  port's new outside-API crate and is not on his main.
+- check and clippy with warnings denied of the five packages, all targets and features: exit 0 on both machines.
+
+TR4, prepared without the executor track's X2:
+- `precise-instruction-set/implementation/translator` did not compile after the merge (10 errors: the slice's
+  old `Arm64`, `Instruction` and `PreciseInstruction` names; unicorn's set the same, not this track's). By the
+  port's recipe the translator's set is a `MeasuredInstructionSet` measured on the WebAssembly executor, so the
+  crate now holds only what that measurement is checked against (8a02f737): `SLICE`, the ten instructions, and
+  `keeps_translator_choices`, the hand-written set's answers as a test of a behavior (a misaligned stack pointer
+  faults, a store that partly faults writes nothing, a load into its base keeps the loaded value, RDVL is
+  undefined, CTR_EL0 reads `wcontainers_arm64::CACHE_TYPE`); a case the old set did not answer (what a fault
+  address keeps of a tag) is left to the measurement.
+- Its tests (both machines, exit 0, 4 passed): every slice instruction has a known behavior that keeps the
+  choices; the generator (`CriticalValueCut`) makes 78,836 states for the ten (ADD 3,680, ADDS 4,880, CSEL 4,360,
+  LDR 10,528, STR 15,036, STP 31,280, LDR post-index 9,024, BRK 18, RDVL 27, MRS 3; the old 32,277 came from the
+  old product generator); measured on the committed Neoverse V2 and Apple M5 recordings, each chip breaks exactly
+  the three choices it makes otherwise (post-index into its base, RDVL, CTR_EL0) and keeps the other seven, so
+  the check tells a wrong behavior from a right one.
+- Linter (59ad72ce) on that crate: 13 findings: 8 need the model key; `trait_not_implemented`, 2
+  `public_outside_interface` and `conformance_not_run` because the crate implements no `PreciseInstructionSet`
+  (the set is the measured crate's), and `implementation_folder` for its tests' generator over a recording's
+  states, as `measured`'s own tests have 3. Where the written choices live is for the orchestrator (below).
+- The plan says the output answers traps by callbacks from inside the run (618230db).
+- Left of TR4, all waiting on X2 (the WebAssembly executor implementing today's `BehaviorSource` and `Executor`):
+  1. measure the ten with that executor over `CriticalValueCut`, each `measure_instruction` giving one behavior
+     that keeps the choices, and 0 `NoBehaviorAgrees` over the 78,836 states;
+  2. the pilot: every instruction the port's list models, each disagreement named a translator fault (fixed,
+     layers 1 and 2 rerun) or a behavior missing from `list_known_behaviors` (reported, none added);
+     `measure_instructions` over the whole list stops at the 4 instructions with no known behavior (Hint,
+     MsrImmediate, Sys, Sysl; READ status-executor-restart.md), so the pilot measures one instruction at a time;
+  3. x86, the same once the x86 executor exists on the committed interfaces;
+  4. the check's 10 planted emission faults; candidate sites (READ): `meaning.rs` `add_with` (ADD, ADDS flags),
+     the CSEL condition, `address` (post-index writeback order), `load`/`store` (the partly faulting store),
+     `carry.rs` `stack_alignment`, `decode_forms.rs:246` (CTR_EL0), RDVL's decode, BRK's immediate.
+- What X2 needs from this track (READ executor-restart at 62d13747 against this tip): every translator and
+  guest-cpu name the wasmtime executor uses exists unchanged (`translate`, `thread_module`, `ProgressCount`,
+  `contract::{Reason, TrapKind}`, `BOUND`, `LookAhead`, `Optimise`, `Guest`, `GuestId`, `HookBody`,
+  `MemoryFault`, `reason::CODE_CHANGED_AFTER_IT_RAN`); since the executor merged 15968cb8 only one line of
+  `contract.rs` changed, inside a function. Its `conformance_run.rs` names the old `Translator` set, which no
+  longer exists: the set comes from measuring the executor (`MeasuredInstructionSet::from_measurements`). After
+  the x86 front end's XF1 merges here, its two `translate` calls take `AccessOrdering::Unordered` after
+  `ProgressCount::Absent`. Nothing else blocks X2 on this side; it waits on the runtime (RT1).
+
+The two stopped items, under the orchestrator's rulings:
+- x86 `answer::Memory` stays. The question for the owner, with the code (x86/src/answer.rs:43,
+  `trait Memory { fn read(&mut self, at: u64, into: &mut [u8]) -> Result<(), u64>; fn write(..); fn check(&mut
+  self, at: u64, bytes: u64, write: bool) -> Result<(), u64>; }`): should the x86 answers reach guest memory
+  through a guest-memory view of his (addresses, page permissions, the first faulting address) once he has
+  reviewed those views, or keep this trait of the x86 crate?
+- `GuestTest`: ruled to take the plan's form (each guest's items plain, the harness included once per guest
+  under a module alias; no trait, no `unsafe`). Not built in this run: a trial merge of `origin/x86-front-end`
+  (3e168614) into this tip (`git merge-tree`) already conflicts in 12 files, among them `runner.rs`,
+  `programs.rs`, `tests/benchmarks.rs`, `tests/valid.rs`, and the rewrite touches all 301 uses in 41 files,
+  most of them the files the front end changes and three it adds (`litmus.rs`, `ordered.rs`,
+  `guest_memory.rs`). Built after XF1 and XF2 merge here, it is one pass over both tracks' code; built before,
+  that merge must redo it by hand in every conflict.
+
+For the x86 front end's ordered form (READ origin/x86-front-end 3e168614, its status and commits): from the
+shared crates it needs its own commits to `guest-cpu` translate.rs (`AccessOrdering`, `Guest::ORDERED_ACCESSES`,
+`Emitter::access_ordering`, `shares_memory`) and `translator` code.rs, contract.rs, full.rs, lib.rs, native.rs
+(the ordering parameter after the progress count, description version 6, `Error::OrderedAccessesNotMade`, and
+the guest memory imported shared with at most `SHARED_MEMORY_MOST_PAGES`, 16 GiB, in the ordered form) merged
+here; nothing of this track's code stands in its way. INFERRED, for that track: a shared guest memory of at most
+16 GiB cannot hold a guest address above it, while the unshared one holds the whole address space.
+
+Linter on the five crates after the merge (59ad72ce): 12,112 (TR2's tip 12,081). The 31 more are all
+`constant_defined_twice` (x86 2 to 28, translator-test 76 to 82, arm64 1 to 0): the merged x86 instruction crates
+define the same constants as the x86 crate (`REX`, `REX_W`, `VEX3`, `EVEX`, `MXCSR_WRITABLE`, ...) and neither
+depends on the other. No change of this track's code caused them; a shared constants place is for the
+orchestrator.
+
+For the x86 front end track (the owner's ruling of today): the ordered form of x86 code for parallel threads
+on weaker hosts is that track's to build; the description section's form byte (its last, a whole byte of
+which 0 and 1 are used) can take it as a new value or bit, with nothing to change here.
+
 ## For the orchestrator
+
+- TR4 (2026-11-26): `precise-instruction-set/implementation/translator` now holds the translator's written
+  choices only, since its set is measured; the layout asks an implementation crate there to implement
+  `PreciseInstructionSet` (4 findings). Keep it there (the brief's place, and the wasmtime executor's manifest
+  names it), or move the choices into translator-test (question 3)? Deleting the crate would break the
+  workspace while that manifest names it.
+- The x86 constants the merged instruction crates and the x86 crate both define (31 `constant_defined_twice`)
+  need one shared place; neither crate depends on the other.
+- Unicorn's hand-written precise set (`precise-instruction-set/implementation/unicorn`) does not compile after the
+  port either (10 errors, the same old names); not this track's.
 
 - C1 touched two places outside this track's crates, to keep the workspace building: wcontainers-wasmtime's
   one `translate` call and one `thread_module` call now pass `ProgressCount::Absent` (its behaviour is

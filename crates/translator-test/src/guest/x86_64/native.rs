@@ -477,8 +477,12 @@ impl CaseMemory {
 /// The clock the inside's answers read in tests: past 2^32 nanoseconds, so that `rdtsc`'s high half is not zero.
 pub const ANSWER_CLOCK: u64 = 3 << u32::BITS;
 
-impl wcontainers_x86::answer::Clock for CaseMemory {
-    fn nanoseconds(&mut self) -> u64 {
+impl wcontainers_clock::Clock for CaseMemory {
+    fn monotonic_nanoseconds(&self) -> u64 {
+        ANSWER_CLOCK
+    }
+
+    fn realtime_nanoseconds(&self) -> u64 {
         ANSWER_CLOCK
     }
 }
