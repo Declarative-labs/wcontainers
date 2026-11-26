@@ -4970,6 +4970,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-processor-cores"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-processor-cores-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-cores",
+]
+
+[[package]]
 name = "wcontainers-random-source"
 version = "0.1.0"
 dependencies = [
