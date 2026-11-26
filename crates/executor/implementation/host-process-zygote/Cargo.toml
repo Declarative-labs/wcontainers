@@ -1,0 +1,26 @@
+[package]
+name = "wcontainers-executor-host-process-zygote"
+description = "Form P's zygote: the layout of a stub's process, the pages and messages it shares with the embedder, and the zygote's code, which runs in another process."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The page size, the guest's lowest address and the register block a stub's register page holds.
+wcontainers-abi.workspace = true
+# The layouts of a socket message, an iovec, a seccomp program, a signal stack and a CPU set.
+libc = "0.2.191"
+# Linux's numbers for the zygote's and the stubs' own host calls, signals and clone flags.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "general", "net", "prctl", "ptrace", "no_std"] }
+
+# Code that runs in another process, as an outside API's bindings do: it denies unsafe code, so that each of its two
+# assembly modules carries its own marked exception.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

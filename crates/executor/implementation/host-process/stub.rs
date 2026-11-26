@@ -6,7 +6,6 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use linux_raw_sys::general as linux;
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::io::Errno;
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
@@ -22,14 +21,10 @@ use zerocopy::IntoBytes;
 use crate::filter::stub_filter;
 use crate::layout::THREADS_PER_PROCESS;
 use crate::pages::{Command, ExitKind, Resume, ThreadPages, control, register};
-
-/// The stub's socket's fixed descriptor number, above the few the zygote holds when it forks.
-pub const SOCKET_FD: u32 = 8;
-/// The memory memfd's fixed descriptor number.
-pub const MEMORY_FD: u32 = 9;
-/// The number a shared block's memfd gets in the stub while it is mapped: the lowest, as the stub holds only the two
-/// above.
-pub const BLOCK_FD: u32 = 0;
+pub(crate) use wcontainers_executor_host_process_zygote::stub::THREAD_FLAGS;
+pub use wcontainers_executor_host_process_zygote::stub::{
+    BLOCK_FD, MEMORY_FD, SOCKET_FD, STOP_SIGNAL,
+};
 
 /// How long a runner waits for a thread before it looks whether the stub has ended, and how long a stopped thread
 /// may take to come back before it is sent its stop again.
@@ -82,24 +77,6 @@ pub struct Stub {
     /// FP/SIMD registers").
     vectors_by_return: AtomicU64,
 }
-
-/// How a stub's threads are made: sharing everything a thread of one process shares, the new thread's exit-clear word
-/// written before the call returns and cleared, with a wake, at its end.
-pub(crate) const THREAD_FLAGS: u32 = linux::CLONE_VM
-    | linux::CLONE_FS
-    | linux::CLONE_FILES
-    | linux::CLONE_SIGHAND
-    | linux::CLONE_THREAD
-    | linux::CLONE_SYSVSEM
-    | linux::CLONE_PARENT_SETTID
-    | linux::CLONE_CHILD_CLEARTID;
-
-/// The signal that stops a stub's thread: a standard one, so stops sent while one is pending are that one, and a
-/// stub holds no C library that claims it.
-pub const STOP_SIGNAL: u32 = linux::SIGUSR1;
-
-/// [`STOP_SIGNAL`] alone, as a kernel signal set.
-pub(crate) const STOP_SET: u64 = 1 << (STOP_SIGNAL - 1);
 
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

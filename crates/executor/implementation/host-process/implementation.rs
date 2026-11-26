@@ -29,7 +29,7 @@ pub mod host;
     target_os = "linux",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-pub mod layout;
+pub use wcontainers_executor_host_process_zygote::layout;
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "aarch64", target_arch = "x86_64")

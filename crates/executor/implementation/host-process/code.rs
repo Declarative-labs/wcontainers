@@ -240,3 +240,16 @@ fn publish_code(probe: &HostProbe, start: usize, bytes: usize) {
         barrier::dsb(barrier::ISH);
     }
 }
+
+// Translated code calls the entries and jumps through the slot table where the native output's process way puts them.
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    crate::layout::FLOOR_ENTRIES as u64 == wcontainers_arm64::way::PROCESS_ENTRIES
+        && crate::layout::FLOOR_ENTRY_SIZE as u64 == wcontainers_arm64::way::PROCESS_ENTRY_BYTES
+        && crate::layout::SIGNAL_STACKS + crate::layout::SIGNAL_STACKS_SIZE
+            <= wcontainers_arm64::way::PROCESS_SLOTS as usize
+        && crate::layout::OUR_AREA == 1 << wcontainers_arm64::way::PROCESS_REACH_BITS
+        && crate::layout::SLOT_TABLE as u64 == wcontainers_arm64::way::PROCESS_SLOTS
+        && (crate::layout::OUR_AREA as u64) << wcontainers_arm64::mirror::SLOT_SHIFT
+            <= crate::layout::SLOT_TABLE_SIZE as u64
+);

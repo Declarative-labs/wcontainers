@@ -90,16 +90,6 @@ pub const SIGNAL_STACKS_SIZE: usize = THREADS_PER_PROCESS * SIGNAL_STACK_SIZE;
 pub const OWN_MAPPINGS: usize = 5;
 
 const _: () = assert!(ZYGOTE >= OUR_AREA);
-// Translated code calls the entries and jumps through the slot table where the native output's process way puts them.
-#[cfg(target_arch = "aarch64")]
-const _: () = assert!(
-    FLOOR_ENTRIES as u64 == wcontainers_arm64::way::PROCESS_ENTRIES
-        && FLOOR_ENTRY_SIZE as u64 == wcontainers_arm64::way::PROCESS_ENTRY_BYTES
-        && SIGNAL_STACKS + SIGNAL_STACKS_SIZE <= wcontainers_arm64::way::PROCESS_SLOTS as usize
-        && OUR_AREA == 1 << wcontainers_arm64::way::PROCESS_REACH_BITS
-        && SLOT_TABLE as u64 == wcontainers_arm64::way::PROCESS_SLOTS
-        && (OUR_AREA as u64) << wcontainers_arm64::mirror::SLOT_SHIFT <= SLOT_TABLE_SIZE as u64
-);
 // The stubs' handlers tell a pc in the slot table by its bits above the table's size alone.
 const _: () = assert!(SLOT_TABLE == SLOT_TABLE_SIZE && SLOT_TABLE.is_power_of_two());
 #[cfg(target_arch = "aarch64")]

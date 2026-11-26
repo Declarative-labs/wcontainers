@@ -50,6 +50,8 @@ object = { version = "0.41.0", default-features = false, features = ["elf", "rea
 # pages, the thread pages as atomic words, and on ARM64 the cache type, cache maintenance and the SVE probe.
 wcontainers-linux-process = { path = "../../../linux-process" }
 wcontainers-linux-process-direct = { path = "../../../linux-process/implementation/direct" }
+# The layout of a stub's process, the pages and messages it shares with us, and the zygote's code.
+wcontainers-executor-host-process-zygote = { path = "../host-process-zygote" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Moving, stopping and killing the zygote and its stubs from outside, and the permissions of their mappings.
@@ -105,6 +107,8 @@ wcontainers-behavior-source-recording = { path = "../../../behavior-source/imple
 wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
 wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
 wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+# The generator's trait, for the moved test's generator that moves the ARM64 generator's states into the guest area.
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 
 # The waiting tests' crates, under `tests-on-other-tracks`: the kernel, its loop with containers, the seeded policy and
 # the host's services it calls; the WebAssembly and emulator executors to compare with.
@@ -202,6 +206,9 @@ name = "conformance"
 path = "conformance_run.rs"
 
 [[test]]
+name = "moved"
+
+[[test]]
 name = "interrupt"
 
 [[test]]
@@ -225,7 +232,5 @@ name = "in_process_speculation"
 [[test]]
 name = "in_process_attacks"
 
-# The zygote's two assembly modules carry their own `#[expect(unsafe_code, reason = "..")]`; nothing else here uses it.
-[lints.rust]
-unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "deny"
+[lints]
+workspace = true

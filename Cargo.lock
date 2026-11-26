@@ -4633,10 +4633,12 @@ dependencies = [
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-clock",
+ "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-executor",
  "wcontainers-executor-arm64-stop",
  "wcontainers-executor-conformance",
+ "wcontainers-executor-host-process-zygote",
  "wcontainers-executor-unicorn",
  "wcontainers-executor-wasmtime",
  "wcontainers-guest-cpu",
@@ -4656,6 +4658,15 @@ dependencies = [
  "wcontainers-translator-test",
  "wcontainers-volatile-bytes",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-executor-host-process-zygote"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "linux-raw-sys",
+ "wcontainers-abi",
 ]
 
 [[package]]
