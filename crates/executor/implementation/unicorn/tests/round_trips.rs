@@ -4,14 +4,14 @@
 use std::num::NonZeroUsize;
 
 use wcontainers_executor_unicorn::driver::{
-    FIRST_PROCESS, InterfaceRunner, TestHost, program_not_run, program_on_runners, program_waiting,
+    FIRST_PROCESS, OnRunner, TestHost, program_not_run, program_on_runners, program_waiting,
 };
-use wcontainers_executor_unicorn::standin::{SPACE_32_BIT, StandIn};
+use wcontainers_executor_unicorn::standin::StandIn;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
-    ExecutionConfig, ExecutorOf, Kernel, Process, ProcessEnd, ReplayDeterminism, Runner,
-    StopReason, TaskId, ThreadOrdering,
+    ExecutionConfig, ExecutorOf, Kernel, Process, ProcessEnd, ReplayDeterminism, StopReason,
+    TaskId, ThreadOrdering,
 };
 use wcontainers_kernel_linux::KernelWithExecutor;
 
@@ -147,9 +147,8 @@ fn a_copy_let_go_of_under_a_handle_is_dropped_later() {
     let (mut kernel, mut runners, _host) =
         program_on_runners("heldattach", &[], &out, NonZeroUsize::MIN);
     let mut runner = runners.pop().expect("one runner");
-    let mut executor = StandIn::with_space(SPACE_32_BIT);
     assert_eq!(
-        run_until_stopped(&mut runner, &mut executor),
+        run_until_stopped(&mut runner),
         StopReason::Idle { until: None },
         "the child waits for ever, attached, and the parent for its end"
     );
@@ -171,17 +170,16 @@ fn a_copy_let_go_of_under_a_handle_is_dropped_later() {
         "the lock's next holder"
     );
     assert_eq!(
-        run_until_stopped(&mut runner, &mut executor),
+        run_until_stopped(&mut runner),
         StopReason::Finished(ProcessEnd::Exited { code: 0 }),
         "the segment has no attachment left: no copy holds the child's"
     );
 }
 
-/// Runs `runner` on `executor` until it stops for any reason but an interface call's, and returns
-/// how.
-fn run_until_stopped(runner: &mut InterfaceRunner<u64>, executor: &mut StandIn) -> StopReason {
+/// Runs `runner` until it stops for any reason but an interface call's, and returns how.
+fn run_until_stopped(runner: &mut OnRunner<u64>) -> StopReason {
     loop {
-        match runner.run_on(executor) {
+        match runner.run() {
             StopReason::Interrupted => {}
             stopped => return stopped,
         }

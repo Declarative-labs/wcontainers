@@ -8,9 +8,8 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use wcontainers_executor_unicorn::driver::{
-    FIRST_PROCESS, InterfaceRunner, program_exit_code, program_on_runners,
+    FIRST_PROCESS, OnRunner, program_exit_code, program_on_runners,
 };
-use wcontainers_executor_unicorn::standin::{SPACE_32_BIT, StandIn};
 use wcontainers_kernel::{Kernel, ProcessEnd, StopReason};
 
 /// How long a guest that never traps is let run before the kernel's interface is called.
@@ -24,10 +23,9 @@ fn out() -> PathBuf {
 }
 
 /// Runs `runner` until the container ends, and returns how.
-fn run_to_end(runner: &mut InterfaceRunner<u64>) -> StopReason {
-    let mut executor = StandIn::with_space(SPACE_32_BIT);
+fn run_to_end(runner: &mut OnRunner<u64>) -> StopReason {
     loop {
-        match runner.run_on(&mut executor) {
+        match runner.run() {
             StopReason::Idle { until: Some(_) } | StopReason::Interrupted => {}
             stopped => return stopped,
         }
@@ -75,10 +73,7 @@ fn a_program_that_never_traps_is_interrupted_for_the_kernels_interface() {
     let (kernel, mut runners, _host) =
         program_on_runners("spin", &["-nostdlib"], &out(), NonZeroUsize::MIN);
     let mut runner = runners.pop().expect("one runner");
-    let running = std::thread::spawn(move || {
-        let mut executor = StandIn::with_space(SPACE_32_BIT);
-        runner.run_on(&mut executor)
-    });
+    let running = std::thread::spawn(move || runner.run());
     std::thread::sleep(RUNNING_FOR);
     // The kernel cannot move to another thread, so a call that never returns ends the test binary.
     let (taking, taken_now) = std::sync::mpsc::channel::<()>();

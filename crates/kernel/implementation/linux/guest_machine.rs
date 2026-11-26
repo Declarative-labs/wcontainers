@@ -4,8 +4,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 
 use wcontainers_abi::{
-    AddressSpace, Cpu, CpuError, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, SharedId,
-    ThreadId,
+    AddressSpace, CpuError, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, SharedId, ThreadId,
 };
 use wcontainers_executor::memory_space::{
     CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
@@ -20,7 +19,8 @@ const UNSHARED_PIECE_BYTES: u64 = 16 * PAGE_SIZE;
 /// An executor with the memory spaces and registers of the guest threads it runs.
 pub struct GuestMachine<C: Executor + 'static> {
     executor: C,
-    /// The addresses each of the executor's spaces holds.
+    /// The addresses each of the executor's spaces holds: the whole address space until the
+    /// container's start bounds it to the ceiling its embedder gives.
     address_space: AddressSpace,
     memories: BTreeMap<MemoryId, Space<C>>,
     /// Each block of shared pages is a space of its own, its pages from address 0.
@@ -41,18 +41,30 @@ struct Space<C: Executor + 'static> {
 struct GuestThread {
     memory: MemoryId,
     registers: RegisterBlock,
+    /// The predicate registers and FFR, which the abi's registers do not hold.
+    predicates: Predicates,
 }
 
-impl<C: Executor + Cpu> GuestMachine<C> {
+/// A thread's SVE predicate registers and first-fault register.
+///
+/// Linux discards them at every system call (<https://docs.kernel.org/arch/arm64/sve.html#:~:text=all%20bits%20of%20the%20predicate%20registers>),
+/// so they are kept only across the other ends of a turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Predicates {
+    /// P0 to P15.
+    pub(crate) registers: [u16; wcontainers_processor_architecture_arm64::PREDICATE_REGISTERS],
+    /// FFR.
+    pub(crate) first_fault: u16,
+}
+
+impl<C: Executor> GuestMachine<C> {
     /// The executor, with no memory or thread yet.
-    ///
-    /// The size of its spaces is the one thing the kernel still asks of the abi's `Cpu`: no
-    /// interface tells it.
     pub(crate) fn new(executor: C) -> Self {
-        let address_space = executor.address_space();
         Self {
             executor,
-            address_space,
+            address_space: AddressSpace {
+                end: crate::ARM64_ADDRESS_SPACE_BYTES,
+            },
             memories: BTreeMap::new(),
             blocks: BTreeMap::new(),
             threads: BTreeMap::new(),
@@ -64,17 +76,21 @@ impl<C: Executor + Cpu> GuestMachine<C> {
 }
 
 impl<C: Executor + 'static> GuestMachine<C> {
-    /// Returns the executor, and the registers and memory space of the thread, for a driver that
-    /// runs the thread itself.
+    /// Returns the executor, and the registers, predicates and memory space of the thread, for
+    /// the runner that runs the thread itself.
     ///
     /// # Panics
     ///
     /// If the kernel has no such thread.
-    pub fn thread_parts(
+    pub(crate) fn thread_parts(
         &mut self,
         thread: ThreadId,
-    ) -> (&mut C, &mut RegisterBlock, &C::GuestMemory) {
-        let GuestThread { memory, registers } = self
+    ) -> (&mut C, &mut RegisterBlock, &mut Predicates, &C::GuestMemory) {
+        let GuestThread {
+            memory,
+            registers,
+            predicates,
+        } = self
             .threads
             .get_mut(&thread)
             .expect("the kernel runs a thread it made");
@@ -82,7 +98,7 @@ impl<C: Executor + 'static> GuestMachine<C> {
             .memories
             .get(memory)
             .expect("a thread's memory lives as long as the thread");
-        (&mut self.executor, registers, &memory.memory)
+        (&mut self.executor, registers, predicates, &memory.memory)
     }
 
     fn memory(&self, memory: MemoryId) -> Result<&C::GuestMemory, CpuError> {
@@ -168,9 +184,10 @@ fn not_copied(error: CopyMemoryError) -> CpuError {
 }
 
 impl<C: Executor + 'static> GuestMachine<C> {
-    /// Returns the addresses each space holds.
-    pub(crate) fn address_space(&self) -> AddressSpace {
-        self.address_space
+    /// Bounds each space to the addresses below `end`, the highest the executor can give, as the
+    /// container's start is told it.
+    pub(crate) fn bound_spaces(&mut self, end: u64) {
+        self.address_space = AddressSpace { end };
     }
 
     pub(crate) fn make_memory(&mut self) -> Result<MemoryId, CpuError> {
@@ -193,6 +210,23 @@ impl<C: Executor + 'static> GuestMachine<C> {
         let id = MemoryId(self.last_memory);
         self.memories.insert(id, copy);
         Ok(id)
+    }
+
+    /// Copies every memory into a new space of the executor under the same handle, as a host that
+    /// saved them brings them back: the executor keeps nothing of the old spaces' code. The blocks
+    /// of shared pages stay, and each copy maps them as its memory did.
+    pub(crate) fn renew_memories(&mut self) -> Result<(), CpuError> {
+        let whole = self.whole_space();
+        let ids: alloc::vec::Vec<MemoryId> = self.memories.keys().copied().collect();
+        for id in ids {
+            let mut renewed = self.create()?;
+            renewed
+                .pages
+                .copy_from(whole.clone(), &self.space(id)?.pages, whole.start)
+                .map_err(not_copied)?;
+            self.memories.insert(id, renewed);
+        }
+        Ok(())
     }
 
     pub(crate) fn drop_memory(&mut self, memory: MemoryId) {
@@ -332,6 +366,7 @@ impl<C: Executor + 'static> GuestMachine<C> {
             GuestThread {
                 memory,
                 registers: RegisterBlock::ZERO,
+                predicates: Predicates::default(),
             },
         );
         Ok(id)
