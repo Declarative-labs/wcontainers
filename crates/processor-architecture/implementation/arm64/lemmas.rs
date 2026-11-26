@@ -45,10 +45,9 @@ pub proof fn lemma_ones_div(n: nat, s: nat)
     lemma_fundamental_div_mod_converse(ones(n), low, high - 1, low - 1);
 }
 
-/// A value times 2^s, modulo 2^n, keeps only the value's low n - s bits.
+/// A value times 2^s, modulo 2^n, keeps only the value's low n - s bits, whatever its sign.
 pub proof fn lemma_mul_pow2_mod(x: int, s: nat, n: nat)
     requires
-        0 <= x,
         s <= n,
     ensures
         (x * pow2(s)) % (pow2(n) as int) == (x % (pow2((n - s) as nat) as int)) * pow2(s),
@@ -145,6 +144,106 @@ pub proof fn lemma_signed_mask(x: i64, n: nat)
             requires
                 -x - 1 == p * q + r;
         lemma_fundamental_div_mod_converse(x as int, p, -q - 1, p - 1 - r);
+    }
+}
+
+/// A sign extension from the low `64 - s` bits, as a shift left and an arithmetic shift right compute it, is SInt.
+pub proof fn lemma_sign_extension(value: u64, s: u32)
+    requires
+        s < 64,
+    ensures
+        ((((value << s) as i64) >> s) as int) == sint(value as int, (64 - s) as nat),
+{
+    let extended = ((value << s) as i64) >> s;
+    let mask = u64::MAX >> s;
+    let top = (value & mask) >> ((63 - s) as u32);
+    assert(
+        (extended >= 0) == (top == 0)
+        && (extended >= 0 ==> extended as u64 == value & mask)
+        && (extended < 0 ==> (!extended) as u64 == (mask - (value & mask)) as u64)
+    ) by (bit_vector)
+        requires
+            extended == ((value << s) as i64) >> s,
+            mask == u64::MAX >> s,
+            top == (value & mask) >> ((63 - s) as u32),
+            s < 64;
+    let length = (64 - s) as nat;
+    vstd::arithmetic::power2::lemma2_to64_rest();
+    vstd::bits::lemma_unsigned_int_max_is_pow2_minus_1();
+    lemma_ones_div(64, s as nat);
+    vstd::bits::lemma_u64_shr_is_div(u64::MAX, s as u64);
+    assert(u64::MAX >> s == u64::MAX >> (s as u64)) by (bit_vector);
+    lemma_mask(value, length);
+    let unsigned = (value & mask) as int;
+    vstd::bits::lemma_u64_shr_is_div(value & mask, (63 - s) as u64);
+    assert((value & mask) >> ((63 - s) as u32) == (value & mask) >> ((63 - s) as u64)) by (bit_vector)
+        requires
+            s < 64;
+    let half = pow2((length - 1) as nat) as int;
+    lemma_pow2_pos((length - 1) as nat);
+    lemma_pow2_adds((length - 1) as nat, 1);
+    vstd::arithmetic::power2::lemma2_to64();
+    if unsigned < half {
+        vstd::arithmetic::div_mod::lemma_basic_div(unsigned, half);
+    } else {
+        vstd::arithmetic::div_mod::lemma_div_non_zero(unsigned, half);
+    }
+    if extended >= 0 {
+        assert(extended as int == (extended as u64) as int);
+    } else {
+        assert((!extended) as int == -extended - 1);
+        assert(((!extended) as u64) as int == (!extended) as int);
+        assert(((mask - (value & mask)) as u64) as int == mask - unsigned);
+    }
+}
+
+/// Appending `a` zero bits to the low `l` bits of a value multiplies its SInt by 2^a.
+pub proof fn lemma_sint_shift(v: int, l: nat, a: nat)
+    requires
+        l >= 1,
+    ensures
+        sint(uint(v, l) * pow2(a), l + a) == sint(v, l) * pow2(a),
+{
+    let (u, step) = (uint(v, l), pow2(a) as int);
+    lemma_pow2_pos(a);
+    lemma_pow2_pos(l);
+    lemma_pow2_adds(l, a);
+    lemma_pow2_adds((l - 1) as nat, a);
+    lemma_pow2_adds((l - 1) as nat, 1);
+    lemma_pow2_adds((l + a - 1) as nat, 1);
+    assert(0 <= u * step < pow2(l + a)) by (nonlinear_arith)
+        requires
+            0 <= u < pow2(l),
+            0 < step,
+            pow2(l + a) == pow2(l) * step;
+    vstd::arithmetic::div_mod::lemma_small_mod((u * step) as nat, pow2(l + a));
+    assert((u * step >= pow2((l + a - 1) as nat)) == (u >= pow2((l - 1) as nat))) by (nonlinear_arith)
+        requires
+            0 < step,
+            pow2((l + a - 1) as nat) == pow2((l - 1) as nat) * step;
+    assert((u - pow2(l)) * step == u * step - pow2(l + a)) by (nonlinear_arith)
+        requires
+            pow2(l + a) == pow2(l) * step;
+}
+
+/// SInt of `l` bits agrees with the value modulo 2^k for k up to l.
+pub proof fn lemma_sint_mod(v: int, l: nat, k: nat)
+    requires
+        1 <= k <= l,
+    ensures
+        sint(v, l) % (pow2(k) as int) == v % (pow2(k) as int),
+{
+    let (low, high) = (pow2(k) as int, pow2((l - k) as nat) as int);
+    lemma_pow2_pos(k);
+    lemma_pow2_pos((l - k) as nat);
+    lemma_pow2_adds(k, (l - k) as nat);
+    vstd::arithmetic::div_mod::lemma_mod_mod(v, low, high);
+    if sint(v, l) != uint(v, l) {
+        assert(uint(v, l) - pow2(l) == uint(v, l) - low * high) by (nonlinear_arith)
+            requires
+                pow2(l) == low * high;
+        vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(-high, uint(v, l), low);
+        assert(low * -high + uint(v, l) == uint(v, l) - low * high) by (nonlinear_arith);
     }
 }
 

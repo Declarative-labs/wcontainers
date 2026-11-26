@@ -16,8 +16,8 @@ use crate::operand::{
 };
 #[cfg(verus_keep_ghost)]
 use crate::pseudocode::{
-    arithmetic_immediate_value, arithmetic_or_logical, conditional_compare, is_zero,
-    logical_result, nzcv_immediate, ones, ror, shifted_register, sint, uint, written,
+    arithmetic_immediate_value, arithmetic_or_logical, conditional_compare, extended_register,
+    is_zero, logical_result, nzcv_immediate, ones, ror, shifted_register, sint, uint, written,
 };
 use crate::registers::{read_register, write_register};
 use crate::{Exception, Instruction, Processor};
@@ -32,8 +32,12 @@ const IMMEDIATE_SHIFT: u32 = 12;
 } // verus!
 /// How many bits each step of a move wide's hw moves its immediate.
 const WIDE_IMMEDIATE_STEP: u32 = u16::BITS;
+verus! {
+
 /// The largest left shift of an [extended register](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--extended-register---Add-extended-and-scaled-register-#:~:text=amount); larger ones are unallocated.
 const MAXIMUM_EXTEND_SHIFT: u64 = 4;
+
+} // verus!
 /// The width of immr and imms, whose values above a 32-bit element's are unused.
 const BITMASK_FIELD_BITS: u32 = 6;
 /// [CRC-32](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32B--CRC32H--CRC32W--CRC32X--CRC32-checksum-#:~:text=0x04C11DB7)'s polynomial, before its bits are reversed.
@@ -475,34 +479,10 @@ pub(crate) fn read_source<LevelSpecific>(
                 number.read(word),
                 RegisterThirtyOne::ZeroRegister,
             );
-            let amount = u64::from(amount.read(word));
-            if amount > MAXIMUM_EXTEND_SHIFT {
-                return Err(Exception::UndefinedInstruction);
+            match extend_register(value, extend_type.read(word), amount.read(word), width) {
+                Some(extended) => extended,
+                None => return Err(Exception::UndefinedInstruction),
             }
-            let (signedness, bits) = match EXTEND_TYPES[extend_type.read(word) as usize] {
-                (Signedness::Unsigned, 32) if crate::planted::is(14) => (Signedness::Signed, 32),
-                other => other,
-            };
-            let shift = u64::BITS - bits;
-            let signedness = if crate::planted::is(134) {
-                Signedness::Unsigned
-            } else {
-                signedness
-            };
-            let extended = match signedness {
-                Signedness::Unsigned => (value << shift) >> shift,
-                Signedness::Signed => (((value << shift) as i64) >> shift) as u64,
-            };
-            if crate::planted::is(13) {
-                let shifted = value << amount;
-                return Ok(match signedness {
-                    Signedness::Unsigned => ((shifted << shift) >> shift) & width.to_mask(),
-                    Signedness::Signed => {
-                        ((((shifted << shift) as i64) >> shift) as u64) & width.to_mask()
-                    }
-                });
-            }
-            (extended << amount) & width.to_mask()
         }
         Operand::ArithmeticImmediate { value, shift } => {
             arithmetic_immediate(value.read(word), shift.read(word))
@@ -590,6 +570,8 @@ enum ShiftType {
 
 } // verus!
 
+verus! {
+
 /// The [extend types](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--extended-register---Add-extended-and-scaled-register-#:~:text=option) in the order of their encodings, with the bits each keeps.
 const EXTEND_TYPES: [(Signedness, u32); 8] = [
     (Signedness::Unsigned, u8::BITS),
@@ -601,6 +583,8 @@ const EXTEND_TYPES: [(Signedness, u32); 8] = [
     (Signedness::Signed, u32::BITS),
     (Signedness::Signed, u64::BITS),
 ];
+
+} // verus!
 
 /// Whether [DecodeBitMasks](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-bitmasks#impl-aarch64.DecodeBitMasks.5) decodes a logical immediate, which may not be all ones, or a bitfield.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -864,46 +848,7 @@ fn sign_extend(value: u64, width: RegisterWidth) -> (extended: i64)
     let shift = u64::BITS - width.to_bits();
     let extended = ((value << shift) as i64) >> shift;
     proof {
-        // The bits are read by bit_vector at each width; then `!` of a negative value gives its magnitude less one.
-        let (mask, top) = match width {
-            RegisterWidth::Bits32 => (0xffff_ffffu64, 0x8000_0000u64),
-            RegisterWidth::Bits64 => (u64::MAX, 0x8000_0000_0000_0000u64),
-        };
-        match width {
-            RegisterWidth::Bits32 => assert(
-                (extended >= 0) == (value & mask < top)
-                && (extended >= 0 ==> extended as u64 == value & mask)
-                && (extended < 0 ==> (!extended) as u64 == (mask - (value & mask)) as u64)
-            ) by (bit_vector)
-                requires
-                    extended == ((value << 32u32) as i64) >> 32u32,
-                    mask == 0xffff_ffffu64,
-                    top == 0x8000_0000u64,
-            ,
-            RegisterWidth::Bits64 => assert(
-                (extended >= 0) == (value & mask < top)
-                && (extended >= 0 ==> extended as u64 == value & mask)
-                && (extended < 0 ==> (!extended) as u64 == (mask - (value & mask)) as u64)
-            ) by (bit_vector)
-                requires
-                    extended == ((value << 0u32) as i64) >> 0u32,
-                    mask == u64::MAX,
-                    top == 0x8000_0000_0000_0000u64,
-            ,
-        }
-        vstd::arithmetic::power2::lemma2_to64();
-        vstd::arithmetic::power2::lemma2_to64_rest();
-        lemma_width_mask(value, width);
-        let unsigned = (value & mask) as int;
-        assert(unsigned == crate::pseudocode::uint(value as int, width.bits()));
-        assert(pow2((width.bits() - 1) as nat) == top && pow2(width.bits()) == mask + 1);
-        if extended >= 0 {
-            assert(extended as int == (extended as u64) as int);
-        } else {
-            assert((!extended) as int == -extended - 1);
-            assert(((!extended) as u64) as int == (!extended) as int);
-            assert(((mask - (value & mask)) as u64) as int == mask - unsigned);
-        }
+        crate::lemmas::lemma_sign_extension(value, shift);
     }
     extended
 }
@@ -1199,6 +1144,110 @@ fn arithmetic_immediate(imm12: u32, sh: u32) -> (immediate: u64)
         assert(amount == if sh == 0 { 0u32 } else { 12u32 });
     }
     immediate << (shift * step)
+}
+
+} // verus!
+
+verus! {
+
+/// ExtendReg of a register's value by the option and shift of the encoding, or none where the shift is unallocated.
+fn extend_register(value: u64, extend_type: u32, amount: u32, width: RegisterWidth) -> (extended: Option<u64>)
+    requires
+        extend_type < EXTEND_TYPES.len(),
+    ensures
+        extended is Some <==> extended_register(value as int, extend_type as nat, amount as nat, width.bits()) is Some,
+        extended matches Some(extended) ==> extended as int == extended_register(
+            value as int,
+            extend_type as nat,
+            amount as nat,
+            width.bits(),
+        )->0,
+{
+    let amount = u64::from(amount);
+    if amount > MAXIMUM_EXTEND_SHIFT {
+        return None;
+    }
+    let (signedness, bits) = match EXTEND_TYPES[extend_type as usize] {
+        (Signedness::Unsigned, 32) => if crate::planted::is(14) {
+            (Signedness::Signed, 32)
+        } else {
+            (Signedness::Unsigned, 32)
+        },
+        other => other,
+    };
+    let shift = u64::BITS - bits;
+    let signedness = if crate::planted::is(134) {
+        Signedness::Unsigned
+    } else {
+        signedness
+    };
+    let extended = match signedness {
+        Signedness::Unsigned => (value << shift) >> shift,
+        Signedness::Signed => (((value << shift) as i64) >> shift) as u64,
+    };
+    if crate::planted::is(13) {
+        let shifted = value << amount;
+        return Some(match signedness {
+            Signedness::Unsigned => ((shifted << shift) >> shift) & width.to_mask(),
+            Signedness::Signed => ((((shifted << shift) as i64) >> shift) as u64) & width.to_mask(),
+        });
+    }
+    proof {
+        let (n, a, length) = (width.bits(), amount as nat, bits as nat);
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        assert(length == pow2((3 + extend_type % 4) as nat) && (signedness is Unsigned) == (extend_type < 4));
+        let kept = if length <= n - a { length } else { (n - a) as nat };
+        let (low, step) = (pow2((n - a) as nat) as int, pow2(a) as int);
+        vstd::arithmetic::power2::lemma_pow2_pos((n - a) as nat);
+        vstd::arithmetic::power2::lemma_pow2_adds((n - a) as nat, (length - (n - a)) as nat);
+        vstd::arithmetic::power2::lemma_pow2_adds((n - a) as nat, (64 - (n - a)) as nat);
+        crate::lemmas::lemma_shift_left(extended, amount as u32, n);
+        assert(extended << amount == extended << (amount as u32)) by (bit_vector)
+            requires
+                amount <= 4;
+        crate::lemmas::lemma_mul_pow2_mod(extended as int, a, n);
+        match signedness {
+            Signedness::Unsigned => {
+                assert((value << shift) >> shift == value & (u64::MAX >> shift)) by (bit_vector)
+                    requires
+                        shift < 64;
+                vstd::bits::lemma_unsigned_int_max_is_pow2_minus_1();
+                crate::lemmas::lemma_ones_div(64, shift as nat);
+                vstd::bits::lemma_u64_shr_is_div(u64::MAX, shift as u64);
+                crate::lemmas::lemma_mask(value, length);
+                if length <= n - a {
+                    vstd::arithmetic::power2::lemma_pow2_adds(length, a);
+                    if length + a < n {
+                        vstd::arithmetic::power2::lemma_pow2_strictly_increases(length + a, n);
+                    }
+                    assert(0 <= extended * step < pow2(n)) by (nonlinear_arith)
+                        requires
+                            0 <= extended < pow2(length),
+                            0 < step,
+                            pow2(length + a) == pow2(length) * step,
+                            pow2(length + a) <= pow2(n);
+                    vstd::arithmetic::div_mod::lemma_small_mod((extended * step) as nat, pow2(n));
+                } else {
+                    vstd::arithmetic::div_mod::lemma_mod_mod(value as int, low, pow2((length - (n - a)) as nat) as int);
+                }
+            },
+            Signedness::Signed => {
+                let signed = ((value << shift) as i64) >> shift;
+                crate::lemmas::lemma_sign_extension(value, shift);
+                crate::lemmas::lemma_signed_mask(signed, 64);
+                assert((signed as u64) & u64::MAX == signed as u64) by (bit_vector);
+                vstd::arithmetic::div_mod::lemma_mod_mod(signed as int, low, pow2((64 - (n - a)) as nat) as int);
+                crate::lemmas::lemma_sint_shift(value as int, kept, a);
+                crate::lemmas::lemma_mul_pow2_mod(sint(value as int, kept), a, n);
+                if kept < length {
+                    crate::lemmas::lemma_sint_mod(value as int, length, kept);
+                    crate::lemmas::lemma_sint_mod(value as int, kept, kept);
+                }
+            },
+        }
+    }
+    Some((extended << amount) & width.to_mask())
 }
 
 } // verus!

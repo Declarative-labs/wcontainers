@@ -159,6 +159,25 @@ pub open spec fn conditional_compare(comparison: Comparison, n: nat, operand1: u
     }
 }
 
+/// [ExtendReg](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-extendreg#impl-aarch64.ExtendReg.4)
+/// of the low `n` bits of a register: its low `len` bits, at most `n - shift` of them, with `shift` zero bits appended,
+/// zero- or sign-extended to `n` bits.
+pub open spec fn extend_reg(x: int, unsigned: bool, len: nat, shift: nat, n: nat) -> int {
+    let len = if len <= n - shift { len } else { (n - shift) as nat };
+    let field = uint(x, len) * pow2(shift);
+    if unsigned { field } else { uint(sint(field, len + shift), n) }
+}
+
+/// The second operand of an extended register form, as its decode gives it: UNDEFINED (none) for a shift above 4, and
+/// the extend types in the order of their encodings, UXTB, UXTH, UXTW, UXTX, SXTB, SXTH, SXTW and SXTX.
+pub open spec fn extended_register(x: int, option: nat, shift: nat, n: nat) -> Option<int> {
+    if shift > 4 {
+        None
+    } else {
+        Some(extend_reg(x, option < 4, pow2((3 + option % 4) as nat), shift, n))
+    }
+}
+
 /// The low `n` bits of a logical instruction's result, then the N, Z, C and V it sets: `result<N-1>:IsZeroBit(result):'00'`.
 pub open spec fn logical_result(x: int, n: nat) -> (int, bool, bool, bool, bool) {
     (uint(x, n), sint(x, n) < 0, is_zero(x, n), false, false)
