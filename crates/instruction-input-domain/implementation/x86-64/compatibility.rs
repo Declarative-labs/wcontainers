@@ -89,11 +89,10 @@ pub fn build_state(operands: &[(OperandType, OperandValue)]) -> ExecutionState<'
     processor.instruction_pointer = case.address;
     let page = case.address & !(PAGE_BYTES - 1);
     let executable = PagePermission::Mapped { data_access: DataAccess::ReadOnly, instruction_fetch: InstructionFetch::Allowed };
-    let bytes = encode(&case);
-    let in_page = bytes.len().min((page + PAGE_BYTES - case.address) as usize);
+    // The bytes past the page lie on the next page, which no permission maps.
     let memory_mutations = vec![
         MemoryDelta::PermissionAssignment { addresses: page..page + PAGE_BYTES, permission: executable },
-        MemoryDelta::ValueAssignment { start: case.address, bytes: Cow::Owned(bytes[..in_page].to_vec()) },
+        MemoryDelta::ValueAssignment { start: case.address, bytes: Cow::Owned(encode(&case)) },
     ];
     ExecutionState { processor, memory_mutations }
 }
