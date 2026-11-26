@@ -5,6 +5,8 @@
 //! packet socket of the namespace sees what leaves a link.
 #![cfg(target_os = "linux")]
 
+mod netlink;
+
 use core::cell::{Cell, RefCell};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::{NonZeroU16, NonZeroU32};
@@ -295,7 +297,33 @@ pub fn tc(commands: &str) {
 }
 
 /// Runs each line of `commands` as one command of the iproute2 tool, with these options.
+///
+/// An `ip` line of a kind the routing socket does here is sent there; the other lines go to the tool, in their order.
 pub fn batch(tool: &str, options: &[&str], commands: &str) {
+    if tool != IP {
+        run_tool(tool, options, commands);
+        return;
+    }
+    let mut left = String::new();
+    for line in commands.lines() {
+        if netlink::done(line) {
+            if !left.is_empty() {
+                run_tool(tool, options, &left);
+                left.clear();
+            }
+            continue;
+        }
+        left.push_str(line);
+        left.push('\n');
+    }
+    if !left.is_empty() {
+        run_tool(tool, options, &left);
+    }
+    settle_addresses(commands);
+}
+
+/// Runs each line of `commands` as one command of the iproute2 tool, with these options, in one batch.
+fn run_tool(tool: &str, options: &[&str], commands: &str) {
     let mut child = Command::new(tool)
         .args(options)
         .args(BATCH)
@@ -312,9 +340,6 @@ pub fn batch(tool: &str, options: &[&str], commands: &str) {
         child.wait().expect("the tool ends").success(),
         "{tool}: {commands}"
     );
-    if tool == IP {
-        settle_addresses(commands);
-    }
 }
 
 /// How long a check waits for Linux to finish what an `ip` command began, which its work behind the routing lock delays.
