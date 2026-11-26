@@ -46,6 +46,7 @@ mod sve_move;
 mod sve_predicate;
 #[cfg(test)]
 mod sve_tests;
+pub mod system_instruction;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
@@ -367,6 +368,8 @@ pub enum PreciseInstruction<LevelSpecific> {
         instruction: Instruction<Infallible>,
         choices: load_store::scalable_access::ScalableAccessChoices,
     },
+    /// HINT, MSR (immediate), SYS or SYSL.
+    SystemInstruction(system_instruction::SystemInstructionBehavior),
     /// LDG, a tag store or STGP.
     TagAccess {
         instruction: memory_tagging::TagAccessInstruction,

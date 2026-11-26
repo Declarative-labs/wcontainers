@@ -47,6 +47,9 @@ use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
 use wcontainers_processor_architecture_arm64::sve::{
     GeneralValues, PredicateValues, ScalableOperand, VectorValues, to_scalable_instruction,
 };
+use wcontainers_processor_architecture_arm64::system_instruction::{
+    SYSTEM_INSTRUCTION, to_system_instruction_bytes,
+};
 use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
@@ -473,6 +476,33 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             Instruction::Brk => vec![UnsignedImmediate(IMM16)],
             Instruction::Rdvl => vec![RegisterNumber(RD), SignedImmediate(RDVL_IMM6)],
             Instruction::MrsCtrEl0 => vec![RegisterNumber(RT)],
+            // The hint number as CRm and op2, and X30, which hint 7 (XPACLRI) strips.
+            Instruction::Hint => vec![
+                UnsignedImmediate(Field::new(8, 4)),
+                UnsignedImmediate(Field::new(5, 3)),
+                OperandType::ImplicitAddress(LINK_REGISTER),
+            ],
+            // op1, CRm and op2, and the flags CFINV, XAFLAG and AXFLAG read.
+            Instruction::MsrImmediate => vec![
+                UnsignedImmediate(Field::new(16, 3)),
+                UnsignedImmediate(Field::new(8, 4)),
+                UnsignedImmediate(Field::new(5, 3)),
+                OperandType::ConditionFlags,
+            ],
+            // Every encoding of op1, CRn, CRm and op2, and the register that holds an address where it reaches one.
+            Instruction::Sys => vec![
+                OperandType::SystemRegister(SYSTEM_INSTRUCTION),
+                RegisterNumber(RT),
+                OperandType::AccessPlacement,
+                OperandType::AddressTag,
+                OperandType::DataPagePermission(DataPage::Lower),
+                OperandType::DataPagePermission(DataPage::Upper),
+                OperandType::MemoryFill,
+            ],
+            Instruction::Sysl => vec![
+                OperandType::SystemRegister(SYSTEM_INSTRUCTION),
+                RegisterNumber(RT),
+            ],
             _ => vec![OperandType::Word(to_example_word(instruction))],
         };
         operand_types.into_iter()
@@ -1020,13 +1050,24 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
                 Some(AccessLayout { bytes, offset: 0 })
             })
-            .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)));
+            .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)))
+            .or_else(|| {
+                let bytes = (instruction == Instruction::Sys)
+                    .then(|| to_system_instruction_bytes(SYSTEM_INSTRUCTION.read(word)))??;
+                Some(AccessLayout { bytes, offset: 0 })
+            });
+        // SYS takes its address from Rt.
+        let base_field = if instruction == Instruction::Sys {
+            RT
+        } else {
+            RN
+        };
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
             match processor
                 .general_purpose_registers
-                .get_mut(RN.read(word) as usize)
+                .get_mut(base_field.read(word) as usize)
             {
                 Some(register) => *register = base,
                 None => processor.stack_pointer = base,

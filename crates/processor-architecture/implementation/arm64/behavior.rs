@@ -177,6 +177,7 @@ impl PreciseInstruction<Infallible> {
                 instruction,
                 choices,
             },
+            Self::SystemInstruction(behavior) => PreciseInstruction::SystemInstruction(behavior),
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
@@ -203,6 +204,7 @@ impl PreciseInstruction<Infallible> {
             | Self::Unimplemented(instruction) => instruction,
             Self::Structure { instruction, .. } => instruction.instruction(),
             Self::TagAccess { instruction, .. } => instruction.instruction(),
+            Self::SystemInstruction(behavior) => behavior.to_instruction(),
         }
     }
 }
@@ -333,6 +335,12 @@ fn list_modeled_behaviors(
             [NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS]
                 .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
                 .to_vec()
+        }
+        Instruction::Hint | Instruction::MsrImmediate | Instruction::Sys | Instruction::Sysl => {
+            crate::system_instruction::list_system_instruction_behaviors(instruction)
+                .iter()
+                .map(|behavior| PreciseInstruction::SystemInstruction(*behavior))
+                .collect()
         }
         Instruction::MrsCtrEl0 => CACHE_TYPES
             .map(|cache_type| PreciseInstruction::MrsCtrEl0 { cache_type })
