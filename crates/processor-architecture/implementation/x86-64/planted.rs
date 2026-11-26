@@ -1502,8 +1502,6 @@ const HINT_NO_OPERATIONS: &[Instruction] = &[
     Instruction::NopMemv0f18r4,
     Instruction::NopMemvGprv0f19,
     Instruction::NopGprvMemv0f1a,
-    Instruction::Prefetchw0f0dr1,
-    Instruction::CldemoteMemu8,
 ];
 const FLUSHES: &[Instruction] =
     &[Instruction::ClflushMemmprefetch, Instruction::ClflushoptMemmprefetch, Instruction::ClwbMemmprefetch];
