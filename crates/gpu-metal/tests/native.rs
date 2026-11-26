@@ -1637,8 +1637,10 @@ const DEPTH_SIDE: u32 = 1 << 12;
 /// The texels of one of those textures.
 const DEPTH_TEXELS: usize = (DEPTH_SIDE as usize) * (DEPTH_SIDE as usize);
 
-/// The conversion tests' programs: a covering triangle whose fragments write depths of the float bits their place
-/// numbers from a base, and a compute that writes the bits of every float a depth texture holds.
+/// The conversion tests' programs: depths drawn from float bits, and the bits read of a depth texture.
+///
+/// A covering triangle's fragments write the depths of the float bits their place numbers from a base, and a compute
+/// writes the bits of every float a depth texture holds.
 const DEPTH_PROGRAMS: &str = "
 struct Base { value: vec4<u32> }
 @group(0) @binding(0) var depth: texture_depth_2d;
@@ -1689,7 +1691,7 @@ fn storage<B: Gpu>(b: &mut B, size: u64) -> B::Buffer {
     .expect("create_buffer")
 }
 
-/// The whole of a `DEPTH_SIDE` square texture.
+/// Returns the whole of a `DEPTH_SIDE` square texture.
 fn depth_extent() -> Extent {
     Extent {
         width: DEPTH_SIDE,
@@ -1698,7 +1700,7 @@ fn depth_extent() -> Extent {
     }
 }
 
-/// The tight pitches of a `DEPTH_SIDE` square texture of words, from byte 0.
+/// Returns the tight pitches of a `DEPTH_SIDE` square texture of words, from byte 0.
 fn depth_side<B: Gpu>(buffer: &B::Buffer) -> wcontainers_gpu::CopyBufferTexture<'_, B> {
     wcontainers_gpu::CopyBufferTexture {
         buffer,
@@ -1728,7 +1730,7 @@ fn read_words<B: Gpu>(b: &mut B, buffer: &B::Buffer, size: u64) -> Vec<u32> {
         .collect()
 }
 
-/// The float the host makes of a 24-bit depth word, as gpu-metal's writes from the host make it.
+/// Returns the float the host makes of a 24-bit depth word, as gpu-metal's writes from the host make it.
 fn host_float(word: u32) -> u32 {
     ((f64::from(word & 0x00ff_ffff) / 16_777_215.0) as f32).to_bits()
 }
@@ -1800,14 +1802,15 @@ fn depth_words_copied_in_become_the_floats_the_host_makes_of_them() {
     assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
 }
 
-/// The 24-bit depth word the host makes of a float's bits, as gpu-metal's reads back make it.
+/// Returns the 24-bit depth word the host makes of a float's bits, as gpu-metal's reads back make it.
 fn host_word(bits: u32) -> u32 {
     let depth = f64::from(f32::from_bits(bits)).clamp(0.0, 1.0);
     (depth * 16_777_215.0).round_ties_even() as u32
 }
 
-/// The bases of the float bits [`floats_copied_out_become_the_words_the_host_makes_of_them`] draws: every float from
-/// zero to two, a texture of them at a time.
+/// The textures of floats the copy-out test draws: every float from zero to two, a texture of them at a time.
+///
+/// Each is a base of the float bits [`floats_copied_out_become_the_words_the_host_makes_of_them`] draws.
 const FLOAT_CHUNKS: u32 = (1 << 30) / (DEPTH_TEXELS as u32);
 
 #[test]
@@ -2030,8 +2033,9 @@ fn a_depth_copy_past_its_buffer_or_off_its_words_is_refused_and_writes_nothing()
     }
 }
 
-/// A program Metal has not compiled before: its numbers are `salt`'s, and its fragments loop over a few sines so that
-/// compiling it takes a while.
+/// Returns a program Metal has not compiled before, whose numbers are `salt`'s.
+///
+/// Its fragments loop over a few sines so that compiling it takes a while.
 fn fresh_program(
     b: &mut MetalGpu<DirectMetal>,
     salt: u64,
@@ -2137,7 +2141,7 @@ const DEPTH_USAGE: TextureUsage = TextureUsage::RENDER
 const CANARY: u8 = 0xa5;
 
 /// The bytes of one 32-bit word.
-const WORD: u32 = u32::BITS / u8::BITS;
+const U32_BYTES: u32 = u32::BITS / u8::BITS;
 
 /// Returns whether the device still works, which a refused call ends.
 fn works(b: &mut MetalGpu<DirectMetal>) -> bool {
@@ -2251,7 +2255,7 @@ fn a_depth_copy_whose_layer_spacing_overflows_is_refused() {
         let side = wcontainers_gpu::CopyBufferTexture {
             buffer: &words,
             offset: 0,
-            row_pitch: u32::MAX - (WORD - 1),
+            row_pitch: u32::MAX - (U32_BYTES - 1),
             rows_per_layer: u32::MAX,
         };
         let extent = Extent {
@@ -2308,13 +2312,13 @@ fn a_depth_copy_out_keeps_the_gaps_between_rows_and_layers() {
     // Rows of four words six words apart, five rows to a layer (one spare), from word 3, and spare words after.
     let (first, pitch, rows, after) = (3u32, 6u32, 5u32, 8u32);
     let words = first + pitch * rows * 2 + after;
-    let size = u64::from(words * WORD);
+    let size = u64::from(words * U32_BYTES);
     let out = storage(&mut b, size);
     fill_canary(&mut b, &out, size);
     let side = wcontainers_gpu::CopyBufferTexture {
         buffer: &out,
-        offset: u64::from(first * WORD),
-        row_pitch: pitch * WORD,
+        offset: u64::from(first * U32_BYTES),
+        row_pitch: pitch * U32_BYTES,
         rows_per_layer: rows,
     };
     let extent = Extent {
@@ -2368,7 +2372,7 @@ fn depth_copies_at_the_edges_of_levels_and_buffers_are_refused_or_taken_whole() 
         ),
         (0, (DRAWN_SIDE, 0), one, 0, true),
         (0, (0, 0), Extent { width: 0, ..one }, 0, true),
-        (1, (1, 1), one, buffer_bytes - WORD, false),
+        (1, (1, 1), one, buffer_bytes - U32_BYTES, false),
     ];
     for (n, (level, (x, y), extent, offset, refused)) in cases.into_iter().enumerate() {
         for copy_in in [true, false] {
@@ -2400,7 +2404,7 @@ fn depth_copies_at_the_edges_of_levels_and_buffers_are_refused_or_taken_whole() 
             if !refused && !copy_in {
                 // Only the last word changed.
                 let got = read_bytes(&mut b, &words, u64::from(buffer_bytes));
-                let last = (buffer_bytes - WORD) as usize;
+                let last = (buffer_bytes - U32_BYTES) as usize;
                 assert!(got[..last].iter().all(|byte| *byte == CANARY), "case {n}");
             }
         }
@@ -2628,8 +2632,9 @@ fn depth_bounds_of_nan_payloads_and_infinities_are_refused() {
     assert!(works(&mut b));
 }
 
-/// A vertex program that writes words at wild indices of a storage binding: one before it, one at 2^30, and one
-/// counted down from the last `u32`.
+/// A vertex program that writes words at wild indices of a storage binding.
+///
+/// It writes one before the binding, one at 2^30, and one counted down from the last `u32`.
 const WILD_WRITES: &str = "
 @group(0) @binding(0) var<storage, read_write> words: array<u32>;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -2692,7 +2697,7 @@ fn vertex_storage_writes_at_wild_indices_stay_in_their_word() {
                 range: wcontainers_gpu::BufferRange {
                     buffer: &words,
                     offset: BOUND_AT,
-                    size: u64::from(WORD),
+                    size: u64::from(U32_BYTES),
                 },
                 writable: true,
             },
@@ -2714,7 +2719,7 @@ fn vertex_storage_writes_at_wild_indices_stay_in_their_word() {
     b.end_pass();
     let got = read_bytes(&mut b, &words, WILD_BYTES);
     assert!(works(&mut b));
-    assert_eq!(changed_outside(&got, u64::from(WORD)), 0);
+    assert_eq!(changed_outside(&got, u64::from(U32_BYTES)), 0);
 }
 
 #[test]
@@ -3009,8 +3014,9 @@ fn repeated_and_crossed_prepares_all_draw_without_a_miss() {
     assert!(works(&mut b));
 }
 
-/// The capture tests' program: its vertex index comes in a structure beside its position, and it writes the index, the
-/// position doubled and the instance negated.
+/// The capture tests' program, whose vertex index comes in a structure beside its position.
+///
+/// It writes the index, the position doubled and the instance negated.
 const CAPTURED: &str = "
 struct In { @location(0) p: vec2<f32>, @builtin(vertex_index) v: u32 }
 struct V {
@@ -3064,7 +3070,7 @@ fn capture_scene<B: Gpu>(b: &mut B) -> CaptureScene<B> {
         streams: [None; MAX_VERTEX_STREAMS],
         attributes: [None; MAX_VERTEX_STREAMS],
     };
-    let pair = 2 * WORD;
+    let pair = 2 * U32_BYTES;
     layout.streams[0] = Some(wcontainers_gpu::VertexStream {
         stride: pair,
         step: wcontainers_gpu::StepMode::Vertex,
@@ -3268,7 +3274,7 @@ fn a_capture_past_its_targets_off_a_word_or_into_what_it_reads_is_refused_and_wr
         range,
     };
     // Three vertices of four words each.
-    let whole = u64::from(3 * 4 * WORD);
+    let whole = u64::from(3 * 4 * U32_BYTES);
     let at = |buffer, offset, size| wcontainers_gpu::BufferRange {
         buffer,
         offset,
@@ -3277,7 +3283,7 @@ fn a_capture_past_its_targets_off_a_word_or_into_what_it_reads_is_refused_and_wr
     for (name, targets) in [
         (
             "one word short",
-            vec![at(&target, 0, whole - u64::from(WORD))],
+            vec![at(&target, 0, whole - u64::from(U32_BYTES))],
         ),
         ("off a word", vec![at(&target, 2, whole)]),
         (
@@ -3379,7 +3385,7 @@ fn a_capture_of_wild_indices_writes_only_its_range_of_its_target() {
         },
     };
     // Six vertices of four words, from byte 256 of the target, which holds exactly them.
-    let (offset, size) = (256u64, u64::from(6 * 4 * WORD));
+    let (offset, size) = (256u64, u64::from(6 * 4 * U32_BYTES));
     b.capture_vertices(
         &call,
         &[wcontainers_gpu::BufferRange {

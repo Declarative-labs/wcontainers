@@ -1,10 +1,7 @@
-//! Copies of 24-bit depth between buffers and textures, converted on the GPU: Metal holds `Depth24Plus` as 32-bit
-//! float, while the interface's buffers hold 24-bit unsigned normalised words.
+//! Copies of 24-bit depth between buffers and textures, converted on the GPU from and to Metal's 32-bit floats.
 //!
-//! A copy into a texture converts the buffer's words into a tight buffer of floats and blits that in; a copy out blits
-//! the floats into a tight buffer and converts them into the buffer's words at its pitches, leaving the bytes between
-//! rows and layers as they were. Both conversions give the bits the host's `f64` arithmetic gives, in 32-bit integer
-//! steps (`DEPTH_PROGRAMS`).
+//! A copy in converts the words into tight floats and blits them in; a copy out blits tight floats and converts
+//! them into the words at the buffer's pitches. Both give the host's `f64` bits (`DEPTH_PROGRAMS`).
 
 use wcontainers_gpu::{CopyBufferTexture, Extent, Gpu, ShaderModule, ShaderStage, TextureRegion};
 use wcontainers_metal::{ComputeCommand, Metal, Size};
@@ -20,17 +17,8 @@ const DEPTH_THREADS: u32 = 64;
 
 /// The programs that convert depth words a word at a time, each thread converting one texel's word.
 ///
-/// `unorm_to_float`: the float nearest `n / (2^24 - 1)`, as the host's `(f64::from(n) / 16777215.0) as f32` gives it.
-/// Below the binary point the bits of `n / (2^24 - 1)` are the 24 bits of `n` repeated, so the float's 24-bit
-/// significand is `n` rotated to its leading one, and what follows is that rotation again: more than half a unit,
-/// which rounds up. The host's two roundings agree with that, as the bits past 53 never make a tie.
-///
-/// `float_to_unorm`: `x * (2^24 - 1)` of the float `x` clamped to zero to one, rounded to the nearest whole number
-/// with ties to even, as the host's `(f64::from(x).clamp(0.0, 1.0) * 16777215.0).round_ties_even() as u32` gives it
-/// (a NaN gives zero). For `x = m * 2^(e - 150)` with its 24-bit significand `m` and `x` below one, the product is
-/// `((m - 1) * 2^24 + (2^24 - m)) / 2^(t + 24)` with `t = 126 - e`: its whole part is `(m - 1) >> t`, and as the low
-/// digit `2^24 - m` is above zero and at most `2^23`, it rounds up exactly when bit `t - 1` of `m - 1` is set, with a
-/// tie only at `t = 0` and `m = 2^23` (one half, giving `2^23`).
+/// Each function's comments give its rounding, which is the host's: `(f64::from(n) / 16777215.0) as f32` in, and
+/// `(f64::from(x).clamp(0.0, 1.0) * 16777215.0).round_ties_even() as u32` out.
 const DEPTH_PROGRAMS: &str = "
 struct Span { at: u32, pitch: u32, layer: u32, width: u32, rows: u32, layers: u32, low: u32, high: u32 }
 @group(0) @binding(0) var<uniform> span: Span;
@@ -38,6 +26,9 @@ struct Span { at: u32, pitch: u32, layer: u32, width: u32, rows: u32, layers: u3
 @group(0) @binding(2) var<storage, read_write> destination: array<u32>;
 
 fn unorm_to_float(word: u32) -> u32 {
+    // The float nearest n / (2^24 - 1). Below the binary point its bits are the 24 bits of n repeated, so the float's
+    // 24-bit significand is n rotated to its leading one, and what follows is that rotation again: more than half a
+    // unit, which rounds up. The host's two roundings agree, as the bits past 53 never make a tie.
     let n = word & 0xffffffu;
     if n == 0u {
         return 0u;
@@ -51,6 +42,11 @@ fn unorm_to_float(word: u32) -> u32 {
 }
 
 fn float_to_unorm(word: u32) -> u32 {
+    // x * (2^24 - 1) of the float x clamped to zero to one, rounded to the nearest with ties to even (a NaN gives
+    // zero). For x = m * 2^(e - 150) below one, of 24-bit significand m, the product is
+    // ((m - 1) * 2^24 + (2^24 - m)) / 2^(t + 24) with t = 126 - e: its whole part is (m - 1) >> t, and as the low digit
+    // 2^24 - m is above zero and at most 2^23, it rounds up exactly when bit t - 1 of m - 1 is set, with a tie only at
+    // t = 0 and m = 2^23 (one half, giving 2^23).
     if word > 0x7f800000u {
         return 0u;
     }
@@ -135,9 +131,10 @@ pub(crate) struct DepthSpan {
 }
 
 impl DepthSpan {
-    /// Returns where a copy of `extent` lies in a buffer of `size` bytes at `side`'s offset and pitches, or none where
-    /// any texel's word is outside the buffer, off a word, or past what a 32-bit word number reaches, or where rows or
-    /// layers would overlap.
+    /// Returns where a copy of `extent` lies in a buffer of `size` bytes at `side`'s offset and pitches.
+    ///
+    /// None where any texel's word is outside the buffer, off a word, or past what a 32-bit word number reaches, or
+    /// where rows or layers would overlap.
     pub(crate) fn of<B: Gpu>(
         side: &CopyBufferTexture<'_, B>,
         extent: Extent,
@@ -183,7 +180,7 @@ impl DepthSpan {
         })
     }
 
-    /// The words of the uniform the depth programs read.
+    /// Returns the words of the uniform the depth programs read.
     fn uniform(&self) -> Vec<u8> {
         [
             self.at,
@@ -255,8 +252,9 @@ impl<M: Metal> MetalGpu<M> {
             .map_err(|_| "no buffer for tight floats")
     }
 
-    /// Encodes the depth program that converts `span`'s words of `buffer` into the tight `floats` (`into_floats`) or
-    /// the tight `floats` into its words.
+    /// Encodes the depth program that converts between `span`'s words of `buffer` and the tight `floats`.
+    ///
+    /// The words become floats where `into_floats`, else the floats become words.
     pub(crate) fn convert_depth(
         &mut self,
         into_floats: bool,
@@ -331,8 +329,9 @@ impl<M: Metal> MetalGpu<M> {
         Ok(())
     }
 
-    /// Copies a texture's region of depth into a buffer's words: blitted out as tight floats, then converted into the
-    /// buffer at its pitches.
+    /// Copies a texture's region of depth into a buffer's words.
+    ///
+    /// The depth is blitted out as tight floats, then converted into the buffer at its pitches.
     pub(crate) fn depth_out_of_texture(
         &mut self,
         src: &TextureRegion<'_, Self>,

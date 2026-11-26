@@ -472,8 +472,9 @@ impl<M: Metal> MetalGpu<M> {
         }
     }
 
-    /// Returns the render pipeline of a combination, made at its first use, a miss counted where a draw needs it; one
-    /// built in the background is left pending, and returned by the draw that needs it once it is built.
+    /// Returns the render pipeline of a combination, made at its first use, a miss counted where a draw needs it.
+    ///
+    /// One built in the background is left pending, and returned by the draw that needs it once it is built.
     fn pipeline(
         &mut self,
         combination: &Combination<'_>,

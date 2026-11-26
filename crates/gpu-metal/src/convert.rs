@@ -99,12 +99,10 @@ pub(crate) fn pixel_format(format: Format) -> Option<PixelFormat> {
     })
 }
 
-/// Returns the swizzle of a view in an interface format, which puts each channel of a format Metal holds in another bit
-/// order back in its place.
+/// Returns the swizzle of a view that puts each channel of a format Metal holds in another bit order back in place.
 ///
-/// `Bgra4Unorm` holds Direct3D's `B4G4R4A4` bits, blue in the low four and alpha in the high, which `abgr4Unorm` reads
-/// as alpha, blue, green and red from the low bits up (measured: the Metal conformance suite's
-/// `samples_abgr4_with_alpha_in_its_low_bits`), so its red reads Metal's green, and so on.
+/// `Bgra4Unorm` holds Direct3D's `B4G4R4A4` bits, which `abgr4Unorm` reads as alpha, blue, green and red from the low
+/// bits up.
 ///
 /// https://developer.apple.com/documentation/metal/mtlpixelformat/abgr4unorm
 pub(crate) fn view_swizzle(format: Format) -> TextureSwizzleChannels {

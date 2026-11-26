@@ -1,11 +1,8 @@
-//! Vertex capture (`TRANSFORM_FEEDBACK`): a draw whose vertex program also writes its location outputs into buffers.
+//! Vertex capture (`TRANSFORM_FEEDBACK`): a draw whose vertex program also writes its outputs into buffers.
 //!
-//! Metal has no capture of its own, so a capture is drawn as a list: the vertex numbers of the draw's whole primitives
-//! are put in list order on the CPU (indices read back), each stream that advances per vertex is gathered into that
-//! order, and the vertex program is rewritten so that its `vertex_index` comes from a stream of the numbers and each
-//! return also stores its location outputs at the vertex's place in the targets. A capture that rasterises draws the
-//! list in its pass; one that does not draws the list's vertices as points in an empty pass of its own, so every
-//! vertex runs once.
+//! Each is drawn as a list: its vertex numbers in list order, its per-vertex streams gathered into that order, and
+//! its vertex program rewritten to store its outputs at each vertex's place; one that does not rasterise draws
+//! points in an empty pass.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -45,12 +42,47 @@ pub(crate) const CAPTURE_COMPONENTS: u32 = 128;
 /// The binding in `CAPTURE_GROUP` of the words a capture variant reads its place from: after the targets'.
 const INFO_BINDING: u32 = CAPTURE_BUFFERS;
 
-/// The bytes of one captured component, and of each word the variant writes.
-const WORD_BYTES: u32 = u32::BITS / u8::BITS;
+/// The bytes of one captured 32-bit component, which the variant writes a word at a time.
+const COMPONENT_BYTES: u32 = u32::BITS / u8::BITS;
 
-/// The words of the info a capture variant reads: the first instance and the vertices of each instance, then two
-/// unread, as one `vec4<u32>`.
+/// The words of the info a capture variant reads as one `vec4<u32>`: the first instance, the list's length, two unread.
+///
+/// https://www.w3.org/TR/WGSL/#vector-types
 const INFO_WORDS: usize = 4;
+
+/// The components of a scalar output, against a vector's size.
+///
+/// https://www.w3.org/TR/WGSL/#scalar-types
+const SCALAR_COMPONENTS: u32 = 1;
+
+/// The corners of a line, which a list of lines takes two vertices at a time.
+///
+/// https://developer.apple.com/documentation/metal/mtlprimitivetype/line
+const LINE_CORNERS: usize = 2;
+
+/// The corners of a triangle, which a list of triangles takes three vertices at a time.
+///
+/// https://developer.apple.com/documentation/metal/mtlprimitivetype/triangle
+const TRIANGLE_CORNERS: usize = 3;
+
+/// The side of the empty pass a capture that does not rasterise draws its points in.
+///
+/// https://developer.apple.com/documentation/metal/mtlrenderpassdescriptor/rendertargetwidth
+const ONE_PIXEL: u32 = 1;
+
+/// The far end of the depth range of that pass's viewport.
+///
+/// https://developer.apple.com/documentation/metal/mtlviewport/zfar
+const FAR_DEPTH: f32 = 1.0;
+
+/// The words of the info a capture variant reads, in their order in its `vec4<u32>`.
+#[derive(Clone, Copy)]
+enum InfoWord {
+    /// The draw's first instance, which the variant's places count from.
+    FirstInstance,
+    /// The vertices of each instance in list order.
+    PerInstance,
+}
 
 /// One location output of a vertex program, as a capture writes it.
 #[derive(Clone, Copy, Debug)]
@@ -90,7 +122,7 @@ fn outputs(shader: &ShaderObj) -> Result<Vec<Output>, GpuError> {
     let types = &shader.module.types;
     let one = |member: Option<u32>, location: u32, ty: Handle<Type>| {
         let (components, scalar, vector) = match types[ty].inner {
-            TypeInner::Scalar(scalar) => (1, scalar, false),
+            TypeInner::Scalar(scalar) => (SCALAR_COMPONENTS, scalar, false),
             TypeInner::Vector { size, scalar } => (size as u32, scalar, true),
             _ => {
                 return Err(GpuError::Invalid(
@@ -98,14 +130,14 @@ fn outputs(shader: &ShaderObj) -> Result<Vec<Output>, GpuError> {
                 ));
             }
         };
-        if scalar.width != 4
+        if u32::from(scalar.width) != COMPONENT_BYTES
             || !matches!(
                 scalar.kind,
                 ScalarKind::Float | ScalarKind::Sint | ScalarKind::Uint
             )
         {
             return Err(GpuError::Invalid(
-                "a captured output that is not of 32-bit components",
+                "a captured output whose components are not single words",
             ));
         }
         Ok(Output {
@@ -172,7 +204,10 @@ impl Stores<'_> {
         function: &mut naga::Function,
         value: Handle<Expression>,
     ) -> Result<naga::Block, &'static str> {
-        let separate = self.targets.len() > 1;
+        let separate = self
+            .targets
+            .split_first()
+            .is_some_and(|(_, rest)| !rest.is_empty());
         let total: u32 = self.outputs.iter().map(|o| o.components).sum();
         let span = Span::UNDEFINED;
         // Expressions that need no emitting first: arguments, globals and the literals.
@@ -189,10 +224,10 @@ impl Stores<'_> {
             .collect();
         let mut literals = HashMap::new();
         let mut words = Vec::new();
-        let mut offset = 0u32;
+        let mut offset = u32::MIN;
         for (n, output) in self.outputs.iter().enumerate() {
             let (stride, first) = if separate {
-                (output.components, 0)
+                (output.components, u32::MIN)
             } else {
                 (total, offset)
             };
@@ -223,11 +258,11 @@ impl Stores<'_> {
         let info = emit(Expression::Load { pointer: info });
         let first_instance = emit(Expression::AccessIndex {
             base: info,
-            index: 0,
+            index: InfoWord::FirstInstance as u32,
         });
         let per_instance = emit(Expression::AccessIndex {
             base: info,
-            index: 1,
+            index: InfoWord::PerInstance as u32,
         });
         let binary = |emit: &mut dyn FnMut(Expression) -> Handle<Expression>, op, left, right| {
             emit(Expression::Binary { op, left, right })
@@ -279,7 +314,7 @@ impl Stores<'_> {
                 literals[&stride],
             );
             let at = binary(&mut emit, BinaryOperator::Add, at, literals[&word]);
-            let target = targets[if separate { n } else { 0 }];
+            let target = targets[if separate { n } else { usize::MIN }];
             let pointer = emit(Expression::Access {
                 base: target,
                 index: at,
@@ -352,9 +387,10 @@ impl Stores<'_> {
     }
 }
 
-/// Returns `module` with its vertex entry point `name` rewritten to capture into `targets` targets, and the input
-/// location its `vertex_index` was moved to, if it reads one; `free` is a location no input of it or of its layout
-/// takes.
+/// Returns `module` with its vertex entry point `name` rewritten to store its outputs into `targets` targets.
+///
+/// It also returns the input location its `vertex_index` was moved to, if it reads one; `free` is a location no input
+/// of it or of its layout takes.
 fn capture_module(
     module: &naga::Module,
     name: &str,
@@ -382,7 +418,7 @@ fn capture_module(
             inner: TypeInner::Array {
                 base: word,
                 size: ArraySize::Dynamic,
-                stride: WORD_BYTES,
+                stride: COMPONENT_BYTES,
             },
         },
         span,
@@ -402,7 +438,7 @@ fn capture_module(
         let binding = u32::try_from(n).map_err(|_| "more targets than a capture takes")?;
         target_globals.push(module.global_variables.append(
             naga::GlobalVariable {
-                name: Some(format!("capture_target_{n}")),
+                name: None,
                 space: AddressSpace::Storage {
                     access: StorageAccess::LOAD | StorageAccess::STORE,
                 },
@@ -419,7 +455,7 @@ fn capture_module(
     }
     let info = module.global_variables.append(
         naga::GlobalVariable {
-            name: Some("capture_info".into()),
+            name: None,
             space: AddressSpace::Uniform,
             binding: Some(ResourceBinding {
                 group: CAPTURE_GROUP,
@@ -473,7 +509,6 @@ fn capture_module(
                     }
                 }
                 if changed {
-                    ty.name = ty.name.map(|n| format!("{n}_captured"));
                     let ty = module.types.insert(ty, span);
                     module.entry_points[index].function.arguments[a as usize].ty = ty;
                     moved = true;
@@ -483,18 +518,19 @@ fn capture_module(
         }
     }
     let function = &mut module.entry_points[index].function;
-    let mut argument = |name: &str, built_in| {
+    let mut argument = |built_in| {
+        let index = u32::try_from(function.arguments.len()).map_err(|_| "too many arguments");
         function.arguments.push(naga::FunctionArgument {
-            name: Some(name.into()),
+            name: None,
             ty: word,
             binding: Some(Binding::BuiltIn(built_in)),
         });
-        u32::try_from(function.arguments.len().saturating_sub(1)).map_err(|_| "too many arguments")
+        index
     };
-    let vertex = argument("capture_vertex", BuiltIn::VertexIndex)?;
+    let vertex = argument(BuiltIn::VertexIndex)?;
     let instance = match instance {
         Some(instance) => instance,
-        None => Instance::Argument(argument("capture_instance", BuiltIn::InstanceIndex)?),
+        None => Instance::Argument(argument(BuiltIn::InstanceIndex)?),
     };
     let stores = Stores {
         outputs,
@@ -508,8 +544,9 @@ fn capture_module(
     Ok((module, moved.then_some(free)))
 }
 
-/// Returns the vertex numbers of the whole primitives of a draw's `numbers` in list order, strips as the lists they draw
-/// and a restart (none) ending a piece; refused past `most` vertices, before more are held.
+/// Returns the vertex numbers of the whole primitives of `numbers` in list order, strips as the lists they draw.
+///
+/// A restart (none) ends a piece; more than `most` vertices are refused before more are held.
 fn list_order(
     topology: Topology,
     provoking: ProvokingVertex,
@@ -521,21 +558,21 @@ fn list_order(
     }
     let mut out = Vec::new();
     // The two vertices before this one in its piece, and how many the piece has had.
-    let (mut a, mut b, mut n) = (0u32, 0u32, 0usize);
+    let (mut a, mut b, mut n) = (u32::MIN, u32::MIN, usize::MIN);
     for v in numbers {
         let Some(v) = v else {
-            n = 0;
+            n = usize::MIN;
             continue;
         };
         n = n.saturating_add(1);
         match topology {
             Topology::PointList => out.push(v),
-            Topology::LineList if n.is_multiple_of(2) => out.extend([b, v]),
-            Topology::TriangleList if n.is_multiple_of(3) => out.extend([a, b, v]),
-            Topology::LineStrip if n >= 2 => out.extend([b, v]),
+            Topology::LineList if n.is_multiple_of(LINE_CORNERS) => out.extend([b, v]),
+            Topology::TriangleList if n.is_multiple_of(TRIANGLE_CORNERS) => out.extend([a, b, v]),
+            Topology::LineStrip if n >= LINE_CORNERS => out.extend([b, v]),
             // Triangle n - 3 of the strip: odd ones keep their winding and their provoking vertex.
-            Topology::TriangleStrip if n >= 3 => {
-                out.extend(match (n.is_multiple_of(2), provoking) {
+            Topology::TriangleStrip if n >= TRIANGLE_CORNERS => {
+                out.extend(match (n.is_multiple_of(LINE_CORNERS), provoking) {
                     (false, _) => [a, b, v],
                     (true, ProvokingVertex::First) => [a, v, b],
                     (true, ProvokingVertex::Last) => [b, a, v],
@@ -570,7 +607,7 @@ impl<M: Metal> MetalGpu<M> {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, GpuError> {
-        let mut bytes = vec![0; usize::try_from(size).map_err(|_| GpuError::OutOfMemory)?];
+        let mut bytes = vec![u8::MIN; usize::try_from(size).map_err(|_| GpuError::OutOfMemory)?];
         self.read_back_now(
             &wcontainers_gpu::ReadSource::Buffer {
                 buffer,
@@ -615,7 +652,7 @@ impl<M: Metal> MetalGpu<M> {
                 let width = usize::try_from(facts.size)
                     .map_err(|_| GpuError::Invalid("an index wider than memory"))?;
                 let numbers = bytes.chunks_exact(width).map(|c| {
-                    let mut word = [0; 4];
+                    let mut word = [u8::MIN; size_of::<u32>()];
                     word[..c.len()].copy_from_slice(c);
                     let value = u32::from_le_bytes(word);
                     // The vertex number wraps past the largest `u32`, as the reference's does.
@@ -679,7 +716,7 @@ impl<M: Metal> MetalGpu<M> {
             }));
         }
         let free = highest
-            .map_or(Some(0), |h| h.checked_add(1))
+            .map_or(Some(u32::MIN), |h| h.checked_add(SCALAR_COMPONENTS))
             .ok_or(GpuError::Invalid("no input location left"))?;
         let (module, numbers_location) =
             capture_module(&vertex.module, &vertex.entry_point, outputs, targets, free)
@@ -698,7 +735,7 @@ impl<M: Metal> MetalGpu<M> {
             info,
             entry_point: vertex.entry_point.clone(),
             stage: ShaderStage::Vertex,
-            key: [0; 32],
+            key: Default::default(),
         };
         let slots = Self::slots(&rewritten)?;
         let shader = Shared(Rc::new(ShaderObj {
@@ -725,14 +762,14 @@ impl<M: Metal> MetalGpu<M> {
     fn stream_of(&mut self, bytes: &[u8]) -> Result<Shared<BufferObj<M>>, GpuError> {
         let size = u64::try_from(bytes.len())
             .map_err(|_| GpuError::OutOfMemory)?
-            .max(u64::from(WORD_BYTES));
+            .max(u64::from(COMPONENT_BYTES));
         let buffer = self.create_buffer(&BufferDesc {
             size,
             usage: BufferUsage::VERTEX | BufferUsage::UNIFORM | BufferUsage::COPY_DST,
             intent: MapIntent::Rarely,
         })?;
         if !bytes.is_empty() {
-            self.write_buffer(&buffer, 0, bytes, WriteMode::Ordered);
+            self.write_buffer(&buffer, u64::MIN, bytes, WriteMode::Ordered);
         }
         Ok(buffer)
     }
@@ -758,7 +795,9 @@ impl<M: Metal> MetalGpu<M> {
             return Err(GpuError::Invalid("a capture of a compute program"));
         };
         let outputs = outputs(vertex)?;
-        let separate = targets.len() > 1;
+        let separate = targets
+            .split_first()
+            .is_some_and(|(_, rest)| !rest.is_empty());
         if separate && targets.len() != outputs.len() {
             return Err(GpuError::Invalid(
                 "several capture targets, not one for each output the program writes",
@@ -785,7 +824,7 @@ impl<M: Metal> MetalGpu<M> {
                 .offset
                 .checked_add(t.size)
                 .is_some_and(|end| end <= t.buffer.size);
-            if !inside || !t.offset.is_multiple_of(u64::from(WORD_BYTES)) {
+            if !inside || !t.offset.is_multiple_of(u64::from(COMPONENT_BYTES)) {
                 return Err(GpuError::Invalid(
                     "a capture target past its buffer's end or off a word",
                 ));
@@ -813,7 +852,7 @@ impl<M: Metal> MetalGpu<M> {
                 ));
             }
         };
-        if instances == 0 {
+        if instances == u32::MIN {
             return Ok(());
         }
         // The most vertices of one instance every target holds, which bounds the list before it is held.
@@ -828,13 +867,13 @@ impl<M: Metal> MetalGpu<M> {
             .iter()
             .enumerate()
             .map(|(n, t)| {
-                let bytes = u64::from(words_of(n)).saturating_mul(u64::from(WORD_BYTES));
+                let bytes = u64::from(words_of(n)).saturating_mul(u64::from(COMPONENT_BYTES));
                 t.size.checked_div(bytes).unwrap_or(u64::MAX)
             })
             .min()
-            .unwrap_or(0)
+            .unwrap_or(u64::MIN)
             .checked_div(u64::from(instances))
-            .unwrap_or(0);
+            .unwrap_or(u64::MIN);
         let order = self.list_of(call, usize::try_from(most).unwrap_or(usize::MAX))?;
         let per_instance = u32::try_from(order.len())
             .map_err(|_| GpuError::Invalid("a capture of more vertices than a u32 counts"))?;
@@ -846,14 +885,14 @@ impl<M: Metal> MetalGpu<M> {
         for (n, t) in targets.iter().enumerate() {
             let needed = vertices
                 .checked_mul(u64::from(words_of(n)))
-                .and_then(|w| w.checked_mul(u64::from(WORD_BYTES)));
+                .and_then(|w| w.checked_mul(u64::from(COMPONENT_BYTES)));
             if needed.is_none_or(|needed| needed > t.size) {
                 return Err(GpuError::Invalid(
                     "capture targets that do not hold every vertex the draw makes",
                 ));
             }
         }
-        if vertices == 0 {
+        if vertices == u64::MIN {
             return Ok(());
         }
         let layout = &call.vertex_layout.desc;
@@ -874,7 +913,7 @@ impl<M: Metal> MetalGpu<M> {
                 streams.push(None);
                 continue;
             };
-            if stream.stride == 0 || stream.step != StepMode::Vertex {
+            if stream.stride == u32::MIN || stream.step != StepMode::Vertex {
                 streams.push(Some(binding.buffer.clone()));
                 continue;
             }
@@ -884,11 +923,13 @@ impl<M: Metal> MetalGpu<M> {
                 .size
                 .saturating_sub(binding.offset)
                 .checked_div(stride)
-                .unwrap_or(0);
+                .unwrap_or(u64::MIN);
             let read = order
                 .iter()
                 .max()
-                .map_or(0, |n| u64::from(*n).saturating_add(1))
+                .map_or(u64::MIN, |n| {
+                    u64::from(*n).saturating_add(u64::from(SCALAR_COMPONENTS))
+                })
                 .min(held);
             let source =
                 self.bytes_of(binding.buffer, binding.offset, read.saturating_mul(stride))?;
@@ -898,10 +939,11 @@ impl<M: Metal> MetalGpu<M> {
                 .ok_or(GpuError::Invalid(
                     "a capture whose streams in list order pass the largest buffer",
                 ))?;
-            let mut gathered = vec![0; usize::try_from(length).map_err(|_| GpuError::OutOfMemory)?];
+            let mut gathered =
+                vec![u8::MIN; usize::try_from(length).map_err(|_| GpuError::OutOfMemory)?];
             let width = usize::from(
                 u16::try_from(stream.stride)
-                    .map_err(|_| GpuError::Invalid("a stride past 2^16"))?,
+                    .map_err(|_| GpuError::Invalid("a stride past what a u16 holds"))?,
             );
             for (element, number) in gathered.chunks_exact_mut(width).zip(&order) {
                 let at = usize::try_from(*number).unwrap_or(usize::MAX);
@@ -929,19 +971,20 @@ impl<M: Metal> MetalGpu<M> {
                     "a capture reading its vertex index with every attribute taken",
                 ))?;
             desc.streams[s] = Some(VertexStream {
-                stride: WORD_BYTES,
+                stride: COMPONENT_BYTES,
                 step: StepMode::Vertex,
             });
             desc.attributes[a] = Some(VertexAttribute {
                 location,
-                stream: u8::try_from(s).map_err(|_| GpuError::Invalid("a stream past 255"))?,
-                offset: 0,
+                stream: u8::try_from(s)
+                    .map_err(|_| GpuError::Invalid("a stream past what a u8 numbers"))?,
+                offset: u32::MIN,
                 format: VertexFormat::Uint32x1,
             });
             let bytes: Vec<u8> = order.iter().flat_map(|n| n.to_le_bytes()).collect();
             let numbers = self.stream_of(&bytes)?;
             if streams.len() <= s {
-                streams.resize(s.saturating_add(1), None);
+                streams.resize(VERTEX_STREAMS as usize, None);
             }
             streams[s] = Some(numbers);
         }
@@ -953,9 +996,10 @@ impl<M: Metal> MetalGpu<M> {
                 made
             }
         };
-        let mut info = [0u8; INFO_WORDS * WORD_BYTES as usize];
-        info[..4].copy_from_slice(&first_instance.to_le_bytes());
-        info[4..8].copy_from_slice(&per_instance.to_le_bytes());
+        let mut words = [u32::MIN; INFO_WORDS];
+        words[InfoWord::FirstInstance as usize] = first_instance;
+        words[InfoWord::PerInstance as usize] = per_instance;
+        let info: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let info = self.stream_of(&info)?;
         let ProgramObj::Render {
             vertex: rewritten, ..
@@ -982,13 +1026,18 @@ impl<M: Metal> MetalGpu<M> {
         self.mark_used(&info);
         extra.push(RenderCommand::SetVertexBuffer {
             buffer: info.raw.borrow().clone(),
-            offset: 0,
-            length: u64::from(WORD_BYTES).saturating_mul(INFO_WORDS as u64),
+            offset: u64::MIN,
+            length: u64::from(COMPONENT_BYTES).saturating_mul(INFO_WORDS as u64),
             index: slot(INFO_BINDING)?,
         });
         let bindings: Vec<Option<VertexBinding<'_, Self>>> = streams
             .iter()
-            .map(|s| s.as_ref().map(|buffer| VertexBinding { buffer, offset: 0 }))
+            .map(|s| {
+                s.as_ref().map(|buffer| VertexBinding {
+                    buffer,
+                    offset: u64::MIN,
+                })
+            })
             .collect();
         // Streams kept as they were keep their offsets.
         let bindings: Vec<Option<VertexBinding<'_, Self>>> = bindings
@@ -1023,14 +1072,14 @@ impl<M: Metal> MetalGpu<M> {
             }
         };
         // Points of an empty pass of one pixel: a viewport over it, whatever the call's, and no scissor.
-        let one = 1.0f32.to_bits();
+        let one = (ONE_PIXEL as f32).to_bits();
         let over_the_pixel = [Viewport {
-            x: 0,
-            y: 0,
+            x: u32::MIN,
+            y: u32::MIN,
             width: one,
             height: one,
-            min_depth: 0,
-            max_depth: one,
+            min_depth: u32::MIN,
+            max_depth: FAR_DEPTH.to_bits(),
         }];
         let drawn = DrawCall {
             program: &variant.program,
@@ -1055,7 +1104,7 @@ impl<M: Metal> MetalGpu<M> {
                 &no_tests
             },
             range: DrawRange::Vertices {
-                first: 0,
+                first: u32::MIN,
                 count: per_instance,
                 first_instance,
                 instances,
@@ -1071,8 +1120,8 @@ impl<M: Metal> MetalGpu<M> {
             colors: Default::default(),
             depth: None,
             empty: Some(EmptyPass {
-                width: 1,
-                height: 1,
+                width: ONE_PIXEL,
+                height: ONE_PIXEL,
                 samples: 1,
             }),
             occlusion: None,

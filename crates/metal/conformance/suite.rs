@@ -686,8 +686,10 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
     assert_eq!(read_texture(&mut subject, &drawn), bytes);
 }
 
-/// Fills a `TARGET_SIDE` square texture of `pixel_format` with `texel` repeated, draws the covering triangle sampling
-/// `view_of(texture)` into an `rgba8Unorm` target, and returns the target's first texel.
+/// Returns the first texel of a draw that samples `view_of` a texture filled with `texel`.
+///
+/// The texture is a `TARGET_SIDE` square of `pixel_format`; the covering triangle samples the view into an
+/// `rgba8Unorm` target.
 fn sampled_texel<M: Metal>(
     subject: &mut M,
     pixel_format: PixelFormat,
@@ -771,6 +773,8 @@ fn sampled_texel<M: Metal>(
 }
 
 /// A 16-bit texel of four different 4-bit channels: 1 to 4 from its high bits down.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/abgr4unorm
 const NIBBLES: u16 = 0x1234;
 
 /// Checks where `abgr4Unorm` holds its channels: measured, alpha in the low four bits, then blue, green and red.
@@ -806,9 +810,10 @@ fn swizzled_view<M: Metal>(
     )
 }
 
-/// Checks that a view's swizzle moves and replaces the channels its samples give, of an `rgba8Unorm` texture and of an
-/// `abgr4Unorm` one holding Direct3D's `B4G4R4A4` bits (blue in the low four bits, alpha in the high), which the
-/// swizzle reads back in their places.
+/// Checks that a view's swizzle moves and replaces the channels its samples give.
+///
+/// Of an `rgba8Unorm` texture, and of an `abgr4Unorm` one holding Direct3D's `B4G4R4A4` bits (blue in the low four
+/// bits, alpha in the high), which the swizzle reads back in their places.
 pub fn samples_a_swizzled_view<M: Metal>(mut subject: M) {
     let seen = sampled_texel(
         &mut subject,
@@ -854,8 +859,9 @@ pub fn samples_a_swizzled_view<M: Metal>(mut subject: M) {
     assert_eq!(seen, [51, 34, 17, 68]);
 }
 
-/// Checks that a swizzle is refused on a view of a texture made to be drawn into, and that no view is made of a
-/// swizzled view, while each channel its own is taken on both textures.
+/// Checks that a swizzle is refused on a view of a texture drawn into, and that no view of a swizzled view is made.
+///
+/// Each channel its own is taken on both textures.
 pub fn refuses_a_swizzle_of_a_texture_drawn_into<M: Metal>(mut subject: M) {
     let swizzle = TextureSwizzleChannels {
         red: TextureSwizzle::Alpha,
@@ -927,9 +933,10 @@ fn function_in_background<M: Metal>(
         .expect("Metal answers make function in background")
 }
 
-/// Checks that functions and pipelines built in the background draw and dispatch as those built at once: more pipelines
-/// pending at once than any thread pool runs, each finished after; that a pipeline's checks refuse it at once; and
-/// that a compute pipeline waits for its function's compile.
+/// Checks that functions and pipelines built in the background draw and dispatch as those built at once.
+///
+/// More pipelines are pending at once than any thread pool runs, each finished after; a pipeline's checks refuse it at
+/// once; and a compute pipeline waits for its function's compile.
 pub fn builds_functions_and_pipelines_in_the_background<M: Metal>(mut subject: M) {
     let (green, _) = green_and_clear();
     let mut pending = Vec::new();
@@ -1622,8 +1629,10 @@ pub fn refuses_depth_and_stencil_tests_without_attachments<M: Metal>(mut subject
     }
 }
 
-/// Draws the covering triangle in green with depth test bounds `bounds` into a target whose `depth32Float` depth is
-/// cleared to `stored`, testing nothing else, and returns the target's texels or the encode's refusal.
+/// Draws the covering triangle in green with depth test bounds `bounds` over a stored depth of `stored`.
+///
+/// The target's `depth32Float` depth is cleared to `stored` and nothing else is tested; returns the target's texels or
+/// the encode's refusal.
 fn drawn_within_bounds<M: Metal>(
     subject: &mut M,
     stored: f64,
@@ -1678,9 +1687,10 @@ fn drawn_within_bounds<M: Metal>(
     Ok(read_texture(subject, &drawn))
 }
 
-/// Checks that depth test bounds discard the fragments whose stored depth lies outside them, bounds included, where
-/// Metal has them; and that they are refused where it lacks them, outside zero to one, out of order, not numbers, or in a
-/// pass with no depth attachment.
+/// Checks that depth test bounds discard the fragments whose stored depth lies outside them, bounds included.
+///
+/// Where Metal has them; and that they are refused where it lacks them, outside zero to one, out of order, not
+/// numbers, or in a pass with no depth attachment.
 pub fn discards_fragments_whose_stored_depth_is_outside_the_bounds<M: Metal>(mut subject: M) {
     let (green, clear) = green_and_clear();
     let bad = [
@@ -2692,7 +2702,7 @@ fn word_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
-/// The texels of a target the covering triangle drew green into, and of one it drew nothing into.
+/// Returns the texels of a target the covering triangle drew green into, and of one it drew nothing into.
 fn green_and_clear() -> (Vec<u8>, Vec<u8>) {
     let texels = (TARGET_SIDE * TARGET_SIDE) as usize;
     (
@@ -2702,9 +2712,13 @@ fn green_and_clear() -> (Vec<u8>, Vec<u8>) {
 }
 
 /// The covering triangle's three vertices as 32-bit indices.
+///
+/// https://developer.apple.com/documentation/metal/mtlprimitivetype/triangle
 const COVERING_INDICES: [u32; 3] = [0, 1, 2];
 
 /// The covering triangle's vertices plus one as 32-bit indices, then its vertices.
+///
+/// https://developer.apple.com/documentation/metal/mtlprimitivetype/triangle
 const SHIFTED_INDICES: [u32; 6] = [1, 2, 3, 0, 1, 2];
 
 /// Returns the commands of the covering draw in green, its draw replaced by `draw`.
@@ -2753,8 +2767,10 @@ fn drawn_with<M: Metal>(
     read_texture(subject, &texture)
 }
 
-/// Checks that draws read their counts from a buffer when they run, and that one reaching past what is bound, or
-/// whose first index or instance plus its count passes the largest `u32`, draws nothing.
+/// Checks that draws read their counts from a buffer when they run.
+///
+/// One reaching past what is bound, or whose first index or instance plus its count passes the largest `u32`, draws
+/// nothing.
 pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
@@ -2813,8 +2829,9 @@ pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
     }
 }
 
-/// Checks that a draw reads the counts a copy before it in the command buffer wrote, and that a write to them from the
-/// CPU waits for the draw: refused while the draw is not committed, and landing after it once it is.
+/// Checks that a draw reads the counts a copy before it wrote, and that a write to them from the CPU waits for it.
+///
+/// The write is refused while the draw is not committed, and lands after it once it is.
 pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, _) = green_and_clear();
@@ -2862,8 +2879,9 @@ pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut 
     assert_eq!(read_texture(&mut subject, &texture), green);
 }
 
-/// Checks that a dispatch reads its threadgroups from a buffer when it runs, and that one of more groups on an axis than
-/// its most, or of more threads on an axis than a `u32` holds, dispatches nothing.
+/// Checks that a dispatch reads its threadgroups from a buffer when it runs.
+///
+/// One of more groups on an axis than its most, or of more threads on an axis than a `u32` holds, dispatches nothing.
 pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
     let words: Vec<u32> = (1..=WORD_COUNT as u32).collect();
     let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
@@ -2923,8 +2941,9 @@ pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
     }
 }
 
-/// Checks that indirect arguments, and an indexed draw's index offset, outside their buffer, off their alignment, or whose
-/// end wraps, are refused before anything is encoded.
+/// Checks that indirect arguments outside their buffer are refused before anything is encoded.
+///
+/// So are an indexed draw's index offset outside its buffer, and either off its alignment or with an end that wraps.
 pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
@@ -3007,8 +3026,9 @@ pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M)
     ));
 }
 
-/// The step rate test's functions: a column of the target for each instance, at the column its first buffer gives and
-/// in the red its second gives.
+/// The step rate test's functions: a column of the target for each instance.
+///
+/// Each column is at the place its first buffer gives, in the red its second gives.
 const COLUMNS: &str = "
 struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) red: f32 }
 @vertex fn columns(@builtin(vertex_index) v: u32, @location(0) column: f32, @location(1) red: f32) -> Out {
@@ -3022,18 +3042,21 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) 
 ";
 
 /// The base instance of the step rate test's draws, past zero so that a rate that left it out would show.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor/steprate
 const BASE_INSTANCE: u32 = 2;
 
 /// The elements of the step rate test's buffers: as many as the base instance and one for each column.
 const STEPPED_ELEMENTS: u32 = BASE_INSTANCE + TARGET_SIDE;
 
-/// The red of element `k` of the step rate test's second buffer, in bytes: ten steps of 1/255 for each element.
+/// Returns the red of element `k` of the step rate test's second buffer, in bytes: ten for each element.
 fn stepped_red(k: u32) -> u8 {
     u8::try_from((k + 1) * 10).expect("a red that fits")
 }
 
-/// Checks that an instance buffer of a step rate other than one advances once every that many instances from the base
-/// instance, and that a rate of zero reads the base instance's element for every instance.
+/// Checks that an instance buffer advances once every `step_rate` instances from the base instance.
+///
+/// A rate of zero reads the base instance's element for every instance.
 pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
     let module = naga::front::wgsl::parse_str(COLUMNS).expect("the test functions parse");
     let info = naga::valid::Validator::new(
@@ -3160,8 +3183,9 @@ fn drawn_with_all<M: Metal>(
     read_texture(subject, &texture)
 }
 
-/// Checks that an indexed draw of 16-bit indices in a buffer of an odd length counts only whole indices from its offset,
-/// so that one reaching the last, lone byte draws nothing, and that an offset off two bytes or past the end is refused.
+/// Checks that an indexed draw of 16-bit indices in a buffer of an odd length counts only whole indices.
+///
+/// One reaching the last, lone byte draws nothing, and an offset off two bytes or past the end is refused.
 pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
@@ -3207,9 +3231,10 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
     }
 }
 
-/// Checks that one buffer may be a draw's arguments, indices and vertices at once (its words read as positions are all
-/// within a pixel's width of the origin, so the triangle covers no pixel centre), that arguments ending at a buffer's last
-/// byte are taken, and that a buffer shorter than an indexed draw's or a dispatch's arguments is refused.
+/// Checks that one buffer may be a draw's arguments, indices and vertices at once.
+///
+/// Its words read as positions lie within a pixel of the origin, so the triangle covers no pixel centre. Arguments
+/// ending at a buffer's last byte are taken; a buffer shorter than the arguments read is refused.
 pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
@@ -3333,10 +3358,13 @@ pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mu
 }
 
 /// The indirect draws of one pass in `draws_a_thousand_indirect_draws_in_one_pass`.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
 const THOUSAND: usize = 1000;
 
-/// Checks a thousand indirect draws in one pass, each at its own offset of one buffer, indexed and not in turn: every one
-/// whose counts wrap or reach past its indices draws nothing, and a good last one still draws.
+/// Checks a thousand indirect draws in one pass, each at its own offset of one buffer, indexed and not in turn.
+///
+/// Every one whose counts wrap or reach past its indices draws nothing, and a good last one still draws.
 pub fn draws_a_thousand_indirect_draws_in_one_pass<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
@@ -3394,8 +3422,9 @@ pub fn draws_a_thousand_indirect_draws_in_one_pass<M: Metal>(mut subject: M) {
     }
 }
 
-/// Checks that a draw without indices of the largest count a `u32` holds from vertex 0, which fits, is drawn: the
-/// covering triangle, its vertices past the three bound reading zeros.
+/// Checks that a draw without indices of the largest count a `u32` holds from vertex 0 is drawn.
+///
+/// It draws the covering triangle, its vertices past the three bound reading zeros.
 pub fn draws_the_largest_count_from_vertex_zero<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, _) = green_and_clear();
@@ -3442,10 +3471,13 @@ fn spin<M: Metal>(subject: &mut M, command_buffer: &M::CommandBuffer, words: &M:
 }
 
 /// The steps of `SPIN` that keep one GPU thread busy for tens of milliseconds.
+///
+/// https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpustarttime
 const SPIN_STEPS: u32 = 1 << 23;
 
-/// Checks that timestamps written around work hold the GPU's clock in nanoseconds: in order, and apart by about the
-/// time the CPU waited for the work, which runs for tens of milliseconds.
+/// Checks that timestamps written around work hold the GPU's clock in nanoseconds.
+///
+/// They are in order, and apart by about the time the CPU waited for the work, which runs for tens of milliseconds.
 pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
     let Ok(timestamps) = subject.make_timestamp_buffer(3) else {
         return;
@@ -3491,8 +3523,7 @@ pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
     );
 }
 
-/// Checks that timestamp buffers of no places or past the most, and timestamps and reads past the last place, are
-/// refused.
+/// Checks that timestamp buffers of no places or past the most, and reads past the last place, are refused.
 pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
     for count in [0, wcontainers_metal::MAX_TIMESTAMPS + 1, u32::MAX] {
         assert_eq!(
@@ -3533,8 +3564,7 @@ pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
     );
 }
 
-/// Checks that a timestamp buffer whose handle is dropped after its timestamps are encoded and before the work runs is
-/// kept until the work completes.
+/// Checks that a timestamp buffer dropped after its timestamps are encoded is kept until its work completes.
 pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subject: M) {
     let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
         return;
@@ -3557,8 +3587,9 @@ pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subje
     finish(&mut subject, &command_buffer);
 }
 
-/// Checks that a read of timestamps waits for committed work that writes them after that work's command buffer handle
-/// was dropped, is refused while an uncommitted writer is held, and is taken once that writer is dropped.
+/// Checks that a read of timestamps waits for committed work that writes them after its handle was dropped.
+///
+/// The read is refused while an uncommitted writer is held, and taken once that writer is dropped.
 pub fn waits_for_a_dropped_writer_before_reading_timestamps<M: Metal>(mut subject: M) {
     let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
         return;
@@ -3652,6 +3683,8 @@ const QUERIES: &str = "
 ";
 
 /// The levels of the textures `QUERIES` reads: four by four texels down to one.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/mipmaplevelcount
 const QUERIED_LEVELS: u32 = 3;
 
 /// Compiles one entry point of `QUERIES`.
@@ -3693,8 +3726,9 @@ fn query_function<M: Metal>(
         .expect("Metal answers make function")
 }
 
-/// Draws with the `QUERIES` fragment function `fragment` reading `texture` at slot 0, and returns the first texel drawn
-/// or the encode's refusal.
+/// Draws with the `QUERIES` fragment function `fragment` reading `texture` at slot 0.
+///
+/// Returns the first texel drawn or the encode's refusal.
 fn query_drawn<M: Metal>(
     subject: &mut M,
     fragment: &str,
@@ -3797,10 +3831,14 @@ fn levels_texture<M: Metal>(
 }
 
 /// A texel no cleared target holds.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/rgba8unorm
 const LAST_LEVEL_TEXEL: [u8; 4] = [10, 20, 30, 40];
 
-/// Checks that a size query of a level a thousand past the last, which naga writes as Metal's `get_width(lod)` with no
-/// clamp, completes, of a texture and of a one-level view, and that the level count it draws beside it is right.
+/// Checks that a size query of a level a thousand past the last completes.
+///
+/// naga writes it as Metal's `get_width(lod)` with no clamp; of a texture and of a one-level view, beside the level
+/// count it draws.
 pub fn answers_a_size_query_of_a_level_past_the_last<M: Metal>(mut subject: M) {
     let texture = levels_texture(&mut subject, TextureType::Type2D, SINGLE, LAST_LEVEL_TEXEL);
     let seen = query_drawn(&mut subject, "size_past", &texture).expect("a query past the levels");

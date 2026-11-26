@@ -355,6 +355,8 @@ impl<T> Drop for Filling<T> {
 }
 
 /// The background builds that may run at once; past them a build is made on the calling thread.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/makerenderpipelinestate(descriptor:completionhandler:)
 const MOST_BACKGROUND_BUILDS: usize = 8;
 
 /// What a function reads, which a draw or dispatch must have bound.
@@ -725,8 +727,9 @@ impl DirectMetal {
         })
     }
 
-    /// Runs `build` on a thread of its own and returns where it leaves its result, or none where the most background
-    /// builds already run or no thread is made, for the caller to build it itself.
+    /// Runs `build` on a thread of its own and returns where it leaves its result.
+    ///
+    /// None where the most background builds already run or no thread is made, for the caller to build it itself.
     fn in_background<T: Clone + Send + 'static>(
         &self,
         build: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -1255,10 +1258,9 @@ impl Metal for DirectMetal {
         let levels = NSRange::new(d.first_level as usize, d.level_count as usize);
         let slices = NSRange::new(d.first_slice as usize, d.slice_count as usize);
         #[expect(unsafe_code, reason = "the call that makes a texture view")]
-        // SAFETY: the levels and slices lie inside the texture, the format is the texture's, its sRGB twin, or, where
-        // the texture was made for such views, the stencil of its depth and stencil or one of the same size, and the
-        // type is one Metal makes of the texture's for that many slices; a swizzle other than each channel its own is
-        // of a texture no pass draws into, so only reads see it.
+        // SAFETY: the levels and slices lie inside the texture; the format is the texture's, its sRGB twin, or the
+        // stencil or a format of the same size where the texture was made for such views; the type is one Metal makes
+        // of the texture's for that many slices; and a swizzle is only on a texture no pass draws into.
         let raw = unsafe {
             t.raw
                 .newTextureViewWithPixelFormat_textureType_levels_slices_swizzle(
@@ -3269,10 +3271,10 @@ fn encode_render_command(
                 IndexType::UInt32 => MTLIndexType::UInt32,
             };
             #[expect(unsafe_code, reason = "a draw with indices of arguments the GPU reads")]
-            // SAFETY: as for a draw with indices; and the counts are read from direct's own copy
-            // (encode_argument_checks), in which the first index plus the index count lie within the indices the buffer
-            // holds past `index_buffer_offset`, itself inside the buffer and a multiple of the index size
-            // (check_render_commands), or else are zero, at an offset inside the copy and a multiple of four.
+            // SAFETY: as for a draw with indices; the counts come from direct's own checked copy
+            // (encode_argument_checks), where the first index plus the count lie within the indices past
+            // `index_buffer_offset` (check_render_commands), or are zero, at an offset inside the copy and a multiple
+            // of four.
             unsafe {
                 encoder
                     .drawIndexedPrimitives_indexType_indexBuffer_indexBufferOffset_indirectBuffer_indirectBufferOffset(
@@ -3431,12 +3433,10 @@ fn check_arguments(buffer: &DirectBuffer, offset: u64, bytes: u64) -> Result<(),
     Ok(())
 }
 
-/// The function that copies each indirect command's arguments into direct's own buffer, each command that would reach
-/// past what it is checked against made one that does nothing.
+/// The function that copies each indirect command's arguments, checked, into direct's own buffer.
 ///
-/// It reads every argument once, through a `volatile` pointer, so that the value it checks is the value it writes,
-/// whatever else changes the arguments meanwhile. Its kinds are `ARGUMENTS_DRAW`, `ARGUMENTS_DRAW_INDEXED` and
-/// `ARGUMENTS_DISPATCH`.
+/// A command reaching past what it is checked against is made one that does nothing. Its kinds are
+/// `ARGUMENTS_DRAW`, `ARGUMENTS_DRAW_INDEXED` and `ARGUMENTS_DISPATCH`.
 ///
 /// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
 const ARGUMENT_CHECK_SOURCE: &str = r#"
@@ -3446,6 +3446,8 @@ struct Job { uint kind; uint index_limit; uint threads[3]; uint max_groups; };
 kernel void check_arguments(volatile device const uint* arguments [[buffer(0)]],
                             device uint* out [[buffer(1)]],
                             constant Job& job [[buffer(2)]]) {
+    // Every argument is read once, through a volatile pointer, so that the value checked is the value written,
+    // whatever else changes the arguments meanwhile.
     const ulong most = 0xffffffffUL;
     if (job.kind == 2u) {
         uint g0 = arguments[0];
@@ -3484,14 +3486,21 @@ kernel void check_arguments(volatile device const uint* arguments [[buffer(0)]],
 "#;
 
 /// The kind of a draw's arguments in `ARGUMENT_CHECK_SOURCE`.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
 const ARGUMENTS_DRAW: u32 = 0;
 /// The kind of an indexed draw's arguments in `ARGUMENT_CHECK_SOURCE`.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
 const ARGUMENTS_DRAW_INDEXED: u32 = 1;
 /// The kind of a dispatch's arguments in `ARGUMENT_CHECK_SOURCE`.
+///
+/// https://developer.apple.com/documentation/metal/mtldispatchthreadgroupsindirectarguments
 const ARGUMENTS_DISPATCH: u32 = 2;
 
-/// The bytes between two commands' checked arguments in direct's buffer: the longest arguments, rounded up to a
-/// multiple of 16.
+/// The bytes between two commands' checked arguments in direct's buffer: the longest, rounded up to 16.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
 const CHECKED_ARGUMENTS_STRIDE: u64 = 32;
 
 const _: () = assert!(
@@ -3652,8 +3661,9 @@ impl DirectMetal {
         Ok(pipeline)
     }
 
-    /// Encodes, in a compute pass of its own, the copy of each job's arguments, checked, into a new buffer only the GPU
-    /// reaches, `CHECKED_ARGUMENTS_STRIDE` bytes a job in order, and returns that buffer; none for no jobs.
+    /// Encodes the checked copy of each job's arguments into a new buffer only the GPU reaches, and returns it.
+    ///
+    /// In a compute pass of its own, `CHECKED_ARGUMENTS_STRIDE` bytes a job in order; none for no jobs.
     fn encode_argument_checks(
         &mut self,
         command_buffer: &DirectCommandBuffer,
@@ -5172,7 +5182,6 @@ fn pixel_format(format: PixelFormat) -> MTLPixelFormat {
     }
 }
 
-/// Returns Metal's texture type of a texture type.
 /// Returns Metal's swizzle of a view's channels.
 fn swizzle_channels(swizzle: TextureSwizzleChannels) -> MTLTextureSwizzleChannels {
     let one = |channel| match channel {

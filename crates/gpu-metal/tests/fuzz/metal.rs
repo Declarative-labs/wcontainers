@@ -2692,7 +2692,6 @@ fn buffer_copy_refused(
     total > u128::from(u64::MAX) || u128::from(offset).saturating_add(total) > u128::from(length)
 }
 
-/// Returns whether a view `d` of a texture is one `direct` must refuse; a format it may take as an sRGB twin is not.
 /// Returns each channel its own most of the time, else any channel or constant for each.
 fn random_swizzle(random: &mut Random) -> TextureSwizzleChannels {
     if !random.chance(20) {
@@ -4286,8 +4285,9 @@ impl World {
         broke
     }
 
-    /// Makes a buffer of its own holding `words` of indirect arguments at an offset, with up to two words after them, and
-    /// returns it, the offset and its length.
+    /// Makes a buffer of its own holding `words` of indirect arguments at an offset, up to two words after them.
+    ///
+    /// Returns the buffer, the offset and its length.
     fn arguments(&mut self, random: &mut Random, words: &[u32]) -> Option<(Buffer, u64, u64)> {
         let offset = 4u64.saturating_mul(random.below(3));
         let length = offset
@@ -4301,11 +4301,10 @@ impl World {
         Some((buffer, offset, length))
     }
 
-    /// Returns an indirect draw of arguments of small values or values whose sums wrap, all but `bad_offset` and
-    /// `bad_index_offset` valid.
+    /// Returns an indirect draw of small arguments or ones whose sums wrap, all but the two bad offsets valid.
     ///
-    /// No sum of a first element and its count that fits a `u32` is large, so that no draw the check lets through runs
-    /// for long.
+    /// `bad_offset` and `bad_index_offset` are invalid. No sum of a first element and its count that fits a `u32` is
+    /// large, so that no draw the check lets through runs for long.
     fn indirect_draw(
         &mut self,
         random: &mut Random,

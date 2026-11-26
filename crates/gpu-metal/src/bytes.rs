@@ -263,8 +263,9 @@ impl<M: Metal> MetalGpu<M> {
         }
     }
 
-    /// Encodes a compute pass of this implementation's own after the copies queued so far, ending the open pass for it
-    /// and opening it again after.
+    /// Encodes a compute pass of this implementation's own after the copies queued so far.
+    ///
+    /// It ends the open pass for it and opens it again after.
     pub(crate) fn encode_own_compute(
         &mut self,
         commands: &[ComputeCommand<M>],

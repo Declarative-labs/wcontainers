@@ -81,16 +81,18 @@ pub trait Metal {
         &mut self,
         descriptor: &RenderPipelineDescriptor<'_, Self>,
     ) -> Result<Self::RenderPipelineState, MakeRenderPipelineStateError>;
-    /// Makes a function as `make_function` does, every check made now, but compiled by Metal on a thread of its own:
-    /// a pipeline made of it waits for the compile, and a compile Metal refuses refuses that pipeline.
+    /// Makes a function as `make_function` does, every check made now, but compiled by Metal on a thread of its own.
+    ///
+    /// A pipeline made of it waits for the compile, and a compile Metal refuses refuses that pipeline.
     ///
     /// https://developer.apple.com/documentation/metal/mtldevice/makelibrary(source:options:completionhandler:)
     fn make_function_in_background(
         &mut self,
         source: &FunctionSource<'_>,
     ) -> Result<Self::Function, MakeFunctionError>;
-    /// Makes a render pipeline as `make_render_pipeline_state` does, every check made now, but built by Metal on a
-    /// thread of its own once its functions are compiled.
+    /// Makes a render pipeline as `make_render_pipeline_state` does, every check made now, but built in the background.
+    ///
+    /// Metal builds it on a thread of its own once its functions are compiled.
     ///
     /// https://developer.apple.com/documentation/metal/mtldevice/makerenderpipelinestate(descriptor:completionhandler:)
     fn make_render_pipeline_state_in_background(
@@ -167,8 +169,9 @@ pub trait Metal {
         timestamps: &Self::TimestampBuffer,
         index: u32,
     ) -> Result<(), EncodeTimestampError>;
-    /// Copies the timestamps of places from `first` on into `into`, once every committed command buffer that writes them
-    /// has completed.
+    /// Copies the timestamps of places from `first` on into `into`.
+    ///
+    /// It waits until every committed command buffer that writes them has completed.
     fn read_timestamps(
         &mut self,
         timestamps: &Self::TimestampBuffer,
@@ -371,8 +374,10 @@ pub struct TextureViewDescriptor {
     /// The first slice: a layer, or a face of a cube counted across every cube.
     pub first_slice: u32,
     pub slice_count: u32,
-    /// What each channel the view's reads give holds. Other than [`TextureSwizzleChannels::IDENTITY`] only on a texture
-    /// not made to be drawn into, and not of a view with one.
+    /// What each channel the view's reads give holds.
+    ///
+    /// Other than [`TextureSwizzleChannels::IDENTITY`] only on a texture not made to be drawn into, and not of a view
+    /// with one.
     pub swizzle: TextureSwizzleChannels,
 }
 
@@ -564,8 +569,9 @@ pub struct VertexBufferLayout {
     pub buffer_index: u32,
     pub stride: u32,
     pub step_function: VertexStepFunction,
-    /// The instances that read one element, from the base instance, where the buffer advances `PerInstance`; zero
-    /// reads the base instance's element for every instance. Read only for `PerInstance`.
+    /// The instances that read one element, from the base instance, where the buffer advances `PerInstance`.
+    ///
+    /// Zero reads the base instance's element for every instance. Read only for `PerInstance`.
     ///
     /// https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor/steprate
     pub step_rate: u32,
@@ -889,9 +895,10 @@ pub enum RenderCommand<M: Metal + ?Sized> {
         front: u32,
         back: u32,
     },
-    /// Discards each fragment whose stored depth is below `min_bound` or above `max_bound`, from then on in the pass; zero
-    /// and one test nothing. Both within zero to one, `min_bound` at most `max_bound`, in a pass with a depth attachment,
-    /// where [`Metal::supports_depth_test_bounds`].
+    /// Discards each fragment whose stored depth is below `min_bound` or above `max_bound`, from then on in the pass.
+    ///
+    /// Zero and one test nothing. Both within zero to one, the low at most the high, in a pass with depth, where
+    /// [`Metal::supports_depth_test_bounds`].
     ///
     /// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthtestbounds(_:)
     SetDepthTestBounds {
@@ -920,17 +927,19 @@ pub enum RenderCommand<M: Metal + ?Sized> {
         base_vertex: i32,
         base_instance: u32,
     },
-    /// Draws with the `DRAW_ARGUMENTS_BYTES` the GPU reads at `indirect_buffer_offset` when the draw runs: vertex count,
-    /// instance count, first vertex and first instance; a draw whose vertices or instances pass the largest index draws
-    /// nothing.
+    /// Draws with the `DRAW_ARGUMENTS_BYTES` the GPU reads at `indirect_buffer_offset` when the draw runs.
+    ///
+    /// They are the vertex count, instance count, first vertex and first instance; a draw whose vertices or instances
+    /// pass the largest index draws nothing.
     DrawPrimitivesIndirect {
         primitive_type: PrimitiveType,
         indirect_buffer: M::Buffer,
         indirect_buffer_offset: u64,
     },
-    /// Draws with the `DRAW_INDEXED_ARGUMENTS_BYTES` the GPU reads at `indirect_buffer_offset` when the draw runs: index
-    /// count, instance count, first index, base vertex and first instance; a draw whose indices reach past the index
-    /// buffer's end, or whose instances pass the largest index, draws nothing.
+    /// Draws with the `DRAW_INDEXED_ARGUMENTS_BYTES` the GPU reads at `indirect_buffer_offset` when the draw runs.
+    ///
+    /// They are the index count, instance count, first index, base vertex and first instance; a draw whose indices
+    /// reach past the index buffer's end, or whose instances pass the largest index, draws nothing.
     DrawIndexedPrimitivesIndirect {
         primitive_type: PrimitiveType,
         index_type: IndexType,
@@ -1166,9 +1175,10 @@ pub enum ComputeCommand<M: Metal + ?Sized> {
         index: u32,
     },
     DispatchThreadgroups(Size),
-    /// Dispatches the threadgroups the GPU reads as `DISPATCH_ARGUMENTS_BYTES` at `indirect_buffer_offset` when the
-    /// dispatch runs; one whose count on an axis passes `max_threadgroups`, or whose threads on an axis pass the largest
-    /// `u32`, dispatches nothing.
+    /// Dispatches the threadgroups the GPU reads as `DISPATCH_ARGUMENTS_BYTES` at `indirect_buffer_offset` once run.
+    ///
+    /// One whose count on an axis passes `max_threadgroups`, or whose threads on an axis pass the largest `u32`,
+    /// dispatches nothing.
     DispatchThreadgroupsIndirect {
         indirect_buffer: M::Buffer,
         indirect_buffer_offset: u64,
