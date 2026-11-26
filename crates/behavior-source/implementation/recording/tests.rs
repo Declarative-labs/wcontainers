@@ -2,17 +2,17 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::path::Path;
 
-use wcontainers_behavior_source::BehaviorSource;
+use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, DataAccess, Exception, FaultStatus, Instruction, InstructionFetch,
-    PagePermission, User, ZERO_PROCESSOR,
+    PagePermission, PreciseInstruction, User, ZERO_PROCESSOR,
 };
 
 use crate::generated::{GeneratedCases, UnreadableGeneratedCases};
 use crate::text::{MalformedRecording, from_text, to_file_name, to_text};
-use crate::{Cases, NotRecorded, Recording};
+use crate::{Cases, NotRecorded, Recording, WrittenStates};
 
 /// The folders of the committed recordings, one for each chip.
 const RECORDINGS: [&str; 2] = [
@@ -221,44 +221,17 @@ fn a_level_0_fault_and_an_undecoded_exception_read_back_as_written() {
     assert_eq!(exceptions(&read), exceptions(&cases));
 }
 
-/// The states before a written recording holds for each instruction, as a generator gives them.
-struct WrittenStates(
-    Vec<(
-        Instruction<Infallible>,
-        Vec<ExecutionState<'static, Arm64<User>>>,
-    )>,
-);
-
-impl WrittenStates {
-    fn new(recording: &Recording) -> Self {
-        let mut states: Vec<(Instruction<Infallible>, Vec<_>)> = recording
-            .instructions()
-            .map(|instruction| (instruction, Vec::new()))
-            .collect();
-        for (instruction, before, _) in recording.cases() {
-            if let Some((_, of_instruction)) =
-                states.iter_mut().find(|(listed, _)| *listed == instruction)
-            {
-                of_instruction.push(before.clone());
-            }
-        }
-        Self(states)
-    }
-}
-
-impl DistinguishingStateGenerator<Arm64<User>> for WrittenStates {
-    type States<'generator>
-        = std::iter::Cloned<std::slice::Iter<'generator, ExecutionState<'static, Arm64<User>>>>
-    where
-        Self: 'generator;
-
-    fn generate_states(&self, instruction: Instruction<Infallible>) -> Self::States<'_> {
-        let states = self
-            .0
-            .iter()
-            .find(|(listed, _)| *listed == instruction)
-            .map_or(&[][..], |(_, states)| states.as_slice());
-        states.iter().cloned()
+/// Returns the behaviors a measurement leaves: its one, or the several no state told apart.
+fn to_remaining(
+    measured: Result<
+        PreciseInstruction<Infallible>,
+        MeasureInstructionError<Arm64<User>, NotRecorded>,
+    >,
+) -> Vec<PreciseInstruction<Infallible>> {
+    match measured {
+        Ok(precise) => vec![precise],
+        Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => behaviors,
+        Err(_) => panic!("a recorded state agrees with no behavior or did not play"),
     }
 }
 
@@ -338,4 +311,32 @@ fn recording_made_from_a_generator_holds_only_its_generator_states() {
         Err(UnreadableGeneratedCases::OtherStateCount { written: count, generated })
             if count == written && generated + 1 == written
     ));
+}
+
+/// Checks that a recording of only the deciding states leaves every instruction the behaviors the whole recording
+/// leaves, on fewer states, and plays each of them as the whole recording does.
+#[test]
+fn deciding_recording_measures_as_the_whole_recording() {
+    let mut committed = read_committed();
+    let states = WrittenStates::new(&committed);
+    let instructions: Vec<_> = committed.instructions().collect();
+    let Ok(mut deciding) =
+        Recording::record_deciding(&mut committed, &states, instructions.clone())
+    else {
+        panic!("the committed recording plays each of its states");
+    };
+    assert!(deciding.count_cases() < committed.count_cases());
+    let deciding_states = WrittenStates::new(&deciding);
+    for instruction in instructions {
+        let whole = committed.measure_instruction(instruction, &states);
+        let kept = deciding.measure_instruction(instruction, &deciding_states);
+        assert!(to_remaining(whole) == to_remaining(kept), "{instruction:?}");
+    }
+    for (instruction, before, after) in deciding.cases() {
+        let played = committed.execute_single_instruction(before.clone());
+        assert!(
+            matches!(played, Ok(played) if played == *after),
+            "{instruction:?}"
+        );
+    }
 }
