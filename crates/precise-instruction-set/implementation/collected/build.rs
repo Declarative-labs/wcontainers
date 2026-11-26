@@ -1,7 +1,8 @@
 //! Lists the baked files of each folder of `samples/`, so that every file is compiled and checked.
 //!
 //! For each folder it writes `<folder>.rs` into the build's output: a module for each file and `SAMPLES`, every
-//! file's `SAMPLE` in the order of the file names, which the crate includes where it names the folder's types.
+//! file's name without its extension and its `SAMPLE`, in the order of the file names, which the crate includes where it
+//! names the folder's types.
 
 use std::fmt::Write;
 use std::fs;
@@ -42,13 +43,16 @@ fn main() {
                 file.display().to_string()
             )
             .expect("writing to a string succeeds");
-            names.push(name);
+            names.push((stem.to_owned(), name));
         }
-        let entries: Vec<String> = names.iter().map(|name| format!("{name}::SAMPLE")).collect();
+        let entries: Vec<String> = names
+            .iter()
+            .map(|(stem, name)| format!("({stem:?}, {name}::SAMPLE)"))
+            .collect();
         writeln!(
             listing,
-            "\n/// Every baked sample of the folder, in the order of the file names.\n\
-             pub const SAMPLES: &[Sample] = &[{}];",
+            "\n/// Every baked sample of the folder with the name of its file, in the order of the file names.\n\
+             pub const SAMPLES: &[(&str, Sample)] = &[{}];",
             entries.join(", ")
         )
         .expect("writing to a string succeeds");
