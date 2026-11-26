@@ -29,7 +29,10 @@ use wcontainers_tcp_sockets::{
     TcpPushOverride, TcpReceiveRequest, TcpReceived, TcpSendRequest, TcpShutdown,
 };
 
+use wcontainers_volatile_bytes::VolatileBytes;
+
 use crate::LocalSystem;
+use crate::host_call::{receive_into, send_from};
 
 /// A TCP connection or listener, or a UDP socket, of the local system, by the network's number
 /// of it.
@@ -44,7 +47,7 @@ fn unspecified(peer: SocketAddr) -> SocketAddr {
     }
 }
 
-impl TcpConnections for LocalSystem {
+impl<E> TcpConnections for LocalSystem<E> {
     type Connection = NetworkHandle;
     type BoundSocket = Infallible;
 
@@ -87,19 +90,19 @@ impl TcpConnections for LocalSystem {
         &self,
         connection: &Self::Connection,
         _request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
-        self.state()
-            .network()
-            .tcp_send(connection.0, bytes)
-            .map(ByteCount)
+        send_from(payload, |bytes| {
+            self.state().network().tcp_send(connection.0, bytes)
+        })
+        .map(ByteCount)
     }
 
     fn receive(
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         let peek = match request {
             TcpReceiveRequest::Read => false,
@@ -108,10 +111,11 @@ impl TcpConnections for LocalSystem {
             } => true,
             _ => return Err(HostError::NotSupported),
         };
-        let length = self
-            .state()
-            .network()
-            .tcp_receive(connection.0, into, peek)?;
+        let length = receive_into(into, |bytes| {
+            self.state()
+                .network()
+                .tcp_receive(connection.0, bytes, peek)
+        })?;
         Ok(TcpReceived {
             length: ByteCount(length),
             timestamps: ReceiveTimestamps {
@@ -213,7 +217,7 @@ impl TcpConnections for LocalSystem {
     }
 }
 
-impl TcpListeners for LocalSystem {
+impl<E> TcpListeners for LocalSystem<E> {
     type Listener = NetworkHandle;
 
     fn listen(
@@ -298,7 +302,7 @@ impl TcpListeners for LocalSystem {
     }
 }
 
-impl Readiness<NetworkHandle> for LocalSystem {
+impl<E> Readiness<NetworkHandle> for LocalSystem<E> {
     async fn wait_until_ready(
         &self,
         connection: &NetworkHandle,
@@ -313,7 +317,7 @@ impl Readiness<NetworkHandle> for LocalSystem {
     }
 }
 
-impl<'a> Configurable<NetworkHandle, TcpSetting<'a>> for LocalSystem {
+impl<'a, E> Configurable<NetworkHandle, TcpSetting<'a>> for LocalSystem<E> {
     fn configure(
         &self,
         _connection: &NetworkHandle,
@@ -323,7 +327,7 @@ impl<'a> Configurable<NetworkHandle, TcpSetting<'a>> for LocalSystem {
     }
 }
 
-impl<'a> Configurable<NetworkHandle, TcpListenerSetting<'a>> for LocalSystem {
+impl<'a, E> Configurable<NetworkHandle, TcpListenerSetting<'a>> for LocalSystem<E> {
     fn configure(
         &self,
         _listener: &NetworkHandle,
@@ -333,7 +337,7 @@ impl<'a> Configurable<NetworkHandle, TcpListenerSetting<'a>> for LocalSystem {
     }
 }
 
-impl NegativeRouteAdvisable<NetworkHandle> for LocalSystem {
+impl<E> NegativeRouteAdvisable<NetworkHandle> for LocalSystem<E> {
     fn give_negative_route_advice(&self, _connection: &NetworkHandle) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }

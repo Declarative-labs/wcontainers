@@ -24,9 +24,13 @@ mod arrivals;
 #[cfg(feature = "std")]
 mod container;
 #[cfg(feature = "std")]
+mod described;
+#[cfg(feature = "std")]
 mod errno;
 #[cfg(feature = "std")]
 pub mod files;
+#[cfg(feature = "std")]
+mod host_call;
 #[cfg(feature = "std")]
 pub mod image;
 #[cfg(feature = "std")]
@@ -34,24 +38,34 @@ pub mod names;
 #[cfg(feature = "std")]
 mod net;
 #[cfg(feature = "std")]
+mod runners;
+#[cfg(feature = "std")]
 mod spec;
 #[cfg(feature = "std")]
 mod system;
 #[cfg(feature = "std")]
 mod tcp;
 #[cfg(feature = "std")]
+mod timer;
+#[cfg(feature = "std")]
 pub mod udp;
 
 #[cfg(feature = "std")]
 pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeConfig};
 #[cfg(feature = "std")]
+pub use described::LocalKernel;
+#[cfg(feature = "std")]
 pub use image::Image;
 #[cfg(feature = "std")]
 pub use oci_spec;
 #[cfg(feature = "std")]
+pub use runners::{IDLE_WITHOUT_WAKE, KernelContainer, RunInterrupter};
+#[cfg(feature = "std")]
 pub use spec::{MASKED_PATHS_FIELD, READONLY_PATHS_FIELD, base_spec, bind_mount, spec_from_json};
 #[cfg(feature = "std")]
 pub use system::{LocalSystem, Warned};
+#[cfg(feature = "std")]
+pub use timer::SliceTimer;
 
 /// A terminal's size in characters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,8 +94,8 @@ pub struct StopFlag(Arc<Raising>);
 #[derive(Default)]
 struct Raising {
     raised: AtomicBool,
-    /// The address of the running thread's flag word, 0 while none runs.
-    running: Mutex<usize>,
+    /// The running thread's flag word.
+    running: Mutex<Option<&'static AtomicU32>>,
 }
 
 #[cfg(feature = "std")]
@@ -93,24 +107,20 @@ impl StopFlag {
             .running
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if *running != 0 {
-            // SAFETY: the executor keeps the word valid while it is entered (`entered`).
-            unsafe { &*(*running as *const AtomicU32) }.store(1, Ordering::SeqCst);
+        if let Some(flag) = *running {
+            flag.store(1, Ordering::SeqCst);
         }
     }
 
     /// For the executor: a thread whose stop flag is `flag` runs until [`StopFlag::left`]; raised at once
     /// if a raise is waiting.
-    ///
-    /// # Safety
-    /// `flag` stays valid until [`StopFlag::left`].
-    pub unsafe fn entered(&self, flag: &AtomicU32) {
+    pub fn entered(&self, flag: &'static AtomicU32) {
         let mut running = self
             .0
             .running
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        *running = flag as *const AtomicU32 as usize;
+        *running = Some(flag);
         if self.0.raised.load(Ordering::SeqCst) {
             flag.store(1, Ordering::SeqCst);
         }
@@ -122,7 +132,7 @@ impl StopFlag {
             .0
             .running
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = 0;
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// For the executor: whether it was raised since this was last asked.
