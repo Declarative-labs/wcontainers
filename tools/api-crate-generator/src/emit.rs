@@ -282,7 +282,8 @@ impl<'a> Generator<'a> {
         }
         namespaces.sort_unstable();
         namespaces.dedup();
-        let read = metadata::read(index, &namespaces);
+        let mut read = metadata::read(index, &namespaces);
+        returned_structures_through_pointers(&mut read);
         let mut interface_api = BTreeMap::new();
         let mut record_api = BTreeMap::new();
         for (position, api) in apis.iter().enumerate() {
@@ -1907,4 +1908,38 @@ pub(crate) fn with_dev_dependencies(manifest: &str, dev: &[String]) -> String {
         text.insert_str(at, &format!("\n[dev-dependencies]\n{lines}"));
     }
     text
+}
+
+/// A structure a COM method returns by value is, in the method's C form (d3d12.h's `RetVal`), written through a pointer
+/// the caller passes after `this`, which the method also returns. Each such method is read as taking that pointer first
+/// (`RetVal`, a structure out; every parameter index of its attributes moved by one) and returning nothing, marked
+/// `ReturnsPointer`, so that the trait returns the structure as it returns any structure out and both glues return the
+/// pointer.
+fn returned_structures_through_pointers(read: &mut metadata::Namespaces) {
+    let structures: BTreeSet<Key> = read
+        .records
+        .iter()
+        .filter(|(record_key, record)| matches!(record.kind, RecordKind::Struct | RecordKind::Union) && !Generator::is_large_integer(record_key))
+        .map(|(record_key, _)| record_key.clone())
+        .collect();
+    for interface in read.interfaces.values_mut() {
+        for method in &mut interface.methods {
+            if !named(&method.return_type).is_some_and(|returned| structures.contains(&returned)) {
+                continue;
+            }
+            for param in &mut method.params {
+                for attribute in &mut param.attributes {
+                    for (argument, value) in &mut attribute.arguments {
+                        if let (true, metadata::Literal::Integer(index)) = (matches!(argument.as_str(), "CountParamIndex" | "BytesParamIndex"), value) {
+                            *index += 1;
+                        }
+                    }
+                }
+            }
+            let pointer = Type::PtrMut(Box::new(method.return_type.clone()), 1);
+            method.params.insert(0, metadata::Param { name: "RetVal".to_string(), ty: pointer, is_in: false, is_out: true, is_optional: false, attributes: Vec::new() });
+            method.return_type = Type::Void;
+            method.attributes.push(metadata::Attribute { name: "ReturnsPointer".to_string(), arguments: Vec::new() });
+        }
+    }
 }

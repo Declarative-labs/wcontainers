@@ -356,10 +356,13 @@ fn the_calling_glue_passes_and_views_exactly_the_documented_bytes() {
                 let mapped = context.map(made.as_ref(), index, Map(READ_WRITE), 0);
                 match (view, mapped) {
                     (Some(view), Ok(mapped)) => {
-                        assert_eq!(mapped.data.len(), u64::try_from(view).unwrap_or(0), "{resource:?} {index} pitches {row_pitch} {depth_pitch}: the view is the reference's");
-                        let mut bytes = vec![0_u8; view];
-                        assert_eq!(mapped.data.read(&mut bytes), view);
-                        assert_eq!(mapped.data.write(&bytes), view);
+                        // Every byte the glue views is read and written first, so that a view past the stand-in's block is
+                        // an AddressSanitizer report; then its length is the reference's.
+                        let viewed = usize::try_from(mapped.data.len()).unwrap_or(0);
+                        let mut bytes = vec![0_u8; viewed];
+                        assert_eq!(mapped.data.read(&mut bytes), viewed);
+                        assert_eq!(mapped.data.write(&bytes), viewed);
+                        assert_eq!(viewed, view, "{resource:?} {index} pitches {row_pitch} {depth_pitch}: the view is the reference's");
                         maps += 1;
                         viewed_bytes += u64::try_from(view).unwrap_or(0);
                         drop(mapped);

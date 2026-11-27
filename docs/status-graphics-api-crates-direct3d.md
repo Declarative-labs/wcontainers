@@ -1,12 +1,181 @@
 # Status: the graphics API crates, Direct3D part
 
-Brief: wcontainers-scratch/orchestrator/restart-2026-11-25/brief-graphics-api-crates.md, with the orchestrator's run of
-2026-11-27 (this run is the Direct3D half of the API track; the Gallium half stays on `graphics-api-crates`). Branch
+Brief: wcontainers-scratch/orchestrator/restart-2026-11-25/brief-graphics-api-crates.md, with the orchestrator's runs of
+2026-11-27 (this branch is the Direct3D half of the API track; the Gallium half stays on `graphics-api-crates`). Branch
 `graphics-api-crates-direct3d`, made from f3af6417f. Marks: MEASURED (a run; its job and log named), READ, INFERRED.
-Logs: wcontainers-scratch/graphics-api-crates/d3d/. Every job ran on the x86-64 machine with `--jobs 12`.
+Logs: wcontainers-scratch/graphics-api-crates/d3d/ (this run's in d3d/run-1127b/). Every job ran on the x86-64 machine
+with `--jobs 12`.
 
-His main: `git fetch` of his checkout's main gives ac696ea19, already inside f3af6417f (`git rev-list --count
-HEAD..FETCH_HEAD` 0, MEASURED): nothing to merge. No interface file of his is touched by any commit of this branch.
+His main: `git fetch` of his checkout's main gives ac696ea19, already inside this branch (`git rev-list --count
+HEAD..FETCH_HEAD` 0, MEASURED): nothing to merge. origin/graphics-api-crates (ce6790aaa) merged with a normal merge
+(9333bd4b4); only Cargo.lock conflicted (both sides kept: the Gallium direct crate's entry). No interface file of his is
+touched by any commit of this branch.
+
+## 0. Run of 2026-11-27 afternoon: the check's findings, the two rulings, D3 continued
+
+Commits: f710cf5b2 (lengths reference, exact C tests, CreateQuery test, the C caller moved), 54a46fafb (GPU addresses
+refused, whole rows lent), c6339e7a7 (structures returned by value glued, descriptor addresses refused). All pushed.
+
+### 0.1 The length rules against a reference that shares no code with them (FIX 1)
+
+- **The reference** (`crates/direct3d-11/implementation/direct/lengths_reference.rs`, template
+  `tools/api-crate-generator/templates/direct3d-11-direct/lengths_reference.rs`): every expected length worked out afresh
+  from Microsoft's pages, each cited in its header: D3D11_SUBRESOURCE_DATA (the element at (x, y, d) is at `d *
+  SysMemSlicePitch + y * SysMemPitch + x * BytesPerPixel`, pitches used only for 2D/3D), UpdateSubresource (row and depth
+  pitch, box in bytes for a buffer, texels otherwise, an empty box a no-op, its worked 2 x 3 x 4 example), D3D11_BOX,
+  D3D11_MAPPED_SUBRESOURCE (pData is row 0 of slice 0, the pitches are only for iterating rows and slices, a 2D texture's
+  depth pitch is not used, a buffer's pitches are at least its size), DXGI_FORMAT (each format listed by number in a
+  table of its own, 100 entries, every other number refused), texture block compression, subresources and
+  D3D11CalcSubresource, mip sizes, and the resource limit (`min(max(128, 0.25 x VRAM), 2048)` MiB, so 2048 MiB at most).
+  It uses no function of lengths.rs: only the interface's description structures, to call the rules.
+- **The tests** (`lengths_tests.rs`, a unit test module of the direct crate): `upload_length_buffer_matches_the_reference`,
+  `initial_and_mapped_lengths_of_a_texture_1d_...`, `upload_initial_and_mapped_lengths_of_a_texture_2d_...` and `..._3d_...`
+  compare `upload_length_*`, `initial_length_*`, `mapped_length_*` and `lent_length_*` with the reference over every format
+  number -1 to 200 and four past the list (plain, packed pairs, block-compressed, depth, planar and the other refused),
+  every dimension (buffers of 1 byte to 4 GiB - 1, 1D and 2D arrays, 3D, full chains and fixed mip counts), every
+  subresource and one past the last, 15 boxes (none, whole, inside off the block grid, one texel, empty on each axis,
+  past each edge, block-aligned, one texel inside a block) and 8 pairs of pitches (packed, padded to 256, padded by an odd
+  amount, zero, a depth pitch far past the rows, pitches past the largest resource); `lengths_worked_out_by_hand` checks
+  the reference itself with 32 assertions of numbers written out from the pages.
+- **What the reference found in lengths.rs** (both fixed):
+  1. A box that does not start or end on a 4 x 4 block's edge (block-compressed) or a pair's edge (R8G8_B8G8) was
+     counted by its texel width, not the blocks it touches: the box (2, 2)-(6, 6) of BC1 is 2 x 2 blocks, the rule
+     said 1 x 1; the system reads every block it touches. Now `blocks_touched` (ceil(end / side) - start / side).
+  2. Map's two uses needed two rules. The calling glue viewed the system's memory raised to the pitches (a 2D texture's
+     depth pitch included, which the page says is not used: a system answering a large one would have had the glue read
+     past what it lent); the serving glue lent no more than that. Now `mapped_length_*` is exactly what the page lets a
+     program view (the calling glue's view) and `lent_length_*` is what the serving glue lends: the view raised to every
+     row whole at the row pitch and every slice whole at the depth pitch (a buffer's and 1D texture's to both pitches),
+     which programs fill whole, bounded as before by `within_served_bound_*`. The serving glue now lends that even past
+     the implementation's own bytes (the rest cleared, nothing written back past them): the slice's pass-through game,
+     whose implementation is the calling glue's exact view, needed it (it failed at f710cf5b2, passes at 54a46fafb).
+- **Exactly sized C, both directions** (`tests/exact`, the direct crate's integration test, `exact.c` built by build.rs
+  under the `c-caller` feature): a C caller of the serving glue (over the recorder) hands initial data and uploads in heap
+  blocks of exactly the reference's length and touches exactly the reference's lent bytes of Map's memory; a C stand-in
+  d3d11.dll for the calling glue reads exactly the reference's length of each initial subresource and upload (byte by
+  byte, so no read is optimized away) and lends from Map a heap block of exactly the reference's view. The calling test
+  also hands one byte fewer (must be refused before the system) and checks the view's length. MEASURED at 54a46fafb and
+  c6339e7a7: "EXACT SERVING: 14 resources created, 591 uploads, 57 maps touching 3792896 bytes"; "EXACT CALLING: 371 short
+  bytes refused, 591 exact uploads, 240 maps viewing 13019327412 bytes; the stand-in saw [31, 591, 248, 248, 0]" (the last
+  0: no slot it does not serve was called); under AddressSanitizer (C instrumented with zig's clang): status 0, 0 reports.
+- **Plants** (job gacdp/20261127-125951-3023771 at 54a46fafb, `.gacd/plant-lengths.sh`, log
+  d3d/run-1127b/plants-lengths-54a46fafb.log): each rule's result made one byte fewer (under) or more (over) in a copy of
+  lengths.rs, and the checker's three plants. "PLANTS: 35; caught by the reference tests 35; caught under asan 27".
+
+| Rule (each of buffer, 1D, 2D, 3D) | Under: reference / exact under ASan | Over: reference / exact under ASan |
+|---|---|---|
+| `upload_length_*` | 4 of 4 fail / 4 of 4 ASan report (`READ of size 1`: the stand-in reading past the one-short slice the calling glue let through) | 4 of 4 / 4 of 4 ASan report (`READ of size n+1`: the serving glue reading past C's exact block) |
+| `initial_length_*` | 4 of 4 / 4 of 4 ASan report (the same) | 4 of 4 / 4 of 4 ASan report (the same) |
+| `mapped_length_*` (the calling glue's view) | 4 of 4 / 4 of 4 assertion (the view is shorter than the reference's: main.rs:789) | 4 of 4 / 4 of 4 ASan report (the glue reading past the stand-in's exact block) |
+| `lent_length_*` (what the serving glue lends) | 4 of 4 / not caught (0 of 4) | 4 of 4 / not caught (0 of 4) |
+| checker's plants: one row pitch short; depth ignored; the pitches ignored | 3 of 3 / 3 of 3 ASan report | |
+
+  Why the exact test cannot see a lent rule one byte off (READ): the serving glue's shadow memory comes in power-of-two
+  classes (COM direct `Shadow::allocate`), so a touch one byte past the lent length is still inside the glue's own block:
+  not memory outside the glue, but a byte it does not copy back. The reference tests catch all 8.
+
+### 0.2 CreateQuery's kind, both ways (FIX 2)
+
+`create_query_hands_out_the_kind_the_object_answers` (tests/exact): the stand-in's predicate answers ID3D11Predicate and,
+as the runtime's does, ID3D11Query1; its query answers ID3D11Query1. MEASURED: "CREATE QUERY: 6 predicates as predicates,
+10 queries as queries, a query without ID3D11Query1 refused". `query_object_of` asks for the predicate first, so a
+predicate (which also answers the query kind's interface) comes back as a predicate; asking the query kind first would
+hand it out as a query. Plant (job gacdp/20261127-133458-3700618 at c6339e7a7, `.gacd/plant-query.sh`, log
+d3d/run-1127b/plant-query.log): the two questions of `query_object_of` swapped in a copy: "exact create_query status 101",
+"a predicate's object (5) comes back as a predicate" (main.rs:859). MEASURED.
+
+The order for older runtimes: not followed, and why. Each kind is held by its newest interface (the brief's object
+model: ID3D11Device5, ID3D11DeviceContext4, ID3D11Query1, ID3D11Texture2D1 ...), and every glued call goes through that
+interface's table; an object answering only ID3D11Query (the 11.0 runtime) has no ID3D11Query1 table to hold, so
+`query_object_of` asks ID3D11Predicate, then ID3D11Query1, and refuses the rest (E_NOINTERFACE; the test above). The same
+holds for every kind (from_owned_older asks the newest interface): the calling glue needs the 11.4 runtime (Windows 10).
+Asking ID3D11Query after ID3D11Query1 would only make sense with a per-version table, which no caller needs.
+
+### 0.3 The rulings followed
+
+- **Q1, the C caller**: it is the direct crate's own integration test (`crates/direct3d-11/implementation/direct/tests/
+  c_caller/{main.rs,caller.rs,caller.c}`); the direct crate's build.rs compiles its C (and exact.c) only under the cargo
+  feature `c-caller` (`cc` optional, `[[test]] required-features`), linking the archive into test programs only
+  (`rustc-link-arg-tests`); the suite's job runs `cargo test -p wcontainers-direct3d-11-direct --features c-caller --test
+  c_caller` (and `--test exact`). The separate workspace and its manifest are gone; the root manifest is not changed. The
+  linter's `crate_not_member` finding is gone (0 at c6339e7a7; MEASURED in the claim below).
+- **Q2, GPU virtual addresses**: under default deny each is an address. The metadata drops the type name
+  `D3D12_GPU_VIRTUAL_ADDRESS`, so every UINT64 and SIZE_T a carried Direct3D 12 method reaches is judged by
+  `src/api.rs UINT64_JUDGED` (41 rows: 14 addresses, 27 numbers); an address, or one not judged, refuses the method in
+  both glues (it is in NOT GLUED with its reason). No line lets one through as a number. Refused for it now:
+  IASetVertexBuffers, IASetIndexBuffer, SOSetTargets, SetGraphicsRootConstantBufferView, SetComputeRootConstantBufferView,
+  SetComputeRootUnorderedAccessView, GetGPUVirtualAddress (all glued as numbers before), and for the descriptor handles'
+  addresses (`D3D12_CPU_DESCRIPTOR_HANDLE.ptr`, `D3D12_GPU_DESCRIPTOR_HANDLE.ptr`) also OMSetRenderTargets (glued before),
+  CreateRenderTargetView, CreateShaderResourceView, ClearRenderTargetView, Get{CPU,GPU}DescriptorHandleForHeapStart,
+  SetGraphicsRootDescriptorTable. The line itself is next (0.5).
+
+### 0.4 D3 continued: structures returned by value
+
+A structure a COM method returns by value is read (src/emit.rs `returned_structures_through_pointers`) as a pointer the
+caller passes first (`RetVal`, a structure out; attribute indices moved by one) and marked `ReturnsPointer`: the trait
+returns the structure as for any structure out, the serving glue fills the caller's pointer and returns it, the calling
+glue passes its own buffer, the refusing entries keep the same C form. Glued now: ID3D12Resource::GetDesc,
+ID3D12DescriptorHeap::GetDesc. GLUED 622 -> 623 over the set (MEASURED, report d3d/run-1127b/r2/report.txt: +2 GetDesc,
+-OMSetRenderTargets refused by its descriptor address). Direct3D 11, DXGI, d3dcommon and COM crates: unchanged by it
+(DIFFERENT only in Direct3D 12 and the C caller's table).
+
+### 0.5 Next, in order (D3's 11 remaining, then the rest)
+
+| Method(s) | Needs |
+|---|---|
+| Get{CPU,GPU}DescriptorHandleForHeapStart, CreateRenderTargetView, CreateShaderResourceView, ClearRenderTargetView, OMSetRenderTargets, SetGraphicsRootDescriptorTable | the (heap, index) line: the trait takes a heap and an index; the calling glue bounds the index by the heap's recorded description and computes the address from the heap's start and the device's increment; the serving glue answers its own heap starts and decodes an address back to (heap, index) or refuses |
+| IASetVertexBuffers, IASetIndexBuffer, SOSetTargets, Set*RootConstantBufferView / UnorderedAccessView, GetGPUVirtualAddress | the (resource, offset) line (ruling Q2): offset and the view's size checked against the resource's recorded width; the serving glue hands out addresses of its own per resource and decodes them back |
+| CreateGraphicsPipelineState, CreateComputePipelineState | descriptions holding bytecode pointers, input layout, stream output, root signature object |
+| CopyTextureRegion, ResourceBarrier | a union whose member the selector picks, holding a resource object |
+| ExecuteCommandLists | an array of objects of several kinds |
+| Map / Unmap (ID3D12Resource) | the `Lent` line of Direct3D 11's Map, range as numbers checked against the recorded width, with a reference of its own |
+
+Then the Direct3D 12 hostile set (lies and fuzzing of its own), the layout cross-check (rerun below), D2 (the HLSL
+compiler crate, section 4's design), A6 and A7 (section 6). Nothing of these waits on another track.
+
+### 0.7 The claim at c6339e7a7 (pushed)
+
+Job gacd/20261127-133259-3685280 (log d3d/run-1127b/claim-c6339e7a7.log); its sanitizer steps rerun on a fresh target
+folder in job gacd/20261127-140114-4062562 (log asan-fresh-c6339e7a7.log), because the first job's AddressSanitizer test
+step failed on probe 32 ("THROUGH 1 calls", hostile.rs:1039) three times out of three: the old plant script (`.gacd/
+plant.sh`) built its planted copies into the tree's own AddressSanitizer target folder, and cargo took the planted
+text-limit build, whose sources are older by mtime and hashed by relative path, as fresh for the tree. The plant script
+now builds into its own folder; on the fresh folder every sanitizer step passes (below). INFERRED from that: the earlier
+claims' sanitizer rows may have run on a stale planted build; only this fresh run is claimed.
+
+| Bar | Result (MEASURED) |
+|---|---|
+| Generator: build, its tests; written twice; equal to the tree | 0, 0; IDENTICAL; SAME AS WRITTEN |
+| GLUED / NOT GLUED over the set | 623 / 141 (a2f3a88d0: 629 / 135; the change is section 0.3's refusals and 0.4's two) |
+| check, clippy -D warnings (all targets, 22 packages); windows-gnu, windows-msvc type-check | 0, 0; 0, 0 |
+| Tests, default; under AddressSanitizer (fresh target) | status 0; status 0, 0 reports |
+| The direct crate with `--features c-caller`: clippy; C caller honest default and AddressSanitizer | 0; 0, 0 ("cases 753 of 755, exports 9 of 9; never reached 2 = unreachable listed 2") |
+| Exact C tests, default and AddressSanitizer; lengths reference tests | 0, 0 (0 reports); 0 |
+| Fuzzing under AddressSanitizer, seeds 11, 12, 13 x 10M: Direct3D 11 hostile set; C caller over every table | 3 of 3 status 0 (116 to 118 s; 11,376 to 19,330 lies; 0 panics back); 3 of 3 status 0; 0 reports |
+| The slice and its harness (each test alone, default, small table, AddressSanitizer) | IDENTICAL, check 0, clippy 0, tests 0; "harness runs: 75 status 0: 75" |
+| The five plants of section 2 | each caught (upload-calling, upload-serving: AddressSanitizer READ past the region; text-limit: probe 32 panics; the two not-yet plants: round_trip.rs:633) |
+| Layout cross-check against MinGW (`check-layout.sh direct3d-glue`, d3d12.h added) | 2,633 assertions written; 79 records MinGW does not declare (listed, left out); 2,124 compiled: compile status 0, 0 fail; the planted one is the only failure. At a830d8964's run (no d3d12.h): 1,097 compiled |
+| Linter (API crates, translated fronts apart) | 27,118 findings (public_outside_interface 4,292, magic_literal 4,269, name_unanswered 3,183, function_summary_not_third_person 3,060, summary_unanswered 2,669, the rest below 500); `crate_not_member` for the C caller: gone |
+
+One number moved that the bars do not judge: the hostile fuzz's "mappings of the system never unmapped" at the end of a
+run is 10 to 12 (a2f3a88d0: 3 to 6), INFERRED from the lend change (the serving glue now lends whole rows past a lying
+implementation's short bytes where it refused before, so more of the fuzz's maps stay open when its run stops).
+
+### 0.6 How the implementations track checks its code against Windows on the rented Linux machines
+
+It has no Windows target; this branch's jobs used two things, both on the x86-64 machine:
+1. **Type-checking for Windows**: the repository's toolchain has no Windows target, so `.gacd/wintool/` (on this branch's
+   scratch, not committed) is a copy of the repository's flake whose `rust-toolchain.toml` adds the targets
+   `x86_64-pc-windows-gnu` and `x86_64-pc-windows-msvc` to the same Rust 1.99.0. The step is
+   `CARGO_TARGET_DIR=<own folder> nix develop path:$PWD/.gacd/wintool -c cargo check -p <packages> --target
+   x86_64-pc-windows-gnu` (and `-msvc`). It checks that the code compiles for Windows (the `cfg(windows)` branches
+   included); it links nothing and runs nothing.
+2. **Layouts against MinGW's headers**: `tools/api-crate-generator/check-layout.sh direct3d-glue <work folder>` (run from
+   the repository's root inside `nix develop`, which has zig) writes one `_Static_assert` per record size and named field
+   offset as the generator lays them out, and compiles it with `zig cc -target x86_64-windows-gnu` against MinGW's
+   d3d11, dxgi and (from c6339e7a7) d3d12 headers; a record MinGW does not declare is listed and left out; one planted
+   wrong size must be the only failure.
+What neither shows (Windows, AC9): behavior of Microsoft's d3d11.dll and d3d12.dll themselves.
 
 ## 1. The Direct3D 11, DXGI, d3dcommon and COM crates in crates/ (a830d8964)
 
@@ -28,8 +197,8 @@ direct3d-11-glue`, in the layout of the other API crates:
   implementation/translated` (`-translated`). Their dependents (`directx`, `direct3d-12`) name them with `package =`, so
   no code of theirs changed; the fronts' own tests name their crate by its new name. Nothing of the fronts implements
   the traits yet (AC4).
-- The hostile C caller is a workspace of its own (b4b1dd679): the repository's members are `crates/*/implementation/*`,
-  one level, and the root manifest is his.
+- The hostile C caller was a workspace of its own (b4b1dd679); by the orchestrator's ruling it is now the direct crate's
+  integration test behind the `c-caller` feature (section 0.3).
 
 MEASURED at a830d8964 (job gacd/20261127-090931-99723, log d3d/claim-a830d8964/tree.log):
 
@@ -200,22 +369,22 @@ nothing but this track's time.
 
 ## Questions for the orchestrator
 
-1. LAYOUT: the hostile C caller (test scaffolding with its own deny table, under `crates/direct3d-11/implementation/
-   direct/c-caller`) is a workspace of its own, because the root manifest's members reach one level below
-   `implementation/` and the root manifest is his. The linter reports it once (`crate_not_member`, "Every crate must be a
-   member of the workspace, and nothing below crates/ may be excluded"). Ways out: his root manifest adds
-   `"crates/*/implementation/*/c-caller"`, or the C caller becomes the direct crate's own integration test (its build
-   script then compiles the C for every build of the direct crate). Nothing waits on it; its tests run from its folder.
-2. Whether GPU virtual addresses are numbers or (resource, offset) (section 5).
+None open. Both of the last run's were ruled and followed (section 0.3).
 
 ## Security
 
-Lines naming `unsafe` (the root manifest's count), f3af6417f -> a2f3a88d0: COM direct 0 -> 95, d3dcommon direct 0 -> 63,
-DXGI direct 0 -> 2,548, Direct3D 11 direct 0 -> 7,081 (and its C caller 0 -> 4), Direct3D 12 direct 0 -> 826; these were
-generator output in job folders before and are now in crates/, each line an `#[expect(unsafe_code)]`-marked single
-operation in an `implementation/direct` crate with its own deny table (or the C caller's, under the direct crate's
-folder). Every interface, recorder, hostile and conformance crate: 0, under the workspace's `forbid`. The fronts moved
-unchanged: Direct3D 11 front 10, Direct3D 12 front 503, directx 1,077 (not touched). No new dependency: the direct
-crates use libc, already in the lock; the C caller's `cc` is already in the lock. The hostile suites (the C caller over
-every table of the five APIs, Direct3D 11's hostile set's lies and fuzzing, the probes) ran under AddressSanitizer at
-a2f3a88d0 with 0 reports; the repository's hostile-guest suite is not this track's and was not run.
+Lines naming `unsafe` (the root manifest's count, comments included), a2f3a88d0 -> c6339e7a7 (MEASURED, claim above):
+COM direct 95 -> 95; d3dcommon direct 63 -> 63; DXGI direct 2,548 -> 2,548; Direct3D 11 direct 7,081 (+ its separate C
+caller 4) -> 7,115 (the C caller's 4 moved in as its integration test, plus tests/exact's marked calls into exact.c);
+Direct3D 12 direct 826 -> 784 (the refused GPU-address and descriptor-address methods carry no marks). Direct3D 11
+hostile and recorder 1 each: the line `#![forbid(unsafe_code)]` of their tests, not code. Every interface, recorder,
+hostile and conformance crate: 0 `unsafe` code, under the workspace's `forbid`. Marks (`expect(unsafe_code`) in direct
+crates: 953. The fronts unchanged: Direct3D 11 front 10, Direct3D 12 front 503, directx 1,077. Every `unsafe` is a
+marked single operation in an `implementation/direct` crate (or its own tests) with its own deny table.
+
+New dependencies: none. `cc` (already in the lock) is now an optional build-dependency of the Direct3D 11 direct crate,
+used only under its `c-caller` feature; the test crates it names as dev-dependencies are this set's own.
+
+Hostile suites run (MEASURED, fresh AddressSanitizer target): the C caller over every table of the five APIs, the exact C
+tests both ways, Direct3D 11's hostile set's lies and 3 x 10M fuzzing, the probes; 0 reports. The repository's
+hostile-guest suite is not this track's and was not run.

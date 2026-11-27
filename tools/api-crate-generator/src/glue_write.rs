@@ -83,6 +83,9 @@ impl Writer<'_, '_> {
         }
         let returned = if glued.status {
             "i32".to_string()
+        } else if glued.returns_pointer {
+            // d3d12.h's C form of a structure returned by value: the caller's pointer, filled and returned.
+            "*mut u8".to_string()
         } else {
             match &glued.returned {
                 Some(Part::Value { c, .. }) => c.clone(),
@@ -660,10 +663,12 @@ impl Writer<'_, '_> {
                     }).unwrap_or_default();
                     let expression = coded.path.replace('<', "::<");
                     let _ = writeln!(inner, "            let lent_length = mapped_length_found(&{resource}_found, {subresource}, {name}_value.{row}, {name}_value.{depth});");
-                    let _ = writeln!(inner, "            // No longer than the implementation's own bytes: the glue lends no memory it did not lend.");
+                    let _ = writeln!(inner, "            // The memory lent is the glue's own: whole rows and slices at the pitches the C side is told (bounded by the");
+                    let _ = writeln!(inner, "            // description, lengths.rs `within_served_bound_*`); the implementation's bytes fill its start, the rest cleared.");
                     let mapped = format!("the Mapped `{name}` the implementation's {method_name} returned");
                     let length = model.ask(&mapped, "mapped", "len", format!("wcontainers_volatile_bytes::VolatileBytes::len(&{name}_value.{data})"));
-                    let _ = writeln!(inner, "            let lent_length = lent_length.filter(|length| u64::try_from(*length).is_ok_and(|length| length <= {length}));");
+                    let _ = writeln!(inner, "            let implementation_length = {length};");
+                    let _ = writeln!(inner, "            let past_implementation = lent_length.is_some_and(|length| u64::try_from(length).unwrap_or(u64::MAX) > implementation_length);");
                     let _ = writeln!(inner, "            let Some(shadow) = lent_length.and_then(Shadow::allocate) else {{");
                     let unmap = model.ask("the implementation's object of the entry", "api-trait", &until, format!("found.value().{until}({resource}_found.get(), {subresource});"));
                     let _ = writeln!(inner, "                {unmap}\n                return Err(E_FAIL);\n            }};");
@@ -673,7 +678,8 @@ impl Writer<'_, '_> {
                     }).unwrap_or_default();
                     let _ = writeln!(inner, "            // Contents the API leaves undefined are cleared, not read; memory lent for reading only is not written back (an exception line of src/api.rs).");
                     let fill = model.ask(&mapped, "mapped", "read_to", format!("shadow.fill_from(&{name}_value.{data});"));
-                    let _ = writeln!(inner, "            if {how}.0 == {discard} {{ shadow.clear(); }} else {{ {fill} }}");
+                    let _ = writeln!(inner, "            if {how}.0 == {discard} || past_implementation {{ shadow.clear(); }}");
+                    let _ = writeln!(inner, "            if {how}.0 != {discard} {{ {fill} }}");
                     let _ = writeln!(inner, "            let written_back = {how}.0 != {read_only};");
                     let _ = writeln!(inner, "            let {name}_record = {expression} {{ {data}: shadow.address(), {row}: {name}_value.{row}, {depth}: {name}_value.{depth} }};");
                     let _ = writeln!(inner, "            reservation.settle(Box::new((shadow, {name}_value.{data}, written_back)));");
@@ -929,11 +935,22 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "        wcontainers_component_object_model_direct::status(&answer)");
         } else if glued.returned.is_some() {
             let _ = writeln!(text, "        answer.map_or(Default::default(), |written| written.0)");
+        } else if glued.returns_pointer {
+            let pointer = glued.parts.first().map_or("ret_val", |(name, _)| name.as_str());
+            let _ = writeln!(text, "        let _ = answer;\n        {pointer}");
         } else {
             let _ = writeln!(text, "        let _ = answer;");
         }
         let _ = writeln!(text, "    }};");
-        let failed_code = if status { "E_FAIL.0".to_string() } else if returned == "()" { "()".to_string() } else { "Default::default()".to_string() };
+        let failed_code = if status {
+            "E_FAIL.0".to_string()
+        } else if glued.returns_pointer {
+            glued.parts.first().map_or("ret_val", |(name, _)| name.as_str()).to_string()
+        } else if returned == "()" {
+            "()".to_string()
+        } else {
+            "Default::default()".to_string()
+        };
         let _ = writeln!(text, "    guarded({failed_code}, body)\n}}\n");
         text
     }

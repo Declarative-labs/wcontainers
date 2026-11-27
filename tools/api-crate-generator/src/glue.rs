@@ -208,6 +208,9 @@ struct Glued {
     returned: Option<Part>,
     /// The status of success that means not yet ready, nothing written (a not-yet exception line).
     not_yet: Option<i32>,
+    /// A structure returned by value: in the C form of a COM method (d3d12.h's `RetVal`) the caller passes a pointer to
+    /// it after `this`, which the method fills and returns; it is the first part, a structure out.
+    returns_pointer: bool,
 }
 
 pub(super) struct Writer<'g, 'a> {
@@ -702,6 +705,11 @@ impl<'g, 'a> Writer<'g, 'a> {
         let returned_record = named(&method.return_type)
             .filter(|k| self.g.read.records.get(k).is_some_and(|record| matches!(record.kind, RecordKind::Struct | RecordKind::Union)) && !Generator::is_large_integer(k))
             .and_then(|_| primitive_or_record_size(&self.layouts, &method.return_type));
+        if attribute_named(&method.attributes, "ReturnsPointer").is_some() {
+            // Read as its pointer first (src/emit.rs `returned_structures_through_pointers`): zeros written through it,
+            // which is answered.
+            return Ok(Refusal { params, returned: "*mut u8".to_string(), answer: "p0".to_string(), stated: "the caller's pointer, zero bytes written through it".to_string() });
+        }
         if let Some((size, _)) = returned_record {
             params.insert(0, ("RetVal".to_string(), "*mut u8".to_string(), Writes::Zeros(size)));
             return Ok(Refusal { params, returned: "*mut u8".to_string(), answer: "p0".to_string(), stated: format!("the caller's pointer, {size} zero bytes written through it") });
@@ -723,7 +731,58 @@ impl<'g, 'a> Writer<'g, 'a> {
         Ok(Refusal { params, returned, answer, stated })
     }
 
+    /// Every UINT64 `ty` reaches, as (method or structure, parameter or field): the type itself (a parameter of
+    /// `owner` named `name`), what it points at, and the fields of each structure or union it holds, once per structure.
+    fn uint64s(&self, owner: &str, name: &str, ty: &Type, seen: &mut BTreeSet<String>, found: &mut Vec<(String, String)>) {
+        match ty {
+            Type::U64 | Type::I64 | Type::USize | Type::ISize => found.push((owner.to_string(), name.to_string())),
+            Type::PtrConst(..) | Type::PtrMut(..) => {
+                if let Some((inner, _, _)) = pointee(ty) {
+                    self.uint64s(owner, name, inner, seen, found);
+                }
+            }
+            Type::ArrayFixed(inner, _) => self.uint64s(owner, name, inner, seen, found),
+            _ => {
+                let Some(record_key) = named(ty) else { return };
+                let Some(record) = self.g.read.records.get(&record_key) else { return };
+                if !matches!(record.kind, RecordKind::Struct | RecordKind::Union) || !seen.insert(record_key.1.clone()) {
+                    return;
+                }
+                for field in &record.fields {
+                    self.uint64s(&record.name, &field.name, &field.ty, seen, found);
+                }
+            }
+        }
+    }
+
     fn glue_of(&self, method: &Method, place: &str) -> Result<Glued, String> {
+        // Direct3D 12's GPU virtual addresses (D3D12_GPU_VIRTUAL_ADDRESS, a UINT64 the metadata does not name) and its
+        // descriptor handles' addresses are addresses, not numbers: each UINT64 and SIZE_T the method reaches is judged
+        // by src/api.rs `UINT64_JUDGED`; an address, or one not judged, refuses the method until a (resource, offset) or
+        // (heap, index) line carries it (default deny).
+        if place.starts_with("ID3D12") {
+            let mut seen = BTreeSet::new();
+            let mut found = Vec::new();
+            for param in &method.params {
+                self.uint64s(place, &param.name, &param.ty, &mut seen, &mut found);
+            }
+            self.uint64s(place, "return", &method.return_type, &mut seen, &mut found);
+            let refused: Vec<String> = found
+                .into_iter()
+                .filter_map(|(owner, field)| match crate::api::UINT64_JUDGED.iter().find(|(o, f, _)| *o == owner && *f == field) {
+                    Some((_, _, crate::api::Uint64::Number)) => None,
+                    Some((_, _, crate::api::Uint64::GpuAddress)) => Some(format!("{owner}.{field}: a GPU virtual address, carried only as (resource, offset) checked against the resource's recorded size, a line not yet written")),
+                    Some((_, _, crate::api::Uint64::DescriptorAddress)) => Some(format!("{owner}.{field}: an address of a descriptor heap's memory, carried only as (heap, index) checked against the heap's recorded description, a line not yet written")),
+                    None => {
+                        eprintln!("UNJUDGED UINT64 {owner}.{field}");
+                        Some(format!("{owner}.{field}: a UINT64 src/api.rs has not judged an address or a number"))
+                    }
+                })
+                .collect();
+            if !refused.is_empty() {
+                return Err(refused.join("; "));
+            }
+        }
         // A count the trait drops (it follows from a slice's length) is a `Count`; a count by value of arrays out only is
         // kept in the trait as a value (the room the caller asks for); a count by pointer of an array out is the room in
         // and the number written out. The same rule as the trait's (src/emit.rs `signature`).
@@ -785,6 +844,9 @@ impl<'g, 'a> Writer<'g, 'a> {
             }
         }
         let status = named(&method.return_type).is_some_and(|k| k == key(FOUNDATION, "HRESULT"));
+        // A structure returned by value: read as a pointer the caller passes first, out (src/emit.rs
+        // `returned_structures_through_pointers`); both glues return that pointer.
+        let returns_pointer = attribute_named(&method.attributes, "ReturnsPointer").is_some();
         let returned = if status || method.return_type == Type::Void {
             None
         } else {
@@ -807,7 +869,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                 return Err("a not-yet exception line on a method with no status, or with an out-parameter but bytes".to_string());
             }
         }
-        Ok(Glued { parts, ranges, status, returned, not_yet })
+        Ok(Glued { parts, ranges, status, returned, not_yet, returns_pointer })
     }
 
     /// A parameter an exception line of src/api.rs maps, if any.

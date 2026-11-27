@@ -679,6 +679,9 @@ impl Writer<'_, '_> {
         let mut values: Vec<String> = Vec::new();
         if let Some(returned) = &glued.returned {
             values.push(Self::convert_in(returned, "returned"));
+        } else if glued.returns_pointer {
+            // The structure returned by value is in our buffer; the pointer the system returns is that buffer's.
+            let _ = writeln!(body, "        let _ = returned;");
         } else if !status {
             let _ = writeln!(body, "        let () = returned;");
         }

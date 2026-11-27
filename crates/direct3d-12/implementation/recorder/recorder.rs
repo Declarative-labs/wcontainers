@@ -1825,10 +1825,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &root_parameter_index;
         let _ = &buffer_location;
-        record(format!(
-            "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView(root_parameter_index={:?}, buffer_location={:?})",
-            root_parameter_index, buffer_location
-        ));
+        record("ID3D12GraphicsCommandList::SetComputeRootConstantBufferView()".to_string());
     }
     fn set_graphics_root_constant_buffer_view(
         &self,
@@ -1837,10 +1834,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &root_parameter_index;
         let _ = &buffer_location;
-        record(format!(
-            "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView(root_parameter_index={:?}, buffer_location={:?})",
-            root_parameter_index, buffer_location
-        ));
+        record("ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView()".to_string());
     }
     fn set_compute_root_unordered_access_view(
         &self,
@@ -1849,10 +1843,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &root_parameter_index;
         let _ = &buffer_location;
-        record(format!(
-            "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView(root_parameter_index={:?}, buffer_location={:?})",
-            root_parameter_index, buffer_location
-        ));
+        record("ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView()".to_string());
     }
     fn ia_set_index_buffer(&self, view: Option<&direct3d_12::structures::IndexBufferView>) {
         let _ = &view;
@@ -1865,10 +1856,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &start_slot;
         let _ = &views;
-        record(format!(
-            "ID3D12GraphicsCommandList::IASetVertexBuffers(start_slot={:?})",
-            start_slot
-        ));
+        record("ID3D12GraphicsCommandList::IASetVertexBuffers()".to_string());
     }
     fn so_set_targets(
         &self,
@@ -1877,10 +1865,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &start_slot;
         let _ = &views;
-        record(format!(
-            "ID3D12GraphicsCommandList::SOSetTargets(start_slot={:?})",
-            start_slot
-        ));
+        record("ID3D12GraphicsCommandList::SOSetTargets()".to_string());
     }
     fn om_set_render_targets(
         &self,
@@ -1893,10 +1878,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &render_target_descriptors;
         let _ = &r_ts_single_handle_to_descriptor_range;
         let _ = &depth_stencil_descriptor;
-        record(format!(
-            "ID3D12GraphicsCommandList::OMSetRenderTargets(num_render_target_descriptors={:?}, r_ts_single_handle_to_descriptor_range={:?})",
-            num_render_target_descriptors, r_ts_single_handle_to_descriptor_range
-        ));
+        record("ID3D12GraphicsCommandList::OMSetRenderTargets()".to_string());
     }
     fn clear_render_target_view(
         &self,
