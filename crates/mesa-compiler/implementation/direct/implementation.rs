@@ -1,13 +1,15 @@
 // Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/mesa-compiler/implementation/direct/bridge). Do not edit.
 //! Mesa's compiler through our C bridge (crates/mesa-compiler/implementation/direct/bridge): every bridge function a safe method of
-//! wcontainers-mesa-compiler's trait, each shader a value of `Shader` that owns one NIR shader and gives it back when
-//! dropped, and every structure the bridge fills copied out whole into owned values before the bridge's free.
+//! wcontainers-mesa-compiler's trait, each shader a value of the type of its place in the bridge's typed chain, owning
+//! one NIR shader and giving it back when dropped, and every structure the bridge fills copied out whole into owned
+//! values before the bridge's free.
 //!
 //! What the marks rely on: the bridge's functions have the types bridge.h and flat.h declare; a function reads and
 //! writes only what its parameters name, as far as the count beside each says (or the header's array length); the
 //! arrays and texts it fills are its own until the matching free, which takes a zeroed structure as nothing; a shader
-//! it returns or fills is a nir_shader it made, given back once by wc_nir_free; Mesa's instruction names are static.
-//! The bridge's C is linked by the crate that builds it (crates/nir's build today; see the status for where it moves).
+//! it returns or fills is a shader it made, of the type it names, given back once by that type's free; a function
+//! taking a shader named `taken` gives it back itself; Mesa's instruction names are static. The bridge's C is built
+//! and linked by this crate's build.rs.
 
 use core::ffi::c_void;
 use core::marker::PhantomData;
@@ -32,29 +34,6 @@ impl Bridge {
             unsafe { wc_init() };
         });
         Bridge { _private: () }
-    }
-}
-
-/// One NIR shader the bridge made, given back when dropped. Not `Send`: no fact of the bridge's is relied on for a
-/// shader moved between threads (NEEDED B1 leaves it to this crate; it may be offered once measured).
-#[derive(Debug)]
-pub struct Shader {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl Shader {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<Shader> {
-        NonNull::new(nir).map(|nir| Shader { nir, _thread: PhantomData })
-    }
-}
-
-impl Drop for Shader {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_free gives back a shader the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_nir_free(self.nir.as_ptr()) };
     }
 }
 
@@ -190,7 +169,7 @@ impl FlatSrcMirror {
 
 impl From<&FlatSrc> for FlatSrcMirror {
     fn from(value: &FlatSrc) -> FlatSrcMirror {
-        FlatSrcMirror { def: value.def, swizzle: value.swizzle.map(|element| element) }
+        FlatSrcMirror { def: value.def, swizzle: value.swizzle.each_ref().map(|element| *element) }
     }
 }
 
@@ -313,6 +292,130 @@ impl FlatMirror {
     }
 }
 
+/// `struct wc_bytes` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct BytesMirror {
+    pub(crate) data: *mut u8,
+    pub(crate) size: usize,
+}
+
+impl Default for BytesMirror {
+    fn default() -> BytesMirror {
+        BytesMirror { data: core::ptr::null_mut(), size: 0 }
+    }
+}
+
+impl BytesMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> Vec<u8> {
+        array(self.data, self.size)
+    }
+}
+
+/// `struct wc_slot_range` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SlotRangeMirror {
+    pub(crate) first: u32,
+    pub(crate) slots: u32,
+}
+
+impl From<&SlotRange> for SlotRangeMirror {
+    fn from(value: &SlotRange) -> SlotRangeMirror {
+        SlotRangeMirror { first: value.first, slots: value.slots }
+    }
+}
+
+/// `struct wc_binding` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BindingMirror {
+    pub(crate) kind: u32,
+    pub(crate) set: u32,
+    pub(crate) binding: u32,
+    pub(crate) count: u32,
+    pub(crate) new_binding: u32,
+    pub(crate) stride: u32,
+}
+
+impl BindingMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> Binding {
+        Binding { kind: self.kind, set: self.set, binding: self.binding, count: self.count, new_binding: self.new_binding, stride: self.stride }
+    }
+}
+
+impl From<&Binding> for BindingMirror {
+    fn from(value: &Binding) -> BindingMirror {
+        BindingMirror { kind: value.kind, set: value.set, binding: value.binding, count: value.count, new_binding: value.new_binding, stride: value.stride }
+    }
+}
+
+/// `struct wc_bindings` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct BindingsMirror {
+    pub(crate) data: *mut BindingMirror,
+    pub(crate) count: usize,
+}
+
+impl Default for BindingsMirror {
+    fn default() -> BindingsMirror {
+        BindingsMirror { data: core::ptr::null_mut(), count: 0 }
+    }
+}
+
+impl BindingsMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> Vec<Binding> {
+        array(self.data, self.count).iter_mut().map(|element| element.owned()).collect()
+    }
+}
+
+/// `struct wc_spirv_common_form` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct SpirvCommonFormMirror {
+    pub(crate) shader: *mut c_void,
+    pub(crate) bindings: BindingsMirror,
+    pub(crate) result: u32,
+}
+
+impl Default for SpirvCommonFormMirror {
+    fn default() -> SpirvCommonFormMirror {
+        SpirvCommonFormMirror { shader: core::ptr::null_mut(), bindings: BindingsMirror::default(), result: 0 }
+    }
+}
+
+impl SpirvCommonFormMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> SpirvCommonForm<SpirvCommon> {
+        SpirvCommonForm { shader: SpirvCommon::owning(core::mem::replace(&mut self.shader, core::ptr::null_mut())), bindings: self.bindings.owned(), result: self.result }
+    }
+}
+
+/// `struct wc_words` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct WordsMirror {
+    pub(crate) data: *mut u32,
+    pub(crate) count: usize,
+}
+
+impl Default for WordsMirror {
+    fn default() -> WordsMirror {
+        WordsMirror { data: core::ptr::null_mut(), count: 0 }
+    }
+}
+
+impl WordsMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> Vec<u32> {
+        array(self.data, self.count)
+    }
+}
+
 /// `struct wc_glsl_name` as the bridge lays it out.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -377,158 +480,8 @@ impl Default for GlslProgramMirror {
 
 impl GlslProgramMirror {
     /// The values read out (the bridge's arrays and texts copied, its shaders taken).
-    pub(crate) fn owned(&mut self) -> GlslProgram<Shader> {
-        GlslProgram { stages: self.stages.each_mut().map(|element| Shader::owning(core::mem::replace(element, core::ptr::null_mut()))), names: self.names.each_mut().map(|element| element.owned()), log: text(self.log) }
-    }
-}
-
-/// `struct wc_slot_range` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct SlotRangeMirror {
-    pub(crate) first: u32,
-    pub(crate) slots: u32,
-}
-
-impl From<&SlotRange> for SlotRangeMirror {
-    fn from(value: &SlotRange) -> SlotRangeMirror {
-        SlotRangeMirror { first: value.first, slots: value.slots }
-    }
-}
-
-/// `struct wc_binding` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct BindingMirror {
-    pub(crate) kind: u32,
-    pub(crate) set: u32,
-    pub(crate) binding: u32,
-    pub(crate) count: u32,
-    pub(crate) new_binding: u32,
-    pub(crate) stride: u32,
-}
-
-impl BindingMirror {
-    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
-    pub(crate) fn owned(&mut self) -> Binding {
-        Binding { kind: self.kind, set: self.set, binding: self.binding, count: self.count, new_binding: self.new_binding, stride: self.stride }
-    }
-}
-
-impl From<&Binding> for BindingMirror {
-    fn from(value: &Binding) -> BindingMirror {
-        BindingMirror { kind: value.kind, set: value.set, binding: value.binding, count: value.count, new_binding: value.new_binding, stride: value.stride }
-    }
-}
-
-/// `struct wc_bindings` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct BindingsMirror {
-    pub(crate) data: *mut BindingMirror,
-    pub(crate) count: usize,
-}
-
-impl Default for BindingsMirror {
-    fn default() -> BindingsMirror {
-        BindingsMirror { data: core::ptr::null_mut(), count: 0 }
-    }
-}
-
-impl BindingsMirror {
-    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
-    pub(crate) fn owned(&mut self) -> Vec<Binding> {
-        array(self.data, self.count).iter_mut().map(|element| element.owned()).collect()
-    }
-}
-
-/// `struct wc_bytes` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct BytesMirror {
-    pub(crate) data: *mut u8,
-    pub(crate) size: usize,
-}
-
-impl Default for BytesMirror {
-    fn default() -> BytesMirror {
-        BytesMirror { data: core::ptr::null_mut(), size: 0 }
-    }
-}
-
-impl BytesMirror {
-    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
-    pub(crate) fn owned(&mut self) -> Vec<u8> {
-        array(self.data, self.size)
-    }
-}
-
-/// `struct wc_words` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct WordsMirror {
-    pub(crate) data: *mut u32,
-    pub(crate) count: usize,
-}
-
-impl Default for WordsMirror {
-    fn default() -> WordsMirror {
-        WordsMirror { data: core::ptr::null_mut(), count: 0 }
-    }
-}
-
-impl WordsMirror {
-    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
-    pub(crate) fn owned(&mut self) -> Vec<u32> {
-        array(self.data, self.count)
-    }
-}
-
-/// `struct wc_position_transform` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct PositionTransformMirror {
-    pub(crate) flip_y: u8,
-    pub(crate) half_z: u8,
-    pub(crate) reverse_z: u8,
-    pub(crate) fixed_point_size: u8,
-}
-
-impl From<&PositionTransform> for PositionTransformMirror {
-    fn from(value: &PositionTransform) -> PositionTransformMirror {
-        PositionTransformMirror { flip_y: u8::from(value.flip_y), half_z: u8::from(value.half_z), reverse_z: u8::from(value.reverse_z), fixed_point_size: u8::from(value.fixed_point_size) }
-    }
-}
-
-/// `struct wc_texture_swizzle` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct TextureSwizzleMirror {
-    pub(crate) unit: u32,
-    pub(crate) swizzle: [u8; 4],
-}
-
-impl From<&TextureSwizzle> for TextureSwizzleMirror {
-    fn from(value: &TextureSwizzle) -> TextureSwizzleMirror {
-        TextureSwizzleMirror { unit: value.unit, swizzle: value.swizzle.map(|element| element) }
-    }
-}
-
-/// `struct wc_nearest_sampler` as the bridge lays it out.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct NearestSamplerMirror {
-    pub(crate) unit: u32,
-    pub(crate) wrap: [u8; 3],
-    pub(crate) mipmapped: u8,
-    pub(crate) min_lod: f32,
-    pub(crate) max_lod: f32,
-    pub(crate) border: [u32; 4],
-}
-
-impl From<&NearestSampler> for NearestSamplerMirror {
-    fn from(value: &NearestSampler) -> NearestSamplerMirror {
-        NearestSamplerMirror { unit: value.unit, wrap: value.wrap.map(|element| element), mipmapped: u8::from(value.mipmapped), min_lod: value.min_lod, max_lod: value.max_lod, border: value.border.map(|element| element) }
+    pub(crate) fn owned(&mut self) -> GlslProgram<Received> {
+        GlslProgram { stages: self.stages.each_mut().map(|element| Received::owning(core::mem::replace(element, core::ptr::null_mut()))), names: self.names.each_mut().map(|element| element.owned()), log: text(self.log) }
     }
 }
 
@@ -557,69 +510,419 @@ impl From<&StreamOutput> for StreamOutputMirror {
     }
 }
 
+/// `struct wc_prepared_form` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedFormMirror {
+    pub(crate) shader: *mut c_void,
+    pub(crate) key: BytesMirror,
+    pub(crate) streamed: *mut StreamOutputMirror,
+    pub(crate) streamed_count: u32,
+    pub(crate) strides: [u32; 4],
+    pub(crate) streams_elsewhere: u8,
+    pub(crate) reads_sample_positions: u8,
+    pub(crate) writes_sample_mask: u8,
+    pub(crate) fetches_target: u8,
+    pub(crate) formatless_images: u64,
+    pub(crate) integer_sampled_units: u64,
+    pub(crate) named_layer: u32,
+    pub(crate) passes_through: u8,
+    pub(crate) pass_through: [*mut c_void; 5],
+    pub(crate) generic_end: u32,
+    pub(crate) geometry_vertices_out: u32,
+    pub(crate) control_points_out: u32,
+    pub(crate) makes_points: u8,
+}
+
+impl Default for PreparedFormMirror {
+    fn default() -> PreparedFormMirror {
+        PreparedFormMirror { shader: core::ptr::null_mut(), key: BytesMirror::default(), streamed: core::ptr::null_mut(), streamed_count: 0, strides: [0; 4], streams_elsewhere: 0, reads_sample_positions: 0, writes_sample_mask: 0, fetches_target: 0, formatless_images: 0, integer_sampled_units: 0, named_layer: 0, passes_through: 0, pass_through: [core::ptr::null_mut(); 5], generic_end: 0, geometry_vertices_out: 0, control_points_out: 0, makes_points: 0 }
+    }
+}
+
+impl PreparedFormMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> PreparedForm<Prepared, Made> {
+        PreparedForm { shader: Prepared::owning(core::mem::replace(&mut self.shader, core::ptr::null_mut())), key: self.key.owned(), streamed: array(self.streamed, self.streamed_count).iter_mut().map(|element| element.owned()).collect(), strides: self.strides.each_mut().map(|element| *element), streams_elsewhere: self.streams_elsewhere != 0, reads_sample_positions: self.reads_sample_positions != 0, writes_sample_mask: self.writes_sample_mask != 0, fetches_target: self.fetches_target != 0, formatless_images: self.formatless_images, integer_sampled_units: self.integer_sampled_units, named_layer: self.named_layer, passes_through: self.passes_through != 0, pass_through: self.pass_through.each_mut().map(|element| Made::owning(core::mem::replace(element, core::ptr::null_mut()))), generic_end: self.generic_end, geometry_vertices_out: self.geometry_vertices_out, control_points_out: self.control_points_out, makes_points: self.makes_points != 0 }
+    }
+}
+
+/// `struct wc_position_transform` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PositionTransformMirror {
+    pub(crate) flip_y: u8,
+    pub(crate) half_z: u8,
+    pub(crate) reverse_z: u8,
+    pub(crate) fixed_point_size: u8,
+}
+
+impl From<&PositionTransform> for PositionTransformMirror {
+    fn from(value: &PositionTransform) -> PositionTransformMirror {
+        PositionTransformMirror { flip_y: u8::from(value.flip_y), half_z: u8::from(value.half_z), reverse_z: u8::from(value.reverse_z), fixed_point_size: u8::from(value.fixed_point_size) }
+    }
+}
+
+/// `struct wc_variant_settings` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct VariantSettingsMirror {
+    pub(crate) transform: PositionTransformMirror,
+    pub(crate) key_transform: PositionTransformMirror,
+    pub(crate) fetch_unit: u32,
+    pub(crate) fetch_multisampled: u8,
+    pub(crate) single_sampled: u8,
+    pub(crate) samples: u32,
+    pub(crate) set: u32,
+    pub(crate) ranges: [SlotRangeMirror; 4],
+}
+
+impl From<&VariantSettings> for VariantSettingsMirror {
+    fn from(value: &VariantSettings) -> VariantSettingsMirror {
+        VariantSettingsMirror { transform: PositionTransformMirror::from(&value.transform), key_transform: PositionTransformMirror::from(&value.key_transform), fetch_unit: value.fetch_unit, fetch_multisampled: u8::from(value.fetch_multisampled), single_sampled: u8::from(value.single_sampled), samples: value.samples, set: value.set, ranges: value.ranges.each_ref().map(SlotRangeMirror::from) }
+    }
+}
+
+/// `struct wc_texture_swizzle` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TextureSwizzleMirror {
+    pub(crate) unit: u32,
+    pub(crate) swizzle: [u8; 4],
+}
+
+impl From<&TextureSwizzle> for TextureSwizzleMirror {
+    fn from(value: &TextureSwizzle) -> TextureSwizzleMirror {
+        TextureSwizzleMirror { unit: value.unit, swizzle: value.swizzle.each_ref().map(|element| *element) }
+    }
+}
+
+/// `struct wc_nearest_sampler` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NearestSamplerMirror {
+    pub(crate) unit: u32,
+    pub(crate) wrap: [u8; 3],
+    pub(crate) mipmapped: u8,
+    pub(crate) min_lod: f32,
+    pub(crate) max_lod: f32,
+    pub(crate) border: [u32; 4],
+}
+
+impl From<&NearestSampler> for NearestSamplerMirror {
+    fn from(value: &NearestSampler) -> NearestSamplerMirror {
+        NearestSamplerMirror { unit: value.unit, wrap: value.wrap.each_ref().map(|element| *element), mipmapped: u8::from(value.mipmapped), min_lod: value.min_lod, max_lod: value.max_lod, border: value.border.each_ref().map(|element| *element) }
+    }
+}
+
+/// `struct wc_variant_form` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VariantFormMirror {
+    pub(crate) shader: *mut c_void,
+    pub(crate) result: u32,
+    pub(crate) key: BytesMirror,
+    pub(crate) bindings: BindingsMirror,
+}
+
+impl Default for VariantFormMirror {
+    fn default() -> VariantFormMirror {
+        VariantFormMirror { shader: core::ptr::null_mut(), result: 0, key: BytesMirror::default(), bindings: BindingsMirror::default() }
+    }
+}
+
+impl VariantFormMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> VariantForm<Variant> {
+        VariantForm { shader: Variant::owning(core::mem::replace(&mut self.shader, core::ptr::null_mut())), result: self.result, key: self.key.owned(), bindings: self.bindings.owned() }
+    }
+}
+
+/// `struct wc_squares` as the bridge lays it out.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct SquaresMirror {
+    pub(crate) kind: u32,
+    pub(crate) sized: u8,
+    pub(crate) before: *mut c_void,
+    pub(crate) geometry: *mut c_void,
+}
+
+impl Default for SquaresMirror {
+    fn default() -> SquaresMirror {
+        SquaresMirror { kind: 0, sized: 0, before: core::ptr::null_mut(), geometry: core::ptr::null_mut() }
+    }
+}
+
+impl SquaresMirror {
+    /// The values read out (the bridge's arrays and texts copied, its shaders taken).
+    pub(crate) fn owned(&mut self) -> Squares<Made> {
+        Squares { kind: self.kind, sized: self.sized != 0, before: Made::owning(core::mem::replace(&mut self.before, core::ptr::null_mut())), geometry: Made::owning(core::mem::replace(&mut self.geometry, core::ptr::null_mut())) }
+    }
+}
+
 // ----- The bridge's functions. -----
 
 #[expect(unsafe_code, reason = "bridge.h declares these functions; each is reached only through the method that marks its call")]
 unsafe extern "C" {
-    fn wc_nir_flatten(nir: *mut c_void, points_in: u32, out: *mut FlatMirror) -> u8;
     fn wc_flat_free(flat: *mut FlatMirror);
     fn wc_init();
-    fn wc_spirv_to_nir(words: *const u32, count: usize, stage: u32, entry_point: *const core::ffi::c_char) -> *mut c_void;
+    fn wc_spirv_read(words: *const u32, count: usize, stage: u32, entry_point: *const core::ffi::c_char, alpha_to_one: u8) -> *mut c_void;
+    fn wc_spirv_shader_key(shader: *const c_void, out: *mut BytesMirror) -> u8;
+    fn wc_spirv_to_common_form(taken: *mut c_void, set: u32, ranges: *const SlotRangeMirror, out: *mut SpirvCommonFormMirror);
+    fn wc_spirv_common_form_free(form: *mut SpirvCommonFormMirror);
+    fn wc_spirv_common_to_spirv(taken: *mut c_void, out: *mut WordsMirror) -> u8;
+    fn wc_spirv_common_flatten(taken: *mut c_void, out: *mut FlatMirror) -> u8;
     fn wc_glsl_to_nir(sources: *const *const core::ffi::c_char, out: *mut GlslProgramMirror) -> u8;
     fn wc_glsl_program_free(program: *mut GlslProgramMirror);
-    fn wc_nir_to_common_form(nir: *mut c_void, set: u32, ranges: *const SlotRangeMirror, out: *mut BindingsMirror) -> u32;
-    fn wc_nir_lower_io(nir: *mut c_void);
-    fn wc_nir_alpha_to_one(nir: *mut c_void);
-    fn wc_nir_serialize(nir: *const c_void, out: *mut BytesMirror) -> u8;
-    fn wc_nir_to_spirv(nir: *mut c_void, out: *mut WordsMirror) -> u8;
-    fn wc_nir_clone(nir: *const c_void) -> *mut c_void;
-    fn wc_nir_number_vertex_elements(nir: *mut c_void) -> u64;
-    fn wc_nir_geometry_vertices_out(nir: *const c_void) -> u32;
-    fn wc_nir_named_layer_location(nir: *const c_void) -> u32;
-    fn wc_nir_control_points_out(nir: *const c_void) -> u32;
-    fn wc_nir_makes_points(nir: *const c_void) -> u8;
-    fn wc_nir_fragcolor_to_buffers(nir: *mut c_void, buffers: u32);
-    fn wc_nir_split_resource_arrays(nir: *mut c_void);
-    fn wc_nir_textures_1d_as_2d(nir: *mut c_void);
-    fn wc_nir_drop_name(nir: *mut c_void);
-    fn wc_nir_uniform_blocks_as_words(nir: *mut c_void);
-    fn wc_nir_transform_position(nir: *mut c_void, transform: PositionTransformMirror);
-    fn wc_nir_reads_sample_positions(nir: *mut c_void) -> u8;
-    fn wc_nir_interpolate_elsewhere(nir: *mut c_void, samples: u32) -> u8;
-    fn wc_nir_fit_sample_masks(nir: *mut c_void, single_sampled: u8);
-    fn wc_nir_writes_sample_mask(nir: *mut c_void) -> u8;
-    fn wc_nir_fetches_target(nir: *mut c_void) -> u8;
-    fn wc_nir_formatless_images(nir: *mut c_void) -> u64;
-    fn wc_nir_fetch_from_texture(nir: *mut c_void, unit: u32, multisampled: u8);
-    fn wc_nir_swizzle_textures(nir: *mut c_void, swizzles: *const TextureSwizzleMirror, count: usize);
-    fn wc_nir_nearest_integer_textures(nir: *mut c_void, samplers: *const NearestSamplerMirror, count: usize) -> u8;
-    fn wc_nir_integer_sampled_units(nir: *mut c_void) -> u64;
-    fn wc_nir_stream_point_size_at_a_location(nir: *mut c_void);
-    fn wc_nir_generic_end(nir: *const c_void) -> u32;
-    fn wc_nir_point_size_also_at(nir: *mut c_void, at: u32) -> u8;
-    fn wc_nir_point_size_at_most(nir: *const c_void, size: f32) -> u8;
-    fn wc_nir_point_square(vs: *const c_void, at: u32, largest: f32) -> *mut c_void;
-    fn wc_nir_geometry_squares(gs: *const c_void, at: u32, largest: f32, block: u32) -> *mut c_void;
-    fn wc_nir_storage_pass_through(last: *mut c_void, made: *mut *mut c_void) -> u8;
-    fn wc_nir_stream_outputs(nir: *const c_void, outputs: *mut StreamOutputMirror, capacity: u32, strides: *mut u32, buffers: u32) -> u32;
-    fn wc_nir_free(nir: *mut c_void);
+    fn wc_received_prepare(taken: *mut c_void, out: *mut PreparedFormMirror);
+    fn wc_prepared_form_free(form: *mut PreparedFormMirror);
+    fn wc_prepared_variant(shader: *const c_void, settings: VariantSettingsMirror, swizzles: *const TextureSwizzleMirror, swizzle_count: usize, samplers: *const NearestSamplerMirror, sampler_count: usize, out: *mut VariantFormMirror);
+    fn wc_variant_form_free(form: *mut VariantFormMirror);
+    fn wc_prepared_points_as_squares(vs: *const c_void, at: u32, largest: f32, out: *mut SquaresMirror);
+    fn wc_prepared_geometry_points_as_squares(gs: *const c_void, at: u32, largest: f32, block: u32, out: *mut SquaresMirror);
+    fn wc_squares_free(squares: *mut SquaresMirror);
+    fn wc_made_key(shader: *const c_void, out: *mut BytesMirror) -> u8;
+    fn wc_made_named_layer_location(shader: *const c_void) -> u32;
+    fn wc_made_variant(shader: *const c_void, settings: VariantSettingsMirror, swizzles: *const TextureSwizzleMirror, swizzle_count: usize, samplers: *const NearestSamplerMirror, sampler_count: usize, out: *mut VariantFormMirror);
+    fn wc_variant_flatten(taken: *mut c_void, points_in: u32, out: *mut FlatMirror) -> u8;
+    fn wc_spirv_shader_free(shader: *mut c_void);
+    fn wc_spirv_common_free(shader: *mut c_void);
+    fn wc_received_free(shader: *mut c_void);
+    fn wc_prepared_free(shader: *mut c_void);
+    fn wc_made_free(shader: *mut c_void);
+    fn wc_variant_free(shader: *mut c_void);
     fn wc_bytes_free(bytes: *mut BytesMirror);
     fn wc_words_free(words: *mut WordsMirror);
-    fn wc_bindings_free(bindings: *mut BindingsMirror);
 }
 
+/// A `struct wc_spirv_shader` the bridge made, given back by `wc_spirv_shader_free` when dropped. Not `Send`: no fact of the bridge's
+/// is relied on for a shader moved between threads.
+#[derive(Debug)]
+pub struct SpirvShader {
+    nir: NonNull<c_void>,
+    _thread: PhantomData<*const ()>,
+}
+
+impl SpirvShader {
+    /// Takes a shader the bridge made; None for null.
+    fn owning(nir: *mut c_void) -> Option<SpirvShader> {
+        NonNull::new(nir).map(|nir| SpirvShader { nir, _thread: PhantomData })
+    }
+
+    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
+    fn into_raw(self) -> *mut c_void {
+        let kept = core::mem::ManuallyDrop::new(self);
+        kept.nir.as_ptr()
+    }
+}
+
+impl Drop for SpirvShader {
+    fn drop(&mut self) {
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_shader_free gives back a wc_spirv_shader the bridge made")]
+        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
+        unsafe { wc_spirv_shader_free(self.nir.as_ptr()) };
+    }
+}
+
+/// A `struct wc_spirv_common` the bridge made, given back by `wc_spirv_common_free` when dropped. Not `Send`: no fact of the bridge's
+/// is relied on for a shader moved between threads.
+#[derive(Debug)]
+pub struct SpirvCommon {
+    nir: NonNull<c_void>,
+    _thread: PhantomData<*const ()>,
+}
+
+impl SpirvCommon {
+    /// Takes a shader the bridge made; None for null.
+    fn owning(nir: *mut c_void) -> Option<SpirvCommon> {
+        NonNull::new(nir).map(|nir| SpirvCommon { nir, _thread: PhantomData })
+    }
+
+    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
+    fn into_raw(self) -> *mut c_void {
+        let kept = core::mem::ManuallyDrop::new(self);
+        kept.nir.as_ptr()
+    }
+}
+
+impl Drop for SpirvCommon {
+    fn drop(&mut self) {
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_common_free gives back a wc_spirv_common the bridge made")]
+        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
+        unsafe { wc_spirv_common_free(self.nir.as_ptr()) };
+    }
+}
+
+/// A `struct wc_received` the bridge made, given back by `wc_received_free` when dropped. Not `Send`: no fact of the bridge's
+/// is relied on for a shader moved between threads.
+#[derive(Debug)]
+pub struct Received {
+    nir: NonNull<c_void>,
+    _thread: PhantomData<*const ()>,
+}
+
+impl Received {
+    /// Takes a shader the bridge made; None for null.
+    fn owning(nir: *mut c_void) -> Option<Received> {
+        NonNull::new(nir).map(|nir| Received { nir, _thread: PhantomData })
+    }
+
+    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
+    fn into_raw(self) -> *mut c_void {
+        let kept = core::mem::ManuallyDrop::new(self);
+        kept.nir.as_ptr()
+    }
+}
+
+impl Drop for Received {
+    fn drop(&mut self) {
+        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made")]
+        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
+        unsafe { wc_received_free(self.nir.as_ptr()) };
+    }
+}
+
+/// A `struct wc_prepared` the bridge made, given back by `wc_prepared_free` when dropped. Not `Send`: no fact of the bridge's
+/// is relied on for a shader moved between threads.
+#[derive(Debug)]
+pub struct Prepared {
+    nir: NonNull<c_void>,
+    _thread: PhantomData<*const ()>,
+}
+
+impl Prepared {
+    /// Takes a shader the bridge made; None for null.
+    fn owning(nir: *mut c_void) -> Option<Prepared> {
+        NonNull::new(nir).map(|nir| Prepared { nir, _thread: PhantomData })
+    }
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made")]
+        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
+        unsafe { wc_prepared_free(self.nir.as_ptr()) };
+    }
+}
+
+/// A `struct wc_made` the bridge made, given back by `wc_made_free` when dropped. Not `Send`: no fact of the bridge's
+/// is relied on for a shader moved between threads.
+#[derive(Debug)]
+pub struct Made {
+    nir: NonNull<c_void>,
+    _thread: PhantomData<*const ()>,
+}
+
+impl Made {
+    /// Takes a shader the bridge made; None for null.
+    fn owning(nir: *mut c_void) -> Option<Made> {
+        NonNull::new(nir).map(|nir| Made { nir, _thread: PhantomData })
+    }
+}
+
+impl Drop for Made {
+    fn drop(&mut self) {
+        #[expect(unsafe_code, reason = "bridge.h: wc_made_free gives back a wc_made the bridge made")]
+        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
+        unsafe { wc_made_free(self.nir.as_ptr()) };
+    }
+}
+
+/// A `struct wc_variant` the bridge made, given back by `wc_variant_free` when dropped. Not `Send`: no fact of the bridge's
+/// is relied on for a shader moved between threads.
+#[derive(Debug)]
+pub struct Variant {
+    nir: NonNull<c_void>,
+    _thread: PhantomData<*const ()>,
+}
+
+impl Variant {
+    /// Takes a shader the bridge made; None for null.
+    fn owning(nir: *mut c_void) -> Option<Variant> {
+        NonNull::new(nir).map(|nir| Variant { nir, _thread: PhantomData })
+    }
+
+    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
+    fn into_raw(self) -> *mut c_void {
+        let kept = core::mem::ManuallyDrop::new(self);
+        kept.nir.as_ptr()
+    }
+}
+
+impl Drop for Variant {
+    fn drop(&mut self) {
+        #[expect(unsafe_code, reason = "bridge.h: wc_variant_free gives back a wc_variant the bridge made")]
+        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
+        unsafe { wc_variant_free(self.nir.as_ptr()) };
+    }
+}
+
+
 impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
-    type Shader = Shader;
+    type SpirvShader = SpirvShader;
+    type SpirvCommon = SpirvCommon;
+    type Received = Received;
+    type Prepared = Prepared;
+    type Made = Made;
+    type Variant = Variant;
 
     fn new() -> Bridge {
         Bridge::started()
     }
 
-    fn flatten(&self, nir: &mut Shader, points_in: u32) -> Option<Flat> {
-        let mut out = FlatMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_flatten takes the types declared there; nir is a shader of ours, changed by the call alone; out is one zeroed struct wc_flat of ours")]
+    fn spirv_read(&self, words: &[u32], stage: u32, entry_point: &core::ffi::CStr, alpha_to_one: bool) -> Option<SpirvShader> {
+        if stage >= 3 { return Default::default(); }
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_read takes the types declared there; words holds as many words as the count beside it; count is words's length; stage is one of enum wc_stage's 3 values; entry_point is zero-ended")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_flatten(nir.nir.as_ptr(), points_in, &raw mut out) };
+        let result = unsafe { wc_spirv_read(words.as_ptr(), words.len(), stage, entry_point.as_ptr(), u8::from(alpha_to_one)) };
+        SpirvShader::owning(result)
+    }
+
+    fn spirv_shader_key(&self, shader: &SpirvShader) -> Option<Vec<u8>> {
+        let mut out = BytesMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_shader_key takes the types declared there; shader is a SpirvShader of ours, of the type the function names, read by the call alone; out is one zeroed struct wc_bytes of ours")]
+        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+        let result = unsafe { wc_spirv_shader_key(shader.nir.as_ptr(), &raw mut out) };
+        let result = result != 0;
+        let copied = out.owned();
+        #[expect(unsafe_code, reason = "bridge.h: wc_bytes_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+        unsafe { wc_bytes_free(&raw mut out) };
+        result.then_some(copied)
+    }
+
+    fn spirv_to_common_form(&self, taken: SpirvShader, set: u32, ranges: &[SlotRange; 4]) -> SpirvCommonForm<SpirvCommon> {
+        let ranges: [SlotRangeMirror; 4] = ranges.each_ref().map(SlotRangeMirror::from);
+        let mut out = SpirvCommonFormMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_to_common_form takes the types declared there; taken is a SpirvShader of ours, of the type the function names, which the bridge takes and gives back itself; ranges is 4 elements of ours, as the header's array length says; out is one zeroed struct wc_spirv_common_form of ours")]
+        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+        unsafe { wc_spirv_to_common_form(taken.into_raw(), set, ranges.as_ptr(), &raw mut out) };
+        let copied = out.owned();
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_common_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+        unsafe { wc_spirv_common_form_free(&raw mut out) };
+        copied
+    }
+
+    fn spirv_common_to_spirv(&self, taken: SpirvCommon) -> Option<Vec<u32>> {
+        let mut out = WordsMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_common_to_spirv takes the types declared there; taken is a SpirvCommon of ours, of the type the function names, which the bridge takes and gives back itself; out is one zeroed struct wc_words of ours")]
+        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+        let result = unsafe { wc_spirv_common_to_spirv(taken.into_raw(), &raw mut out) };
+        let result = result != 0;
+        let copied = out.owned();
+        #[expect(unsafe_code, reason = "bridge.h: wc_words_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+        unsafe { wc_words_free(&raw mut out) };
+        result.then_some(copied)
+    }
+
+    fn spirv_common_flatten(&self, taken: SpirvCommon) -> Option<Flat> {
+        let mut out = FlatMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_common_flatten takes the types declared there; taken is a SpirvCommon of ours, of the type the function names, which the bridge takes and gives back itself; out is one zeroed struct wc_flat of ours")]
+        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+        let result = unsafe { wc_spirv_common_flatten(taken.into_raw(), &raw mut out) };
         let result = result != 0;
         let copied = out.owned();
         #[expect(unsafe_code, reason = "bridge.h: wc_flat_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
@@ -628,15 +931,7 @@ impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
         result.then_some(copied)
     }
 
-    fn spirv_to_nir(&self, words: &[u32], stage: u32, entry_point: &core::ffi::CStr) -> Option<Shader> {
-        if stage >= 3 { return Default::default(); }
-        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_to_nir takes the types declared there; words holds as many words as the count beside it; count is words's length; stage is one of enum wc_stage's 3 values; entry_point is zero-ended")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_spirv_to_nir(words.as_ptr(), words.len(), stage, entry_point.as_ptr()) };
-        Shader::owning(result)
-    }
-
-    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<Shader>, Vec<u8>> {
+    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<Received>, Vec<u8>> {
         let sources: [*const core::ffi::c_char; 3] = sources.map(|text| text.map_or(core::ptr::null(), core::ffi::CStr::as_ptr));
         let mut out = GlslProgramMirror::default();
         #[expect(unsafe_code, reason = "bridge.h: wc_glsl_to_nir takes the types declared there; sources is 3 texts of ours, each zero-ended or null; out is one zeroed struct wc_glsl_program of ours")]
@@ -650,36 +945,61 @@ impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
         if result { Ok(copied) } else { Err(copied.log.unwrap_or_default()) }
     }
 
-    fn to_common_form(&self, nir: &mut Shader, set: u32, ranges: &[SlotRange; 4]) -> Result<Vec<Binding>, u32> {
-        let ranges: [SlotRangeMirror; 4] = ranges.each_ref().map(SlotRangeMirror::from);
-        let mut out = BindingsMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_to_common_form takes the types declared there; nir is a shader of ours, changed by the call alone; ranges is 4 elements of ours, as the header's array length says; out is one zeroed struct wc_bindings of ours")]
+    fn received_prepare(&self, taken: Received) -> PreparedForm<Prepared, Made> {
+        let mut out = PreparedFormMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a Received of ours, of the type the function names, which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_to_common_form(nir.nir.as_ptr(), set, ranges.as_ptr(), &raw mut out) };
+        unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
         let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_bindings_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
         // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_bindings_free(&raw mut out) };
-        if result == 0 { Ok(copied) } else { Err(result) }
+        unsafe { wc_prepared_form_free(&raw mut out) };
+        copied
     }
 
-    fn lower_io(&self, nir: &mut Shader) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_lower_io takes the types declared there; nir is a shader of ours, changed by the call alone")]
+    fn prepared_variant(&self, shader: &Prepared, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
+        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
+        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
+        let mut out = VariantFormMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a Prepared of ours, of the type the function names, read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_lower_io(nir.nir.as_ptr()) };
+        unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
+        let copied = out.owned();
+        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+        unsafe { wc_variant_form_free(&raw mut out) };
+        copied
     }
 
-    fn alpha_to_one(&self, nir: &mut Shader) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_alpha_to_one takes the types declared there; nir is a shader of ours, changed by the call alone")]
+    fn prepared_points_as_squares(&self, vs: &Prepared, at: u32, largest: f32) -> Squares<Made> {
+        let mut out = SquaresMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_points_as_squares takes the types declared there; vs is a Prepared of ours, of the type the function names, read by the call alone; out is one zeroed struct wc_squares of ours")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_alpha_to_one(nir.nir.as_ptr()) };
+        unsafe { wc_prepared_points_as_squares(vs.nir.as_ptr(), at, largest, &raw mut out) };
+        let copied = out.owned();
+        #[expect(unsafe_code, reason = "bridge.h: wc_squares_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+        unsafe { wc_squares_free(&raw mut out) };
+        copied
     }
 
-    fn serialize(&self, nir: &Shader) -> Option<Vec<u8>> {
+    fn prepared_geometry_points_as_squares(&self, gs: &Prepared, at: u32, largest: f32, block: u32) -> Squares<Made> {
+        let mut out = SquaresMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_geometry_points_as_squares takes the types declared there; gs is a Prepared of ours, of the type the function names, read by the call alone; out is one zeroed struct wc_squares of ours")]
+        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+        unsafe { wc_prepared_geometry_points_as_squares(gs.nir.as_ptr(), at, largest, block, &raw mut out) };
+        let copied = out.owned();
+        #[expect(unsafe_code, reason = "bridge.h: wc_squares_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+        unsafe { wc_squares_free(&raw mut out) };
+        copied
+    }
+
+    fn made_key(&self, shader: &Made) -> Option<Vec<u8>> {
         let mut out = BytesMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_serialize takes the types declared there; nir is a shader of ours, read by the call alone; out is one zeroed struct wc_bytes of ours")]
+        #[expect(unsafe_code, reason = "bridge.h: wc_made_key takes the types declared there; shader is a Made of ours, of the type the function names, read by the call alone; out is one zeroed struct wc_bytes of ours")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_serialize(nir.nir.as_ptr(), &raw mut out) };
+        let result = unsafe { wc_made_key(shader.nir.as_ptr(), &raw mut out) };
         let result = result != 0;
         let copied = out.owned();
         #[expect(unsafe_code, reason = "bridge.h: wc_bytes_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
@@ -688,219 +1008,37 @@ impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
         result.then_some(copied)
     }
 
-    fn to_spirv(&self, nir: &mut Shader) -> Option<Vec<u32>> {
-        let mut out = WordsMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_to_spirv takes the types declared there; nir is a shader of ours, changed by the call alone; out is one zeroed struct wc_words of ours")]
+    fn made_named_layer_location(&self, shader: &Made) -> u32 {
+        #[expect(unsafe_code, reason = "bridge.h: wc_made_named_layer_location takes the types declared there; shader is a Made of ours, of the type the function names, read by the call alone")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_to_spirv(nir.nir.as_ptr(), &raw mut out) };
+        unsafe { wc_made_named_layer_location(shader.nir.as_ptr()) }
+    }
+
+    fn made_variant(&self, shader: &Made, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
+        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
+        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
+        let mut out = VariantFormMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_made_variant takes the types declared there; shader is a Made of ours, of the type the function names, read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
+        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+        unsafe { wc_made_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
+        let copied = out.owned();
+        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+        unsafe { wc_variant_form_free(&raw mut out) };
+        copied
+    }
+
+    fn variant_flatten(&self, taken: Variant, points_in: u32) -> Option<Flat> {
+        let mut out = FlatMirror::default();
+        #[expect(unsafe_code, reason = "bridge.h: wc_variant_flatten takes the types declared there; taken is a Variant of ours, of the type the function names, which the bridge takes and gives back itself; out is one zeroed struct wc_flat of ours")]
+        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+        let result = unsafe { wc_variant_flatten(taken.into_raw(), points_in, &raw mut out) };
         let result = result != 0;
         let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_words_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+        #[expect(unsafe_code, reason = "bridge.h: wc_flat_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
         // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_words_free(&raw mut out) };
+        unsafe { wc_flat_free(&raw mut out) };
         result.then_some(copied)
-    }
-
-    fn cloned(&self, nir: &Shader) -> Option<Shader> {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_clone takes the types declared there; nir is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_clone(nir.nir.as_ptr()) };
-        Shader::owning(result)
-    }
-
-    fn number_vertex_elements(&self, nir: &mut Shader) -> u64 {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_number_vertex_elements takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_number_vertex_elements(nir.nir.as_ptr()) }
-    }
-
-    fn geometry_vertices_out(&self, nir: &Shader) -> u32 {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_geometry_vertices_out takes the types declared there; nir is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_geometry_vertices_out(nir.nir.as_ptr()) }
-    }
-
-    fn named_layer_location(&self, nir: &Shader) -> u32 {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_named_layer_location takes the types declared there; nir is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_named_layer_location(nir.nir.as_ptr()) }
-    }
-
-    fn control_points_out(&self, nir: &Shader) -> u32 {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_control_points_out takes the types declared there; nir is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_control_points_out(nir.nir.as_ptr()) }
-    }
-
-    fn makes_points(&self, nir: &Shader) -> bool {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_makes_points takes the types declared there; nir is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_makes_points(nir.nir.as_ptr()) };
-        result != 0
-    }
-
-    fn fragcolor_to_buffers(&self, nir: &mut Shader, buffers: u32) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_fragcolor_to_buffers takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_fragcolor_to_buffers(nir.nir.as_ptr(), buffers) };
-    }
-
-    fn split_resource_arrays(&self, nir: &mut Shader) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_split_resource_arrays takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_split_resource_arrays(nir.nir.as_ptr()) };
-    }
-
-    fn textures_1d_as_2d(&self, nir: &mut Shader) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_textures_1d_as_2d takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_textures_1d_as_2d(nir.nir.as_ptr()) };
-    }
-
-    fn drop_name(&self, nir: &mut Shader) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_drop_name takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_drop_name(nir.nir.as_ptr()) };
-    }
-
-    fn uniform_blocks_as_words(&self, nir: &mut Shader) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_uniform_blocks_as_words takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_uniform_blocks_as_words(nir.nir.as_ptr()) };
-    }
-
-    fn transform_position(&self, nir: &mut Shader, transform: PositionTransform) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_transform_position takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_transform_position(nir.nir.as_ptr(), PositionTransformMirror::from(&transform)) };
-    }
-
-    fn reads_sample_positions(&self, nir: &mut Shader) -> bool {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_reads_sample_positions takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_reads_sample_positions(nir.nir.as_ptr()) };
-        result != 0
-    }
-
-    fn interpolate_elsewhere(&self, nir: &mut Shader, samples: u32) -> bool {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_interpolate_elsewhere takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_interpolate_elsewhere(nir.nir.as_ptr(), samples) };
-        result != 0
-    }
-
-    fn fit_sample_masks(&self, nir: &mut Shader, single_sampled: bool) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_fit_sample_masks takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_fit_sample_masks(nir.nir.as_ptr(), u8::from(single_sampled)) };
-    }
-
-    fn writes_sample_mask(&self, nir: &mut Shader) -> bool {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_writes_sample_mask takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_writes_sample_mask(nir.nir.as_ptr()) };
-        result != 0
-    }
-
-    fn fetches_target(&self, nir: &mut Shader) -> bool {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_fetches_target takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_fetches_target(nir.nir.as_ptr()) };
-        result != 0
-    }
-
-    fn formatless_images(&self, nir: &mut Shader) -> u64 {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_formatless_images takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_formatless_images(nir.nir.as_ptr()) }
-    }
-
-    fn fetch_from_texture(&self, nir: &mut Shader, unit: u32, multisampled: bool) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_fetch_from_texture takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_fetch_from_texture(nir.nir.as_ptr(), unit, u8::from(multisampled)) };
-    }
-
-    fn swizzle_textures(&self, nir: &mut Shader, swizzles: &[TextureSwizzle]) {
-        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_swizzle_textures takes the types declared there; nir is a shader of ours, changed by the call alone; swizzles holds as many elements as the count beside it, in our memory; count is swizzles's length")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_swizzle_textures(nir.nir.as_ptr(), swizzles.as_ptr(), swizzles.len()) };
-    }
-
-    fn nearest_integer_textures(&self, nir: &mut Shader, samplers: &[NearestSampler]) -> bool {
-        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_nearest_integer_textures takes the types declared there; nir is a shader of ours, changed by the call alone; samplers holds as many elements as the count beside it, in our memory; count is samplers's length")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_nearest_integer_textures(nir.nir.as_ptr(), samplers.as_ptr(), samplers.len()) };
-        result != 0
-    }
-
-    fn integer_sampled_units(&self, nir: &mut Shader) -> u64 {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_integer_sampled_units takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_integer_sampled_units(nir.nir.as_ptr()) }
-    }
-
-    fn stream_point_size_at_a_location(&self, nir: &mut Shader) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_stream_point_size_at_a_location takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_stream_point_size_at_a_location(nir.nir.as_ptr()) };
-    }
-
-    fn generic_end(&self, nir: &Shader) -> u32 {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_generic_end takes the types declared there; nir is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_nir_generic_end(nir.nir.as_ptr()) }
-    }
-
-    fn point_size_also_at(&self, nir: &mut Shader, at: u32) -> bool {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_point_size_also_at takes the types declared there; nir is a shader of ours, changed by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_point_size_also_at(nir.nir.as_ptr(), at) };
-        result != 0
-    }
-
-    fn point_size_at_most(&self, nir: &Shader, size: f32) -> bool {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_point_size_at_most takes the types declared there; nir is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_point_size_at_most(nir.nir.as_ptr(), size) };
-        result != 0
-    }
-
-    fn point_square(&self, vs: &Shader, at: u32, largest: f32) -> Option<Shader> {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_point_square takes the types declared there; vs is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_point_square(vs.nir.as_ptr(), at, largest) };
-        Shader::owning(result)
-    }
-
-    fn geometry_squares(&self, gs: &Shader, at: u32, largest: f32, block: u32) -> Option<Shader> {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_geometry_squares takes the types declared there; gs is a shader of ours, read by the call alone")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_geometry_squares(gs.nir.as_ptr(), at, largest, block) };
-        Shader::owning(result)
-    }
-
-    fn storage_pass_through(&self, last: &mut Shader) -> Option<[Option<Shader>; 5]> {
-        let mut made = [core::ptr::null_mut::<c_void>(); 5];
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_storage_pass_through takes the types declared there; last is a shader of ours, changed by the call alone; made is room for 5 shaders, ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_storage_pass_through(last.nir.as_ptr(), made.as_mut_ptr()) };
-        let result = result != 0;
-        let made = made.map(Shader::owning);
-        result.then_some(made)
-    }
-
-    fn stream_outputs(&self, nir: &Shader, outputs: &mut [StreamOutput], strides: &mut [u32]) -> u32 {
-        let mut outputs_room: Vec<StreamOutputMirror> = vec![StreamOutputMirror::default(); outputs.len()];
-        let Ok(capacity) = u32::try_from(outputs.len()) else { return Default::default(); };
-        let Ok(buffers) = u32::try_from(strides.len()) else { return Default::default(); };
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_stream_outputs takes the types declared there; nir is a shader of ours, read by the call alone; outputs_room holds as many elements as the capacity beside it, in our memory; capacity is outputs's length; strides holds as many words as the count beside it; buffers is strides's length")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        let result = unsafe { wc_nir_stream_outputs(nir.nir.as_ptr(), outputs_room.as_mut_ptr(), capacity, strides.as_mut_ptr(), buffers) };
-        for (to, from) in outputs.iter_mut().zip(outputs_room.iter_mut()) { *to = from.owned(); }
-        result
     }
 
 }

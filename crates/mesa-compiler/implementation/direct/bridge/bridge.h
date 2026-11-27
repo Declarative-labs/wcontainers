@@ -1,4 +1,5 @@
-/* The C side of wcontainers-nir: what it needs of the pinned Mesa, behind plain types. */
+/* Our C bridge over the pinned Mesa's compiler, as Rust calls it (crates/mesa-compiler's trait is generated from this
+ * header and flat.h): plain types, and the typed chain at the end. The single steps are in steps.h. */
 #ifndef WCONTAINERS_NIR_BRIDGE_H
 #define WCONTAINERS_NIR_BRIDGE_H
 
@@ -83,10 +84,6 @@ void wc_finish(void);
  * the routes' shape. */
 const struct nir_shader_compiler_options *wc_compiler_options(void);
 
-/* NIR of one entry point of a SPIR-V module for Vulkan, or NULL. */
-struct nir_shader *wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage,
-                                   const char *entry_point);
-
 /* What a name of a GLSL program, or a state value, is in one stage's NIR. */
 enum wc_glsl_name_kind {
    /* A default-block uniform: `at` its first word in uniform buffer 0, `count` its words. */
@@ -139,86 +136,6 @@ struct wc_glsl_names {
    size_t count;
 };
 
-/* One GLSL program's stages as the OpenGL driver receives them, by enum wc_stage (NULL where the
- * program has none), each stage's names, and the compiler's and linker's messages; given back
- * with wc_glsl_program_free. */
-struct wc_glsl_program {
-   struct nir_shader *stages[WC_STAGES];
-   struct wc_glsl_names names[WC_STAGES];
-   char *log;
-};
-
-/* Compiles and links the sources (by enum wc_stage, NULL for none) with Mesa's GLSL compiler, then
- * takes st/mesa's steps for the OpenGL driver's capabilities; false when either step fails. */
-bool wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out);
-void wc_glsl_program_free(struct wc_glsl_program *program);
-
-/* What every route does to the NIR to give it the common form's meaning and bindings: array layers of
- * sampling rounded to the nearest integer (Vulkan's rule; the common form's layer is an integer);
- * dispatches counted from workgroup 0 with no global offset;
- * each combined image sampler split into a texture and a sampler of the same shape; then every
- * resource renumbered into `set`, each kind from its range's first binding in the order of the
- * program's (set, binding). `out` receives one entry a resource. */
-enum wc_bind_result wc_nir_to_common_form(struct nir_shader *nir, uint32_t set,
-                                const struct wc_slot_range ranges[WC_SLOT_KINDS],
-                                struct wc_bindings *out);
-
-/* Stage values as lowered IO (load_input, load_interpolated_input, store_output), the one form
- * route B takes and the one the OpenGL linker hands over; a Vulkan program's blocks of them
- * (gl_PerVertex) split a member each first. Nothing where the IO is lowered already. */
-void wc_nir_lower_io(struct nir_shader *nir);
-
-/* Vulkan's alphaToOne in a fragment program (plan 15.4): Mesa's alpha to coverage, which demotes
- * the samples alpha does not cover, then alpha one on every colour output; IO lowered first. */
-void wc_nir_alpha_to_one(struct nir_shader *nir);
-
-/* NIR's own serialised form, the cache's key (plan 15.3). */
-bool wc_nir_serialize(const struct nir_shader *nir, struct wc_bytes *out);
-
-/* Candidate A's first step: a copy of the shader prepared and written as SPIR-V by Zink's compiler in its
- * native Vulkan mode (the shader itself is left as it was). False for a shader not in the form that mode takes. */
-bool wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out);
-
-struct nir_shader *wc_nir_clone(const struct nir_shader *nir);
-
-/* Vertex inputs numbered as st/mesa hands the driver its vertex elements: each attribute, OpenGL's
- * own (gl_Vertex, gl_Color, ...) among them, at its rank among the attributes read. Returns the
- * slots read before. */
-uint64_t wc_nir_number_vertex_elements(struct nir_shader *nir);
-/* The most vertices a geometry program emits an invocation; zero for another stage. */
-uint32_t wc_nir_geometry_vertices_out(const struct nir_shader *nir);
-/* For a geometry program writing gl_Layer, the location after its generic outputs, where the
- * layer it names can be passed on; UINT32_MAX for one that writes none, or of another stage. */
-uint32_t wc_nir_named_layer_location(const struct nir_shader *nir);
-/* The control points of a tessellation control program's output patch; zero for another stage. */
-uint32_t wc_nir_control_points_out(const struct nir_shader *nir);
-/* An evaluation program in point mode, or a geometry program whose output is points. */
-bool wc_nir_makes_points(const struct nir_shader *nir);
-
-/* gl_FragColor written to each of the first `buffers` draw buffers, nir_lower_fragcolor's step
- * (the driver's own, as Zink's) on lowered stage values. */
-void wc_nir_fragcolor_to_buffers(struct nir_shader *nir, unsigned buffers);
-
-/* Arrays of textures and samplers read only at constant indices (OpenGL ES's constant index
- * expressions) as one variable an element, at the element's binding: the host may have no arrays
- * of bindings. */
-void wc_nir_split_resource_arrays(struct nir_shader *nir);
-
-/* Every 1D texture the program samples as a 2D texture of one row (nir_lower_tex's lower_1d, its
- * variables retyped): the driver makes 1D textures 2D, as the host's 1D textures have neither
- * levels nor layers. */
-void wc_nir_textures_1d_as_2d(struct nir_shader *nir);
-
-/* The program's name and label dropped (st/mesa names each by the API program's number), so that
- * programs of equal content serialise alike. */
-void wc_nir_drop_name(struct nir_shader *nir);
-
-/* Every uniform block access st/mesa hands over (load_ubo, the default uniforms as block 0) as
- * derefs of one array of words a block, sized by the block variables' explicit types; the default
- * uniforms' own variables, which nothing reads after it, removed. Storage block j is bound at
- * PIPE_MAX_SHADER_IMAGES plus j, past the image units. */
-void wc_nir_uniform_blocks_as_words(struct nir_shader *nir);
-
 /* How a vertex program's position (and point size) is changed to meet the host's clip space,
  * viewport and points. */
 struct wc_position_transform {
@@ -232,40 +149,6 @@ struct wc_position_transform {
     * every size a program writes. */
    bool fixed_point_size;
 };
-
-void wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform);
-
-/* Whether a fragment program reads where its samples are (gl_SamplePosition, interpolateAtSample,
- * interpolateAtOffset of a value read per sample), which depends on the targets' sample count. */
-bool wc_nir_reads_sample_positions(struct nir_shader *nir);
-
-/* A fragment program's reads of inputs at an offset or a sample and of the sample position made
- * from the values the common form interpolates, for targets of `samples` samples; false where
- * that count's positions are needed and not known (one, and the standard patterns of two, four,
- * eight and sixteen, are). */
-bool wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples);
-
-/* A fragment program's sample masks as OpenGL defines them: gl_SampleMaskIn of a program run per
- * sample holds only that sample's bit (a host may give every covered sample's), and with targets
- * of one sample its writes of gl_SampleMask are dropped (OpenGL applies the mask only as a
- * multisample operation; a host applies its first bit). */
-void wc_nir_fit_sample_masks(struct nir_shader *nir, bool single_sampled);
-
-/* Whether a fragment program writes gl_SampleMask, which depends on the targets' sample count. */
-bool wc_nir_writes_sample_mask(struct nir_shader *nir);
-
-/* Whether a fragment program reads its first target's texels (framebuffer fetch, which Mesa's
- * lowering of KHR_blend_equation_advanced writes). */
-bool wc_nir_fetches_target(struct nir_shader *nir);
-
-/* The image units a program declares images at without a format (stores converted to the bound
- * image's format), a bit each. */
-uint64_t wc_nir_formatless_images(struct nir_shader *nir);
-
-/* A fragment program's reads of its first target's texels made loads of the texture at `unit`,
- * a copy of the target the driver binds there (multisampled where the target is, each sample
- * reading its own). */
-void wc_nir_fetch_from_texture(struct nir_shader *nir, unsigned unit, bool multisampled);
 
 /* What one component of a texture's result is made of: one of its components, zero or one. */
 enum wc_swizzle {
@@ -282,11 +165,6 @@ struct wc_texture_swizzle {
    uint32_t unit;
    uint8_t swizzle[WC_COMPONENTS];
 };
-
-/* Every result read from the textures at the units listed rearranged by their swizzle (Gallium's
- * sampler views carry one; the host's texture views do not). */
-void wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle *swizzles,
-                             size_t count);
 
 /* How a texture coordinate outside the texture wraps, for a nearest texel. */
 enum wc_wrap {
@@ -310,17 +188,6 @@ struct wc_nearest_sampler {
    uint32_t border[WC_COMPONENTS];
 };
 
-/* Every sampling of an integer texture at the units listed made a load of its nearest texel, as
- * OpenGL samples them (the host only loads and gathers them); a cube map or cube map array among
- * them becomes a 2D array of its faces, six a cube, which the driver binds such a view of. False
- * where the program also gathers such a cube: its gathers then read their own face's edge texels
- * past the edge, not the next face's, which is not built. */
-bool wc_nir_nearest_integer_textures(struct nir_shader *nir,
-                                     const struct wc_nearest_sampler *samplers, size_t count);
-
-/* The texture units a program samples integers at (not loads, gathers or queries), a bit each. */
-uint64_t wc_nir_integer_sampled_units(struct nir_shader *nir);
-
 /* One output a vertex program streams: the buffer, its byte offset in each vertex there, where the
  * route places the output (a generic location, or the position), and its components. */
 struct wc_stream_output {
@@ -332,61 +199,214 @@ struct wc_stream_output {
    uint8_t components;
 };
 
-/* A streamed point size (which the common form keeps as a built-in the stage helper does not
- * stream) also written at a location no output takes, which the stream names instead. */
-void wc_nir_stream_point_size_at_a_location(struct nir_shader *nir);
-
-/* The generic slots a fragment program reads, or another stage's program writes, end here. */
-uint32_t wc_nir_generic_end(const struct nir_shader *nir);
-/* A vertex program's point size also written at the generic slot `at`; false where it writes
- * none. */
-bool wc_nir_point_size_also_at(struct nir_shader *nir, uint32_t at);
-/* Every point size a program with lowered outputs writes is a constant no larger than `size`;
- * false where it writes none. */
-bool wc_nir_point_size_at_most(const struct nir_shader *nir, float size);
-/* A geometry program drawing each point of `vs` as a square of two triangles (the slow path
- * PointsAsQuads), each corner with every output of `vs` and gl_PointCoord at the generic slot
- * `at`. Its size is the point size `vs` also writes at `at` (`wc_nir_point_size_also_at`),
- * clamped to 1..`largest`, or else uniform block 0's first word; the block's next words are the
- * clip-space step of half a pixel over w in x and y and gl_PointCoord's t direction (1 where t
- * grows with the rows, -1 where it falls). NULL for a program writing clip distances, or outputs
- * at offsets known only when run. */
-struct nir_shader *wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest);
-/* A geometry program whose output is points, its uniform blocks as words
- * (`wc_nir_uniform_blocks_as_words`), rewritten to draw each as a square of two triangles
- * (PointsAsQuads), as `wc_nir_point_square` draws them: its size the point size it writes,
- * clamped to 1..`largest`, or else the first word of uniform block `block` (made in words too),
- * whose words are `wc_nir_point_square`'s; gl_PointCoord at the generic slot `at`. NULL for a program of another
- * output, writing clip distances, outputs at offsets known only when run or at `at`, or to more
- * than one stream. */
-struct nir_shader *wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest,
-                                           uint32_t block);
 /* The primitives a pass-through geometry program takes, one program each: points, lines,
  * triangles, lines with adjacency and triangles with adjacency. */
 #define WC_PASS_THROUGH_INPUTS 5
 
-/* For a vertex or evaluation program `last` that reads or writes storage buffers or images, which
- * runs before a geometry program passing each of its primitives on: its point size also written at
- * the generic slot after its outputs (`wc_nir_point_size_also_at`), and in `made` those geometry
- * programs, by the primitive taken (`WC_PASS_THROUGH_INPUTS`'s order), each passing the
- * primitive's own vertices on unchanged with every output as written, its point size read from
- * that slot and not passed on. An evaluation program has one, for the primitive it makes. Returns
- * false, with `made` all NULL, for a program of another stage or using no storage; an entry is NULL
- * for a program writing outputs at offsets known only when run, or a point size the geometry
- * program cannot read. */
-bool wc_nir_storage_pass_through(struct nir_shader *last,
-                                 struct nir_shader *made[WC_PASS_THROUGH_INPUTS]);
+/* The buffers a program streams its outputs to: Gallium's PIPE_MAX_SO_BUFFERS. */
+#define WC_STREAM_BUFFERS 4
 
-/* The outputs `nir` streams (its transform feedback), at most `capacity` written to `outputs`, with
- * each of the first `buffers` buffers' bytes a vertex in `strides`; returns how many it streams,
- * or UINT32_MAX when one is a value the route places neither at a location nor as the position. */
-uint32_t wc_nir_stream_outputs(const struct nir_shader *nir, struct wc_stream_output *outputs,
-                               uint32_t capacity, uint32_t *strides, uint32_t buffers);
+/* ----- The typed chain. Each shader below is a nir_shader at one place in the chains our callers take, and a
+ * function takes only the shader of its place: the orders below are the only ones the bridge offers. The callers
+ * named are graphics-implementations' at 6a001c3ed: the corpus's two candidates on SPIR-V (crates/nir/tests/corpus/
+ * run.rs) and the OpenGL driver (crates/opengl/src/state.rs at a shader's creation, draw.rs at a draw). A function
+ * taking a shader named `taken` takes it whole: the bridge gives it back itself, whatever it returns. ----- */
 
-void wc_nir_free(struct nir_shader *nir);
+/* A program read from SPIR-V for Vulkan: the corpus's first step (run.rs:493 to 496). */
+struct wc_spirv_shader;
+/* A program read from SPIR-V in the common form: what the corpus's candidates convert (run.rs:570 and 671). */
+struct wc_spirv_common;
+/* A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler
+ * and st/mesa's steps (glsl.cpp). */
+struct wc_received;
+/* A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after. */
+struct wc_prepared;
+/* A program the driver's steps make: a pass-through geometry program (state.rs:1175), a vertex program with its
+ * point size also at a location, or a geometry program drawing points as squares (draw.rs:3426 to 3441 and 3514 to
+ * 3522). */
+struct wc_made;
+/* A draw's variant of a prepared or made program, in the common form (draw.rs:779 to 818). */
+struct wc_variant;
+
+/* Reads one entry point of a SPIR-V module for Vulkan, and, with `alpha_to_one`, makes Vulkan's alphaToOne in a
+ * fragment program: the corpus reads each program, then makes alphaToOne in those of its folder for it (run.rs:493 to
+ * 496). NULL for words that are no valid module for Vulkan, or that Mesa's reader refuses. */
+struct wc_spirv_shader *wc_spirv_read(const uint32_t *words, size_t count, enum wc_stage stage, const char *entry_point,
+                                      bool alpha_to_one);
+/* The cache's key of a program read: NIR's serialised form, taken before the common form (run.rs:567). */
+bool wc_spirv_shader_key(const struct wc_spirv_shader *shader, struct wc_bytes *out);
+
+/* A program read from SPIR-V in the common form, with its bindings; the shader NULL when it is refused. */
+struct wc_spirv_common_form {
+   struct wc_spirv_common *shader;
+   struct wc_bindings bindings;
+   enum wc_bind_result result;
+};
+/* Gives the program the common form's meaning and bindings in `set` (each kind from its range's first binding), the
+ * step both candidates take first (run.rs:570 and 671). */
+void wc_spirv_to_common_form(struct wc_spirv_shader *taken, uint32_t set,
+                             const struct wc_slot_range ranges[WC_SLOT_KINDS], struct wc_spirv_common_form *out);
+void wc_spirv_common_form_free(struct wc_spirv_common_form *form);
+
+/* Candidate A: the program written as SPIR-V by Zink's compiler in its native Vulkan mode (run.rs:672). False for a
+ * program not in the form that mode takes. */
+bool wc_spirv_common_to_spirv(struct wc_spirv_common *taken, struct wc_words *out);
+/* Candidate B: the program out of SSA and flattened (run.rs:571, through crates/nir/src/direct.rs:974 to 984). */
+bool wc_spirv_common_flatten(struct wc_spirv_common *taken, struct wc_flat *out);
+
+/* One GLSL program's stages as the OpenGL driver receives them, by enum wc_stage (NULL where the
+ * program has none), each stage's names, and the compiler's and linker's messages; given back
+ * with wc_glsl_program_free. */
+struct wc_glsl_program {
+   struct wc_received *stages[WC_STAGES];
+   struct wc_glsl_names names[WC_STAGES];
+   char *log;
+};
+
+/* Compiles and links the sources (by enum wc_stage, NULL for none) with Mesa's GLSL compiler, then
+ * takes st/mesa's steps for the OpenGL driver's capabilities; false when either step fails. */
+bool wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out);
+void wc_glsl_program_free(struct wc_glsl_program *program);
+
+/* A stage after the driver's steps at its creation, and what the driver reads of it then and at its draws. */
+struct wc_prepared_form {
+   /* NULL when the cache's key could not be made (out of memory). */
+   struct wc_prepared *shader;
+   /* The cache's key: NIR's serialised form (a prepared stage's after every step, state.rs:1178 to 1180; a
+    * variant's as the settings say, draw.rs:807 to 815). */
+   struct wc_bytes key;
+   /* The outputs it streams and each buffer's bytes a vertex (state.rs:1157 to 1162); none when it streams a value
+    * the route places neither at a location nor as the position (`streams_elsewhere`). */
+   struct wc_stream_output *streamed;
+   uint32_t streamed_count;
+   uint32_t strides[WC_STREAM_BUFFERS];
+   bool streams_elsewhere;
+   /* state.rs:1164 to 1169. */
+   bool reads_sample_positions;
+   bool writes_sample_mask;
+   bool fetches_target;
+   uint64_t formatless_images;
+   uint64_t integer_sampled_units;
+   /* UINT32_MAX for a program naming no layer. */
+   uint32_t named_layer;
+   /* A vertex or evaluation program using storage: the pass-through geometry programs by the primitive taken
+    * (state.rs:1174 to 1176); `passes_through` false for any other. */
+   bool passes_through;
+   struct wc_made *pass_through[WC_PASS_THROUGH_INPUTS];
+   /* What the driver reads at its draws (draw.rs:2346, 2393, 2414, 2576, 3422 and 3509). */
+   uint32_t generic_end;
+   uint32_t geometry_vertices_out;
+   uint32_t control_points_out;
+   bool makes_points;
+};
+
+/* The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as
+ * words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment
+ * program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at
+ * a location; the facts read; a vertex or evaluation program's pass-through programs made. */
+void wc_received_prepare(struct wc_received *taken, struct wc_prepared_form *out);
+void wc_prepared_form_free(struct wc_prepared_form *form);
+
+/* What a draw makes a variant of a program for (draw.rs:779 to 818). */
+struct wc_variant_settings {
+   /* The position's transform (none when every field is false). */
+   struct wc_position_transform transform;
+   /* The transform the cache's key is taken with: where it is not `transform`, the key is of a copy with it applied
+    * after `transform` (a geometry program's records, draw.rs:807 to 815). */
+   struct wc_position_transform key_transform;
+   /* A program reading its first target's texels reads them from the texture at this unit, multisampled where the
+    * target is. */
+   uint32_t fetch_unit;
+   bool fetch_multisampled;
+   /* Targets of one sample, and their sample count. */
+   bool single_sampled;
+   uint32_t samples;
+   /* The common form's set and each kind's range. */
+   uint32_t set;
+   struct wc_slot_range ranges[WC_SLOT_KINDS];
+};
+
+/* Why a variant was not made. */
+enum wc_variant_result {
+   WC_VARIANT_MADE,
+   /* A gather of an integer cube map the program also samples (draw.rs:788 to 793). */
+   WC_VARIANT_GATHERS_INTEGER_CUBE,
+   /* Where the samples of the targets' sample count are is not known (draw.rs:801 to 806). */
+   WC_VARIANT_SAMPLES_UNKNOWN,
+   /* The common form's refusals (wc_bind_result's). */
+   WC_VARIANT_BEYOND_LIMIT,
+   WC_VARIANT_UNBOUNDED,
+   WC_VARIANT_OUT_OF_MEMORY,
+};
+
+/* A draw's variant, its key and its bindings; the shader NULL when `result` is not WC_VARIANT_MADE. */
+struct wc_variant_form {
+   struct wc_variant *shader;
+   enum wc_variant_result result;
+   struct wc_bytes key;
+   struct wc_bindings bindings;
+};
+
+/* The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed,
+ * integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles`
+ * swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted,
+ * reads at offsets and samples made from the interpolated values; the key taken; the common form. */
+void wc_prepared_variant(const struct wc_prepared *shader, struct wc_variant_settings settings,
+                         const struct wc_texture_swizzle *swizzles, size_t swizzle_count,
+                         const struct wc_nearest_sampler *samplers, size_t sampler_count, struct wc_variant_form *out);
+void wc_variant_form_free(struct wc_variant_form *form);
+
+/* What drawing points as squares makes (draw.rs:3416 to 3550). */
+enum wc_squares_kind {
+   /* Every point is a pixel: the back end's own points (draw.rs:3428 to 3432 and 3516 to 3520). */
+   WC_SQUARES_ONE_PIXEL,
+   WC_SQUARES_MADE,
+   /* None made: a program writing clip distances or outputs at offsets known only when run, or out of memory. */
+   WC_SQUARES_REFUSED,
+};
+
+struct wc_squares {
+   enum wc_squares_kind kind;
+   /* Whether the program writes a point size (then also at `at`). */
+   bool sized;
+   /* The vertex program drawn before the squares where it writes a point size: a copy also writing it at `at`. */
+   struct wc_made *before;
+   struct wc_made *geometry;
+};
+
+/* A vertex program's points drawn as squares where the back end draws points of one size (draw.rs:3426 to 3441): a
+ * copy writing its point size also at the generic slot `at`; nothing where every point is a pixel; the geometry
+ * program drawing the squares (sized to at most `largest`), its uniform blocks as words. */
+void wc_prepared_points_as_squares(const struct wc_prepared *vs, uint32_t at, float largest, struct wc_squares *out);
+/* A geometry program's points drawn as squares (draw.rs:3514 to 3522): nothing where every point is a pixel; the
+ * program rewritten to draw squares, of at most `largest`, its size else read from uniform block `block`. */
+void wc_prepared_geometry_points_as_squares(const struct wc_prepared *gs, uint32_t at, float largest, uint32_t block,
+                                            struct wc_squares *out);
+void wc_squares_free(struct wc_squares *squares);
+
+/* The cache's key of a made program (state.rs:1186, draw.rs:3445 and 3525). */
+bool wc_made_key(const struct wc_made *shader, struct wc_bytes *out);
+/* For a made geometry program writing gl_Layer, the location after its generic outputs (state.rs:1195); UINT32_MAX
+ * for one naming no layer. */
+uint32_t wc_made_named_layer_location(const struct wc_made *shader);
+/* The driver's steps at a draw on a made program, as on a prepared one (draw.rs:779 to 818). */
+void wc_made_variant(const struct wc_made *shader, struct wc_variant_settings settings,
+                     const struct wc_texture_swizzle *swizzles, size_t swizzle_count,
+                     const struct wc_nearest_sampler *samplers, size_t sampler_count, struct wc_variant_form *out);
+
+/* A variant out of SSA and flattened: the route the driver converts it by (draw.rs:840, 978, 1034 and 1081, through
+ * crates/nir/src/direct.rs:974 to 984), `points_in` a tessellation program's input control points. */
+bool wc_variant_flatten(struct wc_variant *taken, uint32_t points_in, struct wc_flat *out);
+
+/* Each shader given back. */
+void wc_spirv_shader_free(struct wc_spirv_shader *shader);
+void wc_spirv_common_free(struct wc_spirv_common *shader);
+void wc_received_free(struct wc_received *shader);
+void wc_prepared_free(struct wc_prepared *shader);
+void wc_made_free(struct wc_made *shader);
+void wc_variant_free(struct wc_variant *shader);
 void wc_bytes_free(struct wc_bytes *bytes);
 void wc_words_free(struct wc_words *words);
-void wc_bindings_free(struct wc_bindings *bindings);
 
 #ifdef __cplusplus
 }

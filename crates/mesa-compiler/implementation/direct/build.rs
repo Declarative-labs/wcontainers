@@ -37,6 +37,8 @@ const FLAT_HEADER: &str = "bridge/flat.h";
 /// The GLSL front (C++, Mesa's GLSL compiler) and what the bridge's files share.
 const GLSL_SOURCE: &str = "bridge/glsl.cpp";
 const PRIVATE_HEADER: &str = "bridge/bridge_private.h";
+/// The single steps, which only the bridge's own files call.
+const STEPS_HEADER: &str = "bridge/steps.h";
 const GLSL_LIBRARY: &str = "wcontainers_mesa_compiler_glsl";
 const BRIDGE_LIBRARY: &str = "wcontainers_mesa_compiler_bridge";
 /// The file whose flags (defines and C standard) the bridge takes from Mesa's compile commands.
@@ -139,6 +141,7 @@ fn main() {
     println!("{RERUN_IF_CHANGED}{GLSL_SOURCE}");
     println!("{RERUN_IF_CHANGED}{SPIRV_SOURCE}");
     println!("{RERUN_IF_CHANGED}{PRIVATE_HEADER}");
+    println!("{RERUN_IF_CHANGED}{STEPS_HEADER}");
     let roots = [source_folder(build), build.clone()];
     let includes: Vec<PathBuf> = INCLUDES
         .iter()

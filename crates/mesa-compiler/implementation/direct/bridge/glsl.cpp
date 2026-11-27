@@ -589,8 +589,10 @@ wc_glsl_to_nir(const char *const sources[WC_STAGES], struct wc_glsl_program *out
       }
       wc_nir_buffers_as_words(nir, sizes, count, count);
       free(sizes);
-      out->stages[s] = nir_shader_clone(NULL, nir);
-      wc_optimize(out->stages[s]);
+      nir_shader *received = nir_shader_clone(NULL, nir);
+      if (received)
+         wc_optimize(received);
+      out->stages[s] = reinterpret_cast<struct wc_received *>(received);
    }
    standalone_destroy_shader_program(whole);
    free(ctx->screen);

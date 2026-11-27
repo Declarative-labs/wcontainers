@@ -9,6 +9,8 @@ pub const NARROW_BITS: u32 = 16;
 pub const PASS_THROUGH_INPUTS: u32 = 5;
 /// `WC_SOURCES` of the bridge's headers.
 pub const SOURCES: u32 = 5;
+/// `WC_STREAM_BUFFERS` of the bridge's headers.
+pub const STREAM_BUFFERS: u32 = 4;
 /// `WC_TESS_INNER_LEVELS` of the bridge's headers.
 pub const TESS_INNER_LEVELS: u32 = 2;
 /// `WC_TESS_OUTER_LEVELS` of the bridge's headers.
@@ -205,6 +207,12 @@ pub const SLOT_TEXTURE: u32 = 2;
 pub const SLOT_STORAGE: u32 = 3;
 /// `WC_SLOT_KINDS` of `enum wc_slot_kind`.
 pub const SLOT_KINDS: u32 = 4;
+/// `WC_SQUARES_ONE_PIXEL` of `enum wc_squares_kind`.
+pub const SQUARES_ONE_PIXEL: u32 = 0;
+/// `WC_SQUARES_MADE` of `enum wc_squares_kind`.
+pub const SQUARES_MADE: u32 = 1;
+/// `WC_SQUARES_REFUSED` of `enum wc_squares_kind`.
+pub const SQUARES_REFUSED: u32 = 2;
 /// `WC_STAGE_VERTEX` of `enum wc_stage`.
 pub const STAGE_VERTEX: u32 = 0;
 /// `WC_STAGE_FRAGMENT` of `enum wc_stage`.
@@ -411,6 +419,18 @@ pub const VAR_PRIVATE: u32 = 7;
 pub const VAR_FUNCTION: u32 = 8;
 /// `WC_VAR_OTHER` of `enum wc_var_mode`.
 pub const VAR_OTHER: u32 = 9;
+/// `WC_VARIANT_MADE` of `enum wc_variant_result`.
+pub const VARIANT_MADE: u32 = 0;
+/// `WC_VARIANT_GATHERS_INTEGER_CUBE` of `enum wc_variant_result`.
+pub const VARIANT_GATHERS_INTEGER_CUBE: u32 = 1;
+/// `WC_VARIANT_SAMPLES_UNKNOWN` of `enum wc_variant_result`.
+pub const VARIANT_SAMPLES_UNKNOWN: u32 = 2;
+/// `WC_VARIANT_BEYOND_LIMIT` of `enum wc_variant_result`.
+pub const VARIANT_BEYOND_LIMIT: u32 = 3;
+/// `WC_VARIANT_UNBOUNDED` of `enum wc_variant_result`.
+pub const VARIANT_UNBOUNDED: u32 = 4;
+/// `WC_VARIANT_OUT_OF_MEMORY` of `enum wc_variant_result`.
+pub const VARIANT_OUT_OF_MEMORY: u32 = 5;
 /// `WC_WRAP_REPEAT` of `enum wc_wrap`.
 pub const WRAP_REPEAT: u32 = 0;
 /// `WC_WRAP_CLAMP_TO_EDGE` of `enum wc_wrap`.
