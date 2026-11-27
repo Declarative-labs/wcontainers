@@ -14,6 +14,7 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 use crate::memory_space::MemorySpace;
 
 /// The runner of guest threads.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Executor: BehaviorSource {
     type TranslatorConfig: Default;
     type GuestMemory: MemorySpace;
@@ -37,6 +38,7 @@ pub trait Executor: BehaviorSource {
 }
 
 /// One execution of a guest thread, not yet run.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Execution {
     type ProcessorState;
     /// What the executor waits for when it cannot go on.
@@ -66,6 +68,7 @@ pub type PageTableOf<E> = <<E as Executor>::GuestMemory as MemorySpace>::PageTab
 /// The handler of a guest's traps: the points where the guest stops and control passes to the system.
 ///
 /// The guest stays stopped at the trap while a method runs.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait TrapHandler {
     fn handle_system_call(&mut self, request: SystemCallRequest) -> SystemCallResponse;
 
@@ -91,11 +94,13 @@ pub enum InterruptResponse {
     Terminate,
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ExecutionInterrupter: Send + Sync {
     fn interrupt(&self);
 }
 
 /// An executor that can watch one thread and not its siblings.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait PerThreadWatch: Executor {
     fn set_thread_permissions(
         &mut self,

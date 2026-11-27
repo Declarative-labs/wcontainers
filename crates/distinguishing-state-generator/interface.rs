@@ -3,6 +3,7 @@
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
 
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait DistinguishingStateGenerator<Architecture: ProcessorArchitecture> {
     // VERUS: no `impl Trait` in a trait, so the returned iterator is a named type.
     type States<'generator>: Iterator<Item = ExecutionState<'static, Architecture>>
