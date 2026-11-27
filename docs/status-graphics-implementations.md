@@ -1131,8 +1131,11 @@ only with the feature (NEEDED-FROM-API-CRATES.md, "After GI8 part B's first step
   their C order), refused by name as `ConvertError::Unknown(enumeration, value)`: the flat form's stage, type
   kinds, scalars, dimensions, variable modes, built-ins, interpolations, storage formats, instruction kinds,
   geometry and tessellation enumerations; `to_common_form`'s result code and each binding's kind (the kind was an
-  unchecked array index before); the GLSL names' kind and interpolation. This closes the second open SECURITY
-  finding (enumerations from the C bridge transmuted with no range check) on our side.
+  unchecked array index before); the GLSL names' kind and interpolation. CORRECTION of the third run's part A note:
+  there only the instruction operations (`variant`, `deref_kind`) were checked; the structure fields above were still
+  `repr(C)` Rust enums the bridge filled in place (`Kind`, `FlatStage`, `TypeKind`, `FlatScalar`, `Dim`, `VarMode`,
+  `FlatBuiltIn`, `FlatInterpolation`, `Format`, the geometry and tessellation enums, `BindResult`, `GlslNameKind`,
+  `Interpolation`), undefined for a value outside them (READ at 7e53ee79e). Now every one is checked.
 - Hostile test, tests/hostile_compiler.rs: a stand-in implementation of the trait giving numbers past every
   enumeration (0x80000001); 7 tests, each refusal by name, no panic, no Mesa reached.
 - MEASURED at the pushed 383cea56b, both machines alike (Mesa built in the job, 101 s x86-64):
@@ -1304,5 +1307,6 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   outside API's `implementation/direct`); crates/mesa-compiler 0. Closed on our side: enumerations from the C bridge
   read with no range check (every one now a checked conversion, hostile test tests/hostile_compiler.rs, 7 passing on
   both machines). New dependencies: the workspace crates wcontainers-mesa-compiler and -direct only (no outside
-  crate; Cargo.lock hash 7c2859246daceed2 before and after every job). The SAMPLES_PASSED abort finding is opengl's
-  and waits with it on AC8. No hostile-guest suite exists, none was run.
+  crate; Cargo.lock hash 7c2859246daceed2 before and after every job). The SAMPLES_PASSED finding stays as part A
+  recorded it (counted, refusals unwind); its hostile test through st/mesa waits with opengl on AC8. No
+  hostile-guest suite exists, none was run.
