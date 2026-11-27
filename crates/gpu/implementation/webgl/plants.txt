@@ -1,0 +1,305 @@
+# The WebGL 2 back end's committed plant list for the text cargo-mutants never mutates: the GLSL strings of
+# depth.rs on the paths the 24-bit depth work added (`unorm24` and the two conversions it checks against, the
+# depth read's value, the comparison pass) and the Rust arguments that feed the comparison pass, one plant per
+# operator and constant. Every plant keeps the GLSL valid, so it compiles and links; each must make a test fail.
+# Run from the repository's root inside its `nix develop`, with an EGL library named (WCONTAINERS_EGL_FOLDER,
+# EGL_PLATFORM=surfaceless, LD_LIBRARY_PATH) as the crate's tests need:
+#   python3 -I tools/plants/run-plants.py crates/gpu/implementation/webgl/plants.txt --workers 3
+# Not planted (said, not silent): the stencil programs, the cube direction (TOWARDS), the edge and bias
+# probes' programs and the full-screen triangle, none of them the 24-bit depth work.
+# No plant changes how unorm24 takes the whole part of d (2^24 - 1): for every word under both conversions
+# the product rounds to a whole number (depth.rs's tests run all 2^24; truncating, rounding and
+# taking the ceiling were each planted on 2026-11-27 and gave the same words), so the choice is no operator.
+test: cargo test -j 4 --no-fail-fast -p wcontainers-gpu-webgl --lib --test conformance --test handles
+
+plant: product sample test
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+if (reciprocal24 != 0.0) return
+new:
+if (reciprocal24 == 0.0) return
+end
+
+plant: product sample product
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+floatBitsToUint(float(c) * reciprocal24);
+new:
+floatBitsToUint(float(c) / reciprocal24);
+end
+
+plant: nearest sample zero test
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+return c == 0u ? 0u :
+new:
+return c != 0u ? 0u :
+end
+
+plant: nearest sample zero word
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+return c == 0u ? 0u :
+new:
+return c == 1u ? 0u :
+end
+
+plant: nearest sample zero value
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+return c == 0u ? 0u :
+new:
+return c == 0u ? 1u :
+end
+
+plant: nearest sample product
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+floatBitsToUint(float(c) * exp2(-24.0)) + 1u;
+new:
+floatBitsToUint(float(c) / exp2(-24.0)) + 1u;
+end
+
+plant: nearest sample scale
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+floatBitsToUint(float(c) * exp2(-24.0)) + 1u;
+new:
+floatBitsToUint(float(c) * exp2(-23.0)) + 1u;
+end
+
+plant: nearest sample plus one
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+floatBitsToUint(float(c) * exp2(-24.0)) + 1u;
+new:
+floatBitsToUint(float(c) * exp2(-24.0)) + 0u;
+end
+
+plant: nearest sample plus sign
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+floatBitsToUint(float(c) * exp2(-24.0)) + 1u;
+new:
+floatBitsToUint(float(c) * exp2(-24.0)) - 1u;
+end
+
+plant: unorm24 scale
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+uint e = uint(d * 16777215.0);
+new:
+uint e = uint(d * 16777216.0);
+end
+
+plant: unorm24 product
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+uint e = uint(d * 16777215.0);
+new:
+uint e = uint(d / 16777215.0);
+end
+
+plant: unorm24 bits
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+uint bits = floatBitsToUint(d);
+    return
+new:
+uint bits = floatBitsToUint(d) + 1u;
+    return
+end
+
+plant: unorm24 rounded test
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+return sampled24(e) != bits &&
+new:
+return sampled24(e) == bits &&
+end
+
+plant: unorm24 and
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+sampled24(e) != bits && sampled24(e - 1u)
+new:
+sampled24(e) != bits || sampled24(e - 1u)
+end
+
+plant: unorm24 below test
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+sampled24(e - 1u) == bits ? e - 1u : e;
+new:
+sampled24(e - 1u) != bits ? e - 1u : e;
+end
+
+plant: unorm24 below word
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+sampled24(e - 1u) == bits ? e - 1u : e;
+new:
+sampled24(e - 2u) == bits ? e - 1u : e;
+end
+
+plant: unorm24 below word sign
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+sampled24(e - 1u) == bits ? e - 1u : e;
+new:
+sampled24(e + 1u) == bits ? e - 1u : e;
+end
+
+plant: unorm24 below value
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+== bits ? e - 1u : e;
+new:
+== bits ? e - 2u : e;
+end
+
+plant: unorm24 below value sign
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+== bits ? e - 1u : e;
+new:
+== bits ? e + 1u : e;
+end
+
+plant: unorm24 kept value
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+== bits ? e - 1u : e;
+new:
+== bits ? e - 1u : e + 1u;
+end
+
+plant: read float test
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+"scale == 0u ? floatBitsToUint(d)
+new:
+"scale == 1u ? floatBitsToUint(d)
+end
+
+plant: read float bits
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+"scale == 0u ? floatBitsToUint(d)
+new:
+"scale == 0u ? floatBitsToUint(d) + 1u
+end
+
+plant: read 24-bit test
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+: scale == 16777215u ? unorm24(d)
+new:
+: scale == 16777214u ? unorm24(d)
+end
+
+plant: read 24-bit value
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+: scale == 16777215u ? unorm24(d)
+new:
+: scale == 16777215u ? unorm24(d) + 1u
+end
+
+plant: read 16-bit round
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+min(uint(round(d * float(scale))), scale)
+new:
+min(uint(d * float(scale)), scale)
+end
+
+plant: read 16-bit product
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+min(uint(round(d * float(scale))), scale)
+new:
+min(uint(round(d / float(scale))), scale)
+end
+
+plant: read 16-bit cap
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+min(uint(round(d * float(scale))), scale)
+new:
+max(uint(round(d * float(scale))), scale)
+end
+
+plant: read shift
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+ivec2 p = ivec2(gl_FragCoord.xy) + at.xy;
+    {fetch}
+new:
+ivec2 p = ivec2(gl_FragCoord.xy) - at.xy;
+    {fetch}
+end
+
+plant: equal depth
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+    gl_FragDepth = depth;
+new:
+    gl_FragDepth = depth * 0.5;
+end
+
+plant: equal word
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+    o = uvec4(word, 0u, 0u, 0u);
+new:
+    o = uvec4(word + 1u, 0u, 0u, 0u);
+end
+
+plant: equal channel
+file: crates/gpu/implementation/webgl/depth.rs
+old:
+    o = uvec4(word, 0u, 0u, 0u);
+new:
+    o = uvec4(0u, word, 0u, 0u);
+end
+
+plant: equal uniform word
+file: crates/gpu/implementation/webgl/implementation.rs
+old:
+gpu.gl.uniform1ui(word_at, word);
+new:
+gpu.gl.uniform1ui(word_at, word + 1);
+end
+
+plant: equal uniform depth
+file: crates/gpu/implementation/webgl/implementation.rs
+old:
+gpu.gl.uniform1f(depth_at, depth::nearest(word));
+new:
+gpu.gl.uniform1f(depth_at, depth::nearest(word + 1));
+end
+
+plant: equal test
+file: crates/gpu/implementation/webgl/implementation.rs
+old:
+    if v.depth_func != gles::EQUAL {
+        gl.depth_func(gles::EQUAL);
+        v.depth_func = gles::EQUAL;
+new:
+    if v.depth_func != gles::LEQUAL {
+        gl.depth_func(gles::LEQUAL);
+        v.depth_func = gles::LEQUAL;
+end
+
+plant: equal placed at origin
+file: crates/gpu/implementation/webgl/implementation.rs
+old:
+    let placed_at = Origin {
+        x: at[0],
+        y: at[1],
+new:
+    let placed_at = Origin {
+        x: 0,
+        y: 0,
+end

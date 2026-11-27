@@ -1,0 +1,357 @@
+# The WebGPU back end's committed plant list for the text cargo-mutants never mutates: the WGSL strings of
+# fill.rs on the paths the 24-bit depth work added (the read of stored 24-bit depth, `unorm24` and the two
+# conversions it checks against; the float nearest a 24-bit word; the comparison pass; the read and depth
+# programs' shift), one plant per operator and constant, and the Rust arguments that feed those programs.
+# Every plant keeps the WGSL valid, so it compiles and the device builds it; each must make a test fail.
+# Run from the repository's root inside its `nix develop`, with lavapipe named as unit_tests/scenes.rs says
+# (VK_ICD_FILENAMES, WEBGPU_API=vulkan) and WCONTAINERS_SPIRV_TOOLS set:
+#   python3 -I tools/plants/run-plants.py crates/gpu/implementation/webgpu/plants.txt --workers 3
+# Not planted (said, not silent): depth_of_float_bits (a NaN written as depth becomes zero; GI2's, not the
+# 24-bit work), the clear, stencil, present, resolve and packing programs, and COVER_WGSL, which every
+# program of the back end draws with.
+# No plant changes how unorm24 takes the whole part of d (2^24 - 1): for every word under both conversions
+# the product rounds to a whole number (unit_tests/unorm24_read.rs runs all 2^24; truncating, rounding and
+# taking the ceiling were each planted on 2026-11-27 and gave the same words), so the choice is no operator.
+test: cargo test -j 4 --no-fail-fast -p wcontainers-gpu-webgpu --lib --test blocks --test converted --test depth --test features --test fitted --test raster --test surface --test timestamps --test vertices --test volatile --test conformance -- --skip programs_compute_in_16_bit_floats --skip bc_textures_read_back_as_written_and_bc6h_and_bc7_sample_exactly
+
+plant: unorm24 scale
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+let e = u32(d * {MAX}.0);
+new:
+let e = u32(d * 16777216.0);
+end
+
+plant: unorm24 product
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+let e = u32(d * {MAX}.0);
+new:
+let e = u32(d / {MAX}.0);
+end
+
+plant: unorm24 bits
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+let bits = bitcast<u32>(d);
+new:
+let bits = bitcast<u32>(d) + 1u;
+end
+
+plant: unorm24 kept value
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+return select(e, e - 1u,
+new:
+return select(e + 1u, e - 1u,
+end
+
+plant: unorm24 below value
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+return select(e, e - 1u,
+new:
+return select(e, e - 2u,
+end
+
+plant: unorm24 below value sign
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+return select(e, e - 1u,
+new:
+return select(e, e + 1u,
+end
+
+plant: unorm24 rounded test
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+sampled24(e) != bits &&
+new:
+sampled24(e) == bits &&
+end
+
+plant: unorm24 and
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+sampled24(e) != bits && sampled24
+new:
+sampled24(e) != bits || sampled24
+end
+
+plant: unorm24 below test
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+sampled24(e - 1u) == bits);
+new:
+sampled24(e - 1u) != bits);
+end
+
+plant: unorm24 below word
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+sampled24(e - 1u) == bits);
+new:
+sampled24(e - 2u) == bits);
+end
+
+plant: unorm24 below word sign
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+sampled24(e - 1u) == bits);
+new:
+sampled24(e + 1u) == bits);
+end
+
+plant: nearest sample plus one
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+0x1p-24f) + 1u, 0u, c == 0u)
+new:
+0x1p-24f) + 0u, 0u, c == 0u)
+end
+
+plant: nearest sample plus sign
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+0x1p-24f) + 1u, 0u, c == 0u)
+new:
+0x1p-24f) - 1u, 0u, c == 0u)
+end
+
+plant: nearest sample scale
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+select(bitcast<u32>(f32(c) * 0x1p-24f) + 1u
+new:
+select(bitcast<u32>(f32(c) * 0x1p-23f) + 1u
+end
+
+plant: nearest sample product
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+select(bitcast<u32>(f32(c) * 0x1p-24f) + 1u
+new:
+select(bitcast<u32>(f32(c) / 0x1p-24f) + 1u
+end
+
+plant: nearest sample zero value
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
++ 1u, 0u, c == 0u)
+new:
++ 1u, 1u, c == 0u)
+end
+
+plant: nearest sample zero test
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
++ 1u, 0u, c == 0u)
+new:
++ 1u, 0u, c != 0u)
+end
+
+plant: nearest sample zero word
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
++ 1u, 0u, c == 0u)
+new:
++ 1u, 0u, c == 1u)
+end
+
+plant: product sample reciprocal
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+bitcast<u32>(f32(c) * 0x1.000002p-24f)
+new:
+bitcast<u32>(f32(c) * 0x1.000004p-24f)
+end
+
+plant: product sample product
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+bitcast<u32>(f32(c) * 0x1.000002p-24f)
+new:
+bitcast<u32>(f32(c) / 0x1.000002p-24f)
+end
+
+plant: which sample
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+    let sampled = if by_product {
+        SAMPLED_PRODUCT
+    } else {
+        SAMPLED_NEAREST
+    };
+new:
+    let sampled = if by_product {
+        SAMPLED_NEAREST
+    } else {
+        SAMPLED_PRODUCT
+    };
+end
+
+plant: unorm24 largest word
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+.replace("{MAX}", &Format::UNORM24_MAX.to_string())
+new:
+.replace("{MAX}", &(Format::UNORM24_MAX - 1).to_string())
+end
+
+plant: nearest of word product
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+bitcast<u32>(f32({V}) * 0x1p-24f) + select
+new:
+bitcast<u32>(f32({V}) / 0x1p-24f) + select
+end
+
+plant: nearest of word scale
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+bitcast<u32>(f32({V}) * 0x1p-24f) + select
+new:
+bitcast<u32>(f32({V}) * 0x1p-23f) + select
+end
+
+plant: nearest of word plus
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+0x1p-24f) + select(0u, 1u, {V} != 0u)
+new:
+0x1p-24f) - select(0u, 1u, {V} != 0u)
+end
+
+plant: nearest of word zero step
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+select(0u, 1u, {V} != 0u)
+new:
+select(1u, 1u, {V} != 0u)
+end
+
+plant: nearest of word step
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+select(0u, 1u, {V} != 0u)
+new:
+select(0u, 2u, {V} != 0u)
+end
+
+plant: nearest of word zero test
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+select(0u, 1u, {V} != 0u)
+new:
+select(0u, 1u, {V} == 0u)
+end
+
+plant: nearest of word zero word
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+select(0u, 1u, {V} != 0u)
+new:
+select(0u, 1u, {V} != 1u)
+end
+
+plant: stored word mask
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+&format!("(v.x & {}u)", Format::UNORM24_MAX)
+new:
+&format!("(v.x | {}u)", Format::UNORM24_MAX)
+end
+
+plant: stored word mask width
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+&format!("(v.x & {}u)", Format::UNORM24_MAX)
+new:
+&format!("(v.x & {}u)", Format::UNORM24_MAX >> 1)
+end
+
+plant: sampled depth channel
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+const UNORM24_OF_SAMPLE: &str = "unorm24(v.x)";
+new:
+const UNORM24_OF_SAMPLE: &str = "unorm24(v.y)";
+end
+
+plant: equal depth word
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+return Decided(bitcast<f32>(decided.y),
+new:
+return Decided(bitcast<f32>(decided.x),
+end
+
+plant: equal written word
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+vec4<u32>(decided.x, 0u, 0u, 0u));
+new:
+vec4<u32>(decided.y, 0u, 0u, 0u));
+end
+
+plant: equal written channel
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+vec4<u32>(decided.x, 0u, 0u, 0u));
+new:
+vec4<u32>(0u, decided.x, 0u, 0u));
+end
+
+plant: equal test
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+depth_compare: Some(wgpu::CompareFunction::Equal),
+new:
+depth_compare: Some(wgpu::CompareFunction::LessEqual),
+end
+
+plant: equal uniform word
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+[w, nearest(w).to_bits(), 0, 0]
+new:
+[w + 1, nearest(w).to_bits(), 0, 0]
+end
+
+plant: equal uniform depth
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+[w, nearest(w).to_bits(), 0, 0]
+new:
+[w, nearest(w + 1).to_bits(), 0, 0]
+end
+
+plant: equal rectangle
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+        rp.set_scissor_rect(at[0], at[1], size[0], size[1]);
+    };
+new:
+        rp.set_scissor_rect(0, 0, size[0], size[1]);
+    };
+end
+
+plant: read shift
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
+             return vec4<u32>
+new:
+let v = textureLoad(src, vec2i(p.xy) - shift.xy, 0);\n\
+             return vec4<u32>
+end
+
+plant: depth shift
+file: crates/gpu/implementation/webgpu/fill.rs
+old:
+let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
+             return {depth};
+new:
+let v = textureLoad(src, vec2i(p.xy) - shift.xy, 0);\n\
+             return {depth};
+end
