@@ -1,5 +1,4 @@
-//! What the tests give the simulation: one known behavior of each instruction, as one chip would show them, and seeded
-//! random bytes.
+//! What the tests give the simulation: one known behavior of each instruction, as one chip shows them, and random bytes.
 
 use std::cmp::Reverse;
 use std::convert::Infallible;
@@ -17,12 +16,16 @@ use wcontainers_random_source_seeded::{SeededRandomSource, SeededRandomSourceCon
 /// The seed of the values the simulation chooses where a behavior leaves them undecided.
 pub const SEED: u64 = 0;
 
-/// The behaviors the tests' simulation runs: for each instruction, the first the architecture lists that one chip shows
-/// together with the first behavior of every more specific encoding.
+/// The behaviors the tests' simulation runs, one a chip shows for each instruction.
+///
+/// For each instruction it is the first the architecture lists that one chip shows together with the first behavior of
+/// every more specific encoding.
 pub type FirstBehaviors = MeasuredInstructionSet<Arm64<User>>;
 
-/// Returns, for every instruction that has a known behavior, the first that gives what the first behavior of the most
-/// specific listed encoding gives on each generated state whose word that encoding takes.
+/// Returns for every instruction with a known behavior the first that agrees with the more specific encodings.
+///
+/// It agrees where it gives what the first behavior of the most specific listed encoding gives on each generated state
+/// whose word that encoding takes.
 ///
 /// The simulation runs a word as the listed encoding that fixes most bits, as a chip does: so a HINT whose first
 /// behavior is a chip's without FEAT_PAuth would disagree on hint 7, which XPACLRI's behavior strips. An instruction no
@@ -44,8 +47,9 @@ pub fn list_first_behaviors() -> FirstBehaviors {
     FirstBehaviors::from_measurements(&chosen)
 }
 
-/// The generated states of the instruction whose word another listed encoding with a known behavior takes, as fixing
-/// more bits, each with that encoding's first behavior.
+/// Lists the generated states of the instruction that a more specific listed encoding takes, with its first behavior.
+///
+/// An encoding takes a state's word where it has a known behavior and fixes more bits than the instruction does.
 fn list_taken_states(
     instruction: Instruction<Infallible>,
     generator: &CriticalValueCut,

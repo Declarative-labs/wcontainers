@@ -1,10 +1,7 @@
 //! One address space of the stand-in: a unicorn instance holding the pages it maps, and host memory for the rest.
 //!
-//! Unicorn owns the bytes of the pages it maps; a page that allows nothing is not mapped, so it faults by being absent,
-//! and its bytes wait in host memory. A range that shows shared pages reads and writes them in host memory between
-//! turns; unicorn holds a copy for a turn: before it, unicorn takes each page that changed since it last took them, and
-//! after it gives back what the guest wrote.
-//! Where two ranges of one space show the same shared bytes, a store hook copies each guest store to the other.
+//! A page that allows nothing is not mapped. Shared pages live in host memory: unicorn takes those that changed before a
+//! turn and gives back what the guest wrote after it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -22,8 +19,8 @@ use wcontainers_abi::{
     Access, CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock, SYSTEM_CALL_ARGUMENT_COUNT,
     SystemCallNumber, SystemCallRequest,
 };
-use wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
 use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_processor_architecture_arm64::{INSTRUCTION_SIZE, PREDICATE_REGISTERS};
 
 use crate::standin::Unsupported;
 
@@ -83,7 +80,7 @@ const LOWER_LEVELS_AARCH64: u64 = 1 << 10;
 /// Bit 55 of an address, which picks the upper half of the address space, where TBI1 is clear on Linux.
 const UPPER_HALF: u64 = 1 << 55;
 /// The bits of a lower-half address below its tag, the top byte TBI0 leaves out of translation.
-const UNTAGGED: u64 = (1 << 56) - 1;
+pub(crate) const UNTAGGED: u64 = (1 << 56) - 1;
 
 /// The most bytes a space maps in unicorn as one region, a level 2 block of pages.
 ///
@@ -94,7 +91,7 @@ const LARGEST_REGION: u64 = PAGE_SIZE * (PAGE_SIZE / size_of::<u64>() as u64);
 const UNICORN_NO_LIMIT: usize = 0;
 const UNICORN_NO_TIMEOUT: u64 = 0;
 /// The slice that runs one instruction, at one instruction a nanosecond.
-pub(crate) const ONE_INSTRUCTION: u64 = 1;
+const ONE_INSTRUCTION_NANOSECONDS: u64 = ONE_INSTRUCTION_COUNT as u64;
 /// The count of instructions unicorn runs that is one instruction.
 const ONE_INSTRUCTION_COUNT: usize = 1;
 
@@ -725,6 +722,11 @@ impl Memory {
         }
     }
 
+    /// Returns whether the page, which shows no shared pages, may hold something other than zeros.
+    pub(crate) fn is_own_touched(&self, page: u64) -> bool {
+        self.touched.contains(page)
+    }
+
     /// Takes the addresses out of the shared ranges, splitting those at its ends, and returns the parts taken.
     ///
     /// The addresses taken read as whatever the space's own pages last held there; unicorn's copy stays until a remap.
@@ -956,7 +958,6 @@ impl Memory {
         }
         let last = high / PAGE_SIZE;
         let mut page = low / PAGE_SIZE;
-        let mut pieces = Vec::new();
         while page < last {
             let permissions = self.pages[to_index(page)];
             let run_start = page;
@@ -968,17 +969,32 @@ impl Memory {
                 continue;
             }
             let region = run_start * PAGE_SIZE..page * PAGE_SIZE;
+            let mut held = Vec::new();
+            self.list_held_bytes(region.clone(), &mut held);
+            // A region that refuses stores is mapped writable while its bytes are written, then closed: one rebuild of
+            // unicorn's memory map fewer than opening it after.
+            let opened = !held.is_empty() && !permissions.contains(Permissions::WRITE);
+            let mapped_as = if opened {
+                permissions | Permissions::WRITE
+            } else {
+                permissions
+            };
             self.unicorn
-                .mem_map(region.start, region.end - region.start, prot(permissions))
+                .mem_map(region.start, region.end - region.start, prot(mapped_as))
                 .expect("mapping a region in unicorn");
-            self.mapped.insert(region.start, (region.end, permissions));
+            self.mapped.insert(region.start, (region.end, mapped_as));
+            self.write_unicorn(&held);
+            if opened {
+                self.unicorn
+                    .mem_protect(region.start, region.end - region.start, prot(permissions))
+                    .expect("closing a region unicorn has to writes");
+                self.mapped.insert(region.start, (region.end, permissions));
+            }
             // Its guest may write the pages while it runs, which no touched bit would record.
             if permissions.contains(Permissions::WRITE) {
                 self.touched.touch(run_start..page);
             }
-            self.list_held_bytes(region, &mut pieces);
         }
-        self.write_unicorn(&pieces);
     }
 
     /// Copies the own pages unicorn maps over the region into host memory, before the region goes.
@@ -1000,8 +1016,7 @@ impl Memory {
         }
     }
 
-    /// Adds to the pieces what host memory holds for the pages of a region just mapped: the shared bytes a range shows
-    /// there, or the space's own bytes.
+    /// Adds to the pieces what host memory holds for the pages of a region just mapped, shared or the space's own.
     fn list_held_bytes(&self, region: Range<u64>, pieces: &mut Vec<(u64, Vec<u8>)>) {
         for page in region.start / PAGE_SIZE..region.end / PAGE_SIZE {
             let at = page * PAGE_SIZE;
@@ -1028,13 +1043,10 @@ impl Memory {
         }
     }
 
-    /// Writes each piece, which lies in one page, into unicorn's mapped pages and drops what unicorn translated from
-    /// them: unicorn's own writes leave its translations as they were, so code written over would not be what runs
-    /// next.
+    /// Writes each piece, which lies in one page, into unicorn's mapped pages and drops what unicorn translated from them.
     ///
-    /// Unicorn's write to a region that refuses stores makes the region writable and back, and each change rebuilds its
-    /// memory map (MEASURED by the kernel track: 93% of a node start-up), so such a region is made writable once for all
-    /// its pieces.
+    /// Unicorn's write to a region that refuses stores makes it writable and back, each change rebuilding its memory map
+    /// (MEASURED by the kernel track: 93% of a node start-up), so such a region is made writable once for all pieces.
     fn write_unicorn(&mut self, pieces: &[(u64, Vec<u8>)]) {
         let mut refusing = BTreeMap::new();
         for (address, _) in pieces {
@@ -1319,7 +1331,7 @@ impl Memory {
             ..Stopped::default()
         };
         let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
-            usize::try_from(nanoseconds.max(ONE_INSTRUCTION)).unwrap_or(usize::MAX)
+            usize::try_from(nanoseconds.max(ONE_INSTRUCTION_NANOSECONDS)).unwrap_or(usize::MAX)
         });
         let mut result = self.start(registers.pc, count);
         let mut stopped = std::mem::take(self.unicorn.get_data_mut());
@@ -1443,7 +1455,13 @@ impl Memory {
             .expect("restoring unicorn's fresh CPU state");
         self.run_helper(scratch, data, PREDICATE_LOADER.len());
         self.set_permissions(page.clone(), Permissions::empty());
-        let ran = self.run_loaded(registers, Some(ONE_INSTRUCTION), None, None, fault_run);
+        let ran = self.run_loaded(
+            registers,
+            Some(ONE_INSTRUCTION_NANOSECONDS),
+            None,
+            None,
+            fault_run,
+        );
         self.set_permissions(page.clone(), Permissions::all());
         self.run_helper(scratch + PREDICATE_SAVER, data, PREDICATE_SAVER_CODE.len());
         let mut bytes = [u8::MIN; PREDICATE_BYTES];
@@ -1629,8 +1647,6 @@ fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
         .expect("writing SCTLR_EL1");
 }
 
-/// How many predicate registers SVE has, P0 to P15.
-pub(crate) const PREDICATE_REGISTERS: usize = 16;
 /// The bytes of one predicate register at a 128-bit vector length, one bit for each byte of a vector.
 const PREDICATE_REGISTER_BYTES: usize = size_of::<u16>();
 /// The bytes the predicate registers and FFR take on the scratch page, FFR after P15.

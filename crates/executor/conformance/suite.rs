@@ -110,11 +110,10 @@ const DATA_PERMISSIONS: Permissions = Permissions::READ.union(Permissions::WRITE
 /// machine one job takes.
 pub const AGREEMENT_EXECUTORS: usize = 12;
 
-/// A generator that gives at most `at_most` of the states another gives for each instruction, spread evenly over them
-/// from the first.
+/// A generator that gives a sample of the states another gives for each instruction that still tells its behaviors apart.
 ///
-/// The behavior source's tests run every state on one executor, one after another; an executor that takes a large part
-/// of a millisecond for each runs them on a sample in a time a test run allows.
+/// The sample is at most `at_most` states spread evenly, and for each two known behaviors the spread does not tell
+/// apart, the first state that does: an executor slow at each state runs it in time.
 pub struct Sampled<Generator> {
     pub generator: Generator,
     pub at_most: usize,
@@ -123,6 +122,7 @@ pub struct Sampled<Generator> {
 impl<Architecture, Generator> DistinguishingStateGenerator<Architecture> for Sampled<Generator>
 where
     Architecture: ProcessorArchitecture,
+    Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Architecture>,
 {
     // The sample is taken once all the states are known, so they are held in a vector.
@@ -134,7 +134,47 @@ where
     fn generate_states(&self, instruction: Architecture::Instruction) -> Self::States<'_> {
         let states: Vec<_> = self.generator.generate_states(instruction).collect();
         let step = states.len().div_ceil(self.at_most).max(1);
-        let sample: Vec<_> = states.into_iter().step_by(step).collect();
+        let mut kept: Vec<bool> = (0..states.len())
+            .map(|place| place.is_multiple_of(step))
+            .collect();
+        let behaviors: Vec<_> = Architecture::list_known_behaviors(instruction).collect();
+        let mut together: Vec<(usize, usize)> = (0..behaviors.len())
+            .flat_map(|first| (first + 1..behaviors.len()).map(move |second| (first, second)))
+            .filter(|&(first, second)| behaviors[first] != behaviors[second])
+            .collect();
+        let simulate = |before: &ExecutionState<'static, Architecture>| -> Vec<_> {
+            behaviors
+                .iter()
+                .map(|precise| {
+                    let Ok(after) = precise.simulate_state(before.clone());
+                    after
+                })
+                .collect()
+        };
+        for (before, _) in states.iter().zip(&kept).filter(|(_, kept)| **kept) {
+            if together.is_empty() {
+                break;
+            }
+            let after = simulate(before);
+            together.retain(|&(first, second)| after[first] == after[second]);
+        }
+        for (before, kept) in states.iter().zip(&mut kept) {
+            if together.is_empty() {
+                break;
+            }
+            if *kept {
+                continue;
+            }
+            let after = simulate(before);
+            let still = together.len();
+            together.retain(|&(first, second)| after[first] == after[second]);
+            *kept = together.len() < still;
+        }
+        let sample: Vec<_> = states
+            .into_iter()
+            .zip(kept)
+            .filter_map(|(before, kept)| kept.then_some(before))
+            .collect();
         sample.into_iter()
     }
 }
@@ -1476,14 +1516,10 @@ fn length(addresses: &Range<u64>) -> usize {
         .expect("the suite's addresses fit in host memory")
 }
 
-/// Runs each suite function above as its own test on its values, made anew for every test, and the behavior source's.
+/// Runs each suite function above and the behavior source's as its own test on values made anew for every test.
 ///
-/// The values are an executor, the precise instruction set it should agree with, the generator of the states and the
-/// states the executor cannot execute, none for an executor whose error is `Infallible`.
-///
-/// Where the executor is wrong, two more: the instructions its agreement sets aside, and the generator the behavior
-/// source's tests take. Such an executor shows no one known behavior for the instructions set aside, so the behavior
-/// source's measuring test leaves their states out.
+/// The values: an executor, the set it agrees with, the states' generator and the states it cannot execute; for a wrong
+/// executor also the instructions it sets aside and the generator the behavior source's tests take.
 #[macro_export]
 macro_rules! tests {
     (@executor $executor:expr, $set:expr, $generator:expr, $set_aside:expr) => {

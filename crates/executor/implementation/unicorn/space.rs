@@ -303,18 +303,24 @@ fn copy_from(
                 mapped: true,
             } => memory.show_unmapped(moved(range.start)..moved(range.end), pages, offset, true),
             Part::Own | Part::Shown { mapped: false, .. } => {
+                let own = matches!(part, Part::Own);
                 memory.unshare(moved(range.start)..moved(range.end));
                 for page in range.start / PAGE_SIZE..range.end / PAGE_SIZE {
                     let at = page * PAGE_SIZE;
                     let into = moved(at);
-                    if source.is_touched(page) {
+                    let touched = if own {
+                        source.is_own_touched(page)
+                    } else {
+                        source.is_touched(page)
+                    };
+                    if touched {
                         source
                             .read(at, &mut bytes)
                             .map_err(|_| CopyMemoryError::InvalidAddress(InvalidAddressError))?;
                         memory
                             .write(into, &bytes)
                             .map_err(|_| CopyMemoryError::InvalidAddress(InvalidAddressError))?;
-                    } else if memory.is_touched(into / PAGE_SIZE) {
+                    } else if memory.is_own_touched(into / PAGE_SIZE) {
                         memory
                             .write(into, &zeros)
                             .map_err(|_| CopyMemoryError::InvalidAddress(InvalidAddressError))?;

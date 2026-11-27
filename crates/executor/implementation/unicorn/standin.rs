@@ -38,7 +38,7 @@ use wcontainers_processor_architecture_arm64::{
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::engine::EngineHandle;
-use crate::memory::{Memory, Predicates, SharedPages};
+use crate::memory::{Memory, Predicates, SharedPages, UNTAGGED};
 use crate::space::{UnicornPageTable, UnicornSpace};
 
 /// A process's address space on a host with 32 bit memories.
@@ -94,9 +94,6 @@ pub enum Unsupported {
     /// The state names memory past the end of the stand-in's spaces.
     BeyondSpace { end: u64 },
 }
-
-/// The bits of an address below its tag, the top byte a program's data addresses carry on Linux.
-const UNTAGGED: u64 = (1 << 56) - 1;
 
 /// A request of the kernel's that breaks the [`Cpu`] contract, which the stand-in refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -704,8 +701,7 @@ pub struct StandInExecution<'execution> {
     /// The predicate registers and FFR as the execution started: unicorn's interface reaches neither, and a guest's
     /// whole run has no page to pass them through, so the execution ends with them as they were.
     predicates: Predicates,
-    /// SSBS, DIT and TCO as the execution started, which unicorn's interface does not reach, so the execution ends
-    /// with them as they were.
+    /// SSBS, DIT and TCO as the execution started, which it ends with, as unicorn's interface does not reach them.
     process_state_controls: u64,
     memory: &'execution UnicornSpace,
     raised: Arc<AtomicBool>,
@@ -924,7 +920,7 @@ fn to_register_block(processor: &Processor<()>) -> RegisterBlock {
     }
 }
 
-/// The processor unicorn's registers give, with the predicates and SSBS, DIT and TCO the stand-in carries itself.
+/// Returns the processor unicorn's registers give, with the predicates and SSBS, DIT and TCO the stand-in carries itself.
 fn to_processor(
     registers: &RegisterBlock,
     predicates: Predicates,
