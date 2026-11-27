@@ -814,6 +814,117 @@ pub fn extensions_answer_only_when_named<E: Egl, G: OnEgl<E>>(folder: Option<&Pa
     while gl.get_error() != gl::NO_ERROR {}
 }
 
+/// The front face's stencil reference value.
+const FRONT_REFERENCE: i32 = 3;
+/// The back face's stencil reference value.
+const BACK_REFERENCE: i32 = 5;
+/// The front face's stencil value mask.
+const FRONT_MASK: u32 = 0xF0;
+/// The back face's stencil value mask.
+const BACK_MASK: u32 = 0x0F;
+
+/// The front and back faces' stencil compare and operations are set apart (glStencilFuncSeparate,
+/// glStencilOpSeparate), each face reads back as it was set, and neither call is refused by the implementation.
+pub fn stencil_faces_are_separate<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    // A reference value reads back clamped to the stencil bits of the frame buffer drawn to: one with 8 of them.
+    let mut renderbuffers = [0_u32];
+    gl.gen_renderbuffers(&mut renderbuffers);
+    gl.bind_renderbuffer(gl::RENDERBUFFER, renderbuffers[0]);
+    gl.renderbuffer_storage(gl::RENDERBUFFER, gl::DEPTH24_STENCIL8, SIDE, SIDE);
+    let mut framebuffers = [0_u32];
+    gl.gen_framebuffers(&mut framebuffers);
+    gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffers[0]);
+    gl.framebuffer_renderbuffer(gl::FRAMEBUFFER, gl::DEPTH_STENCIL_ATTACHMENT, gl::RENDERBUFFER, renderbuffers[0]);
+    let mut bits = [0_i32];
+    gl.get_integerv(gl::STENCIL_BITS, &mut bits);
+    assert_eq!(bits[0], 8, "the frame buffer's stencil bits");
+    glue_passes(gl, counts, "the front face's compare", || gl.stencil_func_separate(gl::FRONT, gl::LESS, FRONT_REFERENCE, FRONT_MASK));
+    glue_passes(gl, counts, "the back face's compare", || gl.stencil_func_separate(gl::BACK, gl::GEQUAL, BACK_REFERENCE, BACK_MASK));
+    glue_passes(gl, counts, "the front face's operations", || gl.stencil_op_separate(gl::FRONT, gl::KEEP, gl::INCR, gl::DECR));
+    glue_passes(gl, counts, "the back face's operations", || gl.stencil_op_separate(gl::BACK, gl::INVERT, gl::REPLACE, gl::ZERO));
+    let read = |name: u32| {
+        let mut value = [LEFT];
+        gl.get_integerv(name, &mut value);
+        value[0]
+    };
+    let expected = [
+        (gl::STENCIL_FUNC, gl::LESS.cast_signed()),
+        (gl::STENCIL_REF, FRONT_REFERENCE),
+        (gl::STENCIL_VALUE_MASK, FRONT_MASK.cast_signed()),
+        (gl::STENCIL_BACK_FUNC, gl::GEQUAL.cast_signed()),
+        (gl::STENCIL_BACK_REF, BACK_REFERENCE),
+        (gl::STENCIL_BACK_VALUE_MASK, BACK_MASK.cast_signed()),
+        (gl::STENCIL_FAIL, gl::KEEP.cast_signed()),
+        (gl::STENCIL_PASS_DEPTH_FAIL, gl::INCR.cast_signed()),
+        (gl::STENCIL_PASS_DEPTH_PASS, gl::DECR.cast_signed()),
+        (gl::STENCIL_BACK_FAIL, gl::INVERT.cast_signed()),
+        (gl::STENCIL_BACK_PASS_DEPTH_FAIL, gl::REPLACE.cast_signed()),
+        (gl::STENCIL_BACK_PASS_DEPTH_PASS, gl::ZERO.cast_signed()),
+    ];
+    for (name, value) in expected {
+        assert_eq!(read(name), value, "stencil state {name:#x}");
+    }
+    assert_eq!(gl.get_error(), gl::NO_ERROR);
+    gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
+    gl.delete_framebuffers(&framebuffers);
+    gl.delete_renderbuffers(&renderbuffers);
+}
+
+/// The values the four extensions of the WebGL back end add are the registry's: where the context names an
+/// extension, the call taking its value passes the implementation and the library takes it (a wrong number is
+/// INVALID_ENUM). An extension the context does not name is printed and skipped.
+pub fn extension_values_are_taken<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let mut count = [0_i32];
+    gl.get_integerv(gl::NUM_EXTENSIONS, &mut count);
+    let named: Vec<Vec<u8>> = (0..count[0].cast_unsigned()).filter_map(|index| gl.get_stringi(gl::EXTENSIONS, index)).collect();
+    let names = |wanted: &str| {
+        let found = named.iter().any(|named| named.as_slice() == wanted.as_bytes());
+        if !found {
+            println!("NOT NAMED {wanted}: its values are not tried");
+        }
+        found
+    };
+    let mut samplers = [0_u32];
+    gl.gen_samplers(&mut samplers);
+    if names("GL_EXT_clip_cull_distance") {
+        // OpenGL ES asks an enabled clip distance with glIsEnabled only, which the set does not carry: taken by both
+        // calls without an error is what a wrong number (INVALID_ENUM) fails.
+        glue_passes(gl, counts, "enable CLIP_DISTANCE0_EXT", || gl.enable(gl::CLIP_DISTANCE0_EXT));
+        glue_passes(gl, counts, "disable CLIP_DISTANCE0_EXT", || gl.disable(gl::CLIP_DISTANCE0_EXT));
+    }
+    if names("GL_EXT_texture_filter_anisotropic") {
+        let mut most = [0.0_f32];
+        glue_passes(gl, counts, "MAX_TEXTURE_MAX_ANISOTROPY_EXT", || gl.get_floatv(gl::MAX_TEXTURE_MAX_ANISOTROPY_EXT, &mut most));
+        assert!(most[0] >= 2.0, "the extension promises at least 2, read {}", most[0]);
+        glue_passes(gl, counts, "TEXTURE_MAX_ANISOTROPY_EXT", || gl.sampler_parameterf(samplers[0], gl::TEXTURE_MAX_ANISOTROPY_EXT, 2.0));
+    }
+    if names("GL_EXT_texture_mirror_clamp_to_edge") {
+        glue_passes(gl, counts, "MIRROR_CLAMP_TO_EDGE_EXT", || {
+            gl.sampler_parameteri(samplers[0], gl::TEXTURE_WRAP_S, gl::MIRROR_CLAMP_TO_EDGE_EXT.cast_signed());
+        });
+    }
+    if names("GL_EXT_blend_func_extended") {
+        glue_passes(gl, counts, "the second source's factors", || {
+            gl.blend_func_separate(gl::SRC1_COLOR_EXT, gl::ONE_MINUS_SRC1_COLOR_EXT, gl::SRC1_ALPHA_EXT, gl::ONE_MINUS_SRC1_ALPHA_EXT);
+        });
+        let read = |name: u32| {
+            let mut value = [LEFT];
+            gl.get_integerv(name, &mut value);
+            value[0].cast_unsigned()
+        };
+        assert_eq!(read(gl::BLEND_SRC_RGB), gl::SRC1_COLOR_EXT);
+        assert_eq!(read(gl::BLEND_DST_RGB), gl::ONE_MINUS_SRC1_COLOR_EXT);
+        assert_eq!(read(gl::BLEND_SRC_ALPHA), gl::SRC1_ALPHA_EXT);
+        assert_eq!(read(gl::BLEND_DST_ALPHA), gl::ONE_MINUS_SRC1_ALPHA_EXT);
+    }
+    gl.delete_samplers(&samplers);
+    assert_eq!(gl.get_error(), gl::NO_ERROR);
+}
+
 /// Calls every method of the trait, `rounds` times each with arguments picked by the round; nothing may end the
 /// process, and the context still answers after.
 pub fn every_method_is_called<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, rounds: usize) {
@@ -1131,6 +1242,16 @@ macro_rules! tests {
         }
 
         #[test]
+        fn stencil_faces_are_separate() {
+            $crate::stencil_faces_are_separate::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn extension_values_are_taken() {
+            $crate::extension_values_are_taken::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
         fn fuzz_from_the_environment() {
             $crate::fuzz_from_the_environment::<$egl, $gl>($folder.as_deref(), &counts());
         }
@@ -1202,9 +1323,9 @@ fn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {
     }
 }
 
-/// The number of the trait's methods `call_one` calls (152 of 154: glClientWaitSync and glFinish are called by the
+/// The number of the trait's methods `call_one` calls (154 of 156: glClientWaitSync and glFinish are called by the
 /// scenarios, never with a picked timeout, which could wait for ever).
-pub const METHODS: usize = 154;
+pub const METHODS: usize = 156;
 
 /// Calls the trait's method numbered `which`, with arguments picked by `seed`.
 fn call_one<G: OpenGlEs>(gl: &G, fence: &G::Fence, which: usize, seed: usize) {
@@ -1618,234 +1739,240 @@ fn call_one<G: OpenGlEs>(gl: &G, fence: &G::Fence, which: usize, seed: usize) {
             gl.stencil_func(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)));
         }
         102 => {
-            gl.stencil_mask(pick(&WORDS, seed.wrapping_add(0)));
+            gl.stencil_func_separate(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&NUMBERS, seed.wrapping_add(2)), pick(&WORDS, seed.wrapping_add(3)));
         }
         103 => {
-            gl.stencil_op(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)));
+            gl.stencil_mask(pick(&WORDS, seed.wrapping_add(0)));
         }
         104 => {
-            gl.tex_parameteri(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&NUMBERS, seed.wrapping_add(2)));
+            gl.stencil_op(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)));
         }
         105 => {
-            gl.tex_storage_2d(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)), pick(&NUMBERS, seed.wrapping_add(4)));
+            gl.stencil_op_separate(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&WORDS, seed.wrapping_add(3)));
         }
         106 => {
-            gl.tex_storage_3d(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)), pick(&NUMBERS, seed.wrapping_add(4)), pick(&NUMBERS, seed.wrapping_add(5)));
+            gl.tex_parameteri(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&NUMBERS, seed.wrapping_add(2)));
         }
         107 => {
+            gl.tex_storage_2d(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)), pick(&NUMBERS, seed.wrapping_add(4)));
+        }
+        108 => {
+            gl.tex_storage_3d(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)), pick(&NUMBERS, seed.wrapping_add(4)), pick(&NUMBERS, seed.wrapping_add(5)));
+        }
+        109 => {
             {
                 let pixels = vec![0_u8; length(seed.wrapping_add(8))];
                 gl.tex_sub_image_2d(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&NUMBERS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)), pick(&NUMBERS, seed.wrapping_add(4)), pick(&NUMBERS, seed.wrapping_add(5)), pick(&WORDS, seed.wrapping_add(6)), pick(&WORDS, seed.wrapping_add(7)), if seed.wrapping_add(8).is_multiple_of(3) { PixelUnpack::Offset(0) } else { PixelUnpack::Bytes(&pixels) });
             }
         }
-        108 => {
+        110 => {
             {
                 let pixels = vec![0_u8; length(seed.wrapping_add(10))];
                 gl.tex_sub_image_3d(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&NUMBERS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)), pick(&NUMBERS, seed.wrapping_add(4)), pick(&NUMBERS, seed.wrapping_add(5)), pick(&NUMBERS, seed.wrapping_add(6)), pick(&NUMBERS, seed.wrapping_add(7)), pick(&WORDS, seed.wrapping_add(8)), pick(&WORDS, seed.wrapping_add(9)), if seed.wrapping_add(10).is_multiple_of(3) { PixelUnpack::Offset(0) } else { PixelUnpack::Bytes(&pixels) });
             }
         }
-        109 => {
+        111 => {
             gl.transform_feedback_varyings(pick(&WORDS, seed.wrapping_add(0)), &[c"name"], pick(&WORDS, seed.wrapping_add(3)));
         }
-        110 => {
+        112 => {
             gl.uniform1f(pick(&NUMBERS, seed.wrapping_add(0)), pick(&FLOATS, seed.wrapping_add(1)));
         }
-        111 => {
+        113 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(2))];
                 gl.uniform1fv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        112 => {
+        114 => {
             gl.uniform1i(pick(&NUMBERS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)));
         }
-        113 => {
+        115 => {
             {
                 let value = vec![0_i32; length(seed.wrapping_add(2))];
                 gl.uniform1iv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        114 => {
+        116 => {
             gl.uniform1ui(pick(&NUMBERS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
         }
-        115 => {
+        117 => {
             {
                 let value = vec![0_u32; length(seed.wrapping_add(2))];
                 gl.uniform1uiv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        116 => {
+        118 => {
             gl.uniform2f(pick(&NUMBERS, seed.wrapping_add(0)), pick(&FLOATS, seed.wrapping_add(1)), pick(&FLOATS, seed.wrapping_add(2)));
         }
-        117 => {
+        119 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(2))];
                 gl.uniform2fv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        118 => {
+        120 => {
             {
                 let value = vec![0_i32; length(seed.wrapping_add(2))];
                 gl.uniform2iv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        119 => {
+        121 => {
             {
                 let value = vec![0_u32; length(seed.wrapping_add(2))];
                 gl.uniform2uiv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        120 => {
+        122 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(2))];
                 gl.uniform3fv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        121 => {
+        123 => {
             gl.uniform3i(pick(&NUMBERS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&NUMBERS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)));
         }
-        122 => {
+        124 => {
             {
                 let value = vec![0_i32; length(seed.wrapping_add(2))];
                 gl.uniform3iv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        123 => {
+        125 => {
             {
                 let value = vec![0_u32; length(seed.wrapping_add(2))];
                 gl.uniform3uiv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        124 => {
+        126 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(2))];
                 gl.uniform4fv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        125 => {
+        127 => {
             {
                 let value = vec![0_i32; length(seed.wrapping_add(2))];
                 gl.uniform4iv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        126 => {
+        128 => {
             {
                 let value = vec![0_u32; length(seed.wrapping_add(2))];
                 gl.uniform4uiv(pick(&NUMBERS, seed.wrapping_add(0)), &value);
             }
         }
-        127 => {
+        129 => {
             gl.uniform_block_binding(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)));
         }
-        128 => {
+        130 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix2fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        129 => {
+        131 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix2x3fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        130 => {
+        132 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix2x4fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        131 => {
+        133 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix3fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        132 => {
+        134 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix3x2fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        133 => {
+        135 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix3x4fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        134 => {
+        136 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix4fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        135 => {
+        137 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix4x2fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        136 => {
+        138 => {
             {
                 let value = vec![0.0_f32; length(seed.wrapping_add(3))];
                 gl.uniform_matrix4x3fv(pick(&NUMBERS, seed.wrapping_add(0)), seed.wrapping_add(2).is_multiple_of(2), &value);
             }
         }
-        137 => {
+        139 => {
             gl.use_program(pick(&WORDS, seed.wrapping_add(0)));
         }
-        138 => {
+        140 => {
             gl.vertex_attrib_divisor(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
         }
-        139 => {
+        141 => {
             gl.vertex_attrib_i_pointer(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)), pick(&SIZES, seed.wrapping_add(4)).unsigned_abs());
         }
-        140 => {
+        142 => {
             gl.vertex_attrib_pointer(pick(&WORDS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), seed.wrapping_add(3).is_multiple_of(2), pick(&NUMBERS, seed.wrapping_add(4)), pick(&SIZES, seed.wrapping_add(5)).unsigned_abs());
         }
-        141 => {
+        143 => {
             gl.viewport(pick(&NUMBERS, seed.wrapping_add(0)), pick(&NUMBERS, seed.wrapping_add(1)), pick(&NUMBERS, seed.wrapping_add(2)), pick(&NUMBERS, seed.wrapping_add(3)));
         }
-        142 => {
+        144 => {
             let _ = gl.blend_equation_separatei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)));
         }
-        143 => {
+        145 => {
             let _ = gl.blend_func_separatei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), pick(&WORDS, seed.wrapping_add(2)), pick(&WORDS, seed.wrapping_add(3)), pick(&WORDS, seed.wrapping_add(4)));
         }
-        144 => {
+        146 => {
             let _ = gl.clip_control_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
         }
-        145 => {
+        147 => {
             let _ = gl.color_maski_oes(pick(&WORDS, seed.wrapping_add(0)), seed.wrapping_add(1).is_multiple_of(2), seed.wrapping_add(2).is_multiple_of(2), seed.wrapping_add(3).is_multiple_of(2), seed.wrapping_add(4).is_multiple_of(2));
         }
-        146 => {
+        148 => {
             let _ = gl.disablei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
         }
-        147 => {
+        149 => {
             let _ = gl.enablei_oes(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
         }
-        148 => {
+        150 => {
             {
                 let mut params = vec![0_u64; length(seed.wrapping_add(2))];
                 let _ = gl.get_query_objectui64v_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), &mut params);
             }
         }
-        149 => {
+        151 => {
             {
                 let mut params = vec![0_i32; length(seed.wrapping_add(2))];
                 let _ = gl.get_queryiv_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)), &mut params);
             }
         }
-        150 => {
+        152 => {
             let _ = gl.polygon_mode_angle(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
         }
-        151 => {
+        153 => {
             let _ = gl.polygon_offset_clamp_ext(pick(&FLOATS, seed.wrapping_add(0)), pick(&FLOATS, seed.wrapping_add(1)), pick(&FLOATS, seed.wrapping_add(2)));
         }
-        152 => {
+        154 => {
             let _ = gl.provoking_vertex_angle(pick(&WORDS, seed.wrapping_add(0)));
         }
-        153 => {
+        155 => {
             let _ = gl.query_counter_ext(pick(&WORDS, seed.wrapping_add(0)), pick(&WORDS, seed.wrapping_add(1)));
         }
         _ => {}

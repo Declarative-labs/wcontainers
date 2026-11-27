@@ -813,6 +813,117 @@ pub fn extensions_answer_only_when_named<E: Egl, G: OnEgl<E>>(folder: Option<&Pa
     while gl.get_error() != gl::NO_ERROR {}
 }
 
+/// The front face's stencil reference value.
+const FRONT_REFERENCE: i32 = 3;
+/// The back face's stencil reference value.
+const BACK_REFERENCE: i32 = 5;
+/// The front face's stencil value mask.
+const FRONT_MASK: u32 = 0xF0;
+/// The back face's stencil value mask.
+const BACK_MASK: u32 = 0x0F;
+
+/// The front and back faces' stencil compare and operations are set apart (glStencilFuncSeparate,
+/// glStencilOpSeparate), each face reads back as it was set, and neither call is refused by the implementation.
+pub fn stencil_faces_are_separate<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    // A reference value reads back clamped to the stencil bits of the frame buffer drawn to: one with 8 of them.
+    let mut renderbuffers = [0_u32];
+    gl.gen_renderbuffers(&mut renderbuffers);
+    gl.bind_renderbuffer(gl::RENDERBUFFER, renderbuffers[0]);
+    gl.renderbuffer_storage(gl::RENDERBUFFER, gl::DEPTH24_STENCIL8, SIDE, SIDE);
+    let mut framebuffers = [0_u32];
+    gl.gen_framebuffers(&mut framebuffers);
+    gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffers[0]);
+    gl.framebuffer_renderbuffer(gl::FRAMEBUFFER, gl::DEPTH_STENCIL_ATTACHMENT, gl::RENDERBUFFER, renderbuffers[0]);
+    let mut bits = [0_i32];
+    gl.get_integerv(gl::STENCIL_BITS, &mut bits);
+    assert_eq!(bits[0], 8, "the frame buffer's stencil bits");
+    glue_passes(gl, counts, "the front face's compare", || gl.stencil_func_separate(gl::FRONT, gl::LESS, FRONT_REFERENCE, FRONT_MASK));
+    glue_passes(gl, counts, "the back face's compare", || gl.stencil_func_separate(gl::BACK, gl::GEQUAL, BACK_REFERENCE, BACK_MASK));
+    glue_passes(gl, counts, "the front face's operations", || gl.stencil_op_separate(gl::FRONT, gl::KEEP, gl::INCR, gl::DECR));
+    glue_passes(gl, counts, "the back face's operations", || gl.stencil_op_separate(gl::BACK, gl::INVERT, gl::REPLACE, gl::ZERO));
+    let read = |name: u32| {
+        let mut value = [LEFT];
+        gl.get_integerv(name, &mut value);
+        value[0]
+    };
+    let expected = [
+        (gl::STENCIL_FUNC, gl::LESS.cast_signed()),
+        (gl::STENCIL_REF, FRONT_REFERENCE),
+        (gl::STENCIL_VALUE_MASK, FRONT_MASK.cast_signed()),
+        (gl::STENCIL_BACK_FUNC, gl::GEQUAL.cast_signed()),
+        (gl::STENCIL_BACK_REF, BACK_REFERENCE),
+        (gl::STENCIL_BACK_VALUE_MASK, BACK_MASK.cast_signed()),
+        (gl::STENCIL_FAIL, gl::KEEP.cast_signed()),
+        (gl::STENCIL_PASS_DEPTH_FAIL, gl::INCR.cast_signed()),
+        (gl::STENCIL_PASS_DEPTH_PASS, gl::DECR.cast_signed()),
+        (gl::STENCIL_BACK_FAIL, gl::INVERT.cast_signed()),
+        (gl::STENCIL_BACK_PASS_DEPTH_FAIL, gl::REPLACE.cast_signed()),
+        (gl::STENCIL_BACK_PASS_DEPTH_PASS, gl::ZERO.cast_signed()),
+    ];
+    for (name, value) in expected {
+        assert_eq!(read(name), value, "stencil state {name:#x}");
+    }
+    assert_eq!(gl.get_error(), gl::NO_ERROR);
+    gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
+    gl.delete_framebuffers(&framebuffers);
+    gl.delete_renderbuffers(&renderbuffers);
+}
+
+/// The values the four extensions of the WebGL back end add are the registry's: where the context names an
+/// extension, the call taking its value passes the implementation and the library takes it (a wrong number is
+/// INVALID_ENUM). An extension the context does not name is printed and skipped.
+pub fn extension_values_are_taken<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
+    let made = make::<E, G>(folder, &CONTEXT_ES3);
+    let gl = &made.gl;
+    let mut count = [0_i32];
+    gl.get_integerv(gl::NUM_EXTENSIONS, &mut count);
+    let named: Vec<Vec<u8>> = (0..count[0].cast_unsigned()).filter_map(|index| gl.get_stringi(gl::EXTENSIONS, index)).collect();
+    let names = |wanted: &str| {
+        let found = named.iter().any(|named| named.as_slice() == wanted.as_bytes());
+        if !found {
+            println!("NOT NAMED {wanted}: its values are not tried");
+        }
+        found
+    };
+    let mut samplers = [0_u32];
+    gl.gen_samplers(&mut samplers);
+    if names("GL_EXT_clip_cull_distance") {
+        // OpenGL ES asks an enabled clip distance with glIsEnabled only, which the set does not carry: taken by both
+        // calls without an error is what a wrong number (INVALID_ENUM) fails.
+        glue_passes(gl, counts, "enable CLIP_DISTANCE0_EXT", || gl.enable(gl::CLIP_DISTANCE0_EXT));
+        glue_passes(gl, counts, "disable CLIP_DISTANCE0_EXT", || gl.disable(gl::CLIP_DISTANCE0_EXT));
+    }
+    if names("GL_EXT_texture_filter_anisotropic") {
+        let mut most = [0.0_f32];
+        glue_passes(gl, counts, "MAX_TEXTURE_MAX_ANISOTROPY_EXT", || gl.get_floatv(gl::MAX_TEXTURE_MAX_ANISOTROPY_EXT, &mut most));
+        assert!(most[0] >= 2.0, "the extension promises at least 2, read {}", most[0]);
+        glue_passes(gl, counts, "TEXTURE_MAX_ANISOTROPY_EXT", || gl.sampler_parameterf(samplers[0], gl::TEXTURE_MAX_ANISOTROPY_EXT, 2.0));
+    }
+    if names("GL_EXT_texture_mirror_clamp_to_edge") {
+        glue_passes(gl, counts, "MIRROR_CLAMP_TO_EDGE_EXT", || {
+            gl.sampler_parameteri(samplers[0], gl::TEXTURE_WRAP_S, gl::MIRROR_CLAMP_TO_EDGE_EXT.cast_signed());
+        });
+    }
+    if names("GL_EXT_blend_func_extended") {
+        glue_passes(gl, counts, "the second source's factors", || {
+            gl.blend_func_separate(gl::SRC1_COLOR_EXT, gl::ONE_MINUS_SRC1_COLOR_EXT, gl::SRC1_ALPHA_EXT, gl::ONE_MINUS_SRC1_ALPHA_EXT);
+        });
+        let read = |name: u32| {
+            let mut value = [LEFT];
+            gl.get_integerv(name, &mut value);
+            value[0].cast_unsigned()
+        };
+        assert_eq!(read(gl::BLEND_SRC_RGB), gl::SRC1_COLOR_EXT);
+        assert_eq!(read(gl::BLEND_DST_RGB), gl::ONE_MINUS_SRC1_COLOR_EXT);
+        assert_eq!(read(gl::BLEND_SRC_ALPHA), gl::SRC1_ALPHA_EXT);
+        assert_eq!(read(gl::BLEND_DST_ALPHA), gl::ONE_MINUS_SRC1_ALPHA_EXT);
+    }
+    gl.delete_samplers(&samplers);
+    assert_eq!(gl.get_error(), gl::NO_ERROR);
+}
+
 /// Calls every method of the trait, `rounds` times each with arguments picked by the round; nothing may end the
 /// process, and the context still answers after.
 pub fn every_method_is_called<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, rounds: usize) {
@@ -1127,6 +1238,16 @@ macro_rules! tests {
         #[test]
         fn extensions_answer_only_when_named() {
             $crate::extensions_answer_only_when_named::<$egl, $gl>($folder.as_deref());
+        }
+
+        #[test]
+        fn stencil_faces_are_separate() {
+            $crate::stencil_faces_are_separate::<$egl, $gl>($folder.as_deref(), &counts());
+        }
+
+        #[test]
+        fn extension_values_are_taken() {
+            $crate::extension_values_are_taken::<$egl, $gl>($folder.as_deref(), &counts());
         }
 
         #[test]

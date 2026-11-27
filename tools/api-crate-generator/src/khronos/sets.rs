@@ -76,6 +76,9 @@ pub struct Set {
     pub inside: &'static [(&'static str, &'static str)],
     /// Extensions whose values are written beside the core ones.
     pub extensions: &'static [&'static str],
+    /// Values the registry declares that no feature or extension of the API requires, written by name, with the
+    /// reason each is carried.
+    pub values: &'static [(&'static str, &'static str)],
     pub forms: &'static [(&'static str, &'static str, Form)],
     pub forced: &'static [Forced],
     pub composed: &'static [Composed],
@@ -119,7 +122,7 @@ pub const OPENGL_ES: Set = Set {
         "glGetShaderiv", "glGetString", "glGetStringi", "glGetSynciv", "glGetUniformBlockIndex", "glGetUniformLocation",
         "glGetVertexAttribiv", "glInvalidateFramebuffer", "glLinkProgram", "glPixelStorei", "glPolygonOffset", "glReadPixels",
         "glRenderbufferStorage", "glRenderbufferStorageMultisample", "glSamplerParameterf", "glSamplerParameteri", "glScissor",
-        "glShaderSource", "glStencilFunc", "glStencilMask", "glStencilOp", "glTexParameteri", "glTexStorage2D",
+        "glShaderSource", "glStencilFunc", "glStencilFuncSeparate", "glStencilMask", "glStencilOp", "glStencilOpSeparate", "glTexParameteri", "glTexStorage2D",
         "glTexStorage3D", "glTexSubImage2D", "glTexSubImage3D", "glTransformFeedbackVaryings", "glUniform1f", "glUniform1fv",
         "glUniform1i", "glUniform1iv", "glUniform1ui", "glUniform1uiv", "glUniform2f", "glUniform2fv", "glUniform2iv",
         "glUniform2uiv", "glUniform3fv", "glUniform3i", "glUniform3iv", "glUniform3uiv", "glUniform4fv", "glUniform4iv",
@@ -142,7 +145,14 @@ pub const OPENGL_ES: Set = Set {
         "GL_EXT_texture_compression_bptc", "GL_OES_texture_half_float", "GL_EXT_robustness", "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_compression_rgtc",
         "GL_EXT_texture_format_BGRA8888", "GL_EXT_color_buffer_float", "GL_EXT_float_blend", "GL_OES_texture_float_linear",
         "GL_EXT_depth_clamp", "GL_KHR_texture_compression_astc_ldr", "GL_EXT_texture_norm16",
+        // NEEDED-FROM-API-CRATES.md "After GI7" item 2: the values these four add, which the WebGL back end names.
+        "GL_EXT_clip_cull_distance", "GL_EXT_texture_filter_anisotropic", "GL_EXT_texture_mirror_clamp_to_edge",
+        "GL_EXT_blend_func_extended",
     ],
+    values: &[(
+        "GL_UNMASKED_RENDERER_WEBGL",
+        "WebGL's WEBGL_debug_renderer_info value, which gl.xml declares and no OpenGL ES feature or extension requires: the browser route asks the renderer's name with it",
+    )],
     forms: &[
         ("glGetBooleanv", "data", Form::GuardedOut { by: "pname", guard: GET_GUARD, refused: VARIABLE_LISTS }),
         ("glGetFloatv", "data", Form::GuardedOut { by: "pname", guard: GET_GUARD, refused: VARIABLE_LISTS }),
@@ -197,6 +207,7 @@ pub const EGL: Set = Set {
         ("eglGetProcAddress", "loads the OpenGL ES entry points inside the OpenGL ES crate's glue; no pointer reaches safe code"),
         ("eglGetCurrentContext", "tells the OpenGL ES glue whether its context is current on the thread before each call"),
     ],
+    values: &[],
     extensions: &["EGL_KHR_surfaceless_context", "EGL_ANGLE_direct_composition", "EGL_KHR_create_context", "EGL_EXT_create_context_robustness"],
     forms: &[
         ("eglChooseConfig", "attrib_list", Form::AttributeList),

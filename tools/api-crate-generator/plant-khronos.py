@@ -150,6 +150,24 @@ SHARED_EGL = [
     ("egl-binding-context-alive-while-current", "        if !self.context.alive.load(Ordering::Acquire) {\n            return false;\n        }\n        let entries", "        let entries"),
 ]
 
+# Plants of a plain value the glue must pass through as given (NEEDED "After GI7" item 1): the face, and an argument
+# exchanged or changed. Each is an (id, old, new) of the OpenGL ES calls.rs.
+PASSED_GL = [
+    ("face-passed:stencil_func_separate", "unsafe { entry(face, func, ref_, mask) }", "unsafe { entry(constants::FRONT_AND_BACK, func, ref_, mask) }"),
+    ("mask-passed:stencil_func_separate", "unsafe { entry(face, func, ref_, mask) }", "unsafe { entry(face, func, ref_, mask >> 1) }"),
+    ("face-passed:stencil_op_separate", "unsafe { entry(face, sfail, dpfail, dppass) }", "unsafe { entry(constants::FRONT_AND_BACK, sfail, dpfail, dppass) }"),
+    ("order-passed:stencil_op_separate", "unsafe { entry(face, sfail, dpfail, dppass) }", "unsafe { entry(face, dppass, dpfail, sfail) }"),
+]
+
+# Plants of a value written as some other number than the registry declares (NEEDED "After GI7" item 2): each is
+# the value's line of the OpenGL ES constants.rs and a number no OpenGL ES value is.
+VALUES_GL = [
+    ("CLIP_DISTANCE0_EXT", "0x3000"), ("TEXTURE_MAX_ANISOTROPY_EXT", "0x84fe"), ("MAX_TEXTURE_MAX_ANISOTROPY_EXT", "0x84ff"),
+    ("MIRROR_CLAMP_TO_EDGE_EXT", "0x8743"), ("SRC1_COLOR_EXT", "0x88f9"), ("SRC1_ALPHA_EXT", "0x8589"),
+    ("ONE_MINUS_SRC1_COLOR_EXT", "0x88fa"), ("ONE_MINUS_SRC1_ALPHA_EXT", "0x88fb"),
+]
+UNDECLARED = "0xfff0"
+
 LISTED_SHARED = [
     ("extensions-bounded", "a library answering more extensions than 4096: Mesa answers its few hundred; the fuzzing's lying library answers up to 2^31 (a run without the bound does not end)"),
     ("egl-gate", "a destroy runs while no other call of the library is in flight (the gate): a race, which no single-threaded test makes"),
@@ -158,6 +176,7 @@ LISTED_SHARED = [
     ("egl-client-get-all", "a library without EGL_KHR_client_get_all_proc_addresses: Mesa names it"),
     ("egl-handles-written", "a slot past the count EGL wrote: also left None by the null check after it (two checks of one fact; only both removed shows)"),
     ("egl-handles-null", "a null handle in the count EGL wrote: EGL writes none"),
+    ("value:UNMASKED_RENDERER_WEBGL", "WebGL's own value (WEBGL_debug_renderer_info): no native OpenGL ES context answers it, so no test over a native library can tell a wrong number; the browser implementation's test reads it"),
     ("egl-binding-alive-before-make-current", "a context or surface destroyed and not current: the check under the gate refuses it, and without it eglMakeCurrent refuses the destroyed handle (Mesa checks its handles), on which the glue refuses the call alike"),
 ]
 
@@ -221,6 +240,11 @@ def plants_of(root):
         plants.append((name, edits))
     for name, old, new in SHARED_GL:
         plants.append((name, {f"{GL}/implementation.rs": [(old, new)]}))
+    for name, old, new in PASSED_GL:
+        plants.append((name, {f"{GL}/calls.rs": [(old, new)]}))
+    for name, number in VALUES_GL:
+        line = f"pub const {name}: u32 = {number};"
+        plants.append((f"value:{name}", {"crates/opengl-es/constants.rs": [(line, line.replace(number, UNDECLARED))]}))
     for name, changes, _ in egl_site_plants(egl_calls):
         plants.append((name, {f"{EGL}/calls.rs": changes}))
     for name, old, new in SHARED_EGL:

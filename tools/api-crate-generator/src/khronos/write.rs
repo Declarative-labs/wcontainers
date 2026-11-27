@@ -75,6 +75,7 @@ fn values(registry: &Registry, set: &Set) -> BTreeSet<String> {
         wanted.insert(forced.attribute.to_string());
         wanted.insert(forced.value.to_string());
     }
+    wanted.extend(set.values.iter().map(|(name, _)| (*name).to_string()));
     wanted
 }
 
@@ -107,7 +108,7 @@ fn value_text(set: &Set, value: &str, suffix: Option<&str>) -> Option<(&'static 
     Some((ty, format!("{:#x}", number)))
 }
 
-fn write_constants(registry: &Registry, set: &Set, report: &mut String) -> String {
+fn write_constants(registry: &Registry, set: &Set, report: &mut String) -> Result<String, String> {
     let mut text = header(set);
     let _ = writeln!(text, "//! The values of {} the methods take and give, as the registry declares them.\n", set.top);
     let mut written = 0;
@@ -124,7 +125,11 @@ fn write_constants(registry: &Registry, set: &Set, report: &mut String) -> Strin
         written += 1;
     }
     let _ = writeln!(report, "VALUES {}: {written}", set.folder);
-    text
+    for (name, reason) in set.values {
+        let declared = registry.value(name, set.api).ok_or_else(|| format!("{}: the value {name} carried by name is not declared", set.folder))?;
+        let _ = writeln!(report, "  VALUE BY NAME {name} {}: {reason}", declared.value);
+    }
+    Ok(text)
 }
 
 /// The trait's type of a part, or none when the part is left out of the trait.
@@ -907,7 +912,7 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], out:
         }
         let write = |path: std::path::PathBuf, text: &str| std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()));
         write(folder.join("interface.rs"), &write_interface(set, classified))?;
-        write(folder.join("constants.rs"), &write_constants(registry, set, &mut report))?;
+        write(folder.join("constants.rs"), &write_constants(registry, set, &mut report)?)?;
         let package = format!("wcontainers-{}", set.folder);
         let mut manifest = format!("[package]\nname = \"{package}\"\ndescription = \"{}\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\nlicense.workspace = true\nrepository.workspace = true\npublish = false\n\n[lib]\npath = \"interface.rs\"\n", set.summary);
         if set.api == "gles2" {

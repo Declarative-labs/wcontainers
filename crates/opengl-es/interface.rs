@@ -342,11 +342,17 @@ pub trait OpenGlEs: Sized {
     /// Calls [`glStencilFunc`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
     fn stencil_func(&self, func: u32, ref_: i32, mask: u32);
 
+    /// Calls [`glStencilFuncSeparate`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+    fn stencil_func_separate(&self, face: u32, func: u32, ref_: i32, mask: u32);
+
     /// Calls [`glStencilMask`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
     fn stencil_mask(&self, mask: u32);
 
     /// Calls [`glStencilOp`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
     fn stencil_op(&self, fail: u32, zfail: u32, zpass: u32);
+
+    /// Calls [`glStencilOpSeparate`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+    fn stencil_op_separate(&self, face: u32, sfail: u32, dpfail: u32, dppass: u32);
 
     /// Calls [`glTexParameteri`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
     fn tex_parameteri(&self, target: u32, pname: u32, param: i32);

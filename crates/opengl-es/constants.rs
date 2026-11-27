@@ -139,6 +139,22 @@ pub const CLAMP_TO_BORDER: u32 = 0x812d;
 pub const CLAMP_TO_EDGE: u32 = 0x812f;
 /// Declared as [`GL_CLIP_DEPTH_MODE_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const CLIP_DEPTH_MODE_EXT: u32 = 0x935d;
+/// Declared as [`GL_CLIP_DISTANCE0_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE0_EXT: u32 = 0x3000;
+/// Declared as [`GL_CLIP_DISTANCE1_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE1_EXT: u32 = 0x3001;
+/// Declared as [`GL_CLIP_DISTANCE2_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE2_EXT: u32 = 0x3002;
+/// Declared as [`GL_CLIP_DISTANCE3_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE3_EXT: u32 = 0x3003;
+/// Declared as [`GL_CLIP_DISTANCE4_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE4_EXT: u32 = 0x3004;
+/// Declared as [`GL_CLIP_DISTANCE5_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE5_EXT: u32 = 0x3005;
+/// Declared as [`GL_CLIP_DISTANCE6_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE6_EXT: u32 = 0x3006;
+/// Declared as [`GL_CLIP_DISTANCE7_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const CLIP_DISTANCE7_EXT: u32 = 0x3007;
 /// Declared as [`GL_CLIP_ORIGIN_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const CLIP_ORIGIN_EXT: u32 = 0x935c;
 /// Declared as [`GL_COLOR`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -913,6 +929,8 @@ pub const LINE_WIDTH: u32 = 0xb21;
 pub const LINK_STATUS: u32 = 0x8b82;
 /// Declared as [`GL_LOCATION`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const LOCATION: u32 = 0x930e;
+/// Declared as [`GL_LOCATION_INDEX_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const LOCATION_INDEX_EXT: u32 = 0x930f;
 /// Declared as [`GL_LOSE_CONTEXT_ON_RESET`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const LOSE_CONTEXT_ON_RESET: u32 = 0x8252;
 /// Declared as [`GL_LOSE_CONTEXT_ON_RESET_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -953,6 +971,8 @@ pub const MAX_ARRAY_TEXTURE_LAYERS: u32 = 0x88ff;
 pub const MAX_ATOMIC_COUNTER_BUFFER_BINDINGS: u32 = 0x92dc;
 /// Declared as [`GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_ATOMIC_COUNTER_BUFFER_SIZE: u32 = 0x92d8;
+/// Declared as [`GL_MAX_CLIP_DISTANCES_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const MAX_CLIP_DISTANCES_EXT: u32 = 0xd32;
 /// Declared as [`GL_MAX_COLOR_ATTACHMENTS`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_COLOR_ATTACHMENTS: u32 = 0x8cdf;
 /// Declared as [`GL_MAX_COLOR_TEXTURE_SAMPLES`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -961,6 +981,8 @@ pub const MAX_COLOR_TEXTURE_SAMPLES: u32 = 0x910e;
 pub const MAX_COMBINED_ATOMIC_COUNTERS: u32 = 0x92d7;
 /// Declared as [`GL_MAX_COMBINED_ATOMIC_COUNTER_BUFFERS`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_COMBINED_ATOMIC_COUNTER_BUFFERS: u32 = 0x92d1;
+/// Declared as [`GL_MAX_COMBINED_CLIP_AND_CULL_DISTANCES_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const MAX_COMBINED_CLIP_AND_CULL_DISTANCES_EXT: u32 = 0x82fa;
 /// Declared as [`GL_MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS: u32 = 0x8266;
 /// Declared as [`GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -1007,6 +1029,8 @@ pub const MAX_COMPUTE_WORK_GROUP_INVOCATIONS: u32 = 0x90eb;
 pub const MAX_COMPUTE_WORK_GROUP_SIZE: u32 = 0x91bf;
 /// Declared as [`GL_MAX_CUBE_MAP_TEXTURE_SIZE`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_CUBE_MAP_TEXTURE_SIZE: u32 = 0x851c;
+/// Declared as [`GL_MAX_CULL_DISTANCES_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const MAX_CULL_DISTANCES_EXT: u32 = 0x82f9;
 /// Declared as [`GL_MAX_DEBUG_GROUP_STACK_DEPTH`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_DEBUG_GROUP_STACK_DEPTH: u32 = 0x826c;
 /// Declared as [`GL_MAX_DEBUG_LOGGED_MESSAGES`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -1017,6 +1041,8 @@ pub const MAX_DEBUG_MESSAGE_LENGTH: u32 = 0x9143;
 pub const MAX_DEPTH_TEXTURE_SAMPLES: u32 = 0x910f;
 /// Declared as [`GL_MAX_DRAW_BUFFERS`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_DRAW_BUFFERS: u32 = 0x8824;
+/// Declared as [`GL_MAX_DUAL_SOURCE_DRAW_BUFFERS_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const MAX_DUAL_SOURCE_DRAW_BUFFERS_EXT: u32 = 0x88fc;
 /// Declared as [`GL_MAX_ELEMENTS_INDICES`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_ELEMENTS_INDICES: u32 = 0x80e9;
 /// Declared as [`GL_MAX_ELEMENTS_VERTICES`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -1151,6 +1177,8 @@ pub const MAX_TEXTURE_BUFFER_SIZE: u32 = 0x8c2b;
 pub const MAX_TEXTURE_IMAGE_UNITS: u32 = 0x8872;
 /// Declared as [`GL_MAX_TEXTURE_LOD_BIAS`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_TEXTURE_LOD_BIAS: u32 = 0x84fd;
+/// Declared as [`GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const MAX_TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84ff;
 /// Declared as [`GL_MAX_TEXTURE_SIZE`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MAX_TEXTURE_SIZE: u32 = 0xd33;
 /// Declared as [`GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -1217,6 +1245,8 @@ pub const MIN_PROGRAM_TEXTURE_GATHER_OFFSET: u32 = 0x8e5e;
 pub const MIN_SAMPLE_SHADING_VALUE: u32 = 0x8c37;
 /// Declared as [`GL_MIRRORED_REPEAT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MIRRORED_REPEAT: u32 = 0x8370;
+/// Declared as [`GL_MIRROR_CLAMP_TO_EDGE_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const MIRROR_CLAMP_TO_EDGE_EXT: u32 = 0x8743;
 /// Declared as [`GL_MULTIPLY`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const MULTIPLY: u32 = 0x9294;
 /// Declared as [`GL_MULTISAMPLE_LINE_WIDTH_GRANULARITY`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -1273,6 +1303,10 @@ pub const ONE_MINUS_CONSTANT_COLOR: u32 = 0x8002;
 pub const ONE_MINUS_DST_ALPHA: u32 = 0x305;
 /// Declared as [`GL_ONE_MINUS_DST_COLOR`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const ONE_MINUS_DST_COLOR: u32 = 0x307;
+/// Declared as [`GL_ONE_MINUS_SRC1_ALPHA_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const ONE_MINUS_SRC1_ALPHA_EXT: u32 = 0x88fb;
+/// Declared as [`GL_ONE_MINUS_SRC1_COLOR_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const ONE_MINUS_SRC1_COLOR_EXT: u32 = 0x88fa;
 /// Declared as [`GL_ONE_MINUS_SRC_ALPHA`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const ONE_MINUS_SRC_ALPHA: u32 = 0x303;
 /// Declared as [`GL_ONE_MINUS_SRC_COLOR`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -1637,10 +1671,16 @@ pub const SIGNALED: u32 = 0x9119;
 pub const SIGNED_NORMALIZED: u32 = 0x8f9c;
 /// Declared as [`GL_SOFTLIGHT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const SOFTLIGHT: u32 = 0x929c;
+/// Declared as [`GL_SRC1_ALPHA_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const SRC1_ALPHA_EXT: u32 = 0x8589;
+/// Declared as [`GL_SRC1_COLOR_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const SRC1_COLOR_EXT: u32 = 0x88f9;
 /// Declared as [`GL_SRC_ALPHA`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const SRC_ALPHA: u32 = 0x302;
 /// Declared as [`GL_SRC_ALPHA_SATURATE`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const SRC_ALPHA_SATURATE: u32 = 0x308;
+/// Declared as [`GL_SRC_ALPHA_SATURATE_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const SRC_ALPHA_SATURATE_EXT: u32 = 0x308;
 /// Declared as [`GL_SRC_COLOR`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const SRC_COLOR: u32 = 0x300;
 /// Declared as [`GL_SRGB`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -1909,6 +1949,8 @@ pub const TEXTURE_IMMUTABLE_LEVELS: u32 = 0x82df;
 pub const TEXTURE_INTERNAL_FORMAT: u32 = 0x1003;
 /// Declared as [`GL_TEXTURE_MAG_FILTER`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const TEXTURE_MAG_FILTER: u32 = 0x2800;
+/// Declared as [`GL_TEXTURE_MAX_ANISOTROPY_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const TEXTURE_MAX_ANISOTROPY_EXT: u32 = 0x84fe;
 /// Declared as [`GL_TEXTURE_MAX_LEVEL`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const TEXTURE_MAX_LEVEL: u32 = 0x813d;
 /// Declared as [`GL_TEXTURE_MAX_LOD`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
@@ -2053,6 +2095,8 @@ pub const UNIFORM_TYPE: u32 = 0x8a37;
 pub const UNKNOWN_CONTEXT_RESET: u32 = 0x8255;
 /// Declared as [`GL_UNKNOWN_CONTEXT_RESET_EXT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const UNKNOWN_CONTEXT_RESET_EXT: u32 = 0x8255;
+/// Declared as [`GL_UNMASKED_RENDERER_WEBGL`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
+pub const UNMASKED_RENDERER_WEBGL: u32 = 0x9246;
 /// Declared as [`GL_UNPACK_ALIGNMENT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
 pub const UNPACK_ALIGNMENT: u32 = 0xcf5;
 /// Declared as [`GL_UNPACK_IMAGE_HEIGHT`](https://github.com/KhronosGroup/OpenGL-Registry/blob/6af574a14089ccfee87efe230ebcdd8742859813/xml/gl.xml).
