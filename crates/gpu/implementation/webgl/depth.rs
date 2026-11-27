@@ -6,6 +6,7 @@
 //! ([`wcontainers_gpu::slow::SlowPath::StencilCopiedByDraw`]), which the same fetch reads with a scale of 255.
 
 use crate::platform;
+use std::sync::OnceLock;
 use wcontainers_opengl_es::OpenGlEs;
 use wcontainers_opengl_es::constants as gles;
 
@@ -26,10 +27,11 @@ pub(crate) struct DepthRead {
 /// The 24-bit value stored for depth `d` as sampled, by the device's own conversion: the uniform
 /// `reciprocal24` is 0 where the device samples a stored k as the float nearest k / (2^24 - 1) (as Direct3D
 /// asks), else the float it multiplies k by (llvmpipe: the float nearest 1 / (2^24 - 1)); the back end's
-/// probe at creation sets it. Rounding d (2^24 - 1) alone can be one off either way: in the upper part of
-/// each binade the two conversions give one float for neighbouring values, and the product itself rounds.
-/// So the rounded value and its two neighbours are each converted as the device does, the one giving d's
-/// bits kept (the rounded value where none does). v 2^-24 is exact and v / (2^24 - 1) more than half and
+/// probe at creation sets it. Rounding d (2^24 - 1) alone can be one high: in the upper part of each
+/// binade the two conversions give one float for neighbouring values, and the product itself rounds (a
+/// scan of all 2^24 words under both conversions found it never one low). So the rounded value and the
+/// one below it are each converted as the device does, the one giving d's bits kept (the rounded value
+/// where neither does). Words the device samples to one float are told apart by [`EQUAL`]. v 2^-24 is exact and v / (2^24 - 1) more than half and
 /// at most one of its float steps above it, so the nearest float is its bits plus one.
 pub(crate) const UNORM24: &str = "uniform highp float reciprocal24;
 uint sampled24(uint c) {
@@ -41,10 +43,94 @@ uint unorm24(float d) {
     uint bits = floatBitsToUint(d);
     if (sampled24(e) == bits) return e;
     if (e > 0u && sampled24(e - 1u) == bits) return e - 1u;
-    if (e < 16777215u && sampled24(e + 1u) == bits) return e + 1u;
     return e;
 }
 ";
+
+/// The comparison pass after a read of 24-bit depth by sampling, where the device samples some stored
+/// words to the float of another ([`colliding`]): drawn with the depth texture as the depth attachment
+/// and the depth test EQUAL, at the depth stored as `word` (`depth`, the float nearest
+/// word / (2^24 - 1), which the device stores as that word), so only texels holding `word` write it.
+/// The device compares the stored integers, which sampling cannot tell apart.
+const EQUAL: &str = "#version 300 es
+precision highp float;
+uniform highp uint word;
+uniform highp float depth;
+out highp uvec4 o;
+void main() {
+    gl_FragDepth = depth;
+    o = uvec4(word, 0u, 0u, 0u);
+}
+";
+
+/// The comparison pass's program and its uniforms ([`EQUAL`]).
+#[derive(Debug)]
+pub(crate) struct EqualPass {
+    pub(crate) program: u32,
+    pub(crate) word: i32,
+    pub(crate) depth: i32,
+}
+
+/// Builds the comparison pass's program. Err holds GL's log.
+pub(crate) fn build_equal(gl: &impl OpenGlEs) -> Result<EqualPass, String> {
+    let program = link(gl, EQUAL)?;
+    let uniform = |name| {
+        platform::location(gl, program, name)
+            .ok_or_else(|| format!("the comparison pass has no uniform {name}"))
+    };
+    Ok(EqualPass {
+        program,
+        word: uniform("word")?,
+        depth: uniform("depth")?,
+    })
+}
+
+/// The largest 24-bit word.
+const UNORM24_MAX: u32 = (1 << 24) - 1;
+
+/// The stored 24-bit words a read by sampling ([`UNORM24`]) gives as another word on a device that
+/// samples a stored c as c times `reciprocal` (0: the float nearest c / (2^24 - 1), where every word
+/// samples to its own float and none is listed). Found by converting every word as the device does
+/// and reading the float back as the read does; on llvmpipe's product, 0xfffffe alone (it samples to
+/// 1.0, as 0xffffff does). The scan of the first reciprocal asked is kept for the process.
+pub(crate) fn colliding(reciprocal: f32) -> Vec<u32> {
+    static FIRST: OnceLock<(u32, Vec<u32>)> = OnceLock::new();
+    if reciprocal == 0.0 {
+        return Vec::new();
+    }
+    let (bits, words) = FIRST.get_or_init(|| (reciprocal.to_bits(), scan(reciprocal)));
+    if *bits == reciprocal.to_bits() {
+        words.clone()
+    } else {
+        scan(reciprocal)
+    }
+}
+
+/// [`colliding`]'s scan of every word, for a reciprocal other than 0.
+fn scan(reciprocal: f32) -> Vec<u32> {
+    let sampled = |c: u32| (c as f32 * reciprocal).to_bits();
+    let read = |bits: u32| {
+        let e = ((f32::from_bits(bits) * UNORM24_MAX as f32).round() as u32).min(UNORM24_MAX);
+        if e > 0 && sampled(e) != bits && sampled(e - 1) == bits {
+            e - 1
+        } else {
+            e
+        }
+    };
+    (0..=UNORM24_MAX)
+        .filter(|&c| read(sampled(c)) != c)
+        .collect()
+}
+
+/// The float nearest `word` / (2^24 - 1): word 2^-24 is exact and the quotient more than half and at
+/// most one of its float steps above it, so it is word 2^-24's bits plus one (zero stays zero).
+pub(crate) fn nearest(word: u32) -> f32 {
+    if word == 0 {
+        0.0
+    } else {
+        f32::from_bits((word as f32 * (1.0 / (1u32 << 24) as f32)).to_bits() + 1)
+    }
+}
 
 /// A triangle covering the target, from the vertex number alone.
 const VERTEX: &str = "#version 300 es

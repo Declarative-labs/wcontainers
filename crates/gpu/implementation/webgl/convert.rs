@@ -99,9 +99,13 @@ pub(crate) fn depth_unit(format: Format) -> Option<[f32; 2]> {
 /// only where it holds no smallest value (-128 samples as -127 does); into one, never (a draw writes
 /// -127 for -1), so it is refused.
 /// Into a depth format the program writes depth only, from the uniform `unit` where it is unorm. From
-/// 24-bit depth it reads the uniform `reciprocal24` ([`crate::depth::UNORM24`]).
+/// 24-bit depth there is none: no copy the interface allows draws from it (it has no colour partner),
+/// so it is refused.
 pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
     let (from, wf) = bits(src)?;
+    if from == Kind::Depth(UNORM24_BITS) {
+        return None;
+    }
     let (to, wt) = bits(dst)?;
     // R11G11B10 goes only into its 32-bit twin, as one word.
     let packed = from == Kind::SmallFloat && dst == Format::R32Uint;
@@ -125,19 +129,12 @@ pub(crate) fn program(src: Format, dst: Format, sampler: &str) -> Option<String>
     } else {
         Default::default()
     };
-    let unorm24 = if from == Kind::Depth(UNORM24_BITS) {
-        crate::depth::UNORM24
-    } else {
-        ""
-    };
-    let towards = [towards, srgb, unorm24].concat();
+    let towards = [towards, srgb].concat();
     let half = |c: &str| format!("half_bits(v.{c})");
     let decode = match from {
         Kind::Unorm => format!("uvec4(v * vec4({max}) + 0.5)"),
         Kind::Srgb => SRGB_BITS.into(),
-        // As the depth read back by draw is: 24-bit depth checked against the device's conversion,
-        // narrower depth rounded once.
-        Kind::Depth(UNORM24_BITS) => "uvec4(unorm24(v.x), 0u, 0u, 0u)".into(),
+        // As the depth read back by draw is: rounded once.
         Kind::Depth(b) => {
             let one = (1u64 << b) - 1;
             format!("uvec4(min(uint(round(v.x * {one}.0)), {one}u))")

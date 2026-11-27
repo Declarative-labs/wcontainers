@@ -118,6 +118,9 @@ pub struct WebGpu {
     /// Whether the device samples stored 24-bit depth as a product with a rounded reciprocal rather than as the
     /// nearest float ([`Depth24::sampled_by_product`]), which the 24-bit depth read checks against.
     depth24_by_product: bool,
+    /// The stored 24-bit words this device samples to another word's float ([`fill::colliding`]),
+    /// which a 24-bit depth read decides by comparison passes; empty where none is (no pass).
+    depth24_colliding: Vec<u32>,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
     /// Texture reads into a buffer at an offset off Direct3D 12's placement alignment overwrite
@@ -859,6 +862,7 @@ impl WebGpu {
             #[cfg(test)]
             depth24,
             depth24_by_product: depth24.sampled_by_product(),
+            depth24_colliding: fill::colliding(depth24.sampled_by_product()),
         }
     }
 
@@ -1492,6 +1496,17 @@ impl Gpu for WebGpu {
         }
         if desc.usage.contains(TextureUsage::COPY_DST)
             && FORMAT_FACTS[desc.format as usize].depth_stencil
+        {
+            usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
+        }
+        // A read of 24-bit depth on a device sampling some words alike compares against the texture
+        // as a depth attachment (`fill::decide_colliding`).
+        if desc.usage.contains(TextureUsage::COPY_SRC)
+            && matches!(
+                desc.format,
+                Format::Depth24Plus | Format::Depth24PlusStencil8
+            )
+            && !self.depth24_colliding.is_empty()
         {
             usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }

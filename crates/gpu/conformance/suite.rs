@@ -7245,6 +7245,62 @@ fn depth_copies_through_buffers<B: Gpu>(b: &mut B, format: Format) {
     ok(b);
 }
 
+/// Every one of the 2^24 depth words, written into a `Depth24Plus` texture of four 2048 by 2048 layers
+/// (the size every OpenGL ES 3 device takes; word i at texel i) and copied out to a buffer, comes back as written where the back end stores 24-bit depth as
+/// 24-bit unorm (`DEPTH24_UNORM`, which promises it): on a device sampling two words to one float the
+/// back end tells them apart some other way. Every word that came back otherwise is named.
+pub fn every_24_bit_depth_word_copies_out_as_written<B: Gpu>(mut b: B) {
+    let format = Format::Depth24Plus;
+    if !b.caps().features.contains(Features::DEPTH24_UNORM)
+        || !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT)
+    {
+        return;
+    }
+    let (side, layers) = (1u32 << 11, 4u32);
+    let t = texture(
+        &mut b,
+        format,
+        (side, side),
+        layers,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let words = side * side * layers;
+    let written: Vec<u8> = (0..words).flat_map(u32::to_le_bytes).collect();
+    b.write_texture(
+        &region(&t, 0, 0, 0, 0),
+        extent(side, side, layers),
+        &written,
+        side * 4,
+        side,
+        WriteMode::Ordered,
+    );
+    let size = u64::from(words) * 4;
+    let out = buffer(&mut b, size, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    b.copy_texture_to_buffer(
+        &region(&t, 0, 0, 0, 0),
+        &CopyBufferTexture {
+            buffer: &out,
+            offset: 0,
+            row_pitch: side * 4,
+            rows_per_layer: side,
+        },
+        extent(side, side, layers),
+    );
+    let got = read_buffer(&mut b, &out, 0, size);
+    let wrong: Vec<String> = got
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(0u32..)
+        .filter_map(|(bytes, word)| {
+            let read = u32::from_le_bytes(*bytes) & 0xff_ffff;
+            (read != word).then(|| format!("{word:#08x} read as {read:#08x}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{} words: {wrong:?}", wrong.len());
+}
+
 /// Runs each suite function as its own test on a back end made anew for every test.
 ///
 /// A back end is built alone through [`StandaloneGpu`], so every implementation says `StandaloneGpu: yes`.
@@ -7654,6 +7710,11 @@ macro_rules! tests {
         #[test]
         fn depth_copies_through_buffers_keep_their_pitches_and_values() {
             $crate::depth_copies_through_buffers_keep_their_pitches_and_values($value);
+        }
+
+        #[test]
+        fn every_24_bit_depth_word_copies_out_as_written() {
+            $crate::every_24_bit_depth_word_copies_out_as_written($value);
         }
 
         $crate::tests!(@StandaloneGpu $standalone_gpu ($value) $(($standalone_gpu_value))?);

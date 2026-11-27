@@ -731,6 +731,11 @@ pub struct Gl<O: OpenGlEs> {
     /// How the device samples 24-bit depth, for [`depth::UNORM24`]: 0 for the nearest float, else the
     /// float it multiplies the stored value by (the probe at creation).
     depth24_reciprocal: f32,
+    /// The stored 24-bit words sampling gives as another word on this device ([`depth::colliding`]),
+    /// which a read of 24-bit depth decides by comparison passes; empty where none is (no pass).
+    depth24_colliding: Vec<u32>,
+    /// The comparison pass's program ([`depth::EQUAL`]), made at its first use.
+    equal_pass: Option<depth::EqualPass>,
     /// The objects the handles name.
     objects: Objects<O::Fence>,
     /// The EGL objects the context lives in, destroyed after every field above.
@@ -738,9 +743,8 @@ pub struct Gl<O: OpenGlEs> {
     held: Option<platform::Held>,
 }
 
-/// A program of `copy_by_draw`, with its uniforms `at`, into unorm depth `unit`, and from 24-bit depth
-/// `reciprocal24`.
-type CopyProgram = (u32, i32, Option<i32>, Option<i32>);
+/// A program of `copy_by_draw`, with its uniforms `at` and, into unorm depth, `unit`.
+type CopyProgram = (u32, i32, Option<i32>);
 
 /// What the back end's own fetch draws read: depth or stencil of a 2D or 2D array texture, or depth
 /// of a cube.
@@ -859,6 +863,8 @@ impl<O: OpenGlEs> Gl<O> {
             point_sampler: None,
             float_blits: false,
             depth24_reciprocal: 0.0,
+            depth24_colliding: Vec::new(),
+            equal_pass: None,
             objects: Objects::default(),
             #[cfg(not(target_arch = "wasm32"))]
             held: None,
@@ -874,7 +880,10 @@ impl<O: OpenGlEs> Gl<O> {
         }
         if b.caps.features.contains(Features::DEPTH24_UNORM) {
             match probe_depth24_sampling(&mut b) {
-                Ok(reciprocal) => b.depth24_reciprocal = reciprocal,
+                Ok(reciprocal) => {
+                    b.depth24_reciprocal = reciprocal;
+                    b.depth24_colliding = depth::colliding(reciprocal);
+                }
                 Err(log) => {
                     own_program_failed(
                         &mut b,
@@ -1688,12 +1697,11 @@ fn copy_by_draw<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent
             return false;
         };
         let built = depth::link(&gpu.gl, &source).and_then(|p| {
-            let (at, unit, reciprocal) = (
+            let (at, unit) = (
                 platform::location(&gpu.gl, p, "at"),
                 platform::location(&gpu.gl, p, "unit"),
-                platform::location(&gpu.gl, p, "reciprocal24"),
             );
-            at.map(|at| (p, at, unit, reciprocal))
+            at.map(|at| (p, at, unit))
                 .ok_or_else(|| "the copy program has no uniform at".to_string())
         });
         match built {
@@ -1721,11 +1729,8 @@ fn copy_by_draw<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent
     ];
     for i in 0..extent.depth_or_layers {
         let fb = texture_framebuffer(gpu, &dst.texture, dst.mip, read_layer(dst, i));
-        let (program, at, unit, reciprocal) = &gpu.copy_programs[&key];
+        let (program, at, unit) = &gpu.copy_programs[&key];
         gpu.gl.use_program(*program);
-        if let Some(r) = reciprocal {
-            gpu.gl.uniform1f(*r, gpu.depth24_reciprocal);
-        }
         gpu.gl.uniform3i(
             *at,
             src.origin.x as i32 - rect[0],
@@ -2185,9 +2190,98 @@ fn depth_by_draw<O: OpenGlEs>(
                 fb,
                 size,
             )?;
+            if scale == UNORM24_SCALE && !gpu.depth24_colliding.is_empty() {
+                let at = [region.origin.x, region.origin.y];
+                decide_colliding(gpu, (&src, region.mip, layer, at), (&scratch, i), size)?;
+            }
         }
     }
     Ok(scratch)
+}
+
+/// What a depth of 1 is stored as in 24-bit depth ([`depth::stored`]).
+const UNORM24_SCALE: u32 = (1 << 24) - 1;
+
+/// After a read of 24-bit depth by sampling into layer `dst.1` of `dst` (`size` texels), the
+/// comparison passes ([`depth::EQUAL`]): for each word the device samples as another's float, a
+/// draw with the depth test EQUAL at that word writes it where the source (level, layer and
+/// region origin `src`) stores it. The source is the depth attachment where the region starts at
+/// its origin, else a copy of the region made by a blit, which keeps the stored words.
+fn decide_colliding<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    src: (&TextureRef, u32, u32, [u32; 2]),
+    dst: (&TextureRef, u32),
+    size: (i32, i32),
+) -> Result<(), GpuError> {
+    let (texture, mip, layer, at) = src;
+    let copied = if at == [0, 0] {
+        None
+    } else {
+        let copy = make_texture(
+            gpu,
+            &TextureDesc {
+                dimension: TextureDimension::D2,
+                format: texture.desc.format,
+                width: size.0 as u32,
+                height: size.1 as u32,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            },
+        )?;
+        let from = Region {
+            texture: texture.clone(),
+            mip,
+            layer,
+            origin: Origin {
+                x: at[0],
+                y: at[1],
+                z: 0,
+            },
+            stencil: false,
+        };
+        let to = Region {
+            texture: copy.clone(),
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let extent = Extent {
+            width: size.0 as u32,
+            height: size.1 as u32,
+            depth_or_layers: 1,
+        };
+        blit_same(gpu, &from, &to, extent);
+        Some(copy)
+    };
+    let (depth, depth_mip, depth_layer) = match &copied {
+        Some(copy) => (copy, 0, 0),
+        None => (texture, mip, layer),
+    };
+    if gpu.equal_pass.is_none() {
+        match depth::build_equal(&gpu.gl) {
+            Ok(p) => gpu.equal_pass = Some(p),
+            Err(log) => return Err(own_program_failed(gpu, log)),
+        }
+    }
+    let fb = own_framebuffer(gpu, &[(dst.0, 0, dst.1), (depth, depth_mip, depth_layer)]);
+    let words = gpu.depth24_colliding.clone();
+    for word in words {
+        let pass = gpu.equal_pass.as_ref().expect("built above");
+        let (program, word_at, depth_at) = (pass.program, pass.word, pass.depth);
+        gpu.gl.use_program(program);
+        gpu.gl.uniform1ui(word_at, word);
+        gpu.gl.uniform1f(depth_at, depth::nearest(word));
+        own_equal_draw_into(gpu, fb, [0, 0, size.0, size.1]);
+    }
+    if let Some(copy) = copied {
+        destroy_held(gpu, Held::Texture(copy));
+    }
+    Ok(())
 }
 
 /// Draws a full-screen triangle into `target` (`size` pixels) whose fragments fetch level `mip` of
@@ -2275,6 +2369,30 @@ fn own_depth_draw_into<O: OpenGlEs>(gpu: &mut Gl<O>, target: u32, rect: [i32; 4]
         gl.depth_func(gles::ALWAYS);
         v.depth_func = gles::ALWAYS;
     }
+    if v.depth_range != [0.0, 1.0] {
+        gl.depth_rangef(0.0, 1.0);
+        v.depth_range = [0.0, 1.0];
+    }
+    own_draw(gpu);
+}
+
+/// As [`own_draw_into`], for the comparison pass ([`depth::EQUAL`]): the depth test EQUAL against
+/// the depth attachment of `target`, which it does not write, in the full depth range.
+fn own_equal_draw_into<O: OpenGlEs>(gpu: &mut Gl<O>, target: u32, rect: [i32; 4]) {
+    gpu.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, target);
+    gpu.applied.draw_framebuffer = Some(target);
+    gpu.applied.program = 0;
+    open_writes(gpu);
+    state::plain(&gpu.gl, &mut gpu.values, rect);
+    let (gl, v) = (&gpu.gl, &mut gpu.values);
+    gl.enable(gles::DEPTH_TEST);
+    v.depth_test = true;
+    if v.depth_func != gles::EQUAL {
+        gl.depth_func(gles::EQUAL);
+        v.depth_func = gles::EQUAL;
+    }
+    gl.depth_mask(false);
+    v.depth_mask = false;
     if v.depth_range != [0.0, 1.0] {
         gl.depth_rangef(0.0, 1.0);
         v.depth_range = [0.0, 1.0];

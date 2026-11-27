@@ -4,7 +4,7 @@
 //! texture to be copied out, `DepthReadByDraw`; plan section 4.2; a frame drawn into the window's
 //! format, `PresentConverted`, 4.9), and the empty fragment stage of programs without one.
 
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, sync::OnceLock};
 
 use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{
@@ -161,6 +161,8 @@ pub(crate) struct Fills {
     depths: HashMap<(wgpu::TextureFormat, DepthSource), DepthProgram>,
     stencils: HashMap<wgpu::TextureFormat, StencilProgram>,
     reads: HashMap<AspectRead, DepthProgram>,
+    /// The comparison passes after a 24-bit depth read ([`EQUAL_WGSL`]), by the depth format.
+    equals: HashMap<wgpu::TextureFormat, DepthProgram>,
     presents: HashMap<wgpu::TextureFormat, DepthProgram>,
     resolves: HashMap<wgpu::TextureFormat, DepthProgram>,
     /// Keyed by the converted format, whether it widens into the texture, and whether that is 3D.
@@ -1220,6 +1222,8 @@ fn stencil_program(gpu: &mut WebGpu, format: wgpu::TextureFormat) -> StencilProg
 /// Draws the depth or stencil (`read`) of layers `src_at.1..` of `src` at level `src_at.0`, in
 /// the rectangle at `src_at.2` of `size`, into layers `0..layers` of the colour texture `dst` at
 /// its origin, outside a pass (`DepthReadByDraw`). `src` is single-sampled with binding usage.
+/// 24-bit depth on a device sampling some words to the float of another ([`colliding`]) is drawn into
+/// a colour texture of the level's size and decided there by [`decide_colliding`], then copied.
 pub(crate) fn aspect_by_draw(
     gpu: &mut WebGpu,
     src: (&wgpu::Texture, AspectRead),
@@ -1238,6 +1242,22 @@ pub(crate) fn aspect_by_draw(
         AspectRead::Stencil => wgpu::TextureAspect::StencilOnly,
         _ => wgpu::TextureAspect::DepthOnly,
     };
+    if read == AspectRead::Unorm24
+        && !gpu.depth24_colliding.is_empty()
+        && src_tex
+            .usage()
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    {
+        for l in 0..layers {
+            decide_colliding(
+                gpu,
+                (src_tex, src_at.0, src_at.1 + l, src_at.2),
+                (dst, l),
+                size,
+            );
+        }
+        return;
+    }
     let value = uniform(&gpu.device, [src_at.2[0], src_at.2[1], 0, 0]);
     for l in 0..layers {
         let from = level_view(src_tex, aspect, src_at.0, src_at.1 + l);
@@ -1285,10 +1305,12 @@ pub(crate) fn aspect_by_draw(
 }
 
 /// The 24-bit value stored for a sampled depth `d`, by the device's own conversion: `{SAMPLED}` is the
-/// float the device gives for a stored `c`. Rounding d (2^24 - 1) alone can be one off either way: in the
-/// upper part of each binade the nearest float and a product with the rounded reciprocal give one float
-/// for neighbouring values, and the product itself rounds. So the rounded value and its two neighbours
-/// are each converted as the device does, the one giving d's bits kept (the rounded value where none does).
+/// float the device gives for a stored `c`. Rounding d (2^24 - 1) alone can be one high: in the upper part
+/// of each binade the nearest float and a product with the rounded reciprocal give one float for
+/// neighbouring values, and the product itself rounds (a scan of all 2^24 words under both conversions
+/// found it never one low). So the rounded value and the one below it are each converted as the device
+/// does, the one giving d's bits kept (the rounded value where neither does). Words the device samples
+/// to one float are told apart by [`decide_colliding`].
 const UNORM24_READ: &str = "fn sampled24(c: u32) -> u32 {
     return {SAMPLED};
 }
@@ -1297,7 +1319,6 @@ fn unorm24(d: f32) -> u32 {
     let bits = bitcast<u32>(d);
     if (sampled24(e) == bits) { return e; }
     if (e > 0u && sampled24(e - 1u) == bits) { return e - 1u; }
-    if (e < {MAX}u && sampled24(e + 1u) == bits) { return e + 1u; }
     return e;
 }
 ";
@@ -1309,6 +1330,286 @@ const SAMPLED_NEAREST: &str = "select(bitcast<u32>(f32(c) * 0x1p-24f) + 1u, 0u, 
 /// The float a device sampling stored 24-bit depth `c` as c times the float nearest 1 / (2^24 - 1),
 /// 2^-24 (1 + 2^-23), gives (llvmpipe and lavapipe).
 const SAMPLED_PRODUCT: &str = "bitcast<u32>(f32(c) * 0x1.000002p-24f)";
+
+/// The float nearest 1 / (2^24 - 1), 2^-24 (1 + 2^-23), which llvmpipe and lavapipe multiply a stored
+/// 24-bit word by ([`SAMPLED_PRODUCT`]).
+const PRODUCT_RECIPROCAL: f32 = f32::from_bits(0x3380_0001);
+
+/// The stored 24-bit words [`UNORM24_READ`] gives as another word on this device: none where it samples
+/// each word as its nearest float (every word has its own); where it samples by the product, the
+/// words found by converting every word as the device does and reading the float back as
+/// [`UNORM24_READ`] does (on lavapipe 0xfffffe alone, which samples to 1.0 as 0xffffff does). The
+/// scan is made once a process.
+pub(crate) fn colliding(by_product: bool) -> Vec<u32> {
+    static PRODUCT: OnceLock<Vec<u32>> = OnceLock::new();
+    if !by_product {
+        return Vec::new();
+    }
+    PRODUCT
+        .get_or_init(|| {
+            let sampled = |c: u32| (c as f32 * PRODUCT_RECIPROCAL).to_bits();
+            let read = |bits: u32| {
+                let e =
+                    ((f32::from_bits(bits) * UNORM24_MAX as f32).round() as u32).min(UNORM24_MAX);
+                if e > 0 && sampled(e) != bits && sampled(e - 1) == bits {
+                    e - 1
+                } else {
+                    e
+                }
+            };
+            (0..=UNORM24_MAX)
+                .filter(|&c| read(sampled(c)) != c)
+                .collect()
+        })
+        .clone()
+}
+
+/// The float nearest `word` / (2^24 - 1), which the device stores as `word` ([`SAMPLED_NEAREST`]).
+fn nearest(word: u32) -> f32 {
+    if word == 0 {
+        0.0
+    } else {
+        f32::from_bits((word as f32 * 2f32.powi(-(UNORM24_BITS as i32))).to_bits() + 1)
+    }
+}
+
+/// The comparison pass: at the depth stored as the uniform's word (its second word that depth's bits),
+/// writes the word. Drawn with the depth test EQUAL against a 24-bit depth attachment, it writes only
+/// where the attachment holds the word: the device compares stored integers, which sampling cannot
+/// tell apart.
+const EQUAL_WGSL: &str = "
+@group(0) @binding(0) var<uniform> decided: vec4<u32>;
+struct Decided {
+    @builtin(frag_depth) depth: f32,
+    @location(0) word: vec4<u32>,
+}
+@fragment fn equal() -> Decided {
+    return Decided(bitcast<f32>(decided.y), vec4<u32>(decided.x, 0u, 0u, 0u));
+}
+";
+
+/// The comparison pass's pipeline for a depth attachment of `depth` and a colour target of `target`.
+fn equal_program(
+    gpu: &mut WebGpu,
+    depth: wgpu::TextureFormat,
+    target: wgpu::TextureFormat,
+) -> DepthProgram {
+    let cover = cover(gpu);
+    let module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(EQUAL_WGSL.into()),
+        });
+    let layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[fragment_entry(0, UNIFORM)],
+        });
+    let pipeline_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+    gpu.counters.pipelines += 1;
+    let pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cover,
+                entry_point: None,
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: depth,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Equal),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                targets: &[Some(target.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+    DepthProgram { pipeline, layout }
+}
+
+/// The read of 24-bit depth at level `src.1`, layer `src.2`, rectangle at `src.3` of `size`, into
+/// layer `dst.1` of `dst`, where the device samples some words to another's float: the read draws
+/// into a colour texture of the level's size at the rectangle's own place, then for each such word a
+/// pass with the depth test EQUAL against the level, read only, writes the word where the level
+/// stores it ([`EQUAL_WGSL`]); the rectangle is then copied to `dst`.
+fn decide_colliding(
+    gpu: &mut WebGpu,
+    src: (&wgpu::Texture, u32, u32, [u32; 2]),
+    dst: (&wgpu::Texture, u32),
+    size: [u32; 2],
+) {
+    let (src_tex, mip, layer, at) = src;
+    let level = [
+        (src_tex.width() >> mip).max(1),
+        (src_tex.height() >> mip).max(1),
+    ];
+    let target = dst.0.format();
+    let placed = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: level[0],
+            height: level[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: target,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let depth_format = src_tex.format();
+    if !gpu.fills.equals.contains_key(&depth_format) {
+        let program = equal_program(gpu, depth_format, target);
+        gpu.fills.equals.insert(depth_format, program);
+    }
+    let unshifted = uniform(&gpu.device, [0; 4]);
+    let words: Vec<wgpu::Buffer> = gpu
+        .depth24_colliding
+        .iter()
+        .map(|&w| uniform(&gpu.device, [w, nearest(w).to_bits(), 0, 0]))
+        .collect();
+    let from = level_view(src_tex, wgpu::TextureAspect::DepthOnly, mip, layer);
+    let attached = level_view(src_tex, wgpu::TextureAspect::All, mip, layer);
+    let to = level_view(&placed, wgpu::TextureAspect::All, 0, 0);
+    let read = &gpu.fills.reads[&AspectRead::Unorm24];
+    let read_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &read.layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: unshifted.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&from),
+            },
+        ],
+    });
+    let read_pipeline = read.pipeline.clone();
+    let equal = &gpu.fills.equals[&depth_format];
+    let groups: Vec<wgpu::BindGroup> = words
+        .iter()
+        .map(|w| {
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &equal.layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: w.as_entire_binding(),
+                }],
+            })
+        })
+        .collect();
+    let equal_pipeline = equal.pipeline.clone();
+    let rect = |rp: &mut wgpu::RenderPass<'_>| {
+        rp.set_viewport(
+            at[0] as f32,
+            at[1] as f32,
+            size[0] as f32,
+            size[1] as f32,
+            0.0,
+            1.0,
+        );
+        rp.set_scissor_rect(at[0], at[1], size[0], size[1]);
+    };
+    let encoder = gpu.stream(Stream::Main);
+    {
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &to,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        rect(&mut rp);
+        rp.set_pipeline(&read_pipeline);
+        rp.set_bind_group(0, &read_group, &[]);
+        rp.draw(COVER_VERTICES, 0..1);
+    }
+    {
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &to,
+                depth_slice: None,
+                resolve_target: None,
+                ops: keep(),
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &attached,
+                depth_ops: None,
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        rect(&mut rp);
+        rp.set_pipeline(&equal_pipeline);
+        for group in &groups {
+            rp.set_bind_group(0, group, &[]);
+            rp.draw(COVER_VERTICES, 0..1);
+        }
+    }
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &placed,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: at[0],
+                y: at[1],
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: dst.0,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: dst.1,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+    );
+}
 
 /// Writes the WGSL function `unorm24(d)`: the 24-bit value this device stored for a sampled depth.
 fn unorm24_functions(gpu: &WebGpu) -> String {
