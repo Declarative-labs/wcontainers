@@ -54,6 +54,13 @@ const CODE_AREA: u64 = (1 << 45) + (1 << 40);
 const CODE_ROOM: u64 = 1 << 24;
 /// Runs one after another on one thread.
 const RUNS: u64 = 1000;
+/// FPCR's rounding mode toward zero (RMode, bits 23 and 22), the guest's in the runs that keep the thread's own
+/// ([FPCR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPCR--Floating-point-Control-Register)).
+const ROUND_TOWARD_ZERO: u32 = 0b11 << 22;
+/// A tenth, rounded to nearest: rounding toward zero makes it one unit in the last place smaller
+/// ([binary64](https://en.wikipedia.org/wiki/Double-precision_floating-point_format)).
+const TENTH_ROUNDED_TO_NEAREST: u64 = 0x3fb9_9999_9999_999a;
+const TEN: f64 = 10.0;
 
 fn way(memory: &InProcessMemory) -> Way {
     Way::InProcess {
@@ -127,17 +134,18 @@ fn before(seed: u64) -> GuestState {
     }
 }
 
-/// Runs the translated code from `state` and resolves its call into the floor.
-fn run(
+/// Runs the translated code from `state`, with the guest's float status `float`, and resolves its call into the floor.
+fn run_with(
     thread: &mut InProcessThread,
     memory: &InProcessMemory,
     code: &HostCode,
     at: u64,
     state: &GuestState,
+    float: &FloatStatus,
 ) -> Resolution {
     let way = way(memory);
-    let float = FloatStatus::default();
-    thread.enter(way, state, RegisterPage::default(), &float, at);
+    let mut resolving = *float;
+    thread.enter(way, state, RegisterPage::default(), float, at);
     let Exit::Call(call) = thread.run() else {
         panic!("the run ended at no entry of the floor");
     };
@@ -153,7 +161,7 @@ fn run(
         &thread.hardware(),
         &thread.page(),
         &thread.after(),
-        &mut FloatStatus::default(),
+        &mut resolving,
         &mut |address, into| {
             let bytes = memory
                 .borrow(address..address + into.len() as u64)
@@ -162,6 +170,22 @@ fn run(
         },
     )
     .expect("the call resolves")
+}
+
+/// [`run_with`] the default float status.
+fn run(
+    thread: &mut InProcessThread,
+    memory: &InProcessMemory,
+    code: &HostCode,
+    at: u64,
+    state: &GuestState,
+) -> Resolution {
+    run_with(thread, memory, code, at, state, &FloatStatus::default())
+}
+
+/// A tenth, computed with this thread's rounding mode.
+fn tenth() -> f64 {
+    std::hint::black_box(1.0_f64) / std::hint::black_box(TEN)
 }
 
 /// The guest's state after the instructions, from `before` and the word its data page held.
@@ -251,19 +275,30 @@ fn a_thousand_runs_leave_the_thread_its_own() {
     let own = 0x0bad_cafe;
     OWN.set(own);
     thread.set_thread_pointer(own);
-    let third = std::hint::black_box(1.0_f64) / std::hint::black_box(3.0_f64);
+    let control = DirectLinuxProcess.read_fpcr();
+    assert_eq!(tenth().to_bits(), TENTH_ROUNDED_TO_NEAREST);
+    let float = FloatStatus {
+        fpcr: ROUND_TOWARD_ZERO,
+        ..FloatStatus::default()
+    };
     for run_number in 0..RUNS {
         write_word(&memory, DATA, run_number);
         let state = before(run_number);
-        let resolution = run(&mut thread, &memory, &code, at, &state);
+        let resolution = run_with(&mut thread, &memory, &code, at, &state, &float);
         assert_system_call(resolution, &after(&state, run_number));
         assert_eq!(read_word(&memory, DATA + STORED_AT), run_number + ADDED);
     }
     assert_eq!(OWN.get(), own, "the thread's own thread-local");
     assert_eq!(thread.thread_pointer(), own, "the guest's thread pointer");
     assert_eq!(
-        std::hint::black_box(1.0_f64) / std::hint::black_box(3.0_f64),
-        third,
+        thread.hardware().fpcr,
+        ROUND_TOWARD_ZERO,
+        "the guest's rounding"
+    );
+    assert_eq!(DirectLinuxProcess.read_fpcr(), control, "the thread's control");
+    assert_eq!(
+        tenth().to_bits(),
+        TENTH_ROUNDED_TO_NEAREST,
         "the thread's rounding"
     );
 }

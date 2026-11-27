@@ -12,16 +12,18 @@ use wcontainers_arm64::way::{
     AFTER_PAGE_WORDS, IN_PROCESS_ENTRIES, IN_PROCESS_WITHHELD_AT, PROCESS_ENTRY_BYTES,
 };
 use wcontainers_executor_arm64_stop::{
-    AfterPage, FloatStatus, GENERAL, GuestState, Interrupted, in_process,
+    AfterPage, FloatStatus, GENERAL, GuestState, Interrupted, Taken, in_process,
 };
 use wcontainers_linux_process::{
     EXIT_BYTES, EXIT_SCRATCH_REGISTER, FRAME_REGISTER, GENERAL_REGISTERS, LinuxProcess,
-    RUN_FRAME_WORDS, RunFrame, VECTOR_REGISTERS,
+    RUN_FRAME_WORDS, RunEnd, RunFrame, VECTOR_REGISTERS,
 };
-use wcontainers_linux_process_direct::{DirectCodeMapping, DirectLinuxProcess};
+use wcontainers_linux_process_direct::{DirectCodeMapping, DirectLinuxProcess, DirectRunThread};
 
 /// The page the floor's entries are in.
 const FLOOR_PAGE: u64 = IN_PROCESS_ENTRIES & !(PAGE_SIZE - 1);
+/// The link register, which holds the address after a call into the floor.
+const LINK: usize = GENERAL - 1;
 /// The words of the register page, then where the words after it start, in the frame's own words.
 const PAGE_WORDS: usize = size_of::<RegisterPage>() / size_of::<u64>();
 const AFTER_PAGE_AT: usize = IN_PROCESS_WITHHELD_AT / size_of::<u64>();
@@ -66,21 +68,31 @@ pub enum Exit {
     Call(u16),
     /// An exit at no entry of the floor, which translated code never reaches.
     Elsewhere(u64),
+    /// The stop came before the code started: the thread is as it was entered.
+    NotEntered,
+    /// The stop came while the code ran, at the hardware's pc.
+    Stopped,
+    /// An exception of the code, at the hardware's pc.
+    Taken(Taken),
 }
 
-/// A thread of form I: its frame, which holds its registers between runs.
+/// A thread of form I: its frame, which holds its registers between runs, on a host thread prepared to run code.
 #[derive(Debug)]
 pub struct InProcessThread {
     linux: DirectLinuxProcess,
     frame: Box<RunFrame>,
+    host: DirectRunThread,
 }
 
 impl InProcessThread {
-    /// A thread whose registers are all zero; refused where the floor cannot be mapped.
+    /// A thread whose registers are all zero, run on this host thread; refused where the floor cannot be mapped or
+    /// this host thread already runs one.
     pub fn new() -> Result<Self, Errno> {
         floor()?;
+        let linux = DirectLinuxProcess;
         Ok(Self {
-            linux: DirectLinuxProcess,
+            host: linux.prepare_run_thread()?,
+            linux,
             frame: Box::default(),
         })
     }
@@ -107,16 +119,40 @@ impl InProcessThread {
         self.frame.words[AFTER_PAGE_AT..AFTER_PAGE_AT + AFTER_PAGE_WORDS].copy_from_slice(&after);
     }
 
-    /// Runs the thread's code until it calls the floor.
+    /// Runs the thread's code until it calls the floor, takes an exception or is stopped.
     pub fn run(&mut self) -> Exit {
-        let exit = self.linux.run_code(&mut self.frame);
-        match exit
-            .checked_sub(IN_PROCESS_ENTRIES)
-            .filter(|offset| offset.is_multiple_of(PROCESS_ENTRY_BYTES))
-            .and_then(|offset| u16::try_from(offset / PROCESS_ENTRY_BYTES).ok())
-        {
-            Some(code) => Exit::Call(code),
-            None => Exit::Elsewhere(exit),
+        match self.linux.run_code(&mut self.host, &mut self.frame) {
+            RunEnd::Exit(exit) => call_at(exit),
+            RunEnd::NotEntered => Exit::NotEntered,
+            RunEnd::Stopped => {
+                let registers = &mut self.frame.registers;
+                // Stopped in an exit before it changed a register: the call it was making, made.
+                if registers.pc & !(PAGE_SIZE - 1) == FLOOR_PAGE {
+                    let exit = registers.pc & !(PROCESS_ENTRY_BYTES - 1);
+                    registers.pc = registers.x[LINK];
+                    return call_at(exit);
+                }
+                Exit::Stopped
+            }
+            RunEnd::Fault {
+                address,
+                write,
+                alignment,
+            } => {
+                let registers = &self.frame.registers;
+                Exit::Taken(if alignment && address == registers.sp {
+                    Taken::StackAlignment
+                } else if alignment && address == registers.pc {
+                    Taken::JumpAlignment
+                } else {
+                    Taken::Access {
+                        alignment,
+                        fault: address,
+                        write,
+                    }
+                })
+            }
+            RunEnd::Raised(_) => Exit::Taken(Taken::Other),
         }
     }
 
@@ -131,6 +167,12 @@ impl InProcessThread {
             fpsr: registers.fpsr as u32,
             fpcr: registers.fpcr as u32,
         }
+    }
+
+    /// Makes the thread go on from the hardware and register page an exception left, which the stop crate resolved.
+    pub fn resume(&mut self, hardware: &Interrupted, page: &RegisterPage) {
+        self.set_hardware(hardware);
+        self.set_page(page);
     }
 
     fn set_hardware(&mut self, hardware: &Interrupted) {
@@ -189,5 +231,17 @@ impl InProcessThread {
 
     pub fn set_thread_pointer(&mut self, pointer: u64) {
         self.frame.registers.tpidr_el0 = pointer;
+    }
+}
+
+/// Where a run that ended at the exit at `exit` ended.
+fn call_at(exit: u64) -> Exit {
+    match exit
+        .checked_sub(IN_PROCESS_ENTRIES)
+        .filter(|offset| offset.is_multiple_of(PROCESS_ENTRY_BYTES))
+        .and_then(|offset| u16::try_from(offset / PROCESS_ENTRY_BYTES).ok())
+    {
+        Some(code) => Exit::Call(code),
+        None => Exit::Elsewhere(exit),
     }
 }
