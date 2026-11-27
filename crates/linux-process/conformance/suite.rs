@@ -3,7 +3,9 @@
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_arch = "aarch64")]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use nix::sys::signal::Signal as NixSignal;
 use wcontainers_linux_process::{Errno, LinuxProcess, Pid, ProtFlags, Signal};

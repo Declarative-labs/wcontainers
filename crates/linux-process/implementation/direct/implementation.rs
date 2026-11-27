@@ -1,7 +1,9 @@
 //! The calls and instructions themselves, on this host: each use of `unsafe` is one marked line.
 #![cfg(target_os = "linux")]
 
-use core::ffi::{c_int, c_void};
+#[cfg(target_arch = "aarch64")]
+use core::ffi::c_int;
+use core::ffi::c_void;
 #[cfg(target_arch = "aarch64")]
 use core::marker::PhantomData;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
