@@ -525,7 +525,7 @@ void
 wc_nir_fragcolor_to_buffers(struct nir_shader *nir, unsigned buffers)
 {
    /* At most the draw buffers a program has (FRAG_RESULT_DATA0 to DATA7): more would write locations past every
-    * output table of Mesa's and Zink's (found by the hostile caller's fuzzing: a write past nir_to_spirv's). */
+    * output table (found by the hostile caller's fuzzing). */
    if (nir->info.stage != MESA_SHADER_FRAGMENT || buffers > PIPE_MAX_COLOR_BUFS)
       return;
    wc_nir_lower_io(nir);
@@ -1575,13 +1575,6 @@ wc_bytes_free(struct wc_bytes *bytes)
 {
    free(bytes->data);
    bytes->data = NULL;
-}
-
-void
-wc_words_free(struct wc_words *words)
-{
-   free(words->data);
-   words->data = NULL;
 }
 
 void

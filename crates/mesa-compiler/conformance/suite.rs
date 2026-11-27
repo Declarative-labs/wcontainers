@@ -1,6 +1,7 @@
 //! The tests every implementation of wcontainers-mesa-compiler runs, written against the trait alone. The trait's
-//! shaders are typed by their place in the bridge's chain, so a caller can write only the orders the bridge's callers
-//! take (the doctests below show the others do not compile); the tests walk every one of those orders: programs
+//! shaders are typed by their place in the bridge's chain and the OpenGL driver's by their stage, so a caller can write
+//! only the orders the bridge's callers take, on the stages they take them on (the doctests below show the others do
+//! not compile); the tests walk every one of those orders: programs
 //! compiled from GLSL and SPIR-V and read back in every form the trait gives; a hostile caller taking every walk from
 //! every program with edge arguments at every step (values past every enumeration, empty and long lists, units past
 //! every limit); and a seeded fuzzer of the same, from SPIR-V whose words were changed and GLSL whose numbers were.
@@ -8,75 +9,104 @@
 //! The orders that do not compile:
 //!
 //! ```compile_fail,E0308
-//! // Zink's writer on a program not in the common form.
+//! // The flat form of a program not in the common form.
 //! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, read: M::SpirvShader) {
-//!     let _ = compiler.spirv_common_to_spirv(read);
+//!     let _ = compiler.spirv_common_flatten(read);
 //! }
 //! ```
 //!
 //! ```compile_fail,E0382
-//! // Zink's writer twice on one program (it is taken by the first).
+//! // The flat form twice of one program (it is taken by the first).
 //! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, common: M::SpirvCommon) {
-//!     let _ = compiler.spirv_common_to_spirv(common);
-//!     let _ = compiler.spirv_common_to_spirv(common);
+//!     let _ = compiler.spirv_common_flatten(common);
+//!     let _ = compiler.spirv_common_flatten(common);
 //! }
 //! ```
 //!
 //! ```compile_fail,E0308
-//! // Zink's writer on the OpenGL driver's form.
+//! // The SPIR-V route's flat form of the OpenGL driver's variant.
 //! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, variant: M::Variant) {
-//!     let _ = compiler.spirv_common_to_spirv(variant);
+//!     let _ = compiler.spirv_common_flatten(variant);
 //! }
 //! ```
 //!
 //! ```compile_fail,E0308
 //! // The driver's steps at a creation on a program read from SPIR-V.
 //! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, read: M::SpirvShader) {
-//!     let _ = compiler.received_prepare(read);
+//!     let _ = compiler.received_vertex_prepare(read);
 //! }
 //! ```
 //!
 //! ```compile_fail,E0308
 //! // A draw's variant of a stage the driver's creation steps have not taken.
-//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, received: &M::Received, settings: wcontainers_mesa_compiler::VariantSettings) {
-//!     let _ = compiler.prepared_variant(received, settings, &[], &[]);
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, received: &M::ReceivedVertex, settings: wcontainers_mesa_compiler::VariantSettings) {
+//!     let _ = compiler.prepared_vertex_variant(received, settings, &[], &[]);
 //! }
 //! ```
 //!
 //! ```compile_fail,E0308
 //! // Points as squares from a program the driver's steps made (a pass-through or a square).
 //! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, made: &M::Made) {
-//!     let _ = compiler.prepared_points_as_squares(made, 0, 1.0);
+//!     let _ = compiler.prepared_vertex_points_as_squares(made, 0, 1.0);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // A geometry stage taken through the creation steps of a vertex stage.
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, received: M::ReceivedGeometry) {
+//!     let _ = compiler.received_vertex_prepare(received);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // A fragment program's points drawn as squares (only a vertex or evaluation program draws them so).
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, prepared: &M::PreparedFragment) {
+//!     let _ = compiler.prepared_vertex_points_as_squares(prepared, 0, 1.0);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // A vertex program rewritten as a geometry program drawing squares.
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, prepared: &M::PreparedVertex) {
+//!     let _ = compiler.prepared_geometry_points_as_squares(prepared, 0, 1.0, 0);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // A draw's variant of a tessellation control stage through the vertex stage's method.
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, prepared: &M::PreparedTessControl, settings: wcontainers_mesa_compiler::VariantSettings) {
+//!     let _ = compiler.prepared_vertex_variant(prepared, settings, &[], &[]);
 //! }
 //! ```
 //!
 //! The orders the callers take compile:
 //!
 //! ```
-//! fn candidate_a<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, words: &[u32], ranges: &[wcontainers_mesa_compiler::SlotRange; 4]) -> Option<Vec<u32>> {
+//! fn candidate_b<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, words: &[u32], ranges: &[wcontainers_mesa_compiler::SlotRange; 4]) -> Option<wcontainers_mesa_compiler::Flat> {
 //!     let read = compiler.spirv_read(words, 0, c"main", false)?;
 //!     let _key = compiler.spirv_shader_key(&read)?;
 //!     let common = compiler.spirv_to_common_form(read, 0, ranges).shader?;
-//!     compiler.spirv_common_to_spirv(common)
+//!     compiler.spirv_common_flatten(common)
 //! }
-//! fn draw<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, received: M::Received, settings: wcontainers_mesa_compiler::VariantSettings) -> Option<wcontainers_mesa_compiler::Flat> {
-//!     let prepared = compiler.received_prepare(received).shader?;
-//!     let variant = compiler.prepared_variant(&prepared, settings, &[], &[]).shader?;
+//! fn draw<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, received: M::ReceivedVertex, settings: wcontainers_mesa_compiler::VariantSettings) -> Option<wcontainers_mesa_compiler::Flat> {
+//!     let prepared = compiler.received_vertex_prepare(received).shader?;
+//!     let _squares = compiler.prepared_vertex_points_as_squares(&prepared, 0, 64.0);
+//!     let variant = compiler.prepared_vertex_variant(&prepared, settings, &[], &[]).shader?;
 //!     compiler.variant_flatten(variant, 0)
 //! }
 //! ```
 
 use std::ffi::{CStr, CString};
 
-use wcontainers_mesa_compiler::{MesaCompiler, NearestSampler, PositionTransform, SlotRange, TextureSwizzle, VariantSettings, constants};
+use wcontainers_mesa_compiler::{MesaCompiler, NearestSampler, PositionTransform, PreparedForm, SlotRange, Squares, TextureSwizzle, VariantForm, VariantSettings, constants};
 
-/// The first word of every SPIR-V module.
-const SPIRV_MAGIC: u32 = 0x0723_0203;
 /// The bridge's stages (enum wc_stage).
 const VERTEX: u32 = constants::STAGE_VERTEX;
 const FRAGMENT: u32 = constants::STAGE_FRAGMENT;
 const COMPUTE: u32 = constants::STAGE_COMPUTE;
 const GEOMETRY: u32 = constants::STAGE_GEOMETRY;
+const TESS_CONTROL: u32 = constants::STAGE_TESS_CONTROL;
+const TESS_EVALUATION: u32 = constants::STAGE_TESS_EVALUATION;
 /// The stages a GLSL program has a source for, by enum wc_stage.
 const STAGES: usize = constants::STAGES as usize;
 /// A program's sources by stage (none where it has no such stage).
@@ -212,13 +242,14 @@ void main() {
 }
 ";
 
-/// A tessellation evaluation program making triangles from the control program's patch.
+/// A tessellation evaluation program making triangles from the control program's patch, with a point size.
 const EVALUATION_SOURCE: &str = "#version 450
 layout(triangles, equal_spacing, ccw) in;
 layout(location = 0) in vec4 handed[];
 layout(location = 0) out vec4 shaded;
 void main() {
     gl_Position = gl_TessCoord.x * gl_in[0].gl_Position + gl_TessCoord.y * gl_in[1].gl_Position + gl_TessCoord.z * gl_in[2].gl_Position;
+    gl_PointSize = 4.0;
     shaded = handed[0];
 }
 ";
@@ -383,8 +414,8 @@ impl Calls {
     }
 }
 
-/// The SPIR-V candidates' walk (the corpus's, run.rs): a module read (alphaToOne made in a fragment program where the
-/// picks say), its key, the common form, then Zink's writer or the flat form (or nothing: the program dropped).
+/// The SPIR-V route's walk (the corpus's, run.rs): a module read (alphaToOne made in a fragment program where the picks
+/// say), its key, the common form, then the flat form (or nothing: the program dropped).
 fn spirv_walk<M: MesaCompiler>(compiler: &M, stage: u32, words: &[u32], picks: &mut Picks, calls: &mut Calls) {
     calls.one("spirv_read");
     let alpha_to_one = picks.flag();
@@ -396,17 +427,12 @@ fn spirv_walk<M: MesaCompiler>(compiler: &M, stage: u32, words: &[u32], picks: &
     calls.one("spirv_to_common_form");
     let form = compiler.spirv_to_common_form(read, picks.of(&NUMBERS), &picks.ranges());
     let Some(common) = calls.made("spirv_to_common_form", form.shader) else { return };
-    match picks.below(3) {
-        0 => {
-            calls.one("spirv_common_to_spirv");
-            let _ = calls.made("spirv_common_to_spirv", compiler.spirv_common_to_spirv(common));
-        }
-        1 => {
-            calls.one("spirv_common_flatten");
-            let _ = calls.made("spirv_common_flatten", compiler.spirv_common_flatten(common));
-        }
-        _ => drop(common),
+    if picks.below(3) == 0 {
+        drop(common);
+        return;
     }
+    calls.one("spirv_common_flatten");
+    let _ = calls.made("spirv_common_flatten", compiler.spirv_common_flatten(common));
 }
 
 /// A draw's walk on a prepared or made program: its variant, then the flat form (or nothing).
@@ -434,35 +460,115 @@ fn made_walk<M: MesaCompiler>(compiler: &M, made: &M::Made, picks: &mut Picks, c
     }
 }
 
+/// One stage's methods (its creation steps, a draw's variant, its points drawn as squares where the stage draws them),
+/// so that the walks are written once for every stage.
+struct Stage<M: MesaCompiler, R, P> {
+    /// The stage's number (enum wc_stage).
+    number: u32,
+    prepare: (&'static str, fn(&M, R) -> PreparedForm<P, M::Made>),
+    variant: (&'static str, fn(&M, &P, VariantSettings, &[TextureSwizzle], &[NearestSampler]) -> VariantForm<M::Variant>),
+    squares: Option<(&'static str, fn(&M, &P, &mut Picks) -> Squares<M::Made>)>,
+}
+
+fn vertex<M: MesaCompiler>() -> Stage<M, M::ReceivedVertex, M::PreparedVertex> {
+    Stage {
+        number: VERTEX,
+        prepare: ("received_vertex_prepare", M::received_vertex_prepare),
+        variant: ("prepared_vertex_variant", M::prepared_vertex_variant),
+        squares: Some(("prepared_vertex_points_as_squares", |compiler, prepared, picks| compiler.prepared_vertex_points_as_squares(prepared, picks.of(&NUMBERS), picks.of(&FLOATS)))),
+    }
+}
+
+fn fragment<M: MesaCompiler>() -> Stage<M, M::ReceivedFragment, M::PreparedFragment> {
+    Stage { number: FRAGMENT, prepare: ("received_fragment_prepare", M::received_fragment_prepare), variant: ("prepared_fragment_variant", M::prepared_fragment_variant), squares: None }
+}
+
+fn compute<M: MesaCompiler>() -> Stage<M, M::ReceivedCompute, M::PreparedCompute> {
+    Stage { number: COMPUTE, prepare: ("received_compute_prepare", M::received_compute_prepare), variant: ("prepared_compute_variant", M::prepared_compute_variant), squares: None }
+}
+
+fn geometry<M: MesaCompiler>() -> Stage<M, M::ReceivedGeometry, M::PreparedGeometry> {
+    Stage {
+        number: GEOMETRY,
+        prepare: ("received_geometry_prepare", M::received_geometry_prepare),
+        variant: ("prepared_geometry_variant", M::prepared_geometry_variant),
+        squares: Some(("prepared_geometry_points_as_squares", |compiler, prepared, picks| {
+            compiler.prepared_geometry_points_as_squares(prepared, picks.of(&NUMBERS), picks.of(&FLOATS), picks.of(&NUMBERS))
+        })),
+    }
+}
+
+fn tess_control<M: MesaCompiler>() -> Stage<M, M::ReceivedTessControl, M::PreparedTessControl> {
+    Stage {
+        number: TESS_CONTROL,
+        prepare: ("received_tess_control_prepare", M::received_tess_control_prepare),
+        variant: ("prepared_tess_control_variant", M::prepared_tess_control_variant),
+        squares: None,
+    }
+}
+
+fn tess_evaluation<M: MesaCompiler>() -> Stage<M, M::ReceivedTessEvaluation, M::PreparedTessEvaluation> {
+    Stage {
+        number: TESS_EVALUATION,
+        prepare: ("received_tess_evaluation_prepare", M::received_tess_evaluation_prepare),
+        variant: ("prepared_tess_evaluation_variant", M::prepared_tess_evaluation_variant),
+        squares: Some(("prepared_tess_evaluation_points_as_squares", |compiler, prepared, picks| {
+            compiler.prepared_tess_evaluation_points_as_squares(prepared, picks.of(&NUMBERS), picks.of(&FLOATS))
+        })),
+    }
+}
+
+/// Every method of the trait, each of which every walk of `every_method_is_called` must see make what it makes.
+const METHODS: [&str; 24] = [
+    "spirv_read",
+    "spirv_shader_key",
+    "spirv_to_common_form",
+    "spirv_common_flatten",
+    "glsl_to_nir",
+    "received_vertex_prepare",
+    "received_fragment_prepare",
+    "received_compute_prepare",
+    "received_geometry_prepare",
+    "received_tess_control_prepare",
+    "received_tess_evaluation_prepare",
+    "prepared_vertex_variant",
+    "prepared_fragment_variant",
+    "prepared_compute_variant",
+    "prepared_geometry_variant",
+    "prepared_tess_control_variant",
+    "prepared_tess_evaluation_variant",
+    "prepared_vertex_points_as_squares",
+    "prepared_geometry_points_as_squares",
+    "prepared_tess_evaluation_points_as_squares",
+    "made_key",
+    "made_named_layer_location",
+    "made_variant",
+    "variant_flatten",
+];
+
 /// The OpenGL driver's walk on one stage (state.rs, draw.rs): its creation steps, its pass-through programs, draws of
-/// it, and its points drawn as squares.
-fn stage_walk<M: MesaCompiler>(compiler: &M, received: M::Received, picks: &mut Picks, calls: &mut Calls) {
-    calls.one("received_prepare");
-    let form = compiler.received_prepare(received);
-    let _ = calls.made("received_prepare", form.shader.as_ref());
+/// it, and its points drawn as squares where the stage draws them.
+fn stage_walk<M: MesaCompiler, R, P>(compiler: &M, stage: &Stage<M, R, P>, received: R, picks: &mut Picks, calls: &mut Calls) {
+    calls.one(stage.prepare.0);
+    let form = (stage.prepare.1)(compiler, received);
+    let _ = calls.made(stage.prepare.0, form.shader.as_ref());
     for made in form.pass_through.iter().flatten() {
         made_walk(compiler, made, picks, calls);
     }
     let Some(prepared) = form.shader else { return };
     for _ in 0..1 + picks.below(3) {
         let (settings, swizzles, samplers) = (picks.settings(), picks.swizzles(), picks.samplers());
-        calls.one("prepared_variant");
-        let variant = compiler.prepared_variant(&prepared, settings, &swizzles, &samplers);
-        let _ = calls.made("prepared_variant", variant.shader.as_ref());
+        calls.one(stage.variant.0);
+        let variant = (stage.variant.1)(compiler, &prepared, settings, &swizzles, &samplers);
+        let _ = calls.made(stage.variant.0, variant.shader.as_ref());
         flatten_variant(compiler, variant, picks, calls);
     }
-    if picks.flag() {
-        calls.one("prepared_points_as_squares");
-        let squares = compiler.prepared_points_as_squares(&prepared, picks.of(&NUMBERS), picks.of(&FLOATS));
-        let _ = calls.made("prepared_points_as_squares", squares.geometry.as_ref());
-        for made in squares.before.iter().chain(&squares.geometry) {
-            made_walk(compiler, made, picks, calls);
-        }
-    }
-    if picks.flag() {
-        calls.one("prepared_geometry_points_as_squares");
-        let squares = compiler.prepared_geometry_points_as_squares(&prepared, picks.of(&NUMBERS), picks.of(&FLOATS), picks.of(&NUMBERS));
-        let _ = calls.made("prepared_geometry_points_as_squares", squares.geometry.as_ref());
+    if let Some((method, squares)) = stage.squares
+        && picks.flag()
+    {
+        calls.one(method);
+        let squares = squares(compiler, &prepared, picks);
+        let _ = calls.made(method, squares.geometry.as_ref());
         for made in squares.before.iter().chain(&squares.geometry) {
             made_walk(compiler, made, picks, calls);
         }
@@ -475,13 +581,49 @@ fn glsl_walk<M: MesaCompiler>(compiler: &M, sources: Sources<'_>, picks: &mut Pi
     let texts: [Option<&CStr>; STAGES] = std::array::from_fn(|at| owned.get(at).and_then(|text| text.as_deref()));
     calls.one("glsl_to_nir");
     let Some(program) = calls.made("glsl_to_nir", compiler.glsl_to_nir(texts).ok()) else { return };
-    for received in program.stages.into_iter().flatten() {
-        stage_walk(compiler, received, picks, calls);
+    if let Some(received) = program.vertex {
+        stage_walk(compiler, &vertex(), received, picks, calls);
+    }
+    if let Some(received) = program.tess_control {
+        stage_walk(compiler, &tess_control(), received, picks, calls);
+    }
+    if let Some(received) = program.tess_evaluation {
+        stage_walk(compiler, &tess_evaluation(), received, picks, calls);
+    }
+    if let Some(received) = program.geometry {
+        stage_walk(compiler, &geometry(), received, picks, calls);
+    }
+    if let Some(received) = program.fragment {
+        stage_walk(compiler, &fragment(), received, picks, calls);
+    }
+    if let Some(received) = program.compute {
+        stage_walk(compiler, &compute(), received, picks, calls);
     }
 }
 
-/// Compiles a program of each stage, takes it through the driver's steps and a draw's to the flat form; reads each
-/// SPIR-V module, writes it through the common form as SPIR-V and reads that back, and flattens it.
+/// One stage of a compiled program through the driver's creation steps and a draw's to the flat form; the stage is
+/// there exactly where the program has its source.
+fn stage_reads_back<M: MesaCompiler, R, P>(compiler: &M, stage: &Stage<M, R, P>, received: Option<R>, sources: Sources<'_>, settings: &VariantSettings) {
+    let at = usize::try_from(stage.number).unwrap_or(usize::MAX);
+    assert_eq!(received.is_some(), sources[at].is_some(), "a stage made for each source");
+    let Some(received) = received else { return };
+    let form = (stage.prepare.1)(compiler, received);
+    assert!(!form.key.is_empty(), "the prepared stage has a key");
+    assert!(!form.streams_elsewhere);
+    if sources[at] == Some(STORING_VERTEX_SOURCE) {
+        assert!(form.passes_through && form.pass_through.iter().any(Option::is_some), "a vertex program using storage passes through");
+    }
+    let prepared = form.shader.expect("the stage is prepared");
+    let variant = (stage.variant.1)(compiler, &prepared, settings.clone(), &[], &[]);
+    assert_eq!(variant.result, constants::VARIANT_MADE, "the variant is made");
+    assert!(!variant.key.is_empty(), "the variant has a key");
+    let points_in = if stage.number == TESS_CONTROL || stage.number == TESS_EVALUATION { CONTROL_POINTS } else { 0 };
+    let flat = compiler.variant_flatten(variant.shader.expect("made"), points_in).unwrap_or_else(|| panic!("the variant of stage {at} flattens"));
+    assert!(!flat.instrs.is_empty(), "the flat form has instructions");
+}
+
+/// Compiles a program of each stage, takes it through the driver's steps and a draw's to the flat form, and draws the
+/// points of each stage that draws them as squares; reads each SPIR-V module and flattens it through the common form.
 pub fn compiles_and_reads_back<M: MesaCompiler>(compiler: M) {
     let ranges = [SlotRange { first: 0, slots: 64 }, SlotRange { first: 0, slots: 16 }, SlotRange { first: 0, slots: 16 }, SlotRange { first: 0, slots: 16 }];
     let none = PositionTransform { flip_y: false, half_z: false, reverse_z: false, fixed_point_size: false };
@@ -499,56 +641,47 @@ pub fn compiles_and_reads_back<M: MesaCompiler>(compiler: M) {
         let owned: Vec<Option<CString>> = sources.iter().map(|source| source.map(|text| CString::new(text).expect("no zero byte"))).collect();
         let texts: [Option<&CStr>; STAGES] = std::array::from_fn(|at| owned[at].as_deref());
         let program = compiler.glsl_to_nir(texts).unwrap_or_else(|log| panic!("the program compiles: {}", String::from_utf8_lossy(&log)));
-        for (at, stage) in program.stages.into_iter().enumerate() {
-            assert_eq!(stage.is_some(), sources[at].is_some(), "a stage made for each source");
-            let Some(received) = stage else { continue };
-            let form = compiler.received_prepare(received);
-            assert!(!form.key.is_empty(), "the prepared stage has a key");
-            assert!(!form.streams_elsewhere);
-            let prepared = form.shader.expect("the stage is prepared");
-            let variant = compiler.prepared_variant(&prepared, settings.clone(), &[], &[]);
-            assert_eq!(variant.result, constants::VARIANT_MADE, "the variant is made");
-            assert!(!variant.key.is_empty(), "the variant has a key");
-            let points_in = if at == constants::STAGE_TESS_CONTROL as usize || at == constants::STAGE_TESS_EVALUATION as usize { CONTROL_POINTS } else { 0 };
-            let flat = compiler.variant_flatten(variant.shader.expect("made"), points_in).unwrap_or_else(|| panic!("the variant of stage {at} flattens"));
-            assert!(!flat.instrs.is_empty(), "the flat form has instructions");
-            if sources[at] == Some(STORING_VERTEX_SOURCE) {
-                assert!(form.passes_through && form.pass_through.iter().any(Option::is_some), "a vertex program using storage passes through");
-            }
-        }
+        stage_reads_back(&compiler, &vertex(), program.vertex, sources, &settings);
+        stage_reads_back(&compiler, &fragment(), program.fragment, sources, &settings);
+        stage_reads_back(&compiler, &compute(), program.compute, sources, &settings);
+        stage_reads_back(&compiler, &geometry(), program.geometry, sources, &settings);
+        stage_reads_back(&compiler, &tess_control(), program.tess_control, sources, &settings);
+        stage_reads_back(&compiler, &tess_evaluation(), program.tess_evaluation, sources, &settings);
     }
     // A vertex program writing a point size, drawn as squares.
     let source = CString::new(VERTEX_SOURCE).expect("no zero byte");
     let program = compiler.glsl_to_nir([Some(&source), None, None, None, None, None]).expect("the program compiles");
-    let [Some(received), ..] = program.stages else { panic!("a vertex stage") };
-    let prepared = compiler.received_prepare(received).shader.expect("prepared");
-    let squares = compiler.prepared_points_as_squares(&prepared, 1, 64.0);
+    let received = program.vertex.expect("a vertex stage");
+    let prepared = compiler.received_vertex_prepare(received).shader.expect("prepared");
+    let squares = compiler.prepared_vertex_points_as_squares(&prepared, 1, 64.0);
     assert_eq!(squares.kind, constants::SQUARES_MADE, "points drawn as squares");
     let geometry = squares.geometry.expect("the squares' program");
     assert!(compiler.made_key(&geometry).is_some_and(|key| !key.is_empty()));
     // A geometry program making points, naming a layer, drawn as squares: the made program names the layer too.
     let owned = [POINT_VERTEX_SOURCE, SHADED_FRAGMENT_SOURCE, POINT_GEOMETRY_SOURCE].map(|text| CString::new(text).expect("no zero byte"));
     let program = compiler.glsl_to_nir([Some(&owned[0]), Some(&owned[1]), None, Some(&owned[2]), None, None]).expect("the program compiles");
-    let Some(Some(received)) = program.stages.into_iter().nth(GEOMETRY as usize) else { panic!("a geometry stage") };
-    let prepared = compiler.received_prepare(received).shader.expect("prepared");
+    let received = program.geometry.expect("a geometry stage");
+    let prepared = compiler.received_geometry_prepare(received).shader.expect("prepared");
     let squares = compiler.prepared_geometry_points_as_squares(&prepared, 1, 64.0, 0);
     assert_eq!(squares.kind, constants::SQUARES_MADE, "a geometry program's points drawn as squares");
     let geometry = squares.geometry.expect("the squares' program");
     assert!(compiler.made_key(&geometry).is_some_and(|key| !key.is_empty()));
     assert_ne!(compiler.made_named_layer_location(&geometry), u32::MAX, "the squares name the layer");
-    // SPIR-V for Vulkan read, then written by Zink's writer and read back; and flattened.
+    // An evaluation program writing a point size, its points drawn as squares.
+    let owned = [POINT_VERTEX_SOURCE, SHADED_FRAGMENT_SOURCE, CONTROL_SOURCE, EVALUATION_SOURCE].map(|text| CString::new(text).expect("no zero byte"));
+    let program = compiler.glsl_to_nir([Some(&owned[0]), Some(&owned[1]), None, None, Some(&owned[2]), Some(&owned[3])]).expect("the program compiles");
+    let received = program.tess_evaluation.expect("an evaluation stage");
+    let prepared = compiler.received_tess_evaluation_prepare(received).shader.expect("prepared");
+    let squares = compiler.prepared_tess_evaluation_points_as_squares(&prepared, 1, 64.0);
+    assert_eq!(squares.kind, constants::SQUARES_MADE, "an evaluation program's points drawn as squares");
+    assert!(squares.geometry.is_some(), "the squares' program");
+    // SPIR-V for Vulkan read, its key taken, then the common form flattened.
     for (stage, words) in modules() {
         let read = compiler.spirv_read(&words, stage, MAIN, false).expect("the SPIR-V reads");
         assert!(compiler.spirv_shader_key(&read).is_some_and(|key| !key.is_empty()));
         let form = compiler.spirv_to_common_form(read, 0, &ranges);
         assert_eq!(form.result, constants::BIND_OK, "the common form binds");
-        let written = compiler.spirv_common_to_spirv(form.shader.expect("in the common form")).unwrap_or_else(|| panic!("the program of stage {stage} is written as SPIR-V"));
-        assert_eq!(written.first(), Some(&SPIRV_MAGIC));
-        // Mesa's reader refuses the sample mask as Zink writes it (an array of arrays stored as one value): the
-        // fragment program, which writes gl_SampleMask, is not read back; the others are.
-        if stage != FRAGMENT {
-            assert!(compiler.spirv_read(&written, stage, MAIN, false).is_some(), "the SPIR-V of stage {stage} reads back");
-        }
+        assert!(form.shader.is_some(), "in the common form");
         let read = compiler.spirv_read(&words, stage, MAIN, stage == FRAGMENT).expect("the SPIR-V reads");
         let common = compiler.spirv_to_common_form(read, 0, &ranges).shader.expect("in the common form");
         let flat = compiler.spirv_common_flatten(common).expect("the program flattens");
@@ -573,7 +706,18 @@ pub fn refuses_what_is_not_a_program<M: MesaCompiler>(compiler: M) {
     let log = compiler.glsl_to_nir([Some(BROKEN_SOURCE), None, None, None, None, None]).err().expect("a broken program is refused");
     assert!(!log.is_empty(), "with the compiler's message");
     let none = compiler.glsl_to_nir([None; STAGES]);
-    assert!(none.is_err() || none.is_ok_and(|program| program.stages.iter().all(Option::is_none)), "a program of no stage has none");
+    assert!(
+        none.is_err()
+            || none.is_ok_and(|program| {
+                program.vertex.is_none()
+                    && program.fragment.is_none()
+                    && program.compute.is_none()
+                    && program.geometry.is_none()
+                    && program.tess_control.is_none()
+                    && program.tess_evaluation.is_none()
+            }),
+        "a program of no stage has none"
+    );
 }
 
 /// The walks the hostile caller takes, one a case: every SPIR-V module, with and without alphaToOne's pick, and every
@@ -594,10 +738,10 @@ fn hostile_case<M: MesaCompiler>(compiler: &M, case: usize, seed: u64) -> Option
 /// The cases `hostile_case` takes.
 const CASES: usize = 3 + PROGRAMS.len();
 /// The seeds the hostile caller picks every case's arguments by.
-const ROUNDS: u64 = 4;
+const ROUNDS: u64 = 16;
 
 /// Every walk the trait allows, taken by a hostile caller from every program, with arguments picked by `ROUNDS`
-/// seeds; nothing may end the process.
+/// seeds; nothing may end the process, and every method makes what it makes in some walk.
 pub fn every_method_is_called<M: MesaCompiler>(compiler: M) {
     let rounds = ROUNDS;
     let mut calls = Calls::new();
@@ -616,6 +760,9 @@ pub fn every_method_is_called<M: MesaCompiler>(compiler: M) {
     assert!(calls.0 >= rounds * u64::try_from(CASES).unwrap_or(0), "{} calls", calls.0);
     println!("HOSTILE rounds {rounds} cases {CASES} calls {}", calls.0);
     calls.report("HOSTILE");
+    let never: Vec<&str> = METHODS.iter().copied().filter(|method| calls.1.get(method).is_none_or(|(_, made)| *made == 0)).collect();
+    assert!(never.is_empty(), "methods that made nothing: {never:?}");
+    assert_eq!(calls.1.len(), METHODS.len(), "every method called is one of METHODS");
 }
 
 /// SPIR-V words with one to four bits changed.
@@ -649,8 +796,8 @@ fn changed_sources(sources: Sources<'_>, picks: &mut Picks) -> [Option<String>; 
 
 /// Walks picked by the seed until `calls` calls are made: from the modules and programs as they are, from SPIR-V
 /// whose words were changed and from GLSL whose digits were, with arguments picked at every step. Returns the calls
-/// made.
-fn fuzz<M: MesaCompiler>(compiler: &M, seed: u64, calls: u64) -> u64 {
+/// made, by method.
+fn fuzz<M: MesaCompiler>(compiler: &M, seed: u64, calls: u64) -> Calls {
     let modules = modules();
     let mut picks = Picks::new(seed);
     let mut made = Calls::new();
@@ -683,21 +830,28 @@ fn fuzz<M: MesaCompiler>(compiler: &M, seed: u64, calls: u64) -> u64 {
         }
     }
     made.report("FUZZ");
-    made.0
+    made
 }
 
-/// Runs `fuzz` with the seed and count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS give; nothing without them.
+/// A number the environment names; fails without it, so that a run asked for without its input does not pass.
+fn needed(name: &str) -> u64 {
+    std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or_else(|| panic!("{name} names a number"))
+}
+
+/// Runs `fuzz` with the seed and count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS give; fails without them, and
+/// when a method made nothing.
 pub fn fuzz_from_the_environment<M: MesaCompiler>(compiler: M) {
-    let number = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok());
-    let (Some(seed), Some(calls)) = (number("WCONTAINERS_FUZZ_SEED"), number("WCONTAINERS_FUZZ_CALLS")) else { return };
+    let (seed, calls) = (needed("WCONTAINERS_FUZZ_SEED"), needed("WCONTAINERS_FUZZ_CALLS"));
     let made = fuzz(&compiler, seed, calls);
-    println!("FUZZ seed {seed} calls {made}");
+    println!("FUZZ seed {seed} calls {}", made.0);
+    let never: Vec<&str> = METHODS.iter().copied().filter(|method| made.1.get(method).is_none_or(|(_, made)| *made == 0)).collect();
+    assert!(never.is_empty(), "methods that made nothing in seed {seed}: {never:?}");
 }
 
 /// Runs one hostile case alone, as WCONTAINERS_PROBE names it ("case,seed"), so that a case that ends the process is
-/// found by itself; prints the number of cases first ("x" prints only that). Nothing without it.
+/// found by itself; prints the number of cases first ("x" prints only that). Fails without it.
 pub fn probe_from_the_environment<M: MesaCompiler>(compiler: M) {
-    let Ok(probe) = std::env::var("WCONTAINERS_PROBE") else { return };
+    let probe = std::env::var("WCONTAINERS_PROBE").expect("WCONTAINERS_PROBE names a case and a seed, or x");
     println!("CASES {CASES}");
     let parts: Vec<u64> = probe.split(',').filter_map(|part| part.parse().ok()).collect();
     if let [case, seed] = parts[..] {
@@ -725,11 +879,13 @@ macro_rules! tests {
         }
 
         #[test]
+        #[ignore = "one hostile case alone: run by name with WCONTAINERS_PROBE"]
         fn probe_from_the_environment() {
             $crate::probe_from_the_environment($value);
         }
 
         #[test]
+        #[ignore = "the fuzzing: run by name with WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS"]
         fn fuzz_from_the_environment() {
             $crate::fuzz_from_the_environment($value);
         }

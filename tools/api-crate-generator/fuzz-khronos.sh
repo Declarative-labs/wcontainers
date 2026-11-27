@@ -28,7 +28,7 @@ for run in $runs; do
             export WCONTAINERS_EGL_FOLDER=$work/fake FAKE_LIES=1 FAKE_SEED=$seed FAKE_SAY=1
         fi
         start=$(date +%s)
-        WCONTAINERS_FUZZ_SEED=$seed WCONTAINERS_FUZZ_CALLS=$calls timeout 14400 "$binary" --exact direct::fuzz_from_the_environment --nocapture --test-threads=1 > "$log" 2>&1
+        WCONTAINERS_FUZZ_SEED=$seed WCONTAINERS_FUZZ_CALLS=$calls timeout 14400 "$binary" --exact direct::fuzz_from_the_environment --ignored --nocapture --test-threads=1 > "$log" 2>&1
         echo "status $? seconds $(( $(date +%s) - start ))" >> "$log"
     ) &
 done

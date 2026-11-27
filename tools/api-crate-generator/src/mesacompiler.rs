@@ -23,6 +23,96 @@ const NOT_OFFERED: &[(&str, &str)] = &[
     ("wc_compiler_options", "the address of Mesa's options for a Gallium screen, which only Mesa reads: AC8's Gallium trait (NEEDED B1)"),
 ];
 
+/// Shaders whose stage is part of their type, so that a shader of one stage cannot be written where another is taken:
+/// the trait has one type of each per stage of `enum wc_stage`, and a function taking or making one is offered once
+/// per stage it takes. What the glue relies on for it is `STAGE_FACT`.
+const BY_STAGE: &[&str] = &["wc_received", "wc_prepared"];
+
+/// The bridge's facts a shader's stage type rests on (glsl.cpp, wc_glsl_to_nir; bridge.c, wc_received_prepare).
+const STAGE_FACT: &str = "of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes)";
+
+/// Functions of a shader by stage that take only some stages: each stage taken, with the method offered for it. Every
+/// other function of a shader by stage is offered for every stage.
+const STAGES_TAKEN: &[(&str, &[(&str, &str)])] = &[
+    (
+        "wc_prepared_points_as_squares",
+        &[("WC_STAGE_VERTEX", "prepared_vertex_points_as_squares"), ("WC_STAGE_TESS_EVALUATION", "prepared_tess_evaluation_points_as_squares")],
+    ),
+    ("wc_prepared_geometry_points_as_squares", &[("WC_STAGE_GEOMETRY", "prepared_geometry_points_as_squares")]),
+];
+
+/// The enumeration naming the stages, and the prefix of its stages (its last value, `WC_STAGES`, is their count).
+const STAGE_ENUMERATION: &str = "wc_stage";
+const STAGE_PREFIX: &str = "WC_STAGE_";
+/// Where a type of a shader by stage names its stage, before the stage is known.
+const STAGE_MARK: &str = "@";
+/// Where a method's name goes, and its stage in its summary, before each is known.
+const METHOD: &str = "@METHOD@";
+const STAGE_DOC: &str = "@STAGE_DOC@";
+
+fn by_stage(handle: &str) -> bool {
+    BY_STAGE.contains(&handle)
+}
+
+/// One stage of `enum wc_stage`.
+struct Stage {
+    /// `WC_STAGE_TESS_EVALUATION`.
+    enumerator: String,
+    /// `tess_evaluation`.
+    snake: String,
+    /// `TessEvaluation`.
+    pascal: String,
+}
+
+/// The stages, in the enumeration's order (its count left out).
+fn stages(header: &Header) -> Vec<Stage> {
+    header
+        .enumerations
+        .get(STAGE_ENUMERATION)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| {
+            let word = value.strip_prefix(STAGE_PREFIX)?;
+            Some(Stage { enumerator: value.clone(), snake: word.to_lowercase(), pascal: crate::names::pascal_case_of_upper_snake(word) })
+        })
+        .collect()
+}
+
+/// A shader type as a signature names it: a shader by stage carries `STAGE_MARK` where its stage goes.
+fn handle_type(handle: &str) -> String {
+    if by_stage(handle) { format!("{}{STAGE_MARK}", type_name(handle)) } else { type_name(handle) }
+}
+
+/// The stages a function of a shader by stage is offered for, each with its method.
+fn offered_stages(function: &str, header: &Header) -> Result<Vec<(Stage, String)>, String> {
+    if let Some((_, taken)) = STAGES_TAKEN.iter().find(|(name, _)| *name == function) {
+        return taken
+            .iter()
+            .map(|(enumerator, method)| {
+                stages(header)
+                    .into_iter()
+                    .find(|stage| stage.enumerator == *enumerator)
+                    .map(|stage| (stage, (*method).to_string()))
+                    .ok_or_else(|| format!("{function}: no stage {enumerator}"))
+            })
+            .collect();
+    }
+    // The handle's word in the function's name followed by the stage: wc_received_prepare to received_vertex_prepare.
+    let name = method_name(function);
+    let word = BY_STAGE
+        .iter()
+        .map(|handle| handle.trim_start_matches("wc_"))
+        .find(|word| name.starts_with(&format!("{word}_")))
+        .ok_or_else(|| format!("{function}: a function of a shader by stage whose name starts with no such shader"))?;
+    Ok(stages(header)
+        .into_iter()
+        .map(|stage| {
+            let method = format!("{word}_{}{}", stage.snake, &name[word.len()..]);
+            (stage, method)
+        })
+        .collect())
+}
+
 /// Why a function is not offered: one of `NOT_OFFERED`, or a free (a shader type's drop, or inside the copy that reads
 /// what the bridge filled).
 fn not_offered(name: &str) -> Option<&'static str> {
@@ -35,7 +125,6 @@ fn not_offered(name: &str) -> Option<&'static str> {
 fn container(name: &str) -> Option<&'static str> {
     match name {
         "wc_bytes" => Some("u8"),
-        "wc_words" => Some("u32"),
         "wc_bindings" => Some("Binding"),
         "wc_glsl_names" => Some("GlslName"),
         _ => None,
@@ -85,6 +174,9 @@ enum FieldKind {
     Handle(String),
     /// A fixed array of a kind.
     Fixed { element: Box<FieldKind>, length: usize },
+    /// A shader by stage for each stage (`stages[WC_STAGES]`): one field of the owned value per stage, each of its
+    /// stage's type.
+    ByStage { handle: String, length: usize },
 }
 
 fn number(base: &str) -> Option<(&'static str, &'static str)> {
@@ -137,7 +229,16 @@ fn fields(name: &str, header: &Header) -> Result<Vec<(String, FieldKind)>, Strin
             _ => return Err(format!("{name}.{}: {} pointers", field.name, field.pointers)),
         };
         if let Some(array) = &field.array {
-            kind = FieldKind::Fixed { element: Box::new(kind), length: length(header, array)? };
+            let count = length(header, array)?;
+            kind = match kind {
+                FieldKind::Handle(handle) if by_stage(&handle) => {
+                    if count != stages(header).len() {
+                        return Err(format!("{name}.{}: shaders by stage in an array of {count}, not one a stage", field.name));
+                    }
+                    FieldKind::ByStage { handle, length: count }
+                }
+                kind => FieldKind::Fixed { element: Box::new(kind), length: count },
+            };
         }
         out.push((field.name.clone(), kind));
         at += 1;
@@ -154,6 +255,14 @@ fn handles_of(kind: &FieldKind, header: &Header, out: &mut Vec<String>) {
             }
         }
         FieldKind::Fixed { element, .. } | FieldKind::Array { element, .. } => handles_of(element, header, out),
+        FieldKind::ByStage { handle, .. } => {
+            for stage in stages(header) {
+                let named = format!("{handle}_{}", stage.snake);
+                if !out.contains(&named) {
+                    out.push(named);
+                }
+            }
+        }
         FieldKind::Structure(name) => {
             for handle in handles(name, header) {
                 if !out.contains(&handle) {
@@ -178,9 +287,13 @@ fn generic(name: &str, header: &Header) -> bool {
     !handles(name, header).is_empty()
 }
 
-/// `SpirvCommonForm<Self::SpirvCommon>` (with `prefix` "Self::"), the owned type of a structure.
+/// `SpirvCommonForm<Self::SpirvCommon>` (with `prefix` "Self::"), the owned type of a structure; with a prefix, a
+/// shader by stage carries `STAGE_MARK`.
 fn owned_structure(name: &str, header: &Header, prefix: &str) -> String {
-    let params: Vec<String> = handles(name, header).iter().map(|handle| format!("{prefix}{}", type_name(handle))).collect();
+    let params: Vec<String> = handles(name, header)
+        .iter()
+        .map(|handle| if prefix.is_empty() { type_name(handle) } else { format!("{prefix}{}", handle_type(handle)) })
+        .collect();
     if params.is_empty() { type_name(name) } else { format!("{}<{}>", type_name(name), params.join(", ")) }
 }
 
@@ -193,6 +306,7 @@ fn mirror_type(kind: &FieldKind) -> String {
         FieldKind::Array { element, .. } => format!("*mut {}", mirror_type(element)),
         FieldKind::Handle(_) => "*mut c_void".to_string(),
         FieldKind::Fixed { element, length } => format!("[{}; {length}]", mirror_type(element)),
+        FieldKind::ByStage { length, .. } => format!("[*mut c_void; {length}]"),
     }
 }
 
@@ -209,6 +323,8 @@ fn owned_type(kind: &FieldKind, header: &Header, prefix: &str) -> String {
         FieldKind::Array { element, .. } => format!("Vec<{}>", owned_type(element, header, prefix)),
         FieldKind::Handle(handle) => format!("Option<{prefix}{}>", type_name(handle)),
         FieldKind::Fixed { element, length } => format!("[{}; {length}]", owned_type(element, header, prefix)),
+        // Written as one field per stage by `write_structures`.
+        FieldKind::ByStage { .. } => "compile_error!(\"shaders by stage are one field a stage\")".to_string(),
     }
 }
 
@@ -218,7 +334,7 @@ fn holds_pointer(kind: &FieldKind, header: &Header) -> bool {
         FieldKind::Number { .. } | FieldKind::Bool => false,
         FieldKind::Structure(name) => fields(name, header).is_ok_and(|fields| fields.iter().any(|(_, kind)| holds_pointer(kind, header))),
         FieldKind::Fixed { element, .. } => holds_pointer(element, header),
-        FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) => true,
+        FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) | FieldKind::ByStage { .. } => true,
     }
 }
 
@@ -228,7 +344,7 @@ fn plain(kind: &FieldKind, header: &Header) -> bool {
         FieldKind::Number { .. } | FieldKind::Bool => true,
         FieldKind::Structure(name) => fields(name, header).is_ok_and(|fields| fields.iter().all(|(_, kind)| plain(kind, header))),
         FieldKind::Fixed { element, .. } => plain(element, header),
-        FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) => false,
+        FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) | FieldKind::ByStage { .. } => false,
     }
 }
 
@@ -381,12 +497,31 @@ fn write_structures(header: &Header, comments: &BTreeMap<String, String>, interf
                 convert(kind, &format!("self.{field}"))
             }
             None => {
-                let parts: Vec<String> = fields.iter().map(|(field, kind)| format!("{}: {}", crate::names::escaped(field.clone()), convert(kind, &format!("self.{}", crate::names::escaped(field.clone()))))).collect();
+                let parts: Vec<String> = fields
+                    .iter()
+                    .flat_map(|(field, kind)| {
+                        let place = format!("self.{}", crate::names::escaped(field.clone()));
+                        match kind {
+                            // One field a stage, each its stage's shader, taken from the stage's place.
+                            FieldKind::ByStage { handle, .. } => stages(header)
+                                .iter()
+                                .enumerate()
+                                .map(|(at, stage)| {
+                                    format!("{}: {}{}::owning(core::mem::replace(&mut {place}[{at}], core::ptr::null_mut()))", stage.snake, type_name(handle), stage.pascal)
+                                })
+                                .collect::<Vec<_>>(),
+                            kind => vec![format!("{}: {}", crate::names::escaped(field.clone()), convert(kind, &place))],
+                        }
+                    })
+                    .collect();
                 format!("{owned} {{ {} }}", parts.join(", "))
             }
         };
         if read_out.contains(&name) {
-            let _ = writeln!(mirrors, "impl {owned}Mirror {{\n    /// The values read out (the bridge's arrays and texts copied, its shaders taken).\n    pub(crate) fn owned(&mut self) -> {owned_ty} {{\n        {body}\n    }}\n}}\n");
+            // A shader by stage held whole (not one a stage) is a parameter: its stage is the caller's.
+            let staged: Vec<String> = handles(&name, header).iter().filter(|handle| by_stage(handle)).map(|handle| format!("{}: Owning", type_name(handle))).collect();
+            let staged = if staged.is_empty() { String::new() } else { format!("<{}>", staged.join(", ")) };
+            let _ = writeln!(mirrors, "impl {owned}Mirror {{\n    /// The values read out (the bridge's arrays and texts copied, its shaders taken).\n    pub(crate) fn owned{staged}(&mut self) -> {owned_ty} {{\n        {body}\n    }}\n}}\n");
         }
         if fields.iter().all(|(_, kind)| plain(kind, header)) && container(&name).is_none() {
             let parts: Vec<String> = fields.iter().map(|(field, kind)| format!("{0}: {1}", crate::names::escaped(field.clone()), back(kind, &format!("value.{}", crate::names::escaped(field.clone()))))).collect();
@@ -404,6 +539,13 @@ fn write_structures(header: &Header, comments: &BTreeMap<String, String>, interf
                 let array = f.array.as_ref().map(|a| format!("[{a}]")).unwrap_or_default();
                 format!("{}{}{}{}", f.base, if stars.is_empty() { " " } else { " " }, if stars.is_empty() { String::new() } else { stars.clone() }, format!("{}{array}", f.name)).replace("  ", " ")
             });
+            if let FieldKind::ByStage { handle, .. } = kind {
+                for stage in stages(header) {
+                    let _ = writeln!(interface, "    /// The bridge's `{field}[{}]`: the {} stage, if any.", stage.enumerator, stage.snake.replace('_', " "));
+                    let _ = writeln!(interface, "    pub {}: Option<{}{}>,", stage.snake, type_name(handle), stage.pascal);
+                }
+                continue;
+            }
             let _ = write!(interface, "{}", doc(comments, &key.unwrap_or_default(), &format!("The bridge's `{field}`"), "    "));
             let _ = writeln!(interface, "    pub {}: {},", crate::names::escaped(field.clone()), owned_type(kind, header, ""));
         }
@@ -421,6 +563,7 @@ fn zero(kind: &FieldKind) -> String {
         FieldKind::Structure(name) => format!("{}Mirror::default()", type_name(name)),
         FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) => "core::ptr::null_mut()".to_string(),
         FieldKind::Fixed { element, length } => format!("[{}; {length}]", zero(element)),
+        FieldKind::ByStage { length, .. } => format!("[core::ptr::null_mut(); {length}]"),
     }
 }
 
@@ -434,6 +577,8 @@ fn convert(kind: &FieldKind, place: &str) -> String {
         FieldKind::Text => format!("text({place})"),
         FieldKind::Handle(handle) => format!("{}::owning(core::mem::replace(&mut {place}, core::ptr::null_mut()))", type_name(handle)),
         FieldKind::Fixed { element, .. } => format!("{place}.each_mut().map(|element| {})", convert_element(element)),
+        // Read out one field a stage by `write_structures`.
+        FieldKind::ByStage { .. } => "compile_error!(\"shaders by stage are one field a stage\")".to_string(),
         FieldKind::Array { element, count } => {
             let owner = place.rsplit_once('.').map_or("self", |(owner, _)| owner);
             match element.as_ref() {
@@ -453,7 +598,7 @@ fn convert_element(kind: &FieldKind) -> String {
         FieldKind::Structure(_) => "element.owned()".to_string(),
         FieldKind::Text => "text(*element)".to_string(),
         FieldKind::Handle(handle) => format!("{}::owning(core::mem::replace(element, core::ptr::null_mut()))", type_name(handle)),
-        FieldKind::Fixed { .. } | FieldKind::Array { .. } => "compile_error!(\"an array of arrays\")".to_string(),
+        FieldKind::Fixed { .. } | FieldKind::Array { .. } | FieldKind::ByStage { .. } => "compile_error!(\"an array of arrays\")".to_string(),
     }
 }
 
@@ -469,6 +614,7 @@ fn back(kind: &FieldKind, place: &str) -> String {
             element => format!("{place}.each_ref().map(|element| {})", back_element(element)),
         },
         FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) => "core::ptr::null_mut()".to_string(),
+        FieldKind::ByStage { length, .. } => format!("[core::ptr::null_mut(); {length}]"),
     }
 }
 
@@ -479,7 +625,9 @@ fn back_element(kind: &FieldKind) -> String {
         FieldKind::Number { .. } => "*element".to_string(),
         FieldKind::Bool => "u8::from(*element)".to_string(),
         FieldKind::Structure(name) => format!("{}Mirror::from(element)", type_name(name)),
-        FieldKind::Fixed { .. } | FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) => "compile_error!(\"no plain mirror\")".to_string(),
+        FieldKind::Fixed { .. } | FieldKind::Text | FieldKind::Array { .. } | FieldKind::Handle(_) | FieldKind::ByStage { .. } => {
+            "compile_error!(\"no plain mirror\")".to_string()
+        }
     }
 }
 
@@ -531,23 +679,27 @@ fn parameters(function: &CFunction, header: &Header) -> Result<(Vec<Param>, Opti
         let row = crate::cheader::row_of(function, param, header).ok_or_else(|| format!("{}({}): unmapped", function.name, param.name))?;
         let p = match row.split(':').next().unwrap_or(row) {
             "shader read" => {
-                let handle = type_name(header.handle(base).unwrap_or_default());
+                let c_handle = header.handle(base).unwrap_or_default();
+                let handle = handle_type(c_handle);
+                let staged = if by_stage(c_handle) { format!(", {STAGE_FACT}") } else { String::new() };
                 Param {
                     signature: Some(format!("{name}: &Self::{handle}")),
                     before: vec![],
                     argument: format!("{name}.nir.as_ptr()"),
                     c: "*const c_void".to_string(),
-                    fact: Some(format!("{name} is a {handle} of ours, of the type the function names, read by the call alone")),
+                    fact: Some(format!("{name} is a {handle} of ours, of the type the function names{staged}, read by the call alone")),
                 }
             }
             "shader taken" => {
-                let handle = type_name(header.handle(base).unwrap_or_default());
+                let c_handle = header.handle(base).unwrap_or_default();
+                let handle = handle_type(c_handle);
+                let staged = if by_stage(c_handle) { format!(", {STAGE_FACT}") } else { String::new() };
                 Param {
                     signature: Some(format!("{name}: Self::{handle}")),
                     before: vec![],
                     argument: format!("{name}.into_raw()"),
                     c: "*mut c_void".to_string(),
-                    fact: Some(format!("{name} is a {handle} of ours, of the type the function names, which the bridge takes and gives back itself")),
+                    fact: Some(format!("{name} is a {handle} of ours, of the type the function names{staged}, which the bridge takes and gives back itself")),
                 }
             }
             "number or bool by value" => {
@@ -706,7 +858,7 @@ fn return_of(function: &CFunction, header: &Header) -> Result<(String, Option<St
     let base = ret.base.trim_start_matches("const ").trim();
     Ok(match (base, ret.pointers) {
         ("void", 0) => (String::new(), None),
-        (handle, 1) if header.handle(handle).is_some() => (" -> *mut c_void".to_string(), Some(format!("Option<Self::{}>", type_name(handle)))),
+        (handle, 1) if header.handle(handle).is_some() => (" -> *mut c_void".to_string(), Some(format!("Option<Self::{}>", handle_type(header.handle(handle).unwrap_or_default())))),
         // Mesa's options for a Gallium screen: declared, not offered.
         ("struct nir_shader_compiler_options", 1) => (" -> *const c_void".to_string(), None),
         ("bool", 0) => (" -> u8".to_string(), Some("bool".to_string())),
@@ -727,7 +879,7 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
     let mut report = String::new();
     let mut interface = String::from(HEADER);
     interface.push_str(
-        "//! Mesa's shader compiler as our C bridge offers it (crates/mesa-compiler/implementation/direct/bridge: NIR made from SPIR-V or GLSL, changed for the\n//! routes, read as a flat form, written as SPIR-V), as a safe trait. Every enumeration the bridge writes is a `u32` the\n//! caller converts by a checked `TryFrom`.\n\n",
+        "//! Mesa's shader compiler as our C bridge offers it (crates/mesa-compiler/implementation/direct/bridge: NIR made from SPIR-V or GLSL, changed for the\n//! routes, read as a flat form), as a safe trait. Every enumeration the bridge writes is a `u32` the\n//! caller converts by a checked `TryFrom`.\n\n",
     );
     let mut mirrors = String::new();
     write_structures(&header, &comments, &mut interface, &mut mirrors)?;
@@ -760,24 +912,39 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
     let mut glue_types = String::new();
     let mut type_bindings = String::new();
     for handle in &header.handles {
-        let ty = type_name(handle);
         // Only a shader some function takes is given away whole.
         let taken = header.functions.iter().any(|function| {
             !function.name.ends_with("_free") && function.params.iter().any(|param| param.name == "taken" && header.handle(&param.base) == Some(handle.as_str()))
         });
         let into_raw = if taken {
-            "\n\n    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.\n    fn into_raw(self) -> *mut c_void {\n        let kept = core::mem::ManuallyDrop::new(self);\n        kept.nir.as_ptr()\n    }"
+            "\n    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.\n    fn into_raw(self) -> *mut c_void {\n        let kept = core::mem::ManuallyDrop::new(self);\n        kept.nir.as_ptr()\n    }\n"
         } else {
             ""
         };
-        let _ = write!(interface, "{}", doc(&comments, &format!("struct {handle}"), &format!("The bridge's `struct {handle}`, owned"), "    "));
-        let _ = writeln!(interface, "    type {ty};\n");
-        let _ = writeln!(type_bindings, "    type {ty} = {ty};");
-        let _ = writeln!(
-            glue_types,
-            "/// A `struct {handle}` the bridge made, given back by `{handle}_free` when dropped. Not `Send`: no fact of the bridge's\n/// is relied on for a shader moved between threads.\n#[derive(Debug)]\npub struct {ty} {{\n    nir: NonNull<c_void>,\n    _thread: PhantomData<*const ()>,\n}}\n\nimpl {ty} {{\n    /// Takes a shader the bridge made; None for null.\n    fn owning(nir: *mut c_void) -> Option<{ty}> {{\n        NonNull::new(nir).map(|nir| {ty} {{ nir, _thread: PhantomData }})\n    }}{into_raw}\n}}\n\nimpl Drop for {ty} {{\n    fn drop(&mut self) {{\n        #[expect(unsafe_code, reason = \"bridge.h: {handle}_free gives back a {handle} the bridge made\")]\n        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.\n        unsafe {{ {handle}_free(self.nir.as_ptr()) }};\n    }}\n}}\n"
-        );
-        marks += 1;
+        let said = comments.get(&format!("struct {handle}")).cloned().unwrap_or_else(|| format!("The bridge's `struct {handle}`, owned"));
+        // A shader by stage is one type a stage; any other one type.
+        let kinds: Vec<(String, String, String)> = if by_stage(handle) {
+            stages(&header)
+                .iter()
+                .map(|stage| {
+                    let words = stage.snake.replace('_', " ");
+                    (format!("{}{}", type_name(handle), stage.pascal), format!("{} Of the {words} stage.", said.trim()), format!(" of the {words} stage"))
+                })
+                .collect()
+        } else {
+            vec![(type_name(handle), said.trim().to_string(), String::new())]
+        };
+        for (ty, said, of_stage) in kinds {
+            let inherent = if into_raw.is_empty() { String::new() } else { format!("impl {ty} {{{into_raw}}}\n\n") };
+            let _ = write!(interface, "{}", doc(&BTreeMap::new(), "", &said, "    "));
+            let _ = writeln!(interface, "    type {ty};\n");
+            let _ = writeln!(type_bindings, "    type {ty} = {ty};");
+            let _ = writeln!(
+                glue_types,
+                "/// A `struct {handle}`{of_stage} the bridge made, given back by `{handle}_free` when dropped. Not `Send`: no fact of the\n/// bridge's is relied on for a shader moved between threads.\n#[derive(Debug)]\npub struct {ty} {{\n    nir: NonNull<c_void>,\n    _thread: PhantomData<*const ()>,\n}}\n\nimpl Owning for {ty} {{\n    fn owning(nir: *mut c_void) -> Option<{ty}> {{\n        NonNull::new(nir).map(|nir| {ty} {{ nir, _thread: PhantomData }})\n    }}\n}}\n\n{inherent}impl Drop for {ty} {{\n    fn drop(&mut self) {{\n        #[expect(unsafe_code, reason = \"bridge.h: {handle}_free gives back a {handle} the bridge made\")]\n        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.\n        unsafe {{ {handle}_free(self.nir.as_ptr()) }};\n    }}\n}}\n"
+            );
+            marks += 1;
+        }
     }
     let _ = writeln!(interface, "    /// The compiler, ready (Mesa's type tables taken for the process).\n    fn new() -> Self;\n");
     for function in &header.functions {
@@ -793,7 +960,9 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
             let _ = writeln!(report, "  NOT OFFERED {}: {reason}", function.name);
             continue;
         }
-        offered += 1;
+        let marks_before = marks;
+        let mut method_text = String::new();
+        let mut glue_text = String::new();
         let signature_params: Vec<String> = params.iter().filter_map(|p| p.signature.clone()).collect();
         let method_ret = match (&ret, &out_param) {
             (_, Some(out)) if function.name == "wc_glsl_to_nir" => format!("Result<{}, Vec<u8>>", out.ty),
@@ -806,15 +975,15 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
             (Some(r), Some(out)) => return Err(format!("{}: returns {r} with {}", function.name, out.ty)),
         };
         let arrow = if method_ret.is_empty() { String::new() } else { format!(" -> {method_ret}") };
-        let method = method_name(&function.name);
+        let method = METHOD.to_string();
         let receiver = std::iter::once("&self".to_string()).chain(signature_params.iter().cloned()).collect::<Vec<_>>().join(", ");
         // The header's comment on the function (the callers it mirrors), then the function it calls.
         let opening = format!("{}(", function.name);
         let said = comments.iter().find(|(key, _)| key.contains(&opening)).map(|(_, text)| text.clone());
         if let Some(said) = said {
-            let _ = writeln!(interface, "    /// {}.\n    ///", said.trim().trim_end_matches('.').replace('\n', " "));
+            let _ = writeln!(method_text, "    /// {}.\n    ///", said.trim().trim_end_matches('.').replace('\n', " "));
         }
-        let _ = writeln!(interface, "    /// Calls the bridge's `{}`.\n    fn {method}({receiver}){arrow};\n", function.name);
+        let _ = writeln!(method_text, "    /// Calls the bridge's `{}`{STAGE_DOC}.\n    fn {method}({receiver}){arrow};\n", function.name);
         // The glue.
         let facts: Vec<String> = params.iter().filter_map(|p| p.fact.clone()).collect();
         let reason = format!(
@@ -825,45 +994,45 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
         let typed_params: Vec<String> = signature_params.iter().map(|p| p.replace("Self::", "")).collect();
         let receiver = std::iter::once("&self".to_string()).chain(typed_params).collect::<Vec<_>>().join(", ");
         let typed_ret = arrow.replace("Self::", "");
-        let _ = writeln!(calls, "    fn {method}({receiver}){typed_ret} {{");
+        let _ = writeln!(glue_text, "    fn {method}({receiver}){typed_ret} {{");
         for p in &params {
             for line in &p.before {
-                let _ = writeln!(calls, "        {line}");
+                let _ = writeln!(glue_text, "        {line}");
             }
         }
         let arguments: Vec<String> = params.iter().map(|p| p.argument.clone()).collect();
         let plain_return = matches!((&ret, &out_param), (Some(_), None)) && function.ret.pointers == 0 && written.is_empty();
         let tail_only = plain_return && c_ret != " -> u8";
         let binding = if c_ret.is_empty() || tail_only { "" } else { "let result = " };
-        let _ = writeln!(calls, "        #[expect(unsafe_code, reason = \"{}\")]", reason.replace('"', "'"));
-        let _ = writeln!(calls, "        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.");
+        let _ = writeln!(glue_text, "        #[expect(unsafe_code, reason = \"{}\")]", reason.replace('"', "'"));
+        let _ = writeln!(glue_text, "        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.");
         let end = if tail_only { "" } else { ";" };
-        let _ = writeln!(calls, "        {binding}unsafe {{ {}({}) }}{end}", function.name, arguments.join(", "));
+        let _ = writeln!(glue_text, "        {binding}unsafe {{ {}({}) }}{end}", function.name, arguments.join(", "));
         marks += 1;
         if c_ret == " -> u8" && plain_return {
-            let _ = writeln!(calls, "        result != 0");
+            let _ = writeln!(glue_text, "        result != 0");
         } else if c_ret == " -> u8" {
-            let _ = writeln!(calls, "        let result = result != 0;");
+            let _ = writeln!(glue_text, "        let result = result != 0;");
         }
         for line in &written {
-            let _ = writeln!(calls, "        {line}");
+            let _ = writeln!(glue_text, "        {line}");
         }
         match (&ret, &out_param, function.ret.pointers) {
             (Some(_), None, 1) => {
-                let handle = header.handle(&function.ret.base).map(type_name).unwrap_or_default();
-                let _ = writeln!(calls, "        {handle}::owning(result)");
+                let handle = header.handle(&function.ret.base).map(handle_type).unwrap_or_default();
+                let _ = writeln!(glue_text, "        {handle}::owning(result)");
             }
             (Some(_), None, _) if !tail_only && !(plain_return && c_ret == " -> u8") => {
-                let _ = writeln!(calls, "        result");
+                let _ = writeln!(glue_text, "        result");
             }
             (_, Some(out), _) if out.after.len() == 2 && out.after[0].is_empty() => {
                 // Copied out whole, then given back once.
                 let free = &out.after[1];
                 let mirror_name = params.iter().find(|p| p.argument.starts_with("&raw mut ")).map(|p| p.argument.trim_start_matches("&raw mut ").to_string()).unwrap_or_default();
-                let _ = writeln!(calls, "        let copied = {mirror_name}.owned();");
-                let _ = writeln!(calls, "        #[expect(unsafe_code, reason = \"bridge.h: {free} gives back what the bridge allocated into {mirror_name} (null pointers are given back as none: free(NULL))\")]");
-                let _ = writeln!(calls, "        // SAFETY: {mirror_name} is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.");
-                let _ = writeln!(calls, "        unsafe {{ {free}(&raw mut {mirror_name}) }};");
+                let _ = writeln!(glue_text, "        let copied = {mirror_name}.owned();");
+                let _ = writeln!(glue_text, "        #[expect(unsafe_code, reason = \"bridge.h: {free} gives back what the bridge allocated into {mirror_name} (null pointers are given back as none: free(NULL))\")]");
+                let _ = writeln!(glue_text, "        // SAFETY: {mirror_name} is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.");
+                let _ = writeln!(glue_text, "        unsafe {{ {free}(&raw mut {mirror_name}) }};");
                 marks += 1;
                 let tail = match ret.as_deref() {
                     _ if function.name == "wc_glsl_to_nir" => "if result { Ok(copied) } else { Err(copied.log.unwrap_or_default()) }".to_string(),
@@ -871,18 +1040,41 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
                     Some("bool") => "result.then_some(copied)".to_string(),
                     _ => "copied".to_string(),
                 };
-                let _ = writeln!(calls, "        {tail}");
+                let _ = writeln!(glue_text, "        {tail}");
             }
             (_, Some(out), _) => {
                 for line in out.after.iter().filter(|line| !line.is_empty()) {
-                    let _ = writeln!(calls, "        {line}");
+                    let _ = writeln!(glue_text, "        {line}");
                 }
             }
             _ => {}
         }
-        // Copies back what the bridge wrote into the glue's room.
-        let _ = calls;
-        let _ = writeln!(calls, "    }}\n");
+        let _ = writeln!(glue_text, "    }}\n");
+        // Once, or once a stage for a function of a shader by stage.
+        let bare = |text: &str| text.replace(METHOD, "").replace(STAGE_DOC, "");
+        let staged = bare(&method_text).contains(STAGE_MARK) || bare(&glue_text).contains(STAGE_MARK);
+        let instances: Vec<(String, String, String)> = if staged {
+            offered_stages(&function.name, &header)?
+                .into_iter()
+                .map(|(stage, method)| (method, stage.pascal, format!(" on a shader of the {} stage", stage.snake.replace('_', " "))))
+                .collect()
+        } else {
+            if STAGES_TAKEN.iter().any(|(name, _)| *name == function.name) {
+                return Err(format!("{}: listed in STAGES_TAKEN but takes no shader by stage", function.name));
+            }
+            vec![(method_name(&function.name), String::new(), String::new())]
+        };
+        if instances.is_empty() {
+            return Err(format!("{}: offered for no stage", function.name));
+        }
+        let marks_each = marks - marks_before;
+        marks += marks_each * (instances.len() - 1);
+        for (method, stage, stage_doc) in &instances {
+            offered += 1;
+            let fill = |text: &str| text.replace(METHOD, method).replace(STAGE_DOC, stage_doc).replace(STAGE_MARK, stage);
+            interface.push_str(&fill(&method_text));
+            calls.push_str(&fill(&glue_text));
+        }
     }
     let _ = writeln!(interface, "}}");
     let _ = writeln!(report, "MESA COMPILER: functions {}, offered {offered}, marks {marks}", header.functions.len());

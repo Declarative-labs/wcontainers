@@ -69,15 +69,10 @@ struct wc_bindings {
    size_t count;
 };
 
-/* Bytes or words owned by the bridge; given back with wc_bytes_free and wc_words_free. */
+/* Bytes owned by the bridge; given back with wc_bytes_free. */
 struct wc_bytes {
    uint8_t *data;
    size_t size;
-};
-
-struct wc_words {
-   uint32_t *data;
-   size_t count;
 };
 
 /* Takes a reference on Mesa's type tables; wc_finish gives it back. */
@@ -252,9 +247,6 @@ void wc_spirv_to_common_form(struct wc_spirv_shader *taken, uint32_t set,
                              const struct wc_slot_range ranges[WC_SLOT_KINDS], struct wc_spirv_common_form *out);
 void wc_spirv_common_form_free(struct wc_spirv_common_form *form);
 
-/* Candidate A: the program written as SPIR-V by Zink's compiler in its native Vulkan mode (run.rs:672). False for a
- * program not in the form that mode takes. */
-bool wc_spirv_common_to_spirv(struct wc_spirv_common *taken, struct wc_words *out);
 /* Candidate B: the program out of SSA and flattened (run.rs:571, through crates/nir/src/direct.rs:974 to 984). */
 bool wc_spirv_common_flatten(struct wc_spirv_common *taken, struct wc_flat *out);
 
@@ -410,7 +402,6 @@ void wc_prepared_free(struct wc_prepared *shader);
 void wc_made_free(struct wc_made *shader);
 void wc_variant_free(struct wc_variant *shader);
 void wc_bytes_free(struct wc_bytes *bytes);
-void wc_words_free(struct wc_words *words);
 
 #ifdef __cplusplus
 }

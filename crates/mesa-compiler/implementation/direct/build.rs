@@ -28,7 +28,7 @@ const LINK_DYNAMIC: &str = "cargo::rustc-link-lib=dylib=";
 /// Set by cargo when the `standalone` feature is on.
 const STANDALONE_FEATURE: &str = "CARGO_FEATURE_STANDALONE";
 const BRIDGE_SOURCE: &str = "bridge/bridge.c";
-/// The SPIR-V steps: Mesa's SPIR-V reader and candidate A's Zink compiler.
+/// The SPIR-V step: Mesa's SPIR-V reader.
 const SPIRV_SOURCE: &str = "bridge/spirv.c";
 const BRIDGE_HEADER: &str = "bridge/bridge.h";
 /// Candidate B's flattening of NIR.
@@ -56,8 +56,6 @@ const INCLUDES: &[&str] = &[
     "src/compiler/spirv",
     "src/gallium/include",
     "src/gallium/auxiliary",
-    "src/gallium/drivers/zink",
-    "src/gallium/drivers/zink/nir_to_spirv",
     "src/mesa",
     "src/mapi",
     "src/util",
@@ -68,7 +66,6 @@ const INCLUDES: &[&str] = &[
 const LIBRARIES: &[(&str, &str)] = &[
     // Not Mesa's OpenGL library: the stand-ins give what the compiler takes of it, and ld.bfd would
     // take its state tracker too.
-    ("src/gallium/drivers/zink", "zink"),
     ("src/compiler/glsl", "glsl_standalone"),
     ("src/compiler/glsl", "glsl"),
     ("src/compiler/glsl", "glsl_util"),

@@ -37,10 +37,6 @@ void wc_nir_alpha_to_one(struct nir_shader *nir);
 /* NIR's own serialised form, the cache's key (plan 15.3). */
 bool wc_nir_serialize(const struct nir_shader *nir, struct wc_bytes *out);
 
-/* Candidate A's first step: a copy of the shader prepared and written as SPIR-V by Zink's compiler in its
- * native Vulkan mode (the shader itself is left as it was). False for a shader not in the form that mode takes. */
-bool wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out);
-
 /* Candidate B's preparation (out of SSA, values used outside their block in registers) and the
  * shader flattened; the arrays are the bridge's until wc_flat_free. `points_in` is a tessellation
  * program's input control points (unused for other stages). False when out of memory. */
