@@ -88,10 +88,11 @@ const BIT_FIELD: usize = usize::MAX;
 #[cfg(mesa)]
 const NO_FIELD: usize = usize::MAX - 1;
 
-/// Every field of every flat form measured by C: each with its offset and size in the flat form equal to the Rust
-/// mirror's, and where its size in Mesa must be its size here, equal; the first field that differs, with what C says.
+/// Every field of every flat form measured by C: its offset and size in the flat form, and in Mesa's own structure
+/// (none for a bit-field), each beside the generator's layout of it; tests/layouts.rs holds each to the Rust mirror and
+/// to clang's record layouts. None for a field C does not list.
 #[cfg(mesa)]
-pub fn fields_agree() -> Result<Vec<(FieldLayout, FieldMeasured)>, (FieldLayout, FieldMeasured)> {
+pub fn fields_measured() -> Vec<(FieldLayout, Option<FieldMeasured>)> {
     let mut out = Vec::new();
     for (which, layout) in (0_u32..).zip(flat::FIELDS) {
         let mut answers = [0_usize; 4];
@@ -102,27 +103,17 @@ pub fn fields_agree() -> Result<Vec<(FieldLayout, FieldMeasured)>, (FieldLayout,
             *answer = measured;
         }
         let [flat_offset, flat_size, mesa_offset, mesa_size] = answers;
-        let measured = FieldMeasured {
+        let measured = (!answers.contains(&NO_FIELD)).then_some(FieldMeasured {
             mesa_offset: (mesa_offset != BIT_FIELD).then_some(mesa_offset),
             mesa_size: (mesa_size != BIT_FIELD).then_some(mesa_size),
             flat_offset,
             flat_size,
-        };
-        let bit_field = layout.bits != 0;
-        let agrees = !answers.contains(&NO_FIELD)
-            && flat_offset == layout.flat_offset
-            && flat_size == layout.flat_size
-            && bit_field == measured.mesa_offset.is_none()
-            && bit_field == measured.mesa_size.is_none()
-            && (!layout.same_size || measured.mesa_size.is_some_and(|size| if layout.at_least { size <= flat_size } else { size == flat_size }))
-            && (!bit_field || layout.bits <= u64::try_from(flat_size).unwrap_or(0) * u64::from(u8::BITS));
-        if !agrees {
-            return Err((*layout, measured));
-        }
+        });
         out.push((*layout, measured));
     }
-    Ok(out)
+    out
 }
+
 /// Whether every flat structure has the same size in C as its Rust mirror; the first that does not, with both sizes.
 #[cfg(mesa)]
 pub fn layouts_agree() -> Result<usize, (u32, usize, usize)> {

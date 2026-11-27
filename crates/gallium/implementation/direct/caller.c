@@ -17,6 +17,7 @@
 int wc_caller_cases(void);
 int wc_caller_case(uintptr_t address, int which);
 int wc_caller_caps(uintptr_t address);
+int wc_caller_two_screens(uintptr_t first, uintptr_t second);
 int drmGetCap(int fd, uint64_t capability, uint64_t *value);
 
 /* Every field the trait carries of each served state set to a value of its own (written by the generator, which
@@ -452,4 +453,20 @@ int wc_caller_caps(uintptr_t address)
     free(reference);
     screen->destroy(screen);
     return status;
+}
+
+/* Two screens served at once: the second destroyed, the first still serves a context (each screen's key is its own).
+ * 0 when it does; both screens are destroyed. */
+int wc_caller_two_screens(uintptr_t first, uintptr_t second)
+{
+    struct pipe_screen *one = (struct pipe_screen *)first, *two = (struct pipe_screen *)second;
+    two->destroy(two);
+    struct pipe_context *ctx = one->context_create(one, NULL, 0);
+    if (!ctx) {
+        one->destroy(one);
+        return 1;
+    }
+    ctx->destroy(ctx);
+    one->destroy(one);
+    return 0;
 }

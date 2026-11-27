@@ -52,16 +52,6 @@ impl<T> Map<T> {
             }
         }
     }
-
-    /// How many objects are held.
-    pub fn len(&self) -> usize {
-        self.objects.lock().unwrap_or_else(PoisonError::into_inner).len()
-    }
-
-    /// Whether none is held.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 /// Every screen being served, by key, each a `Served<G>` of its implementation's type.

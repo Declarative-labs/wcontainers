@@ -14,6 +14,7 @@ unsafe extern "C" {
     fn wc_caller_cases() -> i32;
     fn wc_caller_case(address: usize, which: i32) -> i32;
     fn wc_caller_caps(address: usize) -> i32;
+    fn wc_caller_two_screens(first: usize, second: usize) -> i32;
 }
 
 /// The environment variable naming the one case a child process runs.
@@ -148,6 +149,23 @@ fn caps_are_mesas_defaults() {
     let status = unsafe { wc_caller_caps(address) };
     println!("CAPS status {status}");
     assert_eq!(status, 0, "the screen's caps differ from Mesa's u_init_pipe_screen_caps first at byte {}", status - 2);
+}
+
+/// Two screens served at once are kept apart: the second's destroy ends the second, and the first still serves a
+/// context, which reaches the first's implementation.
+#[test]
+fn screens_are_kept_apart() {
+    let (first, second) = (Recording::new(), Recording::new());
+    let (first_log, second_log) = (Arc::clone(&first.log), Arc::clone(&second.log));
+    let one = wcontainers_gallium_direct::serve::serve(first).expect("the first screen is served");
+    let two = wcontainers_gallium_direct::serve::serve(second).expect("the second screen is served");
+    #[expect(unsafe_code, reason = "caller.c: wc_caller_two_screens takes the two addresses serve returned (serve.c's live struct pipe_screen), destroys the second, makes and destroys a context of the first and destroys it")]
+    // SAFETY: both addresses are screens serve made just now, not yet destroyed; the call destroys both.
+    let status = unsafe { wc_caller_two_screens(one, two) };
+    assert_eq!(status, 0, "the first screen still serves a context after the second's destroy");
+    let names = |calls: Vec<String>| calls.into_iter().filter(|call| !call.contains("caps")).map(|call| call.split(' ').next().unwrap_or_default().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(second_log.calls()), ["destroy"], "the second screen's implementation: its destroy alone");
+    assert_eq!(names(first_log.calls()), ["context_create", "destroy", "destroy"], "the first screen's implementation: the context and both destroys");
 }
 
 /// Every case, each alone in a process of its own (this test binary run again for one case).

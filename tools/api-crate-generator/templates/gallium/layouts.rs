@@ -9,19 +9,34 @@ mod clang_layouts;
 fn layouts_agree() {
     let checked = wcontainers_gallium_direct::layouts_agree();
     println!("LAYOUTS {checked:?}");
-    assert!(checked.is_ok(), "a flat structure's size differs between C and Rust: {checked:?}");
+    assert_eq!(checked, Ok(wcontainers_gallium_direct::flat::SIZES.len()), "every flat structure the same size in C and Rust");
 }
 
 #[cfg(mesa)]
 #[test]
 fn fields_agree() {
     use std::collections::BTreeMap;
-    let checked = wcontainers_gallium_direct::fields_agree();
-    let fields = match checked {
-        Ok(fields) => fields,
-        Err((layout, measured)) => panic!("a field differs between C, Rust and Mesa: {layout:?} {measured:?}"),
-    };
-    assert_eq!(fields.len(), wcontainers_gallium_direct::flat::FIELDS.len(), "every field measured");
+    // Each field as C measures it: its offset and size in the flat form the Rust mirror's; a bit-field (with no offset
+    // in C) one whose width fits the flat field; a field of the same size in Mesa as in the flat form (a number, a flag,
+    // an object, client memory or a color) of that size, an enumeration (which Mesa may pack) at most that size.
+    let measured = wcontainers_gallium_direct::fields_measured();
+    assert_eq!(measured.len(), wcontainers_gallium_direct::flat::FIELDS.len(), "every field measured");
+    let mut fields = Vec::new();
+    for (layout, field) in &measured {
+        let field = field.unwrap_or_else(|| panic!("{}.{}: a field C does not list", layout.structure, layout.field));
+        assert_eq!((field.flat_offset, field.flat_size), (layout.flat_offset, layout.flat_size), "{}.{}: its offset and size in C and in Rust", layout.structure, layout.field);
+        let bit_field = layout.bits != 0;
+        assert_eq!(field.mesa_offset.is_none(), bit_field, "{}.{}: an offset in Mesa only where it is no bit-field", layout.structure, layout.field);
+        assert_eq!(field.mesa_size.is_none(), bit_field, "{}.{}: a size in Mesa only where it is no bit-field", layout.structure, layout.field);
+        if layout.same_size {
+            let size = field.mesa_size.unwrap_or(usize::MAX);
+            assert!(if layout.at_least { size <= field.flat_size } else { size == field.flat_size }, "{}.{}: its size in Mesa {size}, in the flat form {}", layout.structure, layout.field, field.flat_size);
+        }
+        if bit_field {
+            assert!(layout.bits <= u64::try_from(field.flat_size).unwrap_or(0) * u64::from(u8::BITS), "{}.{}: a width of {} bits in {} bytes", layout.structure, layout.field, layout.bits, field.flat_size);
+        }
+        fields.push((layout, field));
+    }
     // The generator's fields by Mesa's structure, with Mesa's offsets by offsetof, and the fields it leaves out.
     let mut carried: BTreeMap<String, Vec<clang_layouts::Carried>> = BTreeMap::new();
     for (layout, measured) in &fields {
@@ -114,7 +129,7 @@ fn a_dropped_field_fails() {
 fn values_agree() {
     let checked = wcontainers_gallium_direct::values_agree();
     println!("VALUES {checked:?}");
-    assert!(checked.is_ok(), "a declared value differs between the trait and C: {checked:?}");
+    assert_eq!(checked, Ok(wcontainers_gallium_direct::flat::values().len()), "every declared value of the trait the value C computes");
 }
 
 #[cfg(mesa)]
@@ -122,5 +137,5 @@ fn values_agree() {
 fn table_agrees() {
     let (c_size, rust_size) = wcontainers_gallium_direct::table_agrees();
     println!("TABLE C {c_size} Rust {rust_size}");
-    assert_eq!(c_size, rust_size, "serve.c's table and serve.rs's differ");
+    assert_eq!((c_size, rust_size), (core::mem::size_of::<wcontainers_gallium_direct::serve::Table>(), core::mem::size_of::<wcontainers_gallium_direct::serve::Table>()), "serve.c's table and serve.rs's the size of serve.rs's");
 }
