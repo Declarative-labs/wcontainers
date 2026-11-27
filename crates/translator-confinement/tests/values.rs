@@ -1185,3 +1185,107 @@ fn the_slot_s_and_the_frame_s_last_bytes_are_inside() {
         1
     );
 }
+
+#[test]
+fn values_that_need_their_exact_bits() {
+    // movk replaces bits that were set; eor of a constant clears a set bit.
+    assert_eq!(
+        after(&[], &[movz(0, 0xffff, 2), movk(0, 1, 2)], 0),
+        one(0x1_0000_0000)
+    );
+    assert_eq!(
+        after(&[(1, one(0x1_0000_0005))], &[logical(2, 0, 1, 1, 32, 0)], 0),
+        one(5)
+    );
+    // A literal load at the second word, of the first.
+    let words = bytes(&[UDF, 0x18ff_ffe0, UDF]);
+    assert_eq!(check(&words, &PLACE, &[(4, State::entry(&PLACE))]).0, []);
+}
+
+#[test]
+fn a_probe_bounds_its_base_from_above_too() {
+    let reserved = Place {
+        below: 1 << 16,
+        ..PLACE
+    };
+    let mut start = State::entry(&reserved);
+    start.0[1] = Some((BASE - 0x10, BASE + (1 << 32) + 0x10));
+    // ldr wzr, [x1, #8].
+    let words = bytes(&[0xb940_083f, UDF]);
+    let (found, states) = check(&words, &reserved, &[(0, start)]);
+    assert_eq!(found, []);
+    assert_eq!(states[&4].0[1], Some((BASE - 8, BASE + (1 << 32) - 12)));
+}
+
+#[test]
+fn a_loop_that_settles_within_eight_turns_keeps_its_range() {
+    // add x0, x0, #1; and x0, x0, #15; b .-8, from x0 in 0 to 7: x0 settles at 0 to 15 after eight turns.
+    let words = [
+        add_imm(0, 0, 1, false),
+        logical(0, 0, 0, 1, 0, 3),
+        0x17ff_fffe,
+    ];
+    let (found, states) = check(&bytes(&words), &PLACE, &[(0, with(&[(0, Some((0, 7)))]))]);
+    assert_eq!(found, []);
+    assert_eq!(states[&0].0[0], Some((0, 15)));
+}
+
+#[test]
+fn the_last_survivors_of_the_mutation_bar() {
+    let cut = add_ext(23, 24, 1, 0b010, 0, false);
+    // and x0, x1, #0xaaaa...: a two-bit element rotated; #0x1111...: a four-bit element.
+    assert_eq!(
+        after(
+            &[(1, one(u64::MAX))],
+            &[logical(0, 0, 1, 0, 1, 0b11_1100)],
+            0
+        ),
+        one(0xaaaa_aaaa_aaaa_aaaa)
+    );
+    assert_eq!(
+        after(
+            &[(1, one(u64::MAX))],
+            &[logical(0, 0, 1, 0, 0, 0b11_1000)],
+            0
+        ),
+        one(0x1111_1111_1111_1111)
+    );
+    assert_eq!(
+        after(
+            &[(1, one(u64::MAX))],
+            &[logical(0, 0, 1, 0, 0, 0b11_0000)],
+            0
+        ),
+        one(0x0101_0101_0101_0101)
+    );
+    // bfxil x0, x1, #2, #4: the low four bits replaced.
+    assert_eq!(
+        after(&[(0, Some((16, 33)))], &[bfm(0, 1, 2, 5)], 0),
+        Some((16, 47))
+    );
+    // blr with op4 set; sys with CRn 8 or op2 0 where dc has 7 and 1.
+    assert_eq!(decode(0xd63f_0001), Step::Unknown);
+    assert_eq!(decode(0xd50b_8420), Step::Unknown);
+    assert_eq!(decode(0xd50b_7400), Step::Unknown);
+    // dc zva from the window's base plus 2047: its block's first byte may be the base.
+    assert_eq!(
+        run_from(&with(&[(1, one(2047))]), &[cut, 0xd50b_7437]).0,
+        []
+    );
+    // ldp x0, x1, [x23, #16] leaves x23.
+    assert_eq!(
+        after(&[(1, one(0x100))], &[cut, 0xa941_06e0], 23),
+        one(BASE + 0x100)
+    );
+    // stxp w0, x1, x2, [x23] writes x0 alone.
+    assert_eq!(after(&[(1, one(1))], &[cut, 0xc820_0ae1], 1), one(1));
+    // ldxp x0, xzr, [x23] writes no stack pointer.
+    assert_eq!(run_from(&with(&[]), &[cut, 0xc87f_fee0, 0xf940_03e0]).0, []);
+    // stlurb stores, ldapurb loads.
+    let write = |word: u32| match decode(word) {
+        Step::Access(a) => a.write,
+        other => panic!("{other:?}"),
+    };
+    assert!(write(0x1900_02e0));
+    assert!(!write(0x1940_02e0));
+}

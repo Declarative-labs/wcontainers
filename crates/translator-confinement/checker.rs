@@ -136,8 +136,6 @@ pub struct Found {
 
 /// How many times an instruction's state may grow before the registers that grew hold anything.
 const WIDEN_AFTER: u32 = 8;
-/// The most targets a jump into the sequence may have.
-const MOST_TARGETS: u64 = 4096;
 
 /// The range `[lo, hi]` taken modulo 2^64, as a register holds it; anything where it wraps part of the way.
 fn wrapped(lo: i128, hi: i128) -> Value {
@@ -146,7 +144,8 @@ fn wrapped(lo: i128, hi: i128) -> Value {
     if hi.div_euclid(modulus) != turns {
         return None;
     }
-    Some(((lo - turns * modulus) as u64, (hi - turns * modulus) as u64))
+    // Truncation keeps the value modulo 2^64.
+    Some((lo as u64, hi as u64))
 }
 
 fn add_signed(value: Value, by: i64) -> Value {
@@ -159,24 +158,13 @@ fn add_signed(value: Value, by: i64) -> Value {
 
 /// The range of `value` extended as `extend` says, then shifted left.
 fn extended(value: Value, extend: Extend, shift: u32) -> Value {
-    let (lo, hi) = match (value, extend) {
-        (Some(range), _) => range,
-        // Any value cut to fewer bits than a register's.
-        (None, Extend::Unsigned(from)) if from < 64 => (0, (1u64 << from) - 1),
-        (None, _) => return None,
-    };
     let (lo, hi) = match extend {
-        Extend::Unsigned(64) => (lo, hi),
-        Extend::Unsigned(from) => {
-            let mask = (1u64 << from) - 1;
-            if lo >> from == hi >> from {
-                (lo & mask, hi & mask)
-            } else {
-                (0, mask)
-            }
-        }
+        Extend::Unsigned(64) => value?,
+        // Any value, cut to fewer bits than a register's, is in their range.
+        Extend::Unsigned(from) => low_bits(value, from),
         // A signed extension keeps a range of values whose sign bit is clear.
         Extend::Signed(from) => {
+            let (lo, hi) = value?;
             if hi < 1u64 << (from - 1) {
                 (lo, hi)
             } else {
@@ -231,7 +219,7 @@ fn evaluate(made: Made, state: &State, place: &Place, at: usize) -> Value {
         Made::Constant(c) => Some((c, c)),
         Made::Keep { rd, value, shift } => match state.0[usize::from(rd)] {
             Some((lo, hi)) if lo == hi => {
-                let kept = (lo & !(0xffff << shift)) | u64::from(value) << shift;
+                let kept = (lo & !(0xffff << shift)) + (u64::from(value) << shift);
                 Some((kept, kept))
             }
             _ => None,
@@ -244,7 +232,7 @@ fn evaluate(made: Made, state: &State, place: &Place, at: usize) -> Value {
         Made::ExtractInto { rd, width } => {
             let (lo, hi) = state.0[usize::from(rd)]?;
             let mask = (1u64 << width) - 1;
-            Some((lo & !mask, (hi & !mask) | mask))
+            Some((lo & !mask, (hi & !mask) + mask))
         }
         Made::And(rn, mask) => match state.get(rn) {
             Some((lo, hi)) if lo == hi => Some((lo & mask, lo & mask)),
@@ -349,11 +337,9 @@ fn step(
                 return Err(Breach::AccessOutside);
             }
             // An access that did not fault touched the window, the only mapped part of the slot: its base was where
-            // that puts it.
-            let in_slot = first_lo >= place.base.saturating_sub(place.below)
-                && last < place.base + SLOT_BYTES;
-            if let (Base::Reg(Source::Reg(reg)), Offset::Constant(offset_lo, offset_hi), true) =
-                (access.base, access.offset, in_slot)
+            // that puts it. (An access of the frame meets no base in that range, and changes nothing.)
+            if let (Base::Reg(Source::Reg(reg)), Offset::Constant(offset_lo, offset_hi)) =
+                (access.base, access.offset)
             {
                 let window_end = place.base + (1 << WINDOW_BITS) - access.bytes;
                 let low = place.base.checked_add_signed(-offset_hi);
@@ -423,7 +409,7 @@ fn step(
             // The floor's entries, each ending the run.
             let floor = lo == hi
                 && (FLOOR_PAGE..FLOOR_PAGE + 4096).contains(&lo)
-                && (lo - FLOOR_PAGE).is_multiple_of(FLOOR_ENTRY_BYTES);
+                && lo.is_multiple_of(FLOOR_ENTRY_BYTES);
             // The slot table, held inaccessible: the jump faults there.
             let (start, end) = place.slot_table();
             if floor || (start <= lo && hi < end) {
@@ -431,7 +417,7 @@ fn step(
             }
             // Instructions of the sequence.
             let code_end = place.code + length as u64;
-            if place.code <= lo && hi < code_end && (hi - lo) / 4 < MOST_TARGETS {
+            if place.code <= lo && hi < code_end {
                 let first = (lo - place.code).next_multiple_of(4);
                 let targets = (first..=hi - place.code)
                     .step_by(4)

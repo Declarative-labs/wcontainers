@@ -211,7 +211,7 @@ pub fn decode(word: u32) -> Step {
 
 /// Arm's DecodeBitMasks for a logical immediate (Arm ARM, shared pseudocode); none where it is reserved.
 fn bit_mask(sf: bool, n: u32, immr: u32, imms: u32) -> Option<u64> {
-    let combined = (n << 6) | (!imms & 0x3f);
+    let combined = (n << 6) + (!imms & 0x3f);
     if combined == 0 {
         return None;
     }
@@ -235,7 +235,7 @@ fn bit_mask(sf: bool, n: u32, immr: u32, imms: u32) -> Option<u64> {
         } else {
             (1u64 << size) - 1
         };
-        ((ones >> r) | (ones << (size - r))) & mask
+        ((ones >> r) + (ones << (size - r))) & mask
     };
     let mut value = element;
     let mut width = size;
@@ -253,7 +253,7 @@ fn immediate(word: u32) -> Step {
     let rn = bits(word, 5, 5);
     match bits(word, 23, 3) {
         0b000 | 0b001 => {
-            let offset = signed((bits(word, 5, 19) << 2) | bits(word, 29, 2), 21);
+            let offset = signed((bits(word, 5, 19) << 2) + bits(word, 29, 2), 21);
             let made = if sf {
                 Made::CodePage {
                     at: 0,
@@ -447,12 +447,12 @@ fn system(word: u32) -> Step {
             _ => Step::Unknown,
         },
         (1, false) if op1 == 0b011 && crn == 0b0111 && op2 == 0b001 => match crm {
-            // dc zva writes; ic ivau and dc cvau, cvac, cvap, cvadp, civac touch without changing.
+            // dc zva; ic ivau and dc cvau, cvac, cvap, cvadp, civac, which touch without changing, taken as writes too.
             0b0100 | 0b0101 | 0b1010 | 0b1011 | 0b1100 | 0b1101 | 0b1110 => Step::Access(Access {
                 base: Base::Reg(or_zero(rt)),
                 offset: Offset::Constant(-(LARGEST_BLOCK - 1), 0),
                 bytes: LARGEST_BLOCK as u64,
-                write: crm == 0b0100,
+                write: true,
                 loads: Vec::new(),
                 moved: None,
             }),
@@ -696,7 +696,7 @@ fn load_store(word: u32) -> Step {
     }
     // Vector structures, one element of each register or replicated.
     if word & 0xbf9f_0000 == 0x0d00_0000 || word & 0xbf80_0000 == 0x0d80_0000 {
-        let elements = u64::from((bits(word, 13, 1) << 1) | bits(word, 21, 1)) + 1;
+        let elements = u64::from((bits(word, 13, 1) << 1) + bits(word, 21, 1)) + 1;
         let element = match bits(word, 14, 2) {
             0b00 => 1,
             0b01 => 2,
