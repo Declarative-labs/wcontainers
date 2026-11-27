@@ -249,9 +249,9 @@ pub struct GlslName {
 #[derive(Debug)]
 pub struct GlslProgram<Received> {
     /// The bridge's `stages`.
-    pub stages: [Option<Received>; 3],
+    pub stages: [Option<Received>; 6],
     /// The bridge's `names`.
-    pub names: [Vec<GlslName>; 3],
+    pub names: [Vec<GlslName>; 6],
     /// The bridge's `log`.
     pub log: Option<Vec<u8>>,
 }
@@ -454,7 +454,7 @@ pub trait MesaCompiler: Sized {
     /// Compiles and links the sources (by enum wc_stage, NULL for none) with Mesa's GLSL compiler, then takes st/mesa's steps for the OpenGL driver's capabilities; false when either step fails.
     ///
     /// Calls the bridge's `wc_glsl_to_nir`.
-    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<Self::Received>, Vec<u8>>;
+    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 6]) -> Result<GlslProgram<Self::Received>, Vec<u8>>;
 
     /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
     ///

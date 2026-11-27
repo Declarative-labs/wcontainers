@@ -69,6 +69,12 @@ wc_mesa_stage(enum wc_stage stage)
       return MESA_SHADER_FRAGMENT;
    case WC_STAGE_COMPUTE:
       return MESA_SHADER_COMPUTE;
+   case WC_STAGE_GEOMETRY:
+      return MESA_SHADER_GEOMETRY;
+   case WC_STAGE_TESS_CONTROL:
+      return MESA_SHADER_TESS_CTRL;
+   case WC_STAGE_TESS_EVALUATION:
+      return MESA_SHADER_TESS_EVAL;
    case WC_STAGES:
       break;
    }

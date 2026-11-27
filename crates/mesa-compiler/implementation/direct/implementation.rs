@@ -467,14 +467,14 @@ impl GlslNamesMirror {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct GlslProgramMirror {
-    pub(crate) stages: [*mut c_void; 3],
-    pub(crate) names: [GlslNamesMirror; 3],
+    pub(crate) stages: [*mut c_void; 6],
+    pub(crate) names: [GlslNamesMirror; 6],
     pub(crate) log: *mut u8,
 }
 
 impl Default for GlslProgramMirror {
     fn default() -> GlslProgramMirror {
-        GlslProgramMirror { stages: [core::ptr::null_mut(); 3], names: [GlslNamesMirror::default(); 3], log: core::ptr::null_mut() }
+        GlslProgramMirror { stages: [core::ptr::null_mut(); 6], names: [GlslNamesMirror::default(); 6], log: core::ptr::null_mut() }
     }
 }
 
@@ -872,8 +872,8 @@ impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
     }
 
     fn spirv_read(&self, words: &[u32], stage: u32, entry_point: &core::ffi::CStr, alpha_to_one: bool) -> Option<SpirvShader> {
-        if stage >= 3 { return Default::default(); }
-        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_read takes the types declared there; words holds as many words as the count beside it; count is words's length; stage is one of enum wc_stage's 3 values; entry_point is zero-ended")]
+        if stage >= 6 { return Default::default(); }
+        #[expect(unsafe_code, reason = "bridge.h: wc_spirv_read takes the types declared there; words holds as many words as the count beside it; count is words's length; stage is one of enum wc_stage's 6 values; entry_point is zero-ended")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
         let result = unsafe { wc_spirv_read(words.as_ptr(), words.len(), stage, entry_point.as_ptr(), u8::from(alpha_to_one)) };
         SpirvShader::owning(result)
@@ -931,10 +931,10 @@ impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
         result.then_some(copied)
     }
 
-    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<Received>, Vec<u8>> {
-        let sources: [*const core::ffi::c_char; 3] = sources.map(|text| text.map_or(core::ptr::null(), core::ffi::CStr::as_ptr));
+    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 6]) -> Result<GlslProgram<Received>, Vec<u8>> {
+        let sources: [*const core::ffi::c_char; 6] = sources.map(|text| text.map_or(core::ptr::null(), core::ffi::CStr::as_ptr));
         let mut out = GlslProgramMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_glsl_to_nir takes the types declared there; sources is 3 texts of ours, each zero-ended or null; out is one zeroed struct wc_glsl_program of ours")]
+        #[expect(unsafe_code, reason = "bridge.h: wc_glsl_to_nir takes the types declared there; sources is 6 texts of ours, each zero-ended or null; out is one zeroed struct wc_glsl_program of ours")]
         // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
         let result = unsafe { wc_glsl_to_nir(sources.as_ptr(), &raw mut out) };
         let result = result != 0;

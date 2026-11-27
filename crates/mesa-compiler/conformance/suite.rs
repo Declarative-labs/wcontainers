@@ -76,6 +76,11 @@ const SPIRV_MAGIC: u32 = 0x0723_0203;
 const VERTEX: u32 = constants::STAGE_VERTEX;
 const FRAGMENT: u32 = constants::STAGE_FRAGMENT;
 const COMPUTE: u32 = constants::STAGE_COMPUTE;
+const GEOMETRY: u32 = constants::STAGE_GEOMETRY;
+/// The stages a GLSL program has a source for, by enum wc_stage.
+const STAGES: usize = constants::STAGES as usize;
+/// A program's sources by stage (none where it has no such stage).
+type Sources<'a> = [Option<&'a str>; STAGES];
 /// The entry point every program here names.
 const MAIN: &CStr = c"main";
 
@@ -164,18 +169,86 @@ void main() {
 }
 ";
 
+/// A vertex program drawing points of its own size, before a geometry or tessellation stage.
+const POINT_VERTEX_SOURCE: &str = "#version 450
+layout(location = 0) in vec4 at;
+layout(location = 0) out vec4 passed;
+void main() {
+    gl_Position = at;
+    gl_PointSize = at.w;
+    passed = at;
+}
+";
+
+/// A geometry program taking and making points, each with its point size and a layer it names.
+const POINT_GEOMETRY_SOURCE: &str = "#version 450
+layout(points) in;
+layout(points, max_vertices = 2) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    for (int copy = 0; copy < 2; copy++) {
+        gl_Position = gl_in[0].gl_Position + vec4(float(copy));
+        gl_PointSize = gl_in[0].gl_PointSize;
+        gl_Layer = copy;
+        shaded = passed[0];
+        EmitVertex();
+    }
+}
+";
+
+/// A tessellation control program of three control points, passing each on.
+const CONTROL_SOURCE: &str = "#version 450
+layout(vertices = 3) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 handed[];
+void main() {
+    handed[gl_InvocationID] = passed[gl_InvocationID];
+    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+    gl_TessLevelOuter[0] = 2.0;
+    gl_TessLevelOuter[1] = 2.0;
+    gl_TessLevelOuter[2] = 2.0;
+    gl_TessLevelInner[0] = 2.0;
+}
+";
+
+/// A tessellation evaluation program making triangles from the control program's patch.
+const EVALUATION_SOURCE: &str = "#version 450
+layout(triangles, equal_spacing, ccw) in;
+layout(location = 0) in vec4 handed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    gl_Position = gl_TessCoord.x * gl_in[0].gl_Position + gl_TessCoord.y * gl_in[1].gl_Position + gl_TessCoord.z * gl_in[2].gl_Position;
+    shaded = handed[0];
+}
+";
+
+/// A fragment program after the geometry or evaluation program, reading the layer.
+const SHADED_FRAGMENT_SOURCE: &str = "#version 450
+layout(location = 0) in vec4 shaded;
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = shaded + vec4(float(gl_Layer));
+}
+";
+
+/// The control points of the tessellation control program's patch, its evaluation program's input.
+const CONTROL_POINTS: u32 = 3;
+
 /// A source the compiler refuses.
 const BROKEN_SOURCE: &CStr = c"#version 450
 void main() { this is not GLSL }
 ";
 
 /// The GLSL programs the walks start from, by enum wc_stage.
-const PROGRAMS: [[Option<&str>; 3]; 5] = [
-    [Some(VERTEX_SOURCE), Some(FRAGMENT_SOURCE), None],
-    [None, None, Some(COMPUTE_SOURCE)],
-    [Some(OLD_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None],
-    [Some(STORING_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None],
-    [Some(INTEGER_VERTEX_SOURCE), Some(INTEGER_FRAGMENT_SOURCE), None],
+const PROGRAMS: [Sources<'static>; 7] = [
+    [Some(VERTEX_SOURCE), Some(FRAGMENT_SOURCE), None, None, None, None],
+    [None, None, Some(COMPUTE_SOURCE), None, None, None],
+    [Some(OLD_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None, None, None, None],
+    [Some(STORING_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None, None, None, None],
+    [Some(INTEGER_VERTEX_SOURCE), Some(INTEGER_FRAGMENT_SOURCE), None, None, None, None],
+    [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, Some(POINT_GEOMETRY_SOURCE), None, None],
+    [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(CONTROL_SOURCE), Some(EVALUATION_SOURCE)],
 ];
 
 /// The three programs above as SPIR-V for Vulkan, written by glslang 16.4.0 (`glslangValidator -V --target-env
@@ -351,7 +424,7 @@ fn made_walk<M: MesaCompiler>(compiler: &M, made: &M::Made, picks: &mut Picks, c
     calls.one("made_key");
     let _ = calls.made("made_key", compiler.made_key(made));
     calls.one("made_named_layer_location");
-    let _ = compiler.made_named_layer_location(made);
+    let _ = calls.made("made_named_layer_location", Some(compiler.made_named_layer_location(made)).filter(|at| *at != u32::MAX));
     for _ in 0..1 + picks.below(2) {
         let (settings, swizzles, samplers) = (picks.settings(), picks.swizzles(), picks.samplers());
         calls.one("made_variant");
@@ -397,9 +470,9 @@ fn stage_walk<M: MesaCompiler>(compiler: &M, received: M::Received, picks: &mut 
 }
 
 /// A GLSL program's walk: compiled, then the driver's walk on each stage.
-fn glsl_walk<M: MesaCompiler>(compiler: &M, sources: [Option<&str>; 3], picks: &mut Picks, calls: &mut Calls) {
+fn glsl_walk<M: MesaCompiler>(compiler: &M, sources: Sources<'_>, picks: &mut Picks, calls: &mut Calls) {
     let owned: Vec<Option<CString>> = sources.iter().map(|source| source.and_then(|text| CString::new(text).ok())).collect();
-    let texts: [Option<&CStr>; 3] = std::array::from_fn(|at| owned.get(at).and_then(|text| text.as_deref()));
+    let texts: [Option<&CStr>; STAGES] = std::array::from_fn(|at| owned.get(at).and_then(|text| text.as_deref()));
     calls.one("glsl_to_nir");
     let Some(program) = calls.made("glsl_to_nir", compiler.glsl_to_nir(texts).ok()) else { return };
     for received in program.stages.into_iter().flatten() {
@@ -409,8 +482,7 @@ fn glsl_walk<M: MesaCompiler>(compiler: &M, sources: [Option<&str>; 3], picks: &
 
 /// Compiles a program of each stage, takes it through the driver's steps and a draw's to the flat form; reads each
 /// SPIR-V module, writes it through the common form as SPIR-V and reads that back, and flattens it.
-pub fn compiles_and_reads_back<M: MesaCompiler>() {
-    let compiler = M::new();
+pub fn compiles_and_reads_back<M: MesaCompiler>(compiler: M) {
     let ranges = [SlotRange { first: 0, slots: 64 }, SlotRange { first: 0, slots: 16 }, SlotRange { first: 0, slots: 16 }, SlotRange { first: 0, slots: 16 }];
     let none = PositionTransform { flip_y: false, half_z: false, reverse_z: false, fixed_point_size: false };
     let settings = VariantSettings {
@@ -425,7 +497,7 @@ pub fn compiles_and_reads_back<M: MesaCompiler>() {
     };
     for sources in PROGRAMS {
         let owned: Vec<Option<CString>> = sources.iter().map(|source| source.map(|text| CString::new(text).expect("no zero byte"))).collect();
-        let texts: [Option<&CStr>; 3] = std::array::from_fn(|at| owned[at].as_deref());
+        let texts: [Option<&CStr>; STAGES] = std::array::from_fn(|at| owned[at].as_deref());
         let program = compiler.glsl_to_nir(texts).unwrap_or_else(|log| panic!("the program compiles: {}", String::from_utf8_lossy(&log)));
         for (at, stage) in program.stages.into_iter().enumerate() {
             assert_eq!(stage.is_some(), sources[at].is_some(), "a stage made for each source");
@@ -437,7 +509,8 @@ pub fn compiles_and_reads_back<M: MesaCompiler>() {
             let variant = compiler.prepared_variant(&prepared, settings.clone(), &[], &[]);
             assert_eq!(variant.result, constants::VARIANT_MADE, "the variant is made");
             assert!(!variant.key.is_empty(), "the variant has a key");
-            let flat = compiler.variant_flatten(variant.shader.expect("made"), 0).expect("the variant flattens");
+            let points_in = if at == constants::STAGE_TESS_CONTROL as usize || at == constants::STAGE_TESS_EVALUATION as usize { CONTROL_POINTS } else { 0 };
+            let flat = compiler.variant_flatten(variant.shader.expect("made"), points_in).unwrap_or_else(|| panic!("the variant of stage {at} flattens"));
             assert!(!flat.instrs.is_empty(), "the flat form has instructions");
             if sources[at] == Some(STORING_VERTEX_SOURCE) {
                 assert!(form.passes_through && form.pass_through.iter().any(Option::is_some), "a vertex program using storage passes through");
@@ -446,13 +519,23 @@ pub fn compiles_and_reads_back<M: MesaCompiler>() {
     }
     // A vertex program writing a point size, drawn as squares.
     let source = CString::new(VERTEX_SOURCE).expect("no zero byte");
-    let program = compiler.glsl_to_nir([Some(&source), None, None]).expect("the program compiles");
-    let [Some(received), _, _] = program.stages else { panic!("a vertex stage") };
+    let program = compiler.glsl_to_nir([Some(&source), None, None, None, None, None]).expect("the program compiles");
+    let [Some(received), ..] = program.stages else { panic!("a vertex stage") };
     let prepared = compiler.received_prepare(received).shader.expect("prepared");
     let squares = compiler.prepared_points_as_squares(&prepared, 1, 64.0);
     assert_eq!(squares.kind, constants::SQUARES_MADE, "points drawn as squares");
     let geometry = squares.geometry.expect("the squares' program");
     assert!(compiler.made_key(&geometry).is_some_and(|key| !key.is_empty()));
+    // A geometry program making points, naming a layer, drawn as squares: the made program names the layer too.
+    let owned = [POINT_VERTEX_SOURCE, SHADED_FRAGMENT_SOURCE, POINT_GEOMETRY_SOURCE].map(|text| CString::new(text).expect("no zero byte"));
+    let program = compiler.glsl_to_nir([Some(&owned[0]), Some(&owned[1]), None, Some(&owned[2]), None, None]).expect("the program compiles");
+    let Some(Some(received)) = program.stages.into_iter().nth(GEOMETRY as usize) else { panic!("a geometry stage") };
+    let prepared = compiler.received_prepare(received).shader.expect("prepared");
+    let squares = compiler.prepared_geometry_points_as_squares(&prepared, 1, 64.0, 0);
+    assert_eq!(squares.kind, constants::SQUARES_MADE, "a geometry program's points drawn as squares");
+    let geometry = squares.geometry.expect("the squares' program");
+    assert!(compiler.made_key(&geometry).is_some_and(|key| !key.is_empty()));
+    assert_ne!(compiler.made_named_layer_location(&geometry), u32::MAX, "the squares name the layer");
     // SPIR-V for Vulkan read, then written by Zink's writer and read back; and flattened.
     for (stage, words) in modules() {
         let read = compiler.spirv_read(&words, stage, MAIN, false).expect("the SPIR-V reads");
@@ -475,11 +558,10 @@ pub fn compiles_and_reads_back<M: MesaCompiler>() {
 
 /// What the trait refuses: a stage past the bridge's, SPIR-V that is no module, an entry point it lacks, a
 /// program that does not compile, a program of no stage.
-pub fn refuses_what_is_not_a_program<M: MesaCompiler>() {
-    let compiler = M::new();
+pub fn refuses_what_is_not_a_program<M: MesaCompiler>(compiler: M) {
     let words = words(VERTEX_SPIRV);
-    for stage in [3, 4, u32::MAX] {
-        assert!(compiler.spirv_read(&words, stage, MAIN, false).is_none(), "stage {stage} refused");
+    for stage in [GEOMETRY, constants::STAGES, constants::STAGES + 1, u32::MAX] {
+        assert!(compiler.spirv_read(&words, stage, MAIN, false).is_none(), "stage {stage} refused (the module has none of it)");
     }
     assert!(compiler.spirv_read(&words, VERTEX, c"absent", false).is_none(), "an entry point the module lacks");
     assert!(compiler.spirv_read(&[], VERTEX, MAIN, false).is_none(), "no words");
@@ -488,9 +570,9 @@ pub fn refuses_what_is_not_a_program<M: MesaCompiler>() {
     // The first instruction's word count past the module's end.
     changed[5] = u32::MAX;
     assert!(compiler.spirv_read(&changed, VERTEX, MAIN, false).is_none(), "a module whose first instruction runs past its end");
-    let log = compiler.glsl_to_nir([Some(BROKEN_SOURCE), None, None]).err().expect("a broken program is refused");
+    let log = compiler.glsl_to_nir([Some(BROKEN_SOURCE), None, None, None, None, None]).err().expect("a broken program is refused");
     assert!(!log.is_empty(), "with the compiler's message");
-    let none = compiler.glsl_to_nir([None, None, None]);
+    let none = compiler.glsl_to_nir([None; STAGES]);
     assert!(none.is_err() || none.is_ok_and(|program| program.stages.iter().all(Option::is_none)), "a program of no stage has none");
 }
 
@@ -510,12 +592,14 @@ fn hostile_case<M: MesaCompiler>(compiler: &M, case: usize, seed: u64) -> Option
 }
 
 /// The cases `hostile_case` takes.
-pub const CASES: usize = 3 + PROGRAMS.len();
+const CASES: usize = 3 + PROGRAMS.len();
+/// The seeds the hostile caller picks every case's arguments by.
+const ROUNDS: u64 = 4;
 
-/// Every walk the trait allows, taken by a hostile caller from every program, with arguments picked by `rounds`
+/// Every walk the trait allows, taken by a hostile caller from every program, with arguments picked by `ROUNDS`
 /// seeds; nothing may end the process.
-pub fn every_method_is_called<M: MesaCompiler>(rounds: u64) {
-    let compiler = M::new();
+pub fn every_method_is_called<M: MesaCompiler>(compiler: M) {
+    let rounds = ROUNDS;
     let mut calls = Calls::new();
     for round in 0..rounds {
         for case in 0..CASES {
@@ -547,10 +631,10 @@ fn changed_words(words: &[u32], picks: &mut Picks) -> Vec<u32> {
 }
 
 /// GLSL sources with one to three of their digits changed (locations, bindings, sizes, versions).
-fn changed_sources(sources: [Option<&str>; 3], picks: &mut Picks) -> [Option<String>; 3] {
+fn changed_sources(sources: Sources<'_>, picks: &mut Picks) -> [Option<String>; STAGES] {
     let mut changed = sources.map(|source| source.map(str::to_string));
     for _ in 0..1 + picks.below(3) {
-        let at = picks.below(3);
+        let at = picks.below(STAGES);
         if let Some(text) = changed[at].as_mut() {
             let digits: Vec<usize> = text.char_indices().filter(|(_, c)| c.is_ascii_digit()).map(|(at, _)| at).collect();
             if !digits.is_empty() {
@@ -566,8 +650,7 @@ fn changed_sources(sources: [Option<&str>; 3], picks: &mut Picks) -> [Option<Str
 /// Walks picked by the seed until `calls` calls are made: from the modules and programs as they are, from SPIR-V
 /// whose words were changed and from GLSL whose digits were, with arguments picked at every step. Returns the calls
 /// made.
-pub fn fuzz<M: MesaCompiler>(seed: u64, calls: u64) -> u64 {
-    let compiler = M::new();
+fn fuzz<M: MesaCompiler>(compiler: &M, seed: u64, calls: u64) -> u64 {
     let modules = modules();
     let mut picks = Picks::new(seed);
     let mut made = Calls::new();
@@ -585,18 +668,18 @@ pub fn fuzz<M: MesaCompiler>(seed: u64, calls: u64) -> u64 {
             0..=3 => {
                 let (stage, words) = &modules[at % modules.len()];
                 let changed = changed_words(words, &mut picks);
-                spirv_walk(&compiler, *stage, &changed, &mut picks, &mut made);
+                spirv_walk(compiler, *stage, &changed, &mut picks, &mut made);
             }
             4 => {
                 let (stage, words) = &modules[at % modules.len()];
-                spirv_walk(&compiler, *stage, words, &mut picks, &mut made);
+                spirv_walk(compiler, *stage, words, &mut picks, &mut made);
             }
             5 => {
                 let changed = changed_sources(PROGRAMS[at % PROGRAMS.len()], &mut picks);
-                let sources: [Option<&str>; 3] = std::array::from_fn(|stage| changed[stage].as_deref());
-                glsl_walk(&compiler, sources, &mut picks, &mut made);
+                let sources: Sources<'_> = std::array::from_fn(|stage| changed[stage].as_deref());
+                glsl_walk(compiler, sources, &mut picks, &mut made);
             }
-            _ => glsl_walk(&compiler, PROGRAMS[at % PROGRAMS.len()], &mut picks, &mut made),
+            _ => glsl_walk(compiler, PROGRAMS[at % PROGRAMS.len()], &mut picks, &mut made),
         }
     }
     made.report("FUZZ");
@@ -604,21 +687,20 @@ pub fn fuzz<M: MesaCompiler>(seed: u64, calls: u64) -> u64 {
 }
 
 /// Runs `fuzz` with the seed and count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS give; nothing without them.
-pub fn fuzz_from_the_environment<M: MesaCompiler>() {
+pub fn fuzz_from_the_environment<M: MesaCompiler>(compiler: M) {
     let number = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok());
     let (Some(seed), Some(calls)) = (number("WCONTAINERS_FUZZ_SEED"), number("WCONTAINERS_FUZZ_CALLS")) else { return };
-    let made = fuzz::<M>(seed, calls);
+    let made = fuzz(&compiler, seed, calls);
     println!("FUZZ seed {seed} calls {made}");
 }
 
 /// Runs one hostile case alone, as WCONTAINERS_PROBE names it ("case,seed"), so that a case that ends the process is
 /// found by itself; prints the number of cases first ("x" prints only that). Nothing without it.
-pub fn probe_from_the_environment<M: MesaCompiler>() {
+pub fn probe_from_the_environment<M: MesaCompiler>(compiler: M) {
     let Ok(probe) = std::env::var("WCONTAINERS_PROBE") else { return };
     println!("CASES {CASES}");
     let parts: Vec<u64> = probe.split(',').filter_map(|part| part.parse().ok()).collect();
     if let [case, seed] = parts[..] {
-        let compiler = M::new();
         let calls = hostile_case(&compiler, usize::try_from(case).unwrap_or(usize::MAX), seed).map(|calls| calls.0);
         println!("PROBE {probe} ended, calls {calls:?}");
     }
@@ -626,30 +708,30 @@ pub fn probe_from_the_environment<M: MesaCompiler>() {
 
 #[macro_export]
 macro_rules! tests {
-    ($compiler:ty) => {
+    ($value:expr) => {
         #[test]
         fn compiles_and_reads_back() {
-            $crate::compiles_and_reads_back::<$compiler>();
+            $crate::compiles_and_reads_back($value);
         }
 
         #[test]
         fn refuses_what_is_not_a_program() {
-            $crate::refuses_what_is_not_a_program::<$compiler>();
+            $crate::refuses_what_is_not_a_program($value);
         }
 
         #[test]
         fn every_method_is_called() {
-            $crate::every_method_is_called::<$compiler>(4);
+            $crate::every_method_is_called($value);
         }
 
         #[test]
         fn probe_from_the_environment() {
-            $crate::probe_from_the_environment::<$compiler>();
+            $crate::probe_from_the_environment($value);
         }
 
         #[test]
         fn fuzz_from_the_environment() {
-            $crate::fuzz_from_the_environment::<$compiler>();
+            $crate::fuzz_from_the_environment($value);
         }
     };
 }

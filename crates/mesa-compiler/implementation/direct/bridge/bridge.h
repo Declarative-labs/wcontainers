@@ -16,11 +16,15 @@ extern "C" {
 struct nir_shader;
 struct nir_shader_compiler_options;
 
-/* The program stages the routes take, apart from Mesa's own numbering. */
+/* The program stages the routes take, apart from Mesa's own numbering: the geometry and tessellation stages after
+ * the first three, which keep their numbers. */
 enum wc_stage {
    WC_STAGE_VERTEX,
    WC_STAGE_FRAGMENT,
    WC_STAGE_COMPUTE,
+   WC_STAGE_GEOMETRY,
+   WC_STAGE_TESS_CONTROL,
+   WC_STAGE_TESS_EVALUATION,
    WC_STAGES,
 };
 
