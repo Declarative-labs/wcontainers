@@ -4056,6 +4056,7 @@ dependencies = [
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
 ]
@@ -5253,6 +5254,7 @@ dependencies = [
  "wcontainers-configurable",
  "wcontainers-executor",
  "wcontainers-executor-unicorn",
+ "wcontainers-executor-wasmtime",
  "wcontainers-icmp-sockets",
  "wcontainers-icmp-sockets-host",
  "wcontainers-internet-protocol",
