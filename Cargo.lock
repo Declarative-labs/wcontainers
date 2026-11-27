@@ -4147,7 +4147,6 @@ dependencies = [
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-arm64",
- "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
 ]
