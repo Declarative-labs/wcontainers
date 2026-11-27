@@ -1378,11 +1378,11 @@ fn a_random_number_read_leaves_its_register_and_nzcv_undecided() {
         let Ok(after) = read.simulate_state(to_state(word, READ_WRITE, READ_WRITE));
         let expected = &after.processor;
         assert_eq!(
-            expected.general_purpose_registers[5] == RegisterValueExpectation::NonDeterministic,
+            expected.uncompared.general_purpose_registers[5] == u64::MAX,
             undecided
         );
         assert_eq!(
-            expected.condition_flags == RegisterValueExpectation::NonDeterministic,
+            expected.uncompared.condition_flags == ConditionFlags::all(),
             undecided
         );
         assert_eq!(
@@ -1400,23 +1400,6 @@ fn a_random_number_read_leaves_its_register_and_nzcv_undecided() {
 }
 
 #[test]
-fn an_undecided_scalable_register_is_not_compared() {
-    let mut expected = ProcessorExpectation::new(ZERO_PROCESSOR);
-    let mut observed = ZERO_PROCESSOR;
-    observed.vector_registers[3] = 0x1234;
-    observed.predicate_registers[2] = 0x55;
-    observed.first_fault_register = 0x0F;
-    assert!(!Arm64::<User>::meets_expectations(&observed, &expected));
-    expected.vector_registers[3] = RegisterValueExpectation::NonDeterministic;
-    expected.predicate_registers[2] = RegisterValueExpectation::NonDeterministic;
-    assert!(!Arm64::<User>::meets_expectations(&observed, &expected));
-    expected.first_fault_register = RegisterValueExpectation::NonDeterministic;
-    assert!(Arm64::<User>::meets_expectations(&observed, &expected));
-    observed.vector_registers[4] = 1;
-    assert!(!Arm64::<User>::meets_expectations(&observed, &expected));
-}
-
-#[test]
 fn an_optional_instruction_has_the_behavior_of_a_chip_without_its_feature() {
     let behaviors = |instruction| -> Vec<PreciseInstruction<Infallible>> {
         Arm64::<User>::list_known_behaviors(instruction).collect()
@@ -1430,8 +1413,8 @@ fn an_optional_instruction_has_the_behavior_of_a_chip_without_its_feature() {
     );
     assert!(behaviors(Instruction::Ldadd64).contains(&unimplemented(Instruction::Ldadd64)));
     assert_eq!(
-        behaviors(Instruction::Pacm),
-        [unimplemented(Instruction::Pacm)]
+        behaviors(Instruction::Ld1b2Z),
+        [unimplemented(Instruction::Ld1b2Z)]
     );
     assert_eq!(
         behaviors(Instruction::St64bv),
@@ -1439,6 +1422,7 @@ fn an_optional_instruction_has_the_behavior_of_a_chip_without_its_feature() {
     );
     // A modeled hint that changes nothing already is what a chip without it does.
     assert!(!behaviors(Instruction::Bti).contains(&unimplemented(Instruction::Bti)));
+    assert!(!behaviors(Instruction::Pacm).contains(&unimplemented(Instruction::Pacm)));
     let hint = to_state(encode(Instruction::Pacm, &[]), READ_WRITE, READ_WRITE);
     let (after, _) = run(unimplemented(Instruction::Pacm), hint);
     assert_eq!(after.exception, None);

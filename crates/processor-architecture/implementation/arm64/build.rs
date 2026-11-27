@@ -47,6 +47,8 @@ const REGISTER_OFFSET_RECORD: &str = "ro";
 const PAGE_SCALE: u32 = 12;
 /// A branch's offset counts instructions of 4 bytes, as a left shift of its bytes.
 const INSTRUCTION_SCALE: u32 = 2;
+/// The variant of `Instruction` that every level has but the list does not hold.
+const UNLISTED_VARIANT: &str = "MrsCtrEl0";
 
 /// List names this tree spells otherwise, because the list kept an LLVM record name or a bare digit run.
 const RENAMES: [(&str, &str); 24] = [
@@ -223,6 +225,23 @@ fn main() {
             .expect("writing to a string succeeds");
     }
     out.push_str("            Self::MrsCtrEl0 | Self::LevelSpecific(_) => return None,\n        })\n    }\n}\n");
+    // Written for the levels that add no instruction, since `Infallible` has no `Bake` for a derive to ask of it.
+    out.push_str(
+        "\n#[cfg(feature = \"bake\")]\nimpl databake::Bake for Instruction<Infallible> {\n    \
+         fn bake(&self, env: &databake::CrateEnv) -> databake::TokenStream {\n        \
+         env.insert(env!(\"CARGO_CRATE_NAME\"));\n        match *self {\n",
+    );
+    for name in variants.iter().map(String::as_str).chain([UNLISTED_VARIANT]) {
+        writeln!(
+            out,
+            "            Self::{name} => {{\n                \
+             databake::quote!(wcontainers_processor_architecture_arm64::Instruction::{name})\n            }}"
+        )
+        .expect("writing to a string succeeds");
+    }
+    out.push_str(
+        "            Self::LevelSpecific(never) => match never {},\n        }\n    }\n}\n",
+    );
     let path =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join(GENERATED);
     std::fs::write(path, out).expect("the generated list is writable");
@@ -581,7 +600,7 @@ fn render_operand(members: &[&ListField]) -> String {
             1,
             "movimm32_imm" | "imm0_15" | "imm0_31" | "imm0_63" | "imm32_0_15" | "imm32_0_31"
             | "uimm6" | "uimm6s16" | "uimm8_32b" | "uimm8_64b" | "timm32_0_65535" | "uimm16"
-            | "barrier_op" | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63",
+            | "barrier_op" | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63" | "imm0_127",
         ) => match single_run(first) {
             Some(field) => format!("Operand::UnsignedImmediate({field})"),
             // An arrangement split over Q and size.

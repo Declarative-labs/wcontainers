@@ -1,0 +1,29 @@
+[package]
+name = "wcontainers-observation-collector-pinned-behavior-sources"
+description = "A collector that measures every instruction with a behavior source made on each core, the cores of a kind sharing one queue."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-behavior-source = { path = "../../../behavior-source" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-observation-collector = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-cores = { path = "../../../processor-cores" }
+
+[dev-dependencies]
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-accumulator-machine = { path = "../../../instruction-input-domain/implementation/accumulator-machine" }
+wcontainers-observation-collector-conformance = { path = "../../conformance" }
+wcontainers-processor-architecture-accumulator-machine = { path = "../../../processor-architecture/implementation/accumulator-machine" }
+
+[lints]
+workspace = true

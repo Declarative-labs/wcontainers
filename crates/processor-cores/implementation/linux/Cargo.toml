@@ -1,0 +1,32 @@
+[package]
+name = "wcontainers-processor-cores-linux"
+description = "The logical CPUs of a Linux machine, each held by pinning the calling thread to it."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-processor-cores = { path = "../.." }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# sched_setaffinity, sched_getaffinity and sched_getcpu as safe functions (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT).
+rustix = { version = "1.1.6", features = ["thread"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+wcontainers-processor-architecture-x86-64 = { path = "../../../processor-architecture/implementation/x86-64" }
+
+[dev-dependencies]
+wcontainers-processor-cores-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true

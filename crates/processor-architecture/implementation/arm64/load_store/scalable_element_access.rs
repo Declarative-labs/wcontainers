@@ -25,6 +25,7 @@ use crate::registers::{is_general_purpose, read_register};
 use crate::scalable::{PG, VECTOR_BITS, ZD, ZM, ZN, is_active, read_element, read_predicate};
 use crate::{
     AccessDirection, Exception, Instruction, PagePermission, PreciseInstruction, Processor,
+    SuppressibleLoad,
 };
 
 /// The register Xm of the scalar-plus-scalar and vector-plus-scalar forms.
@@ -95,21 +96,77 @@ pub struct ElementAccess {
 }
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/LDFF1W--scalar-plus-vector---Gather-load-first-fault-unsigned-words-to-vector--vector-index--#:~:text=CONSTRAINED%20UNPREDICTABLE)
-/// value of an inactive element at or after one whose FFR bit is clear, after a first-fault or non-fault load that
-/// suppresses no access: zero, which the choice of what it read gives too, or what the register held.
+/// value of an element at or after one whose FFR bit is clear that has no data, as the pseudocode chooses it: zero
+/// (`Unpredictable_SVELDNFZERO`) or what Zt held; an element whose access was performed may also hold its data
+/// (`Unpredictable_SVELDNFDATA`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_element_access)
+)]
 pub enum UnknownElement {
     Zero,
     Merge,
 }
 
+/// The value a chip that chooses by the kind of element gives each one at or after one whose FFR bit is clear, where
+/// an active element whose access was performed may hold its data, zero or what Zt held under every choice, because
+/// the chip may suppress that access instead, which FFR does not show past its first clear bit, so no run is sure to
+/// tell those three apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_element_access)
+)]
+pub struct UnknownElements {
+    /// An active element whose access was suppressed, which has no data: zero or what Zt held; where it lies across
+    /// a fault, zero may also be the bytes read below the fault with zero from it on, as `SuppressibleLoad` allows.
+    pub suppressed: UnknownElement,
+    /// An inactive element, whose data is zero: zero or what Zt held.
+    pub inactive: UnknownElement,
+}
+
 /// The choices a chip makes for an access of elements.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_element_access)
+)]
 pub struct ElementAccessChoices {
     pub misaligned_stack_pointer: MisalignedStackPointer,
     pub across_fault: Option<ScalableStoreAcrossFault>,
     pub fault_address_tag: FaultAddressTag,
-    pub unknown_element: Option<UnknownElement>,
+    pub unknown_elements: Option<UnknownElements>,
+}
+
+impl UnknownElements {
+    /// Every choice the pseudocode allows for a suppressed and an inactive element: zero or merge.
+    pub fn list() -> impl Iterator<Item = Self> {
+        const CHOICES: [UnknownElement; 2] = [UnknownElement::Zero, UnknownElement::Merge];
+        CHOICES.into_iter().flat_map(|suppressed| {
+            CHOICES.into_iter().map(move |inactive| Self {
+                suppressed,
+                inactive,
+            })
+        })
+    }
+
+    /// The value of an unknown element: `data` where it was active and its access performed.
+    fn choose(self, data: u128, performed: bool, active: bool, original: u128) -> u128 {
+        let choice = match (active, performed) {
+            (false, _) => self.inactive,
+            (true, false) if crate::planted::is(3632) => UnknownElement::Merge,
+            (true, false) => self.suppressed,
+            (true, true) => return data,
+        };
+        match choice {
+            UnknownElement::Zero => 0,
+            UnknownElement::Merge => original,
+        }
+    }
 }
 
 impl ElementAccess {
@@ -168,8 +225,11 @@ impl ElementAccess {
         let index = u64::from(element);
         match self.addressing {
             Addressing::ScalarPlusScalar => {
-                let offset =
-                    read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister);
+                let offset = if crate::planted::is(3605) && element > 0 {
+                    0
+                } else {
+                    read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister)
+                };
                 base.wrapping_add(offset.wrapping_add(index).wrapping_mul(memory_bytes))
             }
             Addressing::ScalarPlusImmediate => {
@@ -177,6 +237,15 @@ impl ElementAccess {
                     IMMEDIATE4.read_signed(word) as u64
                 } else {
                     (IMMEDIATE4.read_signed(word) as u64).wrapping_mul(u64::from(self.elements()))
+                };
+                let index = if crate::planted::is(3601) {
+                    index + 1
+                } else if crate::planted::is(3604) && index == 1 {
+                    0
+                } else if crate::planted::is(3609) {
+                    u64::from(self.elements()) - 1 - index
+                } else {
+                    index
                 };
                 base.wrapping_add(vectors.wrapping_add(index).wrapping_mul(memory_bytes))
             }
@@ -208,7 +277,12 @@ impl ElementAccess {
                 } else {
                     0
                 };
-                base.wrapping_add(offset << shift)
+                let address = base.wrapping_add(offset << shift);
+                if crate::planted::is(3634) {
+                    address & u64::from(u32::MAX)
+                } else {
+                    address
+                }
             }
             Addressing::VectorPlusImmediate => {
                 let unit = if crate::planted::is(3505) {
@@ -216,19 +290,80 @@ impl ElementAccess {
                 } else {
                     memory_bytes
                 };
-                self.to_vector_base(processor, word, element)
-                    .wrapping_add(u64::from(IMMEDIATE5.read(word)) * unit)
+                let address = self
+                    .to_vector_base(processor, word, element)
+                    .wrapping_add(u64::from(IMMEDIATE5.read(word)) * unit);
+                let narrow = if self.element_bits == u32::BITS {
+                    crate::planted::any(&[9910, 3621, 3622, 3623])
+                } else {
+                    crate::planted::is(3626)
+                };
+                if narrow {
+                    address & u64::from(u32::MAX)
+                } else {
+                    address
+                }
             }
             Addressing::VectorPlusScalar => {
                 let offset = if crate::planted::is(3509) {
                     0
+                } else if crate::planted::is(3612) {
+                    read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister)
+                        .wrapping_mul(2)
                 } else {
                     read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister)
                 };
-                self.to_vector_base(processor, word, element)
-                    .wrapping_add(offset)
+                let address = self
+                    .to_vector_base(processor, word, element)
+                    .wrapping_add(offset);
+                if self.element_bits == u32::BITS && crate::planted::any(&[3624, 3625]) {
+                    address & u64::from(u32::MAX)
+                } else {
+                    address
+                }
             }
         }
+    }
+
+    /// The element a load reads at the address, extended to its element's bits.
+    fn load_element<Architecture: ProcessorArchitecture>(
+        self,
+        memory: &[MemoryDelta<'_, Architecture>],
+        at: u64,
+    ) -> u128 {
+        let mut buffer = [0_u8; size_of::<u64>()];
+        let bytes = &mut buffer[..self.memory_bytes as usize];
+        read_bytes_into(memory, to_untagged_address(at), bytes);
+        if crate::planted::is(3602) {
+            bytes.reverse();
+        }
+        let value = u64::from_le_bytes(buffer);
+        let bits = self.memory_bytes * u8::BITS
+            - u32::from(crate::planted::any(&[3618, 3627, 3628, 3629, 3630, 3631]));
+        let signed = (self.signed || crate::planted::is(3603)) && !crate::planted::is(9008);
+        let value = if signed && !crate::planted::is(3507) {
+            (((value << (u64::BITS - bits)) as i64) >> (u64::BITS - bits)) as u64
+        } else {
+            value
+        };
+        u128::from(value) & (u128::MAX >> (u128::BITS - self.element_bits))
+    }
+
+    /// The bytes of the element at the address below the fault's location, as read, with zero from it on.
+    fn load_bytes_below<Architecture: ProcessorArchitecture>(
+        self,
+        memory: &[MemoryDelta<'_, Architecture>],
+        at: u64,
+        location: u64,
+    ) -> u128 {
+        let start = to_untagged_address(at);
+        let below = location
+            .wrapping_sub(start)
+            .min(u64::from(self.memory_bytes)) as usize;
+        let below = below.saturating_sub(usize::from(crate::planted::is(3635)));
+        let mut buffer = [0_u8; size_of::<u64>()];
+        read_bytes_into(memory, start, &mut buffer[..below]);
+        u128::from(u64::from_le_bytes(buffer))
     }
 
     /// The element of Zn, zero-extended.
@@ -238,11 +373,25 @@ impl ElementAccess {
         word: u32,
         element: u32,
     ) -> u64 {
-        read_element(
+        let bits = if crate::planted::is(3620) {
+            u32::BITS
+        } else {
+            self.element_bits
+        };
+        let value = read_element(
             processor.vector_registers[ZN.read(word) as usize],
             element,
-            self.element_bits,
-        ) as u64
+            bits,
+        ) as u64;
+        if crate::planted::any(&[9010, 3610, 3611]) && bits == u32::BITS {
+            i64::from(value as u32 as i32) as u64
+        } else if crate::planted::is(3613) {
+            value & !(1 << (u32::BITS - 1))
+        } else if crate::planted::is(3619) {
+            value & !(0xFF << (u64::BITS - u8::BITS))
+        } else {
+            value
+        }
     }
 }
 
@@ -570,7 +719,7 @@ pub(crate) fn list_element_access_behaviors(
                 misaligned_stack_pointer: MisalignedStackPointer::Faults,
                 across_fault: None,
                 fault_address_tag: FaultAddressTag::KeepsTopByte,
-                unknown_element: None,
+                unknown_elements: None,
             },
         });
         return behaviors;
@@ -610,22 +759,22 @@ pub(crate) fn list_element_access_behaviors(
         } else {
             &[None]
         };
-    let unknown: &[Option<UnknownElement>] = if access.suppresses_faults() {
-        &[Some(UnknownElement::Zero), Some(UnknownElement::Merge)]
+    let unknown: Vec<Option<UnknownElements>> = if access.suppresses_faults() {
+        UnknownElements::list().map(Some).collect()
     } else {
-        &[None]
+        Vec::from([None])
     };
     for &misaligned_stack_pointer in stack_pointer {
         for &across_fault in across {
             for &fault_address_tag in tags {
-                for &unknown_element in unknown {
+                for &unknown_elements in &unknown {
                     behaviors.push(PreciseInstruction::ElementAccess {
                         instruction,
                         choices: ElementAccessChoices {
                             misaligned_stack_pointer,
                             across_fault,
                             fault_address_tag,
-                            unknown_element,
+                            unknown_elements,
                         },
                     });
                 }
@@ -665,7 +814,7 @@ where
     let elements = access.elements();
     let memory_bytes = u64::from(access.memory_bytes);
     let predicate = read_predicate(processor, word, PG);
-    let active = |element: u32| is_active(predicate, element, esize);
+    let active = |element: u32| is_active(predicate, element, esize) || crate::planted::is(3615);
     // Each active element in the pseudocode's order, with its address.
     let order: Vec<u32> = if crate::planted::is(3506) {
         (0..elements).rev().collect()
@@ -695,7 +844,13 @@ where
             } else {
                 access.memory_bytes
             };
-            read_element(source, element, esize).to_le_bytes()[..bytes as usize].to_vec()
+            let value = read_element(source, element, esize)
+                >> if crate::planted::is(3617) {
+                    esize / 2
+                } else {
+                    0
+                };
+            value.to_le_bytes()[..bytes as usize].to_vec()
         };
         let fault = moves.iter().enumerate().find_map(|(place, (element, at))| {
             find(*at).map(|(location, status)| (place, *element, *at, location, status))
@@ -726,24 +881,7 @@ where
         }
         return Ok(());
     }
-    let extend = |bytes: &[u8]| -> u128 {
-        let mut buffer = [0_u8; size_of::<u64>()];
-        buffer[..bytes.len()].copy_from_slice(bytes);
-        let value = u64::from_le_bytes(buffer);
-        let bits = bytes.len() as u32 * u8::BITS;
-        let value = if access.signed && !crate::planted::is(3507) {
-            (((value << (u64::BITS - bits)) as i64) >> (u64::BITS - bits)) as u64
-        } else {
-            value
-        };
-        u128::from(value) & (u128::MAX >> (u128::BITS - esize))
-    };
-    let read = |at: u64| -> u128 {
-        let mut bytes = [0_u8; size_of::<u64>()];
-        let bytes = &mut bytes[..memory_bytes as usize];
-        read_bytes_into(memory, to_untagged_address(at), bytes);
-        extend(bytes)
-    };
+    let read = |at: u64| access.load_element(memory, at);
     let target = ZD.read(word) as usize;
     let original = processor.vector_registers[target];
     if !access.suppresses_faults() {
@@ -782,29 +920,36 @@ where
             != crate::planted::is(3501)
             || (crate::planted::is(3508) && first == Some(element))
             || crate::planted::is(3502);
+        let later = first.is_some_and(|first| element > first);
         let (data, fault) = match at {
             Some(at) => match find(at) {
                 Some((location, status)) if performs_first => {
                     return Err(abort(at, location, status));
                 }
                 Some(_) => (0, true),
+                None if crate::planted::is(3606) && later => (
+                    read(at) & (u128::MAX >> (u128::BITS - memory_bytes as u32 * u8::BITS)),
+                    false,
+                ),
+                None if crate::planted::is(3607) && later => (0, false),
+                None if crate::planted::is(3614) && later => {
+                    (read(moves.first().map_or(at, |(_, first)| *first)), false)
+                }
                 None => (read(at), false),
             },
             None => (0, false),
         };
         faulted |= fault;
         let group = (u16::MAX >> (u16::BITS - predicate_bits)) << (element * predicate_bits);
-        if faulted {
+        if faulted || (crate::planted::is(3608) && later) {
             first_fault &= !group;
         }
         let held = (before & first_fault) >> (element * predicate_bits) & 1;
         unknown |= held == 0 && !crate::planted::is(3510);
-        let value = match choices.unknown_element {
-            Some(UnknownElement::Merge) if unknown && at.is_none() => {
-                read_element(original, element, esize)
-            }
-            _ if crate::planted::is(3510) && at.is_none() => read_element(original, element, esize),
-            _ if unknown && fault => 0,
+        let kept = read_element(original, element, esize);
+        let value = match choices.unknown_elements {
+            _ if crate::planted::is(3510) && at.is_none() => kept,
+            Some(chosen) if unknown => chosen.choose(data, !fault, at.is_some(), kept),
             _ => data,
         };
         result |= value << (element * esize);
@@ -817,28 +962,90 @@ where
     Ok(())
 }
 
-/// The Z register of a first-fault or non-fault load whose value, with FFR's, the state does not decide: one that
-/// completes with an access it may suppress, since [MemNF](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-sve#impl-aarch64.MemNF.3)
-/// may fail for any reason, and a Neoverse V2 suppresses accesses that would not fault by what its translations held
-/// before, which no state holds; none for any other instruction.
-pub(crate) fn to_undecided_register<LevelSpecific>(
+/// The access of a first-fault or non-fault load that a chip may suppress though it would not fault, from its first
+/// such active element on, with the value the choices give each element there whether its access is performed or
+/// suppressed; none for any other instruction, or where no such element is active.
+pub(crate) fn to_suppressible_load<LevelSpecific, Architecture>(
     instruction: Instruction<Infallible>,
+    choices: ElementAccessChoices,
     processor: &Processor<LevelSpecific>,
+    memory: &[MemoryDelta<'_, Architecture>],
     word: u32,
-) -> Option<usize> {
+) -> Option<SuppressibleLoad>
+where
+    Architecture: ProcessorArchitecture<PagePermission = PagePermission>,
+{
     let access = to_element_access(instruction)?;
+    let chosen = choices.unknown_elements?;
     if !access.suppresses_faults() {
         return None;
     }
+    let esize = access.element_bits;
     let predicate = read_predicate(processor, word, PG);
-    let mut active = (0..access.elements())
-        .filter(|element| is_active(predicate, *element, access.element_bits));
+    let active = |element: u32| is_active(predicate, element, esize);
+    let mut suppressible = (0..access.elements()).filter(|element| active(*element));
     if access.faulting == Faulting::AfterFirst {
-        active.next();
+        suppressible.next();
     }
-    active
-        .next()
-        .map(|_| ZD.read(word) as usize % crate::VECTOR_REGISTERS)
+    let first_suppressible = suppressible.next()?;
+    let register = ZD.read(word) as usize % crate::VECTOR_REGISTERS;
+    let original = processor.vector_registers[register];
+    let (mut when_read, mut when_suppressed, mut below_fault) = (0_u128, 0_u128, 0_u128);
+    let (mut when_zeroed, mut when_merged) = (0_u128, 0_u128);
+    for element in 0..access.elements() {
+        let kept = read_element(original, element, esize);
+        let is_element_active = active(element);
+        let (data, below, performed) = if is_element_active {
+            let at = access.to_address(processor, word, element);
+            let start = to_untagged_address(at);
+            let bytes = u64::from(access.memory_bytes);
+            match find_fault(memory, start, bytes, AccessDirection::Read) {
+                Some((location, _)) => (
+                    0,
+                    Some(access.load_bytes_below(memory, at, location)),
+                    false,
+                ),
+                None if crate::planted::is(3633) => (
+                    access.load_element(memory, at.wrapping_add(bytes)),
+                    None,
+                    true,
+                ),
+                None => (access.load_element(memory, at), None, true),
+            }
+        } else {
+            (0, None, false)
+        };
+        let suppressed = chosen.choose(0, false, is_element_active, kept);
+        let below = match below {
+            Some(below)
+                if chosen.suppressed == UnknownElement::Zero && !crate::planted::is(3632) =>
+            {
+                below
+            }
+            _ => suppressed,
+        };
+        let (zeroed, merged) = if performed {
+            (0, kept)
+        } else {
+            (suppressed, suppressed)
+        };
+        when_read |= chosen.choose(data, performed, is_element_active, kept) << (element * esize);
+        when_suppressed |= suppressed << (element * esize);
+        below_fault |= below << (element * esize);
+        when_zeroed |= zeroed << (element * esize);
+        when_merged |= merged << (element * esize);
+    }
+    Some(SuppressibleLoad {
+        register,
+        element_bits: esize,
+        first_suppressible,
+        first_fault_before: processor.first_fault_register,
+        when_read,
+        when_zeroed,
+        when_merged,
+        when_suppressed,
+        below_fault,
+    })
 }
 
 /// The bugs planted in these models, each caught by its instruction's states.
@@ -925,6 +1132,233 @@ const fn bug(number: u32, instruction: Instruction<Infallible>, what: &'static s
         number,
         instruction,
         planted_by: PlantedBy::ScalableLoadsAndStores,
+        what,
+    }
+}
+
+/// The bugs planted for the per-lane expectation of first-fault and non-fault loads and for 32-bit vector bases with
+/// bit 31 set, each caught by its instruction's states; 9008 and 9010 are the fourth check's, planted again.
+pub const LANE_AND_BASE_PLANTED_BUGS: [PlantedBug; 22] = [
+    lane_bug(
+        9008,
+        Instruction::Ldnf1shImmediate32,
+        "a signed non-fault load zero-extends",
+    ),
+    lane_bug(
+        9010,
+        Instruction::Ld1wGatherImmediate,
+        "a 32-bit vector base is sign-extended",
+    ),
+    lane_bug(
+        3601,
+        Instruction::Ldnf1bImmediate,
+        "a non-fault load reads each element from the next one's address",
+    ),
+    lane_bug(
+        3602,
+        Instruction::Ldnf1hImmediate,
+        "a non-fault halfword load swaps the bytes of each element",
+    ),
+    lane_bug(
+        3603,
+        Instruction::Ldnf1wImmediate64,
+        "an unsigned non-fault load sign-extends",
+    ),
+    lane_bug(
+        3604,
+        Instruction::Ldnf1d,
+        "a non-fault load reads its second element from the first's address",
+    ),
+    lane_bug(
+        3605,
+        Instruction::Ldff1b,
+        "a first-fault load leaves Xm out of every element but the first",
+    ),
+    lane_bug(
+        3606,
+        Instruction::Ldff1sh32,
+        "a signed first-fault load zero-extends every element but the first",
+    ),
+    lane_bug(
+        3607,
+        Instruction::Ldff1w,
+        "a first-fault load zeroes every element after the first active one",
+    ),
+    lane_bug(
+        3608,
+        Instruction::Ldff1d,
+        "a first-fault load clears FFR after its first active element though nothing faults",
+    ),
+    lane_bug(
+        3609,
+        Instruction::Ldnf1sbImmediate32,
+        "a non-fault load reads its elements from the last",
+    ),
+    lane_bug(
+        3610,
+        Instruction::Ldff1wGatherImmediate,
+        "a first-fault gather sign-extends its 32-bit vector base",
+    ),
+    lane_bug(
+        3611,
+        Instruction::St1wScatterImmediate,
+        "a scatter sign-extends its 32-bit vector base",
+    ),
+    lane_bug(
+        3612,
+        Instruction::Ldnt1wZZR32,
+        "a vector-plus-scalar load adds Xm twice",
+    ),
+    lane_bug(
+        3613,
+        Instruction::Ld1hGatherImmediate32,
+        "a gather clears bit 31 of its 32-bit vector base",
+    ),
+    lane_bug(
+        3614,
+        Instruction::Ldff1sb16,
+        "a first-fault load gives every later element the first one's data",
+    ),
+    lane_bug(
+        3615,
+        Instruction::Ldnf1hImmediate32,
+        "a non-fault load takes every element as active",
+    ),
+    lane_bug(
+        3616,
+        Instruction::St1wZPBr,
+        "ST1W stores doubleword elements as words",
+    ),
+    lane_bug(
+        3617,
+        Instruction::St1hScatterImmediate,
+        "a halfword scatter stores the high half of each element",
+    ),
+    lane_bug(
+        3618,
+        Instruction::Ld1sbGatherImmediate32,
+        "a signed byte gather extends bit 6",
+    ),
+    lane_bug(
+        3619,
+        Instruction::Ld1dGatherImmediate,
+        "a 64-bit vector base loses its tag before the access",
+    ),
+    lane_bug(
+        3620,
+        Instruction::Ldnt1sbZZR64,
+        "a vector-plus-scalar load reads 32-bit elements of its 64-bit base",
+    ),
+];
+
+const fn lane_bug(
+    number: u32,
+    instruction: Instruction<Infallible>,
+    what: &'static str,
+) -> PlantedBug {
+    PlantedBug {
+        number,
+        instruction,
+        planted_by: PlantedBy::LanesAndBases,
+        what,
+    }
+}
+
+/// The bugs planted for narrow bases whose sum crosses 4 GiB, for the data a load extends, and for the choices of
+/// first-fault and non-fault loads after a clear FFR bit, each caught by its instruction's states; 3618 is in
+/// [`LANE_AND_BASE_PLANTED_BUGS`].
+pub const GENERATOR_AND_FIRST_FAULT_PLANTED_BUGS: [PlantedBug; 16] = [
+    generator_bug(
+        9910,
+        Instruction::Ld1wGatherImmediate,
+        "a gather adds its immediate to a 32-bit vector base in 32 bits",
+    ),
+    generator_bug(
+        3621,
+        Instruction::Ldff1hGatherImmediate32,
+        "a first-fault gather adds its immediate to a 32-bit vector base in 32 bits",
+    ),
+    generator_bug(
+        3622,
+        Instruction::St1wScatterImmediate,
+        "a scatter adds its immediate to a 32-bit vector base in 32 bits",
+    ),
+    generator_bug(
+        3623,
+        Instruction::Ld1sbGatherImmediate32,
+        "a signed byte gather adds its immediate to a 32-bit vector base in 32 bits",
+    ),
+    generator_bug(
+        3624,
+        Instruction::Ldnt1wZZR32,
+        "a vector-plus-scalar load adds Xm to a 32-bit vector base in 32 bits",
+    ),
+    generator_bug(
+        3625,
+        Instruction::Stnt1hZZR,
+        "a vector-plus-scalar store adds Xm to a 32-bit vector base in 32 bits",
+    ),
+    generator_bug(
+        3626,
+        Instruction::Ld1dGatherImmediate,
+        "a gather adds its immediate to a 64-bit vector base in 32 bits",
+    ),
+    generator_bug(
+        3627,
+        Instruction::Ldnf1sbImmediate16,
+        "a signed non-fault byte load extends bit 6",
+    ),
+    generator_bug(
+        3628,
+        Instruction::Ldff1shGatherImmediate32,
+        "a signed first-fault halfword gather extends bit 14",
+    ),
+    generator_bug(
+        3629,
+        Instruction::Ld1swGatherImmediate64,
+        "a signed word gather extends bit 30",
+    ),
+    generator_bug(
+        3630,
+        Instruction::Ldff1sb64,
+        "a signed first-fault byte load extends bit 6",
+    ),
+    generator_bug(
+        3631,
+        Instruction::Ldnt1sbZZR32,
+        "a signed vector-plus-scalar byte load extends bit 6",
+    ),
+    generator_bug(
+        3632,
+        Instruction::Ldnf1wImmediate,
+        "a non-fault load keeps what Zt held in a suppressed element whatever the choice",
+    ),
+    generator_bug(
+        3633,
+        Instruction::Ldff1bGather64,
+        "a first-fault gather reads an element it performs after a clear FFR bit from the bytes after its own",
+    ),
+    generator_bug(
+        3634,
+        Instruction::Ld1wGatherExtendedOffset,
+        "a gather adds its 32-bit offsets to its base in 32 bits",
+    ),
+    generator_bug(
+        3635,
+        Instruction::Ldnf1hImmediate,
+        "a non-fault load leaves out the last byte it read below a fault",
+    ),
+];
+
+const fn generator_bug(
+    number: u32,
+    instruction: Instruction<Infallible>,
+    what: &'static str,
+) -> PlantedBug {
+    PlantedBug {
+        number,
+        instruction,
+        planted_by: PlantedBy::GeneratorAndFirstFault,
         what,
     }
 }

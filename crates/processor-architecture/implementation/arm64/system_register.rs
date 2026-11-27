@@ -72,7 +72,35 @@ pub enum HeldRegister {
     FloatingPointStatus,
     /// [TPIDR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TPIDR-EL0--EL0-Read-Write-Software-Thread-ID-Register).
     SoftwareThreadId,
+    /// PSTATE's [SSBS](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SSBS--Speculative-Store-Bypass-Safe).
+    SpeculativeStoreBypassSafe,
+    /// PSTATE's [DIT](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/DIT--Data-Independent-Timing).
+    DataIndependentTiming,
+    /// PSTATE's [TCO](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCO--Tag-Check-Override).
+    TagCheckOverride,
 }
+
+impl HeldRegister {
+    /// The bit of `Processor::process_state_controls` a PSTATE control is, none for another register.
+    pub const fn to_process_state_bit(self) -> Option<u64> {
+        match self {
+            Self::SpeculativeStoreBypassSafe => Some(1 << 12),
+            Self::DataIndependentTiming => Some(1 << 24),
+            Self::TagCheckOverride => Some(1 << 25),
+            Self::ConditionFlags
+            | Self::FloatingPointControl
+            | Self::FloatingPointStatus
+            | Self::SoftwareThreadId => None,
+        }
+    }
+}
+
+/// The PSTATE controls `Processor::process_state_controls` holds.
+pub const PROCESS_STATE_CONTROLS: [HeldRegister; 3] = [
+    HeldRegister::SpeculativeStoreBypassSafe,
+    HeldRegister::DataIndependentTiming,
+    HeldRegister::TagCheckOverride,
+];
 
 /// A value a register holds that the processor state does not, fixed by the chip or by the executor's guest.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,8 +119,7 @@ pub enum SystemRegisterAccess {
     Held(HeldRegister),
     /// Reads a fixed value; a write is undefined.
     Fixed(FixedValue),
-    /// Reads zero, and a write changes nothing the state holds: PSTATE's DIT, SSBS and TCO, which the executor's
-    /// guest enters EL0 with clear, and the debug communication channel with no debugger.
+    /// Reads zero, and a write changes nothing the state holds: the debug communication channel with no debugger.
     ReadsZero,
     /// Reads zero; a write is undefined.
     ReadOnlyZero,
@@ -120,9 +147,21 @@ pub const SYSTEM_REGISTERS: [(&str, SystemRegisterEncoding, SystemRegisterAccess
         ),
         // SCTLR_EL1.UMA is clear.
         ("DAIF", at(3, 3, 4, 2, 1), A::Trapped),
-        ("DIT", at(3, 3, 4, 2, 5), A::ReadsZero),
-        ("SSBS", at(3, 3, 4, 2, 6), A::ReadsZero),
-        ("TCO", at(3, 3, 4, 2, 7), A::ReadsZero),
+        (
+            "DIT",
+            at(3, 3, 4, 2, 5),
+            A::Held(HeldRegister::DataIndependentTiming),
+        ),
+        (
+            "SSBS",
+            at(3, 3, 4, 2, 6),
+            A::Held(HeldRegister::SpeculativeStoreBypassSafe),
+        ),
+        (
+            "TCO",
+            at(3, 3, 4, 2, 7),
+            A::Held(HeldRegister::TagCheckOverride),
+        ),
         (
             "FPCR",
             at(3, 3, 4, 4, 0),
@@ -245,6 +284,11 @@ pub fn to_system_register_access(field: u32) -> SystemRegisterAccess {
 
 /// What a chip or its executor fixes about the system registers EL0 reaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::system_register)
+)]
 pub struct SystemRegisterChoices {
     pub cache_type: u64,
     pub zero_block_size: u64,
@@ -254,11 +298,16 @@ pub struct SystemRegisterChoices {
     pub floating_point_status_bits: u64,
     /// Whether the chip has the random number registers, [FEAT_RNG](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-5-architecture-extension#:~:text=FEAT_RNG); without them an access is undefined.
     pub random_number_registers: bool,
+    /// Whether MRS and MSR reach PSTATE.TCO; where not, as on a chip whose hypervisor gives its guest no FEAT_MTE, they
+    /// read zero and write nothing while PSTATE.TCO keeps its value.
+    pub tag_check_override: bool,
 }
 
 /// What a Neoverse V2 under KVM shows, MEASURED by the measured set's `system_registers` survey on a Graviton4: its
 /// cache type and zero block size, the TPIDRRO_EL0 its guest holds, and FPCR's AHP, DN, FZ, RMode and FZ16 and FPSR's
-/// N, Z, C, V, QC and cumulative flags; and the random number registers, MEASURED by the whole-set run.
+/// N, Z, C, V, QC and cumulative flags; and the random number registers, MEASURED by the whole-set run; and TCO, which
+/// KVM's guest cannot reach, MEASURED by the system family's check pass (PSTATE.TCO set before stays set after an MSR
+/// that clears it and reads as zero).
 pub const NEOVERSE_V2_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices {
     cache_type: 0xB444_C004,
     zero_block_size: 0x4,
@@ -266,6 +315,7 @@ pub const NEOVERSE_V2_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterCh
     floating_point_control_bits: 0x07C8_0000,
     floating_point_status_bits: 0xF800_009F,
     random_number_registers: true,
+    tag_check_override: false,
 };
 
 /// Another chip's choices, every value different, so that each is told apart.
@@ -276,6 +326,7 @@ pub const OTHER_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices 
     floating_point_control_bits: u64::MAX,
     floating_point_status_bits: u64::MAX,
     random_number_registers: false,
+    tag_check_override: true,
 };
 
 /// [MRS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-)
@@ -337,6 +388,11 @@ pub fn simulate_system_register_move<LevelSpecific>(
             HeldRegister::FloatingPointControl => processor.floating_point_control,
             HeldRegister::FloatingPointStatus => processor.floating_point_status,
             HeldRegister::SoftwareThreadId => processor.software_thread_id,
+            HeldRegister::SpeculativeStoreBypassSafe
+            | HeldRegister::DataIndependentTiming
+            | HeldRegister::TagCheckOverride => {
+                read_process_state_control(processor, register, choices)
+            }
         },
         (A::Held(register), AccessDirection::Write) => {
             let value = read_register(processor, number, RegisterThirtyOne::ZeroRegister);
@@ -358,12 +414,49 @@ pub fn simulate_system_register_move<LevelSpecific>(
                     processor.software_thread_id = value & 0xFFFF_FFFF;
                 }
                 HeldRegister::SoftwareThreadId => processor.software_thread_id = value,
+                HeldRegister::SpeculativeStoreBypassSafe
+                | HeldRegister::DataIndependentTiming
+                | HeldRegister::TagCheckOverride => {
+                    if register != HeldRegister::TagCheckOverride || choices.tag_check_override {
+                        write_process_state_control(processor, register, value);
+                    }
+                }
             }
             return Ok(());
         }
     };
     write_register(processor, number, read, RegisterThirtyOne::ZeroRegister);
     Ok(())
+}
+
+/// What MRS reads of a PSTATE control: its bit of the processor state, at the same bit, or zero for TCO where the chip
+/// does not reach it.
+fn read_process_state_control<LevelSpecific>(
+    processor: &Processor<LevelSpecific>,
+    register: HeldRegister,
+    choices: SystemRegisterChoices,
+) -> u64 {
+    if register == HeldRegister::TagCheckOverride && !choices.tag_check_override {
+        return 0;
+    }
+    let bit = register.to_process_state_bit().unwrap_or(0);
+    if crate::planted::is(4702) {
+        return processor.process_state_controls & !bit;
+    }
+    processor.process_state_controls & bit
+}
+
+/// Sets a PSTATE control to the value's bit at its place, as MSR (register) and MSR (immediate) write it.
+pub(crate) fn write_process_state_control<LevelSpecific>(
+    processor: &mut Processor<LevelSpecific>,
+    register: HeldRegister,
+    value: u64,
+) {
+    let bit = register.to_process_state_bit().unwrap_or(0);
+    if crate::planted::is(4703) && register == HeldRegister::DataIndependentTiming {
+        return;
+    }
+    processor.process_state_controls = (processor.process_state_controls & !bit) | (value & bit);
 }
 
 /// The register a completed MRS or MSR leaves undecided, and whether it leaves NZCV undecided: a read of a random number

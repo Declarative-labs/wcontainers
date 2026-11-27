@@ -104,6 +104,11 @@ pub struct ScalableAccess {
 
 /// What an SVE store writes of the active elements below a fault.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_access)
+)]
 pub enum ScalableStoreAcrossFault {
     WritesNothing,
     WritesBytesBelowFault,
@@ -117,6 +122,11 @@ pub enum ScalableStoreAcrossFault {
 
 /// The choices a chip makes for an SVE access, as for the other loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_access)
+)]
 pub struct ScalableAccessChoices {
     pub misaligned_stack_pointer: MisalignedStackPointer,
     pub across_fault: Option<ScalableStoreAcrossFault>,
@@ -129,7 +139,12 @@ impl ScalableAccess {
         match self.element {
             ElementSize::Bits(bits) => Some(bits),
             ElementSize::Field(field) => {
-                let bits = u8::BITS << field.read(word);
+                let size = if crate::planted::is(3616) && self.memory_bytes == 4 {
+                    2
+                } else {
+                    field.read(word)
+                };
+                let bits = u8::BITS << size;
                 (bits >= self.memory_bytes * u8::BITS).then_some(bits)
             }
         }

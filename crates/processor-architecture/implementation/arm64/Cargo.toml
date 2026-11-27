@@ -25,6 +25,8 @@ required-features = ["planted"]
 [features]
 # Lets a check turn on one planted bug of `planted::PLANTED_BUGS`; nothing else turns it on.
 planted = []
+# Lets every instruction and behavior write itself as a Rust expression that names each variant by its full path.
+bake = ["dep:databake"]
 
 [dependencies]
 wcontainers-processor-architecture = { path = "../.." }
@@ -33,6 +35,7 @@ wcontainers-privilege-level-arm64-user = { path = "../../../privilege-level/impl
 bitflags.workspace = true
 # Verus's library, in which the proven functions' specifications are written; a plain build keeps none of them.
 vstd.workspace = true
+databake = { workspace = true, optional = true }
 
 [dev-dependencies]
 wcontainers-behavior-source = { path = "../../../behavior-source" }

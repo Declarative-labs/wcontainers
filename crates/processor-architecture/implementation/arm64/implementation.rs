@@ -16,13 +16,19 @@ use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 pub mod advanced_simd;
+#[cfg(feature = "bake")]
+mod bake;
 mod behavior;
 pub mod branch;
 mod condition_flags;
+mod core_identity;
 pub mod cryptography;
 mod documented;
 pub mod encoding;
 mod exception;
+mod expectation;
+#[cfg(test)]
+mod expectation_tests;
 pub mod floating_point;
 pub mod integer;
 mod lemmas;
@@ -54,6 +60,7 @@ mod sve_remaining_planted;
 mod sve_tests;
 pub mod system_instruction;
 pub mod system_register;
+pub mod system_state_planted;
 #[cfg(test)]
 mod tests;
 
@@ -63,6 +70,7 @@ pub use behavior::{
     StoreOfBaseWithWriteback, VectorLength, VectorLengthReading, WaitForInterruptBehavior,
 };
 pub use condition_flags::{CONDITIONS, Condition, ConditionFlags};
+pub use core_identity::CoreIdentity;
 pub use documented::{
     DocumentedInstruction, DocumentedOperation, to_documented_operation, to_implicit_inputs,
     writes_condition_flags,
@@ -70,6 +78,7 @@ pub use documented::{
 pub use exception::{
     AccessDirection, Exception, FaultStatus, SmeTrapCode, SystemAccess, WaitInstruction,
 };
+pub use expectation::{ProcessorExpectation, SuppressibleLoad, UncomparedBits};
 pub use listing::{
     Instruction, InstructionClass, InstructionRecord, LISTED_INSTRUCTIONS, PrivilegeBehavior,
 };
@@ -180,98 +189,13 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
         behavior::list_known_behaviors(instruction).into_iter()
     }
 
-    /// Compares every register a behavior fixes; the exclusive monitor is never compared, since no program and so no
+    /// Compares every value a behavior fixes; the exclusive monitor is never compared, since no program and so no
     /// source reads it: a later store exclusive shows it.
     fn meets_expectations(
         observed: &Processor<Level::PrivilegedProcessorSubset>,
         expectation: &ProcessorExpectation<Level::PrivilegedProcessorSubset>,
     ) -> bool {
-        let expected = &expectation.processor;
-        observed
-            .general_purpose_registers
-            .iter()
-            .zip(&expectation.general_purpose_registers)
-            .all(|(value, register)| register.is_met_by(*value))
-            && expectation
-                .condition_flags
-                .is_met_by(u64::from(observed.condition_flags.bits()))
-            && observed.stack_pointer == expected.stack_pointer
-            && observed.program_counter == expected.program_counter
-            && observed
-                .vector_registers
-                .iter()
-                .zip(&expectation.vector_registers)
-                .all(|(value, register)| register.is_met_by(*value))
-            && observed
-                .predicate_registers
-                .iter()
-                .zip(&expectation.predicate_registers)
-                .all(|(value, register)| register.is_met_by(*value))
-            && expectation
-                .first_fault_register
-                .is_met_by(observed.first_fault_register)
-            && observed.floating_point_control == expected.floating_point_control
-            && observed.floating_point_status == expected.floating_point_status
-            && observed.software_thread_id == expected.software_thread_id
-            && observed.exception == expected.exception
-            && observed.level_specific == expected.level_specific
-    }
-}
-
-/// What a behavior expects one register to hold after an instruction.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RegisterValueExpectation<Value = u64> {
-    Deterministic(Value),
-    /// The state before does not decide the value, as with a read of [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number) or an SVE lane the manual leaves UNKNOWN, so it is not compared.
-    NonDeterministic,
-}
-
-impl<Value: PartialEq> RegisterValueExpectation<Value> {
-    pub fn is_met_by(&self, observed: Value) -> bool {
-        match self {
-            Self::Deterministic(value) => *value == observed,
-            Self::NonDeterministic => true,
-        }
-    }
-}
-
-/// What a behavior expects the processor to hold after an instruction: the general-purpose registers, NZCV and the SVE
-/// registers each as a value expectation, the only registers an instruction may leave undecided, and every other value
-/// in `processor`.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ProcessorExpectation<LevelSpecific> {
-    /// The processor the behavior leaves, read for every value not expected below.
-    pub processor: Processor<LevelSpecific>,
-    pub general_purpose_registers: [RegisterValueExpectation; GENERAL_PURPOSE_REGISTERS],
-    /// [NZCV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/NZCV--Condition-Flags), its flags at their bits of the register.
-    pub condition_flags: RegisterValueExpectation,
-    /// Z0 to Z31, whole, as `Processor::vector_registers` holds them.
-    pub vector_registers: [RegisterValueExpectation<u128>; VECTOR_REGISTERS],
-    pub predicate_registers: [RegisterValueExpectation<u16>; PREDICATE_REGISTERS],
-    pub first_fault_register: RegisterValueExpectation<u16>,
-}
-
-impl<LevelSpecific> ProcessorExpectation<LevelSpecific> {
-    /// Expects every value the processor holds.
-    pub fn new(processor: Processor<LevelSpecific>) -> Self {
-        Self {
-            general_purpose_registers: processor
-                .general_purpose_registers
-                .map(RegisterValueExpectation::Deterministic),
-            condition_flags: RegisterValueExpectation::Deterministic(u64::from(
-                processor.condition_flags.bits(),
-            )),
-            vector_registers: processor
-                .vector_registers
-                .map(RegisterValueExpectation::Deterministic),
-            predicate_registers: processor
-                .predicate_registers
-                .map(RegisterValueExpectation::Deterministic),
-            first_fault_register: RegisterValueExpectation::Deterministic(
-                processor.first_fault_register,
-            ),
-            processor,
-        }
+        expectation.is_met_by(observed)
     }
 }
 
@@ -308,8 +232,8 @@ impl<Level: PrivilegeLevel> Iterator for Instructions<Level> {
 /// predicate holds one bit for each of its bytes.
 ///
 /// TODO: temporary placeholder until the rest of the state every level has is designed: TPIDRRO_EL0 and TPIDR2_EL0;
-/// PSTATE's DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA
-/// and ZT0; FPMR; GCSPR_EL0.
+/// PSTATE's BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA and ZT0; FPMR;
+/// GCSPR_EL0.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor<LevelSpecific> {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
@@ -328,6 +252,11 @@ pub struct Processor<LevelSpecific> {
     pub floating_point_status: u64,
     /// [TPIDR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TPIDR-EL0--EL0-Read-Write-Software-Thread-ID-Register).
     pub software_thread_id: u64,
+    /// PSTATE's [SSBS](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SSBS--Speculative-Store-Bypass-Safe),
+    /// [DIT](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/DIT--Data-Independent-Timing) and
+    /// [TCO](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCO--Tag-Check-Override), each at its
+    /// bit of SPSR_EL1 and of what MRS reads, every other bit zero.
+    pub process_state_controls: u64,
     pub exclusive_monitor: ExclusiveMonitor,
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
@@ -347,6 +276,7 @@ pub const ZERO_PROCESSOR: Processor<()> = Processor {
     floating_point_control: 0,
     floating_point_status: 0,
     software_thread_id: 0,
+    process_state_controls: 0,
     exclusive_monitor: ExclusiveMonitor::Open,
     exception: None,
     level_specific: (),

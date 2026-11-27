@@ -1,15 +1,18 @@
 use std::borrow::Cow;
+use std::convert::Infallible;
 use std::path::Path;
 
-use wcontainers_behavior_source::BehaviorSource;
+use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
+use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, DataAccess, Exception, FaultStatus, Instruction, InstructionFetch,
-    PagePermission, User, ZERO_PROCESSOR,
+    PagePermission, PreciseInstruction, User, ZERO_PROCESSOR,
 };
 
+use crate::generated::{GeneratedCases, UnreadableGeneratedCases};
 use crate::text::{MalformedRecording, from_text, to_file_name, to_text};
-use crate::{NotRecorded, Recording};
+use crate::{Cases, NotRecorded, Recording, WrittenStates};
 
 /// The folders of the committed recordings, one for each chip.
 const RECORDINGS: [&str; 2] = [
@@ -93,11 +96,7 @@ after pc=0x1004 | value 0x2000 8877665544332211
             )]
     );
     let (before, after) = (before.clone(), after.clone());
-    let mut recording = Recording {
-        instructions: vec![(instruction, cases)],
-        next: (0, 0),
-        played: None,
-    };
+    let mut recording = Recording::new(vec![(instruction, Cases::Written(cases))]);
     assert!(matches!(recording.execute_single_instruction(before), Ok(played) if played == after));
 }
 
@@ -220,4 +219,124 @@ fn a_level_0_fault_and_an_undecoded_exception_read_back_as_written() {
             .collect::<Vec<_>>()
     };
     assert_eq!(exceptions(&read), exceptions(&cases));
+}
+
+/// Returns the behaviors a measurement leaves: its one, or the several no state told apart.
+fn to_remaining(
+    measured: Result<
+        PreciseInstruction<Infallible>,
+        MeasureInstructionError<Arm64<User>, NotRecorded>,
+    >,
+) -> Vec<PreciseInstruction<Infallible>> {
+    match measured {
+        Ok(precise) => vec![precise],
+        Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => behaviors,
+        Err(_) => panic!("a recorded state agrees with no behavior or did not play"),
+    }
+}
+
+fn read_committed() -> Recording {
+    match Recording::read(Path::new(RECORDINGS[0])) {
+        Ok(recording) => recording,
+        Err(error) => panic!("reading {}: {error}", RECORDINGS[0]),
+    }
+}
+
+/// Checks that recording the committed recording's states from a generator writes a text that reads back byte for
+/// byte, gives every case again and plays every state as the committed recording does.
+#[test]
+fn recording_made_from_a_generator_reads_back_and_plays_its_states() {
+    let mut committed = read_committed();
+    let states = WrittenStates::new(&committed);
+    let instructions: Vec<_> = committed.instructions().collect();
+    let Ok(mut generated) = Recording::record(&mut committed, &states, instructions.clone()) else {
+        panic!("the committed recording plays each of its states");
+    };
+    for (instruction, cases) in &generated.instructions {
+        let Cases::Generated(cases) = cases else {
+            panic!("a recording made from a generator holds no state before");
+        };
+        let text = cases.to_text(*instruction);
+        let Ok((named, read)) = GeneratedCases::from_text(&text, &states) else {
+            panic!("{instruction:?}: the text does not read back");
+        };
+        assert!(named == *instruction);
+        assert!(read.to_text(named) == text, "{instruction:?}");
+    }
+    let expected: Vec<_> = committed
+        .cases()
+        .map(|(instruction, before, after)| (instruction, before.clone(), after.clone()))
+        .collect();
+    let given: Vec<_> = generated.generate_cases(&states).collect();
+    assert!(given == expected);
+    for (instruction, before, after) in expected {
+        let played = generated.execute_single_instruction(before);
+        assert!(
+            matches!(played, Ok(played) if played == after),
+            "{instruction:?}"
+        );
+    }
+}
+
+/// Checks that a recording made from a generator plays no state the generator did not give and refuses a text whose
+/// number of states is not the generator's.
+#[test]
+fn recording_made_from_a_generator_holds_only_its_generator_states() {
+    let mut committed = read_committed();
+    let states = WrittenStates::new(&committed);
+    let Some(instruction) = committed.instructions().next() else {
+        panic!("the committed recording holds an instruction");
+    };
+    let Ok(mut generated) = Recording::record(&mut committed, &states, [instruction]) else {
+        panic!("the committed recording plays each of its states");
+    };
+    let Some(mut unrecorded) = states.generate_states(instruction).next() else {
+        panic!("the instruction has a state");
+    };
+    unrecorded.processor.stack_pointer ^= 1;
+    assert!(matches!(
+        generated.execute_single_instruction(unrecorded),
+        Err(NotRecorded)
+    ));
+    let Some((_, Cases::Generated(cases))) = generated.instructions.first() else {
+        panic!("the recording holds the instruction");
+    };
+    let mut fewer = WrittenStates::new(&read_committed());
+    for (_, of_instruction) in &mut fewer.0 {
+        of_instruction.pop();
+    }
+    let written = cases.len();
+    assert!(matches!(
+        GeneratedCases::from_text(&cases.to_text(instruction), &fewer),
+        Err(UnreadableGeneratedCases::OtherStateCount { written: count, generated })
+            if count == written && generated + 1 == written
+    ));
+}
+
+/// Checks that a recording of only the deciding states leaves every instruction the behaviors the whole recording
+/// leaves, on fewer states, and plays each of them as the whole recording does.
+#[test]
+fn deciding_recording_measures_as_the_whole_recording() {
+    let mut committed = read_committed();
+    let states = WrittenStates::new(&committed);
+    let instructions: Vec<_> = committed.instructions().collect();
+    let Ok(mut deciding) =
+        Recording::record_deciding(&mut committed, &states, instructions.clone())
+    else {
+        panic!("the committed recording plays each of its states");
+    };
+    assert!(deciding.count_cases() < committed.count_cases());
+    let deciding_states = WrittenStates::new(&deciding);
+    for instruction in instructions {
+        let whole = committed.measure_instruction(instruction, &states);
+        let kept = deciding.measure_instruction(instruction, &deciding_states);
+        assert!(to_remaining(whole) == to_remaining(kept), "{instruction:?}");
+    }
+    for (instruction, before, after) in deciding.cases() {
+        let played = committed.execute_single_instruction(before.clone());
+        assert!(
+            matches!(played, Ok(played) if played == *after),
+            "{instruction:?}"
+        );
+    }
 }

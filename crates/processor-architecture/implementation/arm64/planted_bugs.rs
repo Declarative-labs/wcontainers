@@ -25,6 +25,9 @@ fn main() {
         .chain(&wcontainers_processor_architecture_arm64::advanced_simd::ADVANCED_SIMD_PLANTED_BUGS)
         .chain(&wcontainers_processor_architecture_arm64::load_store::scalable_element_access::ELEMENT_ACCESS_PLANTED_BUGS)
         .chain(&wcontainers_processor_architecture_arm64::sve_remaining::REMAINING_PLANTED_BUGS)
+        .chain(&wcontainers_processor_architecture_arm64::load_store::scalable_element_access::LANE_AND_BASE_PLANTED_BUGS)
+        .chain(&wcontainers_processor_architecture_arm64::system_state_planted::SYSTEM_STATE_PLANTED_BUGS)
+        .chain(&wcontainers_processor_architecture_arm64::load_store::scalable_element_access::GENERATOR_AND_FIRST_FAULT_PLANTED_BUGS)
         .filter(|bug| named.is_empty() || named.contains(&bug.number))
         .collect();
     let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
