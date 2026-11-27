@@ -1,0 +1,18 @@
+[package]
+name = "wcontainers-opengl-es-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-egl = { path = "../../egl" }
+wcontainers-opengl-es = { path = ".." }
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "wcontainers-opengl-es"
+description = "OpenGL ES 3, the Khronos graphics API the WebGL route draws through natively (ANGLE, Mesa), as a safe trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-egl = { path = "../egl" }
+
+[lints]
+workspace = true
