@@ -1529,6 +1529,125 @@ helpers calling back into the context during a call: the registry already lets g
 nested call on the same context finds its objects); G9 measured again on the pinned Mesa with our driver's
 capabilities once the glue serves a real context. Waits on nothing.
 
+## The check of d2cd0e0c4 fixed under the new test bar (2026-11-27; logs wcontainers-scratch/graphics-api-crates/r17/)
+
+The orchestrator's bar from this run: a test states the right value (from the documented behavior or a reference
+sharing no code), never only that two results differ; plants are not picked by hand (cargo-mutants over the
+hand-written Rust, committed plant lists for generated code and C, run by one command); survivors 0 or removed, every
+limit said. His main ac696ea19 was already inside the branch (`git rev-list --count HEAD..FETCH_HEAD` 0).
+
+1. **The Mesa compiler's right values** (crates/mesa-compiler/conformance/reference.rs, right.rs). `reference` is an
+   evaluator of the trait's flat form written from NIR's documented meaning of each operation (it shares no code with
+   Mesa or the bridge); the suite runs a draw's variant on inputs, buffers and textures it makes and states each output:
+   - `transforms_right`: all 16 transforms on the vertex program's variant, its squares' copy (`made_variant`) and a
+     geometry program's variant; each position worked by hand from bridge.h (y negated; z = (z + w) / 2; z = w - z, in
+     that order), the point size kept or removed; the key under `key_transform` equal to the key of the program made
+     with it, while the program made has `transform` alone (80 checks).
+   - `samplers_right`: the nearest samplers by OpenGL's rules (level of detail clamped to [min_lod, max_lod], the
+     level none above one half and else the nearest, at most the last; texel floor(at x size) wrapped per axis; the
+     border, each of its four words, where an axis that wraps to it is left; a sampler at another unit leaves the sample
+     as written) and the swizzles (each component the one named, 0 or 1), on `prepared_vertex_variant` and
+     `made_variant` (the check's untested arguments).
+   - `bindings_right`: the common form's rule (ordered by set, binding and kind; each kind numbered on from its
+     range's first slot; refused one slot short of each kind), the full binding list stated.
+   - `squares_right`: every corner of the vertex program's and the geometry program's squares (position moved by
+     size x step x w, the point coordinate, the size clamped to [1, largest]) and the block at the binding asked for.
+   Found while writing them (documented Mesa behavior the tests now state): GLSL's uniform block b is Gallium's constant
+   buffer b + 1 (0 is the default uniform block, which every program has); Mesa's linker places a program pair's
+   varyings itself and may read one stage input from another written from the same value.
+2. **G10's independent count in the repository.** tests/layouts.rs runs clang (`WCONTAINERS_CLANG` or `clang`; it
+   fails, not skips, without it) with the flags build.rs compiles the glue's C with, and compares clang's record
+   layouts of Mesa's headers with every field the generator carries or leaves out: names, count, each Mesa offset by
+   offsetof, each bit-field's width (the comparison moved from the generator, whose `gallium-layouts` command is gone).
+   The test itself now holds every field to the Rust mirror (`fields_measured` only measures).
+3. **served.rs states every field.** caller.c's states are filled by the generator, every field the trait carries a
+   value of its own within its width (flags of both values); the test compares the first case's whole log line by line:
+   each state as received in full, each object bound, unbound and given back, the samplers' stage and first slot, the
+   context's private pointer and flags.
+4. **The OpenGL ES fuzzing counts calls that reach each method**: the suite wraps both implementations in counting
+   wrappers the generator writes (`CountedGl`, `CountedEgl`). It found a real gap: seven EGL methods (create_context,
+   create_pbuffer_surface, the destroys, get_config_attrib, query_surface, swap_buffers) were never reached (a
+   surfaceless display has no window configs, which an empty list asks for); the pools now start with pbuffer configs,
+   a context and a pbuffer: 154 of 154 OpenGL ES methods and 15 of 15 EGL methods reached.
+5. **Caps, ShaderCaps and ComputeCaps implement Default**: Mesa's defaults (pipe_caps' from
+   inputs/gallium/caps-defaults.txt, transcribed from u_init_pipe_screen_caps with accel 1; the others zero).
+
+Then AC8 step 2: **the capabilities written into the screen.** serve.c asks each stage's capabilities (the eight of
+MESA_SHADER_MESH_STAGES), then the screen's (Mesa's defaults with the two values u_init_pipe_screen_caps computes from
+the stages: the fragment stage's first constant buffer's size, hardware selection), then the compute ones, and writes
+each into the screen's const fields (generated `wc_flat_*_to` copies and `Flat*::of`). Test `caps_are_mesas_defaults`:
+the served screen's `caps` equal, byte for byte, what Mesa's own u_init_pipe_screen_caps writes for the same stages
+(the caller links Mesa's Gallium auxiliary library; a stand-in drmGetCap, which that function calls only through
+get_screen_fd, which neither screen sets).
+
+The plant lists (committed, one command each: `python3 -I tools/plants/run-plants.py <list>`):
+crates/mesa-compiler/implementation/direct/plants.txt (one plant per argument of every glue function, one per branch of
+the bridge's rules of a draw's variant), crates/gallium/implementation/direct/plants.txt (one per field of every copy
+function a served pointer reaches, in C and Rust, one per argument of every glue function and per check of the
+trampolines), tools/api-crate-generator/plants.txt (the check's plant: the header reader keeping only the last name of a
+multi-name declaration, which only the written crate's layout test can show).
+
+MEASURED (ARM64 jobs at pushed commits; the x86-64 machine went away during the run, its earlier runs agree):
+
+| Bar | Result |
+|---|---|
+| Mesa compiler suite (10 tests, the four new among them), under AddressSanitizer | 10 of 10; 10 of 10, HOSTILE 16 rounds 1,810 calls (22dd459b0) |
+| Every hostile case alone; fuzzing 12 seeds x 100,000 calls under AddressSanitizer | PROBES 640, ENDED 0; 12 of 12 status 0, every method made something (22dd459b0) |
+| Mesa compiler plant list | **111 of 111 caught** (22dd459b0; also 7fed3086b on x86-64) |
+| Gallium plant list; generator plant list | **270 of 270 caught**; 1 of 1 (0eb8234e4; also 22dd459b0, and b1f40b78e on x86-64) |
+| G10 in the crate | FIELD LAYOUTS 47 structures, 683 fields (545 offsets, 138 widths equal), PROBLEMS 0; without clang status 101 |
+| Gallium: written twice, check, clippy (with and without Mesa), the crate's tests, the served cases under AddressSanitizer with leak detection | IDENTICAL; 0, 0, 0; layouts 5 of 5, served 4 of 4 (`caps_are_mesas_defaults` CAPS status 0, `screens_are_kept_apart`), every case alone 6 of 6; status 0 (0eb8234e4) |
+| OpenGL ES and EGL: written, check (Linux, wasm32), clippy, suite, under AddressSanitizer | 0, 0, 0, 17 of 17, 17 of 17; fuzz default `methods reached: OpenGL ES 154 of 154 fuzzed, EGL 15 of 15` (22dd459b0) |
+| Lines naming `unsafe` | gallium 0, gallium direct 24 (20 before: the two new C checks' declarations and calls in the test), marks 12; recording 0; mesa-compiler direct 68, marks 34 (unchanged); egl direct 95, opengl-es direct 802 (unchanged) |
+
+cargo-mutants 27.1.0 (installed under the job's folder on the machine, never in the lock), each mutant in its own copy:
+
+| File | Mutants | Caught | Survived | Timed out (a hang: caught) | Unviable |
+|---|---|---|---|---|---|
+| crates/gallium/implementation/direct/implementation.rs (0eb8234e4) | 18 | 15 | **0** | 0 | 3 |
+| crates/gallium/implementation/direct/registry.rs (0eb8234e4) | 17 | 13 | **0** | 0 | 4 |
+| crates/gallium/implementation/direct/held.rs (0eb8234e4) | 39 | 9 | 23 | 0 | 7 |
+| tools/api-crate-generator/src/cheader.rs (22dd459b0) | 232 | 189 | 35 | 2 | 6 |
+| src/gallium.rs | 148 | 127 | 17 | 0 | 4 |
+| src/gallium_glue.rs | 164 | 146 | 14 | 0 | 4 |
+| src/gallium_interface.rs | 316 | 279 | 30 | 0 | 7 |
+| src/gallium_recording.rs | 44 | 38 | 6 | 0 | 0 |
+| src/gallium_serve.rs | 40 | 38 | 2 | 0 | 0 |
+| src/gallium_values.rs | 149 | 126 | 16 | 4 | 3 |
+| src/khronos/mod.rs | 5 | 5 | 0 | 0 | 0 |
+| src/khronos/write.rs | 231 | 172 | 57 | 0 | 2 |
+| src/main.rs | 20 | 3 | 17 | 0 | 0 |
+| src/mesacompiler.rs | 245 | 209 | 27 | 1 | 8 |
+| **Generator, all** | **1,594** | **1,332** | **221** | 7 | 34 |
+
+The test commands: the gallium direct crate's tests with the `hostile` feature (layouts against clang, values, the served
+cases, the caps, two screens); for the generator, its unit tests and tests/written.rs (gallium, mesa-compiler and
+khronos written as the tree holds them, and every report as reports/ holds it). **The bar "survivors 0" is not reached
+for the generator and held.rs.** held.rs's 23 are its object and client-memory accessors (reached by nothing served yet:
+see below). The generator's 221 (lists in r17/generator-missed-22dd459b0.txt) are of four kinds, each next: the Win32
+commands of main.rs (17, the Direct3D track's, its own test commands); the stand-in EGL library khronos/write.rs writes
+under fakes/ (`fake_method`, `c_of`: 26), which nothing in the repository holds or builds, so to be removed; mapping
+rules' arms and guards whose removal changes no written file (`row`, `signature`, `return_of`: redundant arms, to be
+removed one by one with the written test as the judge); and the generator's own checks that refuse a bad plan or
+header (`gallium::check`), which need unit tests feeding a bad input.
+
+Not covered, said: the suites' own code (suite.rs, right.rs, reference.rs, the OpenGL ES suite template, the browser
+page): a mutant of a test only weakens that test (reference.rs's unit test and the right-value tests, which pass only
+when it computes the documented values, are its check; cargo-mutants' `--test-package` would not run the direct crate's
+suite for the conformance crate's file); the generator's Win32 commands (main.rs `census`, `layout-check`, `generate`,
+`once-check`) and the Direct3D generator's files, the Direct3D track's, tested by its own scripts; held.rs's object and
+client-memory accessors, which only the flat copies of structures no served pointer takes yet call (they get their
+callers and tests with the next slice); the caps' `wc_flat_*_to` copies field by field (a field whose Mesa default is
+zero would survive dropping: they need an implementation that sets every field, next); bridge.c's passes other than
+the variant's rules.
+
+Slips of this run, said: (1) the first commit e79c9341d also took the generator's gallium_layouts.rs deletion, staged
+earlier, so e79c9341d and 582bbd365 do not build the generator (a10034f83 does); no force push. (2) At about 15:46:30 on
+the x86-64 machine I ran `pkill -f "cargo-mutants mutants"` to stop my own run; it matched every user's: the
+implementations track's job gi-r17w/20261127-152816-967143 ended 7 seconds later (its status file says 0) and should be
+run again. (3) My first mutation run shared arm-run's CARGO_TARGET_DIR across mutants (its results were void); the
+runs above give each mutant its own copy.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
