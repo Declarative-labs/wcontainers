@@ -96,23 +96,68 @@ const PATTERN: u8 = 0xc3;
 /// ([Arm ARM, C6.2](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions)).
 const FORMS: [(&str, u32, AddressFrom, bool); 18] = [
     ("ldr x0, [x1]", LOAD_THROUGH_X1, AddressFrom::Base(0), false),
-    ("ldr x0, [x1, #8]", 0xf940_0420, AddressFrom::Base(-FORM_OFFSET), false),
-    ("ldur x0, [x1, #-8]", 0xf85f_8020, AddressFrom::Base(FORM_OFFSET), false),
-    ("ldr x0, [x1, x2]", 0xf862_6820, AddressFrom::Index { scale: 0 }, false),
-    ("ldr x0, [x1, x2, lsl #3]", 0xf862_7820, AddressFrom::Index { scale: 3 }, false),
-    ("ldr x0, [x1, w2, sxtw]", 0xf862_c820, AddressFrom::NegativeWord, false),
-    ("ldr x0, [x1, #8]!", 0xf840_8c20, AddressFrom::Base(-FORM_OFFSET), false),
+    (
+        "ldr x0, [x1, #8]",
+        0xf940_0420,
+        AddressFrom::Base(-FORM_OFFSET),
+        false,
+    ),
+    (
+        "ldur x0, [x1, #-8]",
+        0xf85f_8020,
+        AddressFrom::Base(FORM_OFFSET),
+        false,
+    ),
+    (
+        "ldr x0, [x1, x2]",
+        0xf862_6820,
+        AddressFrom::Index { scale: 0 },
+        false,
+    ),
+    (
+        "ldr x0, [x1, x2, lsl #3]",
+        0xf862_7820,
+        AddressFrom::Index { scale: 3 },
+        false,
+    ),
+    (
+        "ldr x0, [x1, w2, sxtw]",
+        0xf862_c820,
+        AddressFrom::NegativeWord,
+        false,
+    ),
+    (
+        "ldr x0, [x1, #8]!",
+        0xf840_8c20,
+        AddressFrom::Base(-FORM_OFFSET),
+        false,
+    ),
     ("ldr x0, [x1], #8", 0xf840_8420, AddressFrom::Base(0), false),
     ("ldp x0, x3, [x1]", 0xa940_0c20, AddressFrom::Base(0), false),
     ("ldrb w0, [x1]", 0x3940_0020, AddressFrom::Base(0), false),
     ("str x0, [x1]", STORE_THROUGH_X1, AddressFrom::Base(0), true),
     ("stp x0, x3, [x1]", 0xa900_0c20, AddressFrom::Base(0), true),
-    ("ld1 {v0.16b}, [x1]", 0x4c40_7020, AddressFrom::Base(0), false),
-    ("st1 {v0.16b}, [x1]", 0x4c00_7020, AddressFrom::Base(0), true),
+    (
+        "ld1 {v0.16b}, [x1]",
+        0x4c40_7020,
+        AddressFrom::Base(0),
+        false,
+    ),
+    (
+        "st1 {v0.16b}, [x1]",
+        0x4c00_7020,
+        AddressFrom::Base(0),
+        true,
+    ),
     ("ldxr x0, [x1]", 0xc85f_7c20, AddressFrom::Base(0), false),
     ("stxr w4, x0, [x1]", 0xc804_7c20, AddressFrom::Base(0), true),
     ("ldar x0, [x1]", 0xc8df_fc20, AddressFrom::Base(0), false),
-    ("ldr x0, [sp]", LOAD_THROUGH_SP, AddressFrom::StackPointer, false),
+    (
+        "ldr x0, [sp]",
+        LOAD_THROUGH_SP,
+        AddressFrom::StackPointer,
+        false,
+    ),
 ];
 
 /// How an access form's registers reach its target.
@@ -321,7 +366,12 @@ fn two_memories_run_apart_each_in_its_own_window() {
         let (memory, _) = &memories[k];
         write_word(memory, DATA + STORED_AT, 0);
         let start = before(k as u64 + 2);
-        let ended = execute(&mut executor, memory, start.clone(), &mut Handler::default());
+        let ended = execute(
+            &mut executor,
+            memory,
+            start.clone(),
+            &mut Handler::default(),
+        );
         assert_system_call(&ended, &start, words[k]);
         assert_eq!(read_word(memory, DATA + STORED_AT), words[k] + ADDED);
         let (other, _) = &memories[1 - k];
@@ -358,7 +408,12 @@ fn a_thousand_executions_leave_the_thread_its_own() {
             software_thread_id: guest_s,
             ..before(run_number)
         };
-        let ended = execute(&mut executor, &memory, start.clone(), &mut Handler::default());
+        let ended = execute(
+            &mut executor,
+            &memory,
+            start.clone(),
+            &mut Handler::default(),
+        );
         assert_system_call(&ended, &start, run_number);
         assert_eq!(
             ended.software_thread_id, guest_s,

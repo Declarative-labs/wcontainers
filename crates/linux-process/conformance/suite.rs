@@ -539,7 +539,11 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
     assert_eq!(tenth().to_bits(), TENTH_ROUNDED_TO_NEAREST);
     let exit = linux.run_code(&mut thread, &mut frame);
     assert_eq!(THREAD_OWN.get(), WORD, "the thread's own thread-local");
-    assert_eq!(linux.read_fpcr(), control, "the thread's floating-point control");
+    assert_eq!(
+        linux.read_fpcr(),
+        control,
+        "the thread's floating-point control"
+    );
     assert_eq!(
         tenth().to_bits(),
         TENTH_ROUNDED_TO_NEAREST,
@@ -640,12 +644,48 @@ pub fn ends_a_run_at_a_fault_of_its_code(linux: impl LinuxProcess) {
     // Each instruction, the address in x1, the stack pointer, how the run ends, and whether it ends at the target of
     // a branch to x1 rather than at the instruction.
     let cases = [
-        (LOAD_THROUGH_X1, unmapped, CODE_STACK, fault(unmapped, false, false), false),
-        (STORE_THROUGH_X1, unmapped, CODE_STACK, fault(unmapped, true, false), false),
-        (LOAD_THROUGH_SP, unmapped, misaligned, fault(misaligned, false, true), false),
-        (UNDEFINED, unmapped, CODE_STACK, RunEnd::Raised(Signal::ILL), false),
-        (BREAKPOINT, unmapped, CODE_STACK, RunEnd::Raised(Signal::TRAP), false),
-        (BRANCH_TO_X1, 0, CODE_STACK, RunEnd::Raised(Signal::ILL), true),
+        (
+            LOAD_THROUGH_X1,
+            unmapped,
+            CODE_STACK,
+            fault(unmapped, false, false),
+            false,
+        ),
+        (
+            STORE_THROUGH_X1,
+            unmapped,
+            CODE_STACK,
+            fault(unmapped, true, false),
+            false,
+        ),
+        (
+            LOAD_THROUGH_SP,
+            unmapped,
+            misaligned,
+            fault(misaligned, false, true),
+            false,
+        ),
+        (
+            UNDEFINED,
+            unmapped,
+            CODE_STACK,
+            RunEnd::Raised(Signal::ILL),
+            false,
+        ),
+        (
+            BREAKPOINT,
+            unmapped,
+            CODE_STACK,
+            RunEnd::Raised(Signal::TRAP),
+            false,
+        ),
+        (
+            BRANCH_TO_X1,
+            0,
+            CODE_STACK,
+            RunEnd::Raised(Signal::ILL),
+            true,
+        ),
     ];
     let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
     for (k, (instruction, address, stack, wanted, branches)) in cases.into_iter().enumerate() {
@@ -704,7 +744,12 @@ pub fn stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer(
                     }
                 };
                 ran.store(true, Ordering::Release);
-                (end, frame.registers.pc, frame.registers.sp, THREAD_OWN.get())
+                (
+                    end,
+                    frame.registers.pc,
+                    frame.registers.sp,
+                    THREAD_OWN.get(),
+                )
             });
             let thread = tid.recv().expect("the runner's thread");
             while !ran.load(Ordering::Acquire) {
@@ -715,7 +760,11 @@ pub fn stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer(
             }
             runner.join().expect("the runner ends")
         });
-        assert_eq!(end, (RunEnd::Stopped, pc, stack, WORD), "the stack {stack:#x}");
+        assert_eq!(
+            end,
+            (RunEnd::Stopped, pc, stack, WORD),
+            "the stack {stack:#x}"
+        );
         assert!(
             hostile.iter().all(|word| *word == WORD),
             "no signal frame written at the code's stack pointer"
@@ -778,7 +827,11 @@ pub fn blocks_every_signal_but_a_run_s_on_the_prepared_thread(linux: impl LinuxP
     assert_eq!(other, before, "another thread's mask");
     drop(thread);
     assert_eq!(blocked(), before);
-    drop(linux.prepare_run_thread().expect("prepared again after the drop"));
+    drop(
+        linux
+            .prepare_run_thread()
+            .expect("prepared again after the drop"),
+    );
 }
 
 /// Each new memory starts zeroed, and two are apart.

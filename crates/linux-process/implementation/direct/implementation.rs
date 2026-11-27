@@ -5,9 +5,9 @@ use core::ffi::{c_int, c_void};
 #[cfg(target_arch = "aarch64")]
 use core::marker::PhantomData;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicU32, AtomicU64};
 #[cfg(target_arch = "aarch64")]
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use rustix::fs::{MemfdFlags, SealFlags};
 use rustix::mm::{MapFlags, MprotectFlags};
@@ -531,7 +531,9 @@ impl LinuxProcess for DirectLinuxProcess {
             mask_set
         };
         if !set {
-            return Err(Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::INVAL));
+            return Err(
+                Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::INVAL)
+            );
         }
         PREPARED.set(true);
         Ok(DirectRunThread {
@@ -623,10 +625,7 @@ impl LinuxProcess for DirectLinuxProcess {
     #[cfg(target_arch = "aarch64")]
     fn read_fpcr(&self) -> u64 {
         let value: u64;
-        #[expect(
-            unsafe_code,
-            reason = "reads FPCR, which no crate wraps"
-        )]
+        #[expect(unsafe_code, reason = "reads FPCR, which no crate wraps")]
         // SAFETY: the read has no effect beyond its output register.
         unsafe {
             core::arch::asm!("mrs {}, fpcr", out(reg) value, options(nomem, nostack, preserves_flags));
@@ -814,10 +813,18 @@ fn handling(
 ) -> Handling {
     let stop = signal == RUN_STOP_SIGNAL.as_raw();
     let Some(record) = record else {
-        return if stop { Handling::Nothing } else { Handling::Earlier };
+        return if stop {
+            Handling::Nothing
+        } else {
+            Handling::Earlier
+        };
     };
     if record.running == 0 {
-        return if stop { Handling::Pending } else { Handling::Earlier };
+        return if stop {
+            Handling::Pending
+        } else {
+            Handling::Earlier
+        };
     }
     let in_entry = (record.entry_first..=record.entry_last).contains(&pc);
     // From an exit's load of where exits go to the run's last instruction, the code's registers are being saved; a
@@ -852,7 +859,9 @@ fn handling(
 #[cfg(target_arch = "aarch64")]
 fn syndrome(records: &[u8; RECORDS_BYTES]) -> u64 {
     let word = |at: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(records.get(at..at + size_of::<u32>())?.try_into().ok()?))
+        Some(u32::from_le_bytes(
+            records.get(at..at + size_of::<u32>())?.try_into().ok()?,
+        ))
     };
     let mut at = 0;
     while let (Some(magic), Some(size)) = (word(at), word(at + size_of::<u32>())) {
@@ -916,7 +925,10 @@ extern "C" fn on_run_signal(signal: c_int, info: *mut libc::siginfo_t, context: 
     let registers = &mut context.uc_mcontext;
     let fault = (address, syndrome(records), info.si_code);
     let scratch = registers.regs[usize::from(EXIT_SCRATCH_REGISTER)];
-    match (handling(signal, registers.pc, scratch, record.as_deref(), fault), record) {
+    match (
+        handling(signal, registers.pc, scratch, record.as_deref(), fault),
+        record,
+    ) {
         (Handling::Nothing, _) => {}
         (Handling::Pending, Some(record)) => record.pending = 1,
         (Handling::Abort, Some(record)) => {
@@ -1012,9 +1024,9 @@ impl Drop for DirectRunThread {
 mod entering {
     use super::{
         END_AT, END_DETAIL_AT, EXIT_AT, EXIT_LINKED, EXITS_GO_AT, FPCR_AT, FPSR_AT, KEPT_BYTES,
-        KEPT_D_AT, KEPT_SYSTEM_AT, NOT_ENTERED, NZCV, NZCV_AT, PC_AT, REGISTERS_AT, RUN_STOP_SIGNAL,
-        RunFrame, SIGNAL_STACK_AT, SP_AT, THREAD_STACK_AT, TOP_ENTRY_AT, TOP_EXIT_AT,
-        TOP_LABELS_AT, TOP_PENDING_AT, TOP_RUNNING_AT, TPIDR_AT, V_AT, X_AT,
+        KEPT_D_AT, KEPT_SYSTEM_AT, NOT_ENTERED, NZCV, NZCV_AT, PC_AT, REGISTERS_AT,
+        RUN_STOP_SIGNAL, RunFrame, SIGNAL_STACK_AT, SP_AT, THREAD_STACK_AT, TOP_ENTRY_AT,
+        TOP_EXIT_AT, TOP_LABELS_AT, TOP_PENDING_AT, TOP_RUNNING_AT, TPIDR_AT, V_AT, X_AT,
     };
 
     /// Runs the frame's code until it branches with link to an exit, faults or is stopped, as

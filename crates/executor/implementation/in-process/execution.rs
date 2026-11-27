@@ -286,7 +286,10 @@ impl Execution for InProcessExecution<'_> {
             match ask_handler(handler, trap, &mut run.state) {
                 Ok(()) => {}
                 Err(Ended::SystemCall) => {
-                    break Some(system_call(word_at(memory, run.state.pc - INSTRUCTION_SIZE)));
+                    break Some(system_call(word_at(
+                        memory,
+                        run.state.pc - INSTRUCTION_SIZE,
+                    )));
                 }
                 Err(Ended::MemoryFault { address, access }) => {
                     break Some(abort(memory, address, access));
@@ -307,7 +310,10 @@ impl Execution for InProcessExecution<'_> {
 enum Trap {
     SystemCall(SystemCallRequest),
     /// A fault at the address as the guest made it, its top byte kept.
-    MemoryFault { address: u64, access: Access },
+    MemoryFault {
+        address: u64,
+        access: Access,
+    },
     /// An interrupt asked for, before the guest entered or while it ran.
     Interrupt,
     /// The first landing of a run alone: its one instruction is done.
@@ -320,7 +326,10 @@ enum Trap {
 enum Ended {
     /// At a system call: the state is after it.
     SystemCall,
-    MemoryFault { address: u64, access: Access },
+    MemoryFault {
+        address: u64,
+        access: Access,
+    },
     Interrupt,
     Exception(Exception),
 }

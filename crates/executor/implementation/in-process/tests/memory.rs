@@ -100,7 +100,10 @@ fn a_new_memory_reads_as_zeros_and_its_window_allows_nothing() {
     assert_eq!(memory.window_base(), u64::from(memory.slot()) << SLOT_BITS);
     for at in [WINDOW.start, DATA, LAST] {
         assert_eq!(read(&memory, page(at)), vec![0; GUEST_PAGE as usize]);
-        assert_eq!(window_bytes(&memory, page(at)), vec![0; GUEST_PAGE as usize]);
+        assert_eq!(
+            window_bytes(&memory, page(at)),
+            vec![0; GUEST_PAGE as usize]
+        );
         assert_eq!(window_protection(&memory, at), NOTHING);
     }
     assert_eq!(window_protection(&memory, OUTSIDE), RESERVED);
@@ -133,7 +136,10 @@ fn each_window_s_slot_table_and_displaced_code_s_are_held_inaccessible() {
     };
     assert_eq!(displaced.slot_table(), DISPLACED_SLOTS);
     for at in [WINDOW.start, LAST] {
-        assert_eq!(host_protection(displaced.slot(at)).as_deref(), Some(RESERVED));
+        assert_eq!(
+            host_protection(displaced.slot(at)).as_deref(),
+            Some(RESERVED)
+        );
     }
 }
 
@@ -196,7 +202,10 @@ fn two_memories_have_windows_apart() {
     for at in [DATA, LAST] {
         write(&first, at, &pattern(4, GUEST_PAGE as usize));
         assert_eq!(read(&second, page(at)), vec![0; GUEST_PAGE as usize]);
-        assert_eq!(window_bytes(&second, page(at)), vec![0; GUEST_PAGE as usize]);
+        assert_eq!(
+            window_bytes(&second, page(at)),
+            vec![0; GUEST_PAGE as usize]
+        );
     }
 }
 
