@@ -1,30 +1,48 @@
+#![no_std]
+
 use vstd::prelude::*;
 use wcontainers_kernel::TaskId;
 
 verus! {
 
-#[verifier::external_type_specification]
-pub struct ExTaskId(pub TaskId);
-
 pub trait CapabilityTable {
     type Identifier;
+
+    type Config;
+
     type Capability;
+
+    type Error;
 
     spec fn state(&self) -> Map<(TaskId, Self::Identifier), Self::Capability>;
 
-    fn get(&self, task: TaskId, identifier: &Self::Identifier) -> (capability: Option<&Self::Capability>)
+    fn create(
+        &mut self,
+        task: TaskId,
+        identifier: Self::Identifier,
+        config: Self::Config,
+    ) -> (created: Result<(), CreateError<Self::Error>>)
         ensures
-            match capability {
-                Some(capability) => self.state().contains_key((task, *identifier)) && *capability == self.state().index((task, *identifier)),
-                None => !self.state().contains_key((task, *identifier)),
+            match created {
+                Ok(_) => !old(self).state().contains_key((task, identifier))
+                    && final(self).state().contains_key((task, identifier))
+                    && final(self).state().remove((task, identifier)) == old(self).state(),
+                Err(CreateError::IdentifierTaken) => old(self).state().contains_key(
+                    (task, identifier),
+                ) && final(self).state() == old(self).state(),
+                Err(CreateError::Failed(_)) => !old(self).state().contains_key((task, identifier))
+                    && final(self).state() == old(self).state(),
             },
     ;
 
-    fn put(&mut self, task: TaskId, identifier: Self::Identifier, capability: Self::Capability) -> (refused: Option<Self::Capability>)
+    fn get(&self, task: TaskId, identifier: &Self::Identifier) -> (capability: Option<
+        &Self::Capability,
+    >)
         ensures
-            match refused {
-                Some(refused) => old(self).state().contains_key((task, identifier)) && refused == capability && final(self).state() == old(self).state(),
-                None => !old(self).state().contains_key((task, identifier)) && final(self).state() == old(self).state().insert((task, identifier), capability),
+            match capability {
+                Some(capability) => self.state().contains_key((task, *identifier)) && *capability
+                    == self.state().index((task, *identifier)),
+                None => !self.state().contains_key((task, *identifier)),
             },
     ;
 
@@ -34,4 +52,9 @@ pub trait CapabilityTable {
     ;
 }
 
+pub enum CreateError<Error> {
+    IdentifierTaken,
+    Failed(Error),
 }
+
+} // verus!
