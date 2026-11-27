@@ -22,8 +22,8 @@ use wcontainers_abi::{
     Access, CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock, SYSTEM_CALL_ARGUMENT_COUNT,
     SystemCallNumber, SystemCallRequest,
 };
-use wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
 use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_processor_architecture_arm64::{INSTRUCTION_SIZE, PREDICATE_REGISTERS};
 
 use crate::standin::Unsupported;
 
@@ -1000,8 +1000,7 @@ impl Memory {
         }
     }
 
-    /// Adds to the pieces what host memory holds for the pages of a region just mapped: the shared bytes a range shows
-    /// there, or the space's own bytes.
+    /// Adds to the pieces what host memory holds for the pages of a region just mapped, shared or the space's own.
     fn list_held_bytes(&self, region: Range<u64>, pieces: &mut Vec<(u64, Vec<u8>)>) {
         for page in region.start / PAGE_SIZE..region.end / PAGE_SIZE {
             let at = page * PAGE_SIZE;
@@ -1028,13 +1027,10 @@ impl Memory {
         }
     }
 
-    /// Writes each piece, which lies in one page, into unicorn's mapped pages and drops what unicorn translated from
-    /// them: unicorn's own writes leave its translations as they were, so code written over would not be what runs
-    /// next.
+    /// Writes each piece, which lies in one page, into unicorn's mapped pages and drops what unicorn translated from them.
     ///
-    /// Unicorn's write to a region that refuses stores makes the region writable and back, and each change rebuilds its
-    /// memory map (MEASURED by the kernel track: 93% of a node start-up), so such a region is made writable once for all
-    /// its pieces.
+    /// Unicorn's write to a region that refuses stores makes it writable and back, each change rebuilding its memory map
+    /// (MEASURED by the kernel track: 93% of a node start-up), so such a region is made writable once for all pieces.
     fn write_unicorn(&mut self, pieces: &[(u64, Vec<u8>)]) {
         let mut refusing = BTreeMap::new();
         for (address, _) in pieces {
@@ -1629,8 +1625,6 @@ fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
         .expect("writing SCTLR_EL1");
 }
 
-/// How many predicate registers SVE has, P0 to P15.
-pub(crate) const PREDICATE_REGISTERS: usize = 16;
 /// The bytes of one predicate register at a 128-bit vector length, one bit for each byte of a vector.
 const PREDICATE_REGISTER_BYTES: usize = size_of::<u16>();
 /// The bytes the predicate registers and FFR take on the scratch page, FFR after P15.

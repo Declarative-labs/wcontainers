@@ -704,8 +704,7 @@ pub struct StandInExecution<'execution> {
     /// The predicate registers and FFR as the execution started: unicorn's interface reaches neither, and a guest's
     /// whole run has no page to pass them through, so the execution ends with them as they were.
     predicates: Predicates,
-    /// SSBS, DIT and TCO as the execution started, which unicorn's interface does not reach, so the execution ends
-    /// with them as they were.
+    /// SSBS, DIT and TCO as the execution started, which it ends with, as unicorn's interface does not reach them.
     process_state_controls: u64,
     memory: &'execution UnicornSpace,
     raised: Arc<AtomicBool>,
@@ -924,7 +923,7 @@ fn to_register_block(processor: &Processor<()>) -> RegisterBlock {
     }
 }
 
-/// The processor unicorn's registers give, with the predicates and SSBS, DIT and TCO the stand-in carries itself.
+/// Returns the processor unicorn's registers give, with the predicates and SSBS, DIT and TCO the stand-in carries itself.
 fn to_processor(
     registers: &RegisterBlock,
     predicates: Predicates,
