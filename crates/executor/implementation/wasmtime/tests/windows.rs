@@ -61,6 +61,8 @@ const WORD: u64 = size_of::<u64>() as u64;
 const FILL: u64 = 1 << 20;
 /// An offset in window 1 past the 64 KiB after its place, where its address as computed is another place of it.
 const PAST_SPILL: u64 = 0x2_0000;
+/// An offset inside a page, a multiple of a word.
+const IN_PAGE: u64 = 0x48;
 /// A page of window 0 the fault tests allow, so that an address landing in window 0 would not fault.
 const LOW_PAGE: u64 = 0x20_0000;
 
@@ -250,7 +252,9 @@ fn a_fault_outside_the_pages_given_names_the_address() {
 fn an_exclusive_load_keeps_the_address() {
     // A system call clears the monitor, so the load runs as one instruction, as the behavior source runs it.
     let mut executor = WasmtimeExecutor::new(WasmtimeTranslatorConfig::default());
-    let address = 9 * WINDOW + 3 * PAGE_SIZE;
+    // An address inside its page, so that its place's offset in the page carries over to the address kept.
+    let page = 9 * WINDOW + 3 * PAGE_SIZE;
+    let address = page + IN_PAGE;
     let mut registers = ZERO_PROCESSOR.general_purpose_registers;
     registers[0] = address;
     let mapped = |data_access| PagePermission::Mapped {
@@ -276,7 +280,7 @@ fn an_exclusive_load_keeps_the_address() {
                 bytes: Cow::Owned(LOAD_EXCLUSIVE.to_le_bytes().to_vec()),
             },
             MemoryDelta::PermissionAssignment {
-                addresses: address..address + PAGE_SIZE,
+                addresses: page..page + PAGE_SIZE,
                 permission: mapped(DataAccess::ReadWrite),
             },
         ],
@@ -289,6 +293,102 @@ fn an_exclusive_load_keeps_the_address() {
         "{:?}",
         after.processor.exclusive_monitor
     );
+}
+
+#[test]
+fn single_loads_in_more_windows_than_a_space_holds_each_read_their_word() {
+    // Each state uses its own window, one after another, more of them than one space holds at once.
+    let mut executor = WasmtimeExecutor::new(WasmtimeTranslatorConfig::default());
+    for window in 1..=2 * HOST_WINDOWS {
+        let address = window * WINDOW + PAGE_SIZE;
+        let value = STORED + window;
+        let mut registers = ZERO_PROCESSOR.general_purpose_registers;
+        registers[0] = address;
+        let before = ExecutionState {
+            processor: Processor {
+                program_counter: LOWEST_ADDRESS,
+                general_purpose_registers: registers,
+                ..ZERO_PROCESSOR
+            },
+            memory_mutations: vec![
+                MemoryDelta::PermissionAssignment {
+                    addresses: LOWEST_ADDRESS..LOWEST_ADDRESS + PAGE_SIZE,
+                    permission: PagePermission::Mapped {
+                        data_access: DataAccess::ReadOnly,
+                        instruction_fetch: InstructionFetch::Allowed,
+                    },
+                },
+                MemoryDelta::ValueAssignment {
+                    start: LOWEST_ADDRESS,
+                    bytes: Cow::Owned(LOAD.to_le_bytes().to_vec()),
+                },
+                MemoryDelta::PermissionAssignment {
+                    addresses: address..address + PAGE_SIZE,
+                    permission: PagePermission::Mapped {
+                        data_access: DataAccess::ReadOnly,
+                        instruction_fetch: InstructionFetch::Forbidden,
+                    },
+                },
+                MemoryDelta::ValueAssignment {
+                    start: address,
+                    bytes: Cow::Owned(value.to_le_bytes().to_vec()),
+                },
+            ],
+        };
+        let after = executor
+            .execute_single_instruction(before)
+            .expect("a state of the space");
+        assert_eq!(
+            after.processor.general_purpose_registers[1], value,
+            "window {window}"
+        );
+        assert_eq!(
+            after.processor.program_counter,
+            LOWEST_ADDRESS + size_of::<u32>() as u64
+        );
+    }
+}
+
+#[test]
+fn one_permission_change_across_window_ends_gives_each_window_its_place() {
+    // Window 1 and window 3 have no place before the calls, which each reach across a window's end.
+    for (end, lower) in [(WINDOW, u64::MIN), (3 * WINDOW, 2)] {
+        let (mut executor, memory, mut table) = with_code(&[LOAD]);
+        writable_range(&mut table, end - PAGE_SIZE..end + PAGE_SIZE);
+        for address in [end - WORD, end, end + PAGE_SIZE - WORD] {
+            write_word(&memory, address, address / WORD);
+            let (processor, handler) = run(&mut executor, &memory, address);
+            assert_eq!(handler.fault, None, "at {address:#x} below window {lower}");
+            assert_eq!(processor.general_purpose_registers[1], address / WORD);
+        }
+        // The page after the range allows nothing.
+        let past = end + PAGE_SIZE;
+        let (_, handler) = run(&mut executor, &memory, past);
+        assert_eq!(handler.fault, Some((past, Access::Read)));
+    }
+}
+
+#[test]
+fn addresses_past_the_space_are_refused() {
+    let executor = WasmtimeExecutor::new(WasmtimeTranslatorConfig::default());
+    let (memory, mut table) = executor.create_guest_memory().expect("a space");
+    assert_eq!(
+        table.set_permissions(SPACE_END..SPACE_END + PAGE_SIZE, Permissions::READ),
+        Err(InvalidAddressError)
+    );
+    assert_eq!(
+        table.set_permissions(
+            SPACE_END - PAGE_SIZE..SPACE_END + PAGE_SIZE,
+            Permissions::READ
+        ),
+        Err(InvalidAddressError)
+    );
+    assert!(memory.borrow(SPACE_END - 1..SPACE_END + 1).is_err());
+    assert!(memory.borrow(SPACE_END..SPACE_END + 1).is_err());
+    // The last page of the space is its own.
+    writable(&mut table, SPACE_END - PAGE_SIZE);
+    write_word(&memory, SPACE_END - WORD, STORED);
+    assert_eq!(read_word(&memory, SPACE_END - WORD), STORED);
 }
 
 #[test]
