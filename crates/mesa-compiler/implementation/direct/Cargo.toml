@@ -31,6 +31,16 @@ wcontainers-mesa-compiler-conformance = { path = "../../conformance" }
 name = "conformance"
 path = "conformance_run.rs"
 
+# The suite's runs asked for by name, each a program of its own that fails without its input: the fuzzing and one
+# hostile case alone.
+[[example]]
+name = "fuzz"
+path = "fuzz.rs"
+
+[[example]]
+name = "probe"
+path = "probe.rs"
+
 [build-dependencies]
 cc = "1"
 serde = { version = "1", features = ["derive"] }
