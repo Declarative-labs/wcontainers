@@ -1207,15 +1207,15 @@ layout(location = 0) out vec4 colour;
 void main() { colour = shaded; }
 ";
 
-/// The control points of the control program's patch, its evaluation program's input.
-const CONTROL_POINTS: u32 = 3;
+/// The points of the control program's patch, its evaluation program's input.
+const PATCH_POINTS: u32 = 3;
 
-/// The stages of a linked program, in the bridge's order.
+/// Returns the stages of a linked program, in the bridge's order.
 fn stages_of(stages: &[GlslStage]) -> Vec<Stage> {
     stages.iter().map(|s| s.stage).collect()
 }
 
-/// The stage `stage` of a linked program, prepared as the driver prepares it at its creation.
+/// Prepares the stage `stage` of a linked program as the driver prepares it at its creation.
 fn prepared_stage(stages: Vec<GlslStage>, stage: Stage) -> Prepared {
     stages
         .into_iter()
@@ -1226,8 +1226,8 @@ fn prepared_stage(stages: Vec<GlslStage>, stage: Stage) -> Prepared {
         .unwrap()
 }
 
-/// The geometry program of a linked program with [`POINT_VERTEX`] and [`SHADED_FRAGMENT`],
-/// prepared.
+/// Prepares the geometry program of a linked program with [`POINT_VERTEX`] and
+/// [`SHADED_FRAGMENT`].
 fn prepared_geometry(source: &str) -> Prepared {
     let stages = compile(&[
         (Stage::Vertex, POINT_VERTEX),
@@ -1318,7 +1318,7 @@ fn a_tessellation_pair_from_glsl_goes_through_route_b_and_the_stage_helper() {
         program
             .variant(&DrawSettings::default(), &[], &[])
             .unwrap()
-            .flatten(CONTROL_POINTS)
+            .flatten(PATCH_POINTS)
             .unwrap()
     };
     let unnamed = wcontainers_gpu::reflect::VariantKey::default();

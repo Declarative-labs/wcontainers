@@ -33,9 +33,10 @@ impl Stage {
         Stage::TessEvaluation,
     ];
 
-    /// The stage whose set the program's resources bind in: a geometry or control program runs
-    /// as the stage helper's compute work, and an evaluation program draws the tessellated points
-    /// as a vertex program does.
+    /// Returns the stage whose set the program's resources bind in.
+    ///
+    /// A geometry or control program runs as the stage helper's compute work, and an evaluation
+    /// program draws the tessellated points as a vertex program does.
     pub const fn shader_stage(self) -> ShaderStage {
         match self {
             Stage::Vertex | Stage::TessEvaluation => ShaderStage::Vertex,
@@ -69,7 +70,7 @@ pub enum Staged<V, F, C, G, TC, TE> {
 }
 
 impl<V, F, C, G, TC, TE> Staged<V, F, C, G, TC, TE> {
-    /// The stage the program is of.
+    /// Returns the program's stage.
     pub const fn stage(&self) -> Stage {
         match self {
             Staged::Vertex(_) => Stage::Vertex,
@@ -655,7 +656,7 @@ impl<M: MesaCompiler + Clone> Received<M> {
     }
 }
 
-/// The stage the compiler prepared as `form`, its program put in its stage's place by `place`.
+/// Makes the stage the compiler prepared as `form`, its program put in its stage's place by `place`.
 fn prepared<M: MesaCompiler + Clone, P>(
     compiler: M,
     form: wcontainers_mesa_compiler::PreparedForm<P, M::Made>,
@@ -741,7 +742,11 @@ fn variant<M: MesaCompiler + Clone>(
     })
 }
 
-/// Why a step taken only on programs of other stages refused a program of `stage`.
+/// The steps refused for a program of another stage, by name.
+const POINTS_AS_SQUARES: &str = "points drawn as squares";
+const GEOMETRY_POINTS_AS_SQUARES: &str = "a geometry program's points drawn as squares";
+
+/// Says why a step taken only on programs of other stages refused a program of `stage`.
 fn not_of_stage(step: &str, stage: Stage) -> ConvertError {
     ConvertError::Unsupported(format!("{step}, for a program of the {stage:?} stage"))
 }
@@ -804,7 +809,7 @@ impl<M: MesaCompiler + Clone> Prepared<M> {
         variant(&self.compiler, form, stage, settings.samples)
     }
 
-    /// The stage the program is of.
+    /// Returns the program's stage.
     pub const fn stage(&self) -> Stage {
         self.shader.stage()
     }
@@ -823,7 +828,7 @@ impl<M: MesaCompiler + Clone> Prepared<M> {
             Staged::TessEvaluation(s) => self
                 .compiler
                 .prepared_tess_evaluation_points_as_squares(s, at, largest),
-            other => return Err(not_of_stage("points drawn as squares", other.stage())),
+            other => return Err(not_of_stage(POINTS_AS_SQUARES, other.stage())),
         };
         squares(&self.compiler, made)
     }
@@ -837,10 +842,7 @@ impl<M: MesaCompiler + Clone> Prepared<M> {
         block: u32,
     ) -> Result<Squares<M>, ConvertError> {
         let Staged::Geometry(s) = &self.shader else {
-            return Err(not_of_stage(
-                "a geometry program's points drawn as squares",
-                self.stage(),
-            ));
+            return Err(not_of_stage(GEOMETRY_POINTS_AS_SQUARES, self.stage()));
         };
         let made = self
             .compiler

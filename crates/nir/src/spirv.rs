@@ -1,4 +1,4 @@
-//! SPIR-V words as instructions, and the validation of a module with what the common form allows it.
+//! Reads SPIR-V words as instructions, and validates a module with what the common form allows it.
 
 use crate::ConvertError;
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
