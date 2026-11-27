@@ -421,3 +421,155 @@ fn a_copy_carries_bytes_permissions_and_mappings() {
         "the copy after a write to the source"
     );
 }
+
+/// Bytes that span the memory's own file and a block shown from another are read and written whole, through every
+/// form of borrowed bytes, and the borrowed bytes' length is the addresses'.
+#[test]
+fn bytes_across_the_own_file_and_a_shown_block_are_read_and_written_whole() {
+    let pool = pool();
+    let (first, first_table) = memory(&pool);
+    let (second, mut second_table) = memory(&pool);
+    let middle = DATA + GUEST_PAGE;
+    assert_eq!(
+        second_table.map_from(page(middle), &first_table, middle),
+        Ok(())
+    );
+    let three = DATA..DATA + 3 * GUEST_PAGE;
+    let bytes = pattern(10, 3 * GUEST_PAGE as usize);
+    write(&second, DATA, &bytes);
+    assert_eq!(read(&second, three.clone()), bytes);
+    assert_eq!(window_bytes(&second, three.clone()), bytes);
+    assert_eq!(
+        read(&first, page(middle)),
+        bytes[GUEST_PAGE as usize..2 * GUEST_PAGE as usize]
+    );
+    let borrowed = second.borrow(three.clone()).expect("inside the window");
+    assert_eq!(borrowed.len(), 3 * GUEST_PAGE);
+    let mut sink = Vec::new();
+    assert_eq!(borrowed.read_to(&mut sink), Ok(bytes.len()));
+    assert_eq!(sink, bytes);
+    let again = pattern(11, bytes.len());
+    let mut source: &[u8] = &again;
+    assert_eq!(borrowed.write_from(&mut source), Ok(again.len()));
+    assert_eq!(window_bytes(&second, three), again);
+    let inner = second
+        .borrow(DATA + 1..DATA + 9)
+        .expect("inside the window");
+    assert_eq!(inner.len(), 8);
+}
+
+/// Two blocks shown side by side whose file offsets run on are still two: each page shows its own block's bytes.
+#[test]
+fn two_blocks_shown_side_by_side_stay_apart() {
+    let pool = pool();
+    let (first, first_table) = memory(&pool);
+    let (third, third_table) = memory(&pool);
+    let (_fourth, mut fourth_table) = memory(&pool);
+    let (second, mut second_table) = memory(&pool);
+    let first_bytes = pattern(12, GUEST_PAGE as usize);
+    let third_bytes = pattern(13, 2 * GUEST_PAGE as usize);
+    write(&first, DATA, &first_bytes);
+    write(&third, DATA, &third_bytes);
+    // The third's two pages become one block of two pages; the first's page a block of one.
+    assert_eq!(
+        fourth_table.map_from(DATA..DATA + 2 * GUEST_PAGE, &third_table, DATA),
+        Ok(())
+    );
+    let at = DATA + SHIFT;
+    assert_eq!(second_table.map_from(page(at), &first_table, DATA), Ok(()));
+    assert_eq!(
+        second_table.map_from(page(at + GUEST_PAGE), &third_table, DATA + GUEST_PAGE),
+        Ok(())
+    );
+    let mut wanted = first_bytes;
+    wanted.extend_from_slice(&third_bytes[GUEST_PAGE as usize..]);
+    assert_eq!(read(&second, at..at + 2 * GUEST_PAGE), wanted);
+    assert_eq!(window_bytes(&second, at..at + 2 * GUEST_PAGE), wanted);
+}
+
+/// A block shown over pages of which only some allow anything shows on every page, those between included.
+#[test]
+fn a_block_shows_on_every_page_whatever_their_permissions() {
+    let pool = pool();
+    let (first, first_table) = memory(&pool);
+    let (second, mut second_table) = memory(&pool);
+    let bytes = pattern(14, 3 * GUEST_PAGE as usize);
+    write(&first, DATA, &bytes);
+    let at = DATA + SHIFT;
+    for allowed in [at, at + 2 * GUEST_PAGE] {
+        assert_eq!(
+            second_table.set_permissions(page(allowed), Permissions::READ | Permissions::WRITE),
+            Ok(())
+        );
+    }
+    assert_eq!(
+        second_table.map_from(at..at + 3 * GUEST_PAGE, &first_table, DATA),
+        Ok(())
+    );
+    assert_eq!(window_bytes(&second, at..at + 3 * GUEST_PAGE), bytes);
+    assert_eq!(window_protection(&second, at + GUEST_PAGE), NOTHING);
+    assert_eq!(window_protection(&second, at), READ_WRITE);
+}
+
+/// The seals every memory file of this process holds, by its name.
+fn seals_of_files_named(name: &str) -> Vec<rustix::fs::SealFlags> {
+    std::fs::read_dir("/proc/self/fd")
+        .expect("this process's files")
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let target = std::fs::read_link(&path).ok()?;
+            target.to_str()?.contains(name).then_some(path)
+        })
+        .filter_map(|path| {
+            let file = std::fs::File::open(path).ok()?;
+            rustix::fs::fcntl_get_seals(&file).ok()
+        })
+        .collect()
+}
+
+/// A memory's own file and every shared block cannot change size, and their seals cannot be changed: no access inside
+/// a window is ever past a file's end.
+#[test]
+fn every_memory_file_cannot_change_size() {
+    use rustix::fs::SealFlags;
+    let pool = pool();
+    let (first, first_table) = memory(&pool);
+    let (_second, mut second_table) = memory(&pool);
+    write(&first, DATA, &pattern(15, GUEST_PAGE as usize));
+    assert_eq!(
+        second_table.map_from(page(DATA), &first_table, DATA),
+        Ok(())
+    );
+    let wanted = SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL;
+    for name in [
+        "wcontainers in-process memory",
+        "wcontainers in-process shared block",
+    ] {
+        let seals = seals_of_files_named(name);
+        assert!(!seals.is_empty(), "no file named {name}");
+        assert!(
+            seals.iter().all(|seals| seals.contains(wanted)),
+            "{name}: {seals:?}"
+        );
+    }
+}
+
+/// A copy of addresses that begin with a hole, whose source holds data past their end, copies exactly them: the hole
+/// stays zeros, the data lands at its own place, and nothing past the end is copied.
+#[test]
+fn a_copy_takes_exactly_its_addresses_holes_and_data_alike() {
+    let pool = pool();
+    let (source, source_table) = memory(&pool);
+    let (copy, mut copy_table) = memory(&pool);
+    let data = pattern(16, 2 * GUEST_PAGE as usize);
+    write(&source, DATA + GUEST_PAGE, &data);
+    let to = DATA + SHIFT;
+    assert_eq!(
+        copy_table.copy_from(to..to + 2 * GUEST_PAGE, &source_table, DATA),
+        Ok(())
+    );
+    let mut wanted = vec![0; GUEST_PAGE as usize];
+    wanted.extend_from_slice(&data[..GUEST_PAGE as usize]);
+    wanted.extend(vec![0; GUEST_PAGE as usize]);
+    assert_eq!(read(&copy, to..to + 3 * GUEST_PAGE), wanted);
+}

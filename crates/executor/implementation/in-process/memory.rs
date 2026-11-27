@@ -41,6 +41,10 @@ const BELOW: u64 = 1 << 16;
 const SLOT_TABLE_BYTES: u64 = SLOT_BYTES << SLOT_SHIFT;
 /// The first slot a memory takes: slot 0's window, at host address 0, is no guest's.
 const FIRST_SLOT: u16 = 1;
+/// The seals of every memory file: its size never changes, nor do its seals.
+const SIZE_SEALS: SealFlags = SealFlags::SHRINK
+    .union(SealFlags::GROW)
+    .union(SealFlags::SEAL);
 /// The most bytes copied between memory files in one call.
 const COPY_BYTES: u64 = 1 << 30;
 
@@ -93,13 +97,12 @@ impl InProcessPool {
         let (slot, mut reserved, slots) = self.reserve_slot()?;
         let own = rustix::fs::memfd_create(
             "wcontainers in-process memory",
-            MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+            MemfdFlags::CLOEXEC.union(MemfdFlags::ALLOW_SEALING),
         )
         .map_err(CreateMemoryError::Host)?;
         rustix::fs::ftruncate(&own, OUTSIDE).map_err(CreateMemoryError::Host)?;
         // A file that cannot change size: no access inside the window is ever past its end.
-        rustix::fs::fcntl_add_seals(&own, SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL)
-            .map_err(CreateMemoryError::Host)?;
+        rustix::fs::fcntl_add_seals(&own, SIZE_SEALS).map_err(CreateMemoryError::Host)?;
         self.linux
             .map_file_within(
                 &mut reserved,
@@ -334,13 +337,10 @@ impl Window {
         for range in owned {
             let block = rustix::fs::memfd_create(
                 "wcontainers in-process shared block",
-                MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+                MemfdFlags::CLOEXEC.union(MemfdFlags::ALLOW_SEALING),
             )?;
-            rustix::fs::ftruncate(&block, range.end - range.start)?;
-            rustix::fs::fcntl_add_seals(
-                &block,
-                SealFlags::SHRINK | SealFlags::GROW | SealFlags::SEAL,
-            )?;
+            rustix::fs::ftruncate(&block, length(&range) as u64)?;
+            rustix::fs::fcntl_add_seals(&block, SIZE_SEALS)?;
             copy_data(self.own.as_fd(), range.clone(), block.as_fd(), 0)?;
             let block = Block(Rc::new(block));
             self.shown.insert(
@@ -693,7 +693,7 @@ fn whole_pages(
     other_start: u64,
 ) -> Result<Range<u64>, InvalidAddressError> {
     inside(addresses)?;
-    let length = addresses.end - addresses.start;
+    let length = length(addresses) as u64;
     let source = other_start..other_start.checked_add(length).ok_or(InvalidAddressError)?;
     inside(&source)?;
     let whole = |at: u64| at.is_multiple_of(GUEST_PAGE);
@@ -709,28 +709,16 @@ fn page_cover(range: &Range<u64>) -> Range<u64> {
     range.start & !(GUEST_PAGE - 1)..range.end.next_multiple_of(GUEST_PAGE)
 }
 
-/// Reads the file's bytes at `offset` into `into`, returning how many were read before a refusal or the file's end.
+/// Reads the file's bytes at `offset` into `into`, returning how many were read: all of them, a memory file's reads
+/// below its end being whole, or none where the host refuses.
 fn read_exactly(file: BorrowedFd<'_>, into: &mut [u8], offset: u64) -> usize {
-    let mut done = 0;
-    while done < into.len() {
-        match rustix::io::pread(file, &mut into[done..], offset + done as u64) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => done += read,
-        }
-    }
-    done
+    rustix::io::pread(file, into, offset).unwrap_or_default()
 }
 
-/// Writes `bytes` to the file at `offset`, returning how many were written before a refusal.
+/// Writes `bytes` to the file at `offset`, returning how many were written: all of them, a memory file's writes below
+/// its end being whole, or none where the host refuses.
 fn write_exactly(file: BorrowedFd<'_>, bytes: &[u8], offset: u64) -> usize {
-    let mut done = 0;
-    while done < bytes.len() {
-        match rustix::io::pwrite(file, &bytes[done..], offset + done as u64) {
-            Ok(0) | Err(_) => break,
-            Ok(written) => done += written,
-        }
-    }
-    done
+    rustix::io::pwrite(file, bytes, offset).unwrap_or_default()
 }
 
 /// Frees the file's bytes in the range, which then read as zeros.
@@ -740,9 +728,9 @@ fn punch(file: BorrowedFd<'_>, range: &Range<u64>) -> Result<(), Errno> {
     }
     rustix::fs::fallocate(
         file,
-        FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
+        FallocateFlags::PUNCH_HOLE.union(FallocateFlags::KEEP_SIZE),
         range.start,
-        range.end - range.start,
+        length(range) as u64,
     )
 }
 

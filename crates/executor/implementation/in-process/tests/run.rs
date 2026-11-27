@@ -20,7 +20,8 @@ use wcontainers_executor_in_process::memory::{
 use wcontainers_linux_process::LinuxProcess;
 use wcontainers_linux_process_direct::DirectLinuxProcess;
 use wcontainers_processor_architecture_arm64::{
-    AccessDirection, Exception, FaultStatus, Processor, ZERO_PROCESSOR,
+    AccessDirection, ConditionFlags, Exception, FaultStatus, Processor, SystemAccess,
+    ZERO_PROCESSOR,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -688,6 +689,8 @@ fn an_interrupt_asked_before_the_execution_is_taken_first_by_a_guest_that_keeps_
  {
     let mut executor = executor();
     let (memory, _table) = memory(&executor, &[SYSTEM_CALL, BRANCH_BACK], 0);
+    // Its pieces translated first, so that no slice ends in a translation before its first system call.
+    execute(&mut executor, &memory, before(10), &mut Handler::default());
     let (execution, interrupter) = executor.prepare_execution(before(10), &memory);
     interrupter.interrupt();
     let interrupted = AtomicBool::new(false);
@@ -780,6 +783,9 @@ fn a_fault_is_a_write_or_a_read_as_linux_reports_it() {
     }
 }
 
+/// System calls the guest makes while interrupts land: enough that some land in its calls into the floor.
+const STORM_CALLS: usize = 5 * MANY_CALLS;
+
 /// Interrupts that land anywhere while a guest makes system call after system call, in a call into the floor too, are
 /// each answered continue and change nothing: every call is made with what the last one returned, and the execution
 /// ends at the one the handler ends.
@@ -796,10 +802,11 @@ fn interrupts_that_land_anywhere_change_nothing_the_guest_sees() {
         scope.spawn(move || {
             while !done.load(Ordering::Acquire) {
                 interrupter.interrupt();
+                std::thread::yield_now();
             }
         });
         let mut handler = Handler {
-            returning: MANY_CALLS,
+            returning: STORM_CALLS,
             ..Handler::default()
         };
         let stop = execution.run(&mut handler);
@@ -815,7 +822,7 @@ fn interrupts_that_land_anywhere_change_nothing_the_guest_sees() {
         Some(Exception::SupervisorCall { immediate: 0 }),
         "{ended:x?}"
     );
-    assert_eq!(handler.calls.len(), MANY_CALLS + 1);
+    assert_eq!(handler.calls.len(), STORM_CALLS + 1);
     assert_eq!(
         handler.calls[0].arguments[0],
         start.general_purpose_registers[0]
@@ -901,4 +908,184 @@ fn an_execution_on_a_thread_that_already_runs_one_ends_in_an_serror() {
         }
     );
     assert!(handler.calls.is_empty());
+}
+
+/// `svc #0x1234`, `subs x0, x1, x1`, `dup v1.2d, x5`, `msr fpsr, x6`, `nop`, `mrs x0, cntvct_el0`
+/// ([Arm ARM, C6.2 and C7.2](https://developer.arm.com/documentation/ddi0602/latest)).
+const SYSTEM_CALL_1234: u32 = 0xd402_4681;
+const IMMEDIATE: u16 = 0x1234;
+const SUBTRACT_FLAGS: u32 = 0xeb01_0020;
+const DUPLICATE_X5: u32 = 0x4e08_0ca1;
+const WRITE_FPSR: u32 = 0xd51b_4426;
+const NOTHING_DONE: u32 = 0xd503_201f;
+const READ_COUNTER: u32 = 0xd53b_e040;
+/// The registers those read and write.
+const DUPLICATED: usize = 5;
+const DUPLICATED_INTO: usize = 1;
+const STATUS_FROM: usize = 6;
+/// FPSR's QC and IOC, which `msr fpsr` sets.
+const STATUS: u64 = 0x0800_0001;
+
+#[test]
+fn a_system_call_that_ends_the_execution_ends_at_its_own_immediate() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[SYSTEM_CALL_1234], 0);
+    let ended = execute(&mut executor, &memory, before(16), &mut Handler::default());
+    assert_eq!(
+        ended.exception,
+        Some(Exception::SupervisorCall {
+            immediate: IMMEDIATE
+        })
+    );
+    assert_eq!(ended.program_counter, CODE + size_of::<u32>() as u64);
+}
+
+/// The flags, vector registers and FPSR the guest leaves are the execution's: `subs` of a register from itself sets Z
+/// and C, `dup` fills both halves, and `msr fpsr` sets what it is given.
+#[test]
+fn the_flags_vectors_and_float_status_the_guest_leaves_are_the_execution_s() {
+    let mut executor = executor();
+    let (memory, _table) = memory(
+        &executor,
+        &[SUBTRACT_FLAGS, DUPLICATE_X5, WRITE_FPSR, SYSTEM_CALL],
+        0,
+    );
+    let mut start = before(17);
+    start.general_purpose_registers[STATUS_FROM] = STATUS;
+    for (v, value) in start.vector_registers.iter_mut().enumerate() {
+        *value = u128::from(start.general_purpose_registers[v % 31]) << 64 | v as u128;
+    }
+    let ended = execute(
+        &mut executor,
+        &memory,
+        start.clone(),
+        &mut Handler::default(),
+    );
+    assert_eq!(
+        ended.exception,
+        Some(Exception::SupervisorCall { immediate: 0 })
+    );
+    assert_eq!(
+        ended.condition_flags,
+        ConditionFlags::ZERO | ConditionFlags::CARRY
+    );
+    let duplicated = u128::from(start.general_purpose_registers[DUPLICATED]);
+    let mut vectors = start.vector_registers;
+    vectors[DUPLICATED_INTO] = duplicated << 64 | duplicated;
+    assert_eq!(ended.vector_registers, vectors);
+    assert_eq!(ended.floating_point_status, STATUS);
+}
+
+/// A guest that loops through two pieces, landing at every one, is interrupted each slice too: a landing is no trap.
+#[test]
+fn a_guest_that_loops_through_two_pieces_is_interrupted_each_slice() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[NOTHING_DONE, BRANCH_BACK], 0);
+    let mut handler = Handler {
+        interrupts_before_end: Some(SLICES),
+        ..Handler::default()
+    };
+    let ended = execute(&mut executor, &memory, before(18), &mut handler);
+    assert_eq!(handler.interrupts, SLICES + 1);
+    assert_eq!(ended.exception, None);
+    assert!(handler.calls.is_empty());
+}
+
+/// An access through a stack pointer that is not a multiple of 16 faults as Linux sets EL0 (SCTLR_EL1.SA0), and the
+/// guest's state is at the access.
+#[test]
+fn an_access_through_a_misaligned_stack_pointer_is_a_stack_pointer_alignment_fault() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[LOAD_THROUGH_SP, SYSTEM_CALL], 0);
+    let start = Processor {
+        stack_pointer: STACK + 1,
+        ..before(19)
+    };
+    let ended = execute(&mut executor, &memory, start, &mut Handler::default());
+    assert_eq!(ended.exception, Some(Exception::StackPointerAlignmentFault));
+    assert_eq!(
+        (ended.program_counter, ended.stack_pointer),
+        (CODE, STACK + 1)
+    );
+}
+
+/// A tagged address that faults: the handler is given it without its top byte, which the chip ignores, and the abort
+/// the execution ends at keeps it.
+#[test]
+fn a_tagged_fault_reaches_the_handler_untagged_and_the_abort_tagged() {
+    let mut executor = executor();
+    let tagged = NOTHING | TAG;
+    let (faults, ended) = fault_of(&mut executor, LOAD_THROUGH_X1, tagged);
+    assert_eq!(faults, [(NOTHING, Access::Read)]);
+    assert_eq!(
+        ended.exception,
+        Some(Exception::DataAbort {
+            status: FaultStatus::TranslationFaultLevel3,
+            access: AccessDirection::Read,
+            address: tagged,
+        })
+    );
+}
+
+/// A read of the counter, CNTVCT_EL0, which the instruction list has EL1 trap so that the system answers it, ends at
+/// its trap with the register's encoding (op0 3, op1 3, CRn 14, CRm 0, op2 2) and x0.
+#[test]
+fn a_read_of_the_counter_ends_at_its_trap() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &[READ_COUNTER, SYSTEM_CALL], 0);
+    let ended = execute(&mut executor, &memory, before(20), &mut Handler::default());
+    assert_eq!(
+        ended.exception,
+        Some(Exception::SystemAccessTrapped(SystemAccess {
+            op0: 3,
+            op1: 3,
+            crn: 14,
+            crm: 0,
+            op2: 2,
+            rt: 0,
+            direction: AccessDirection::Read,
+        }))
+    );
+    assert_eq!(ended.program_counter, CODE);
+}
+
+/// The host addresses of every slot (from 64 KiB below slot 1's window to the last slot's end) and of every slot
+/// table (from slot 0's at 2^46, 2^35 bytes for each slot).
+const SLOTS: core::ops::Range<u64> = (1 << 33) - (64 << 10)..1 << 44;
+const SLOT_TABLES: core::ops::Range<u64> = 1 << 46..(1 << 46) + (1 << 44 << 2);
+
+/// The pieces of an execution are mapped where no window or slot table is, so that a guest never reaches them and
+/// they take no slot from a memory.
+#[test]
+fn pieces_are_mapped_outside_every_slot_and_slot_table() {
+    let mut executor = executor();
+    let (memory, _table) = memory(&executor, &INSTRUCTIONS, 0);
+    execute(&mut executor, &memory, before(21), &mut Handler::default());
+    let maps = std::fs::read_to_string("/proc/self/maps").expect("the process's own maps");
+    let pieces: Vec<(u64, u64)> = maps
+        .lines()
+        .filter(|line| line.contains("wcontainers instructions"))
+        .filter_map(|line| {
+            let (start, end) = line.split_whitespace().next()?.split_once('-')?;
+            Some((
+                u64::from_str_radix(start, 16).ok()?,
+                u64::from_str_radix(end, 16).ok()?,
+            ))
+        })
+        .collect();
+    assert!(!pieces.is_empty(), "no piece mapped");
+    // The floor is the one page of exits that holds its first entry.
+    let floor = wcontainers_arm64::way::IN_PROCESS_ENTRIES & !(GUEST_PAGE - 1);
+    assert!(
+        pieces.contains(&(floor, floor + GUEST_PAGE)),
+        "the floor as one page at {floor:#x}: {pieces:x?}"
+    );
+    for (start, end) in pieces {
+        for area in [SLOTS, SLOT_TABLES] {
+            assert!(
+                end <= area.start || start >= area.end,
+                "a piece at {start:#x}..{end:#x} inside {area:#x?}"
+            );
+        }
+    }
 }
