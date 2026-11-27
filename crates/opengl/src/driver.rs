@@ -29,9 +29,9 @@ use crate::guest::{self, guest_call, refuse};
 use crate::pipe::*;
 use crate::resources::{self, Mapping, Resource};
 use crate::screen::{DRIVER_NAME, whole};
+use crate::shaders::{self, Shader};
 use crate::state::Stage;
 use crate::states::{self, Blend, DepthStencil, Elements, Raster, Retired, Sampler, retire};
-use crate::shaders::{self, Shader};
 use crate::views::{self, SamplerView};
 use wcontainers_nir::mesa::Staged;
 
@@ -737,7 +737,9 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         program: <Compiled as MesaCompiler>::ReceivedTessEvaluation,
         _: &ShaderState,
     ) -> Option<Arc<Shader>> {
-        self.call(None, || Some(shaders::create(Staged::TessEvaluation(program))))
+        self.call(None, || {
+            Some(shaders::create(Staged::TessEvaluation(program)))
+        })
     }
 
     fn create_vertex_elements_state(&self, elements: &[VertexElement]) -> Option<Arc<Elements<B>>> {

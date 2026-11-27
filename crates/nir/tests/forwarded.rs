@@ -1523,8 +1523,16 @@ fn a_stage_received_through_the_gallium_trait_is_prepared_by_its_own_step() {
         (Staged::Fragment(FRAGMENT), "fragment", Stage::Fragment),
         (Staged::Compute(COMPUTE), "compute", Stage::Compute),
         (Staged::Geometry(GEOMETRY), "geometry", Stage::Geometry),
-        (Staged::TessControl(TESS_CONTROL), "tess control", Stage::TessControl),
-        (Staged::TessEvaluation(TESS_EVALUATION), "tess evaluation", Stage::TessEvaluation),
+        (
+            Staged::TessControl(TESS_CONTROL),
+            "tess control",
+            Stage::TessControl,
+        ),
+        (
+            Staged::TessEvaluation(TESS_EVALUATION),
+            "tess evaluation",
+            Stage::TessEvaluation,
+        ),
     ];
     for ((shader, step, stage), (_, tag, _)) in stages.into_iter().zip(STAGES) {
         let prepared = Received::new(Recorder, shader)

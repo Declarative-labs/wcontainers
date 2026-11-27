@@ -110,7 +110,7 @@ fn scan(reciprocal: f32) -> Vec<u32> {
     let read = |bits: u32| {
         let e = ((f32::from_bits(bits) * Format::UNORM24_MAX as f32).round() as u32)
             .min(Format::UNORM24_MAX);
-        if e > 0 && sampled(e) != bits && sampled(e - 1) == bits {
+        if sampled(e) != bits && e.checked_sub(1).is_some_and(|below| sampled(below) == bits) {
             e - 1
         } else {
             e
