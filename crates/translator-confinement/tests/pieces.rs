@@ -543,16 +543,73 @@ fn a_stack_access_s_piece_is_the_word_and_the_exit() {
     }
 }
 
+/// `add sp, sp, #k`, shifted by 12 for a k of 4096 or more.
+fn stack_step_up(k: i64) -> u32 {
+    stack_step(k) ^ 0x4000_0000
+}
+/// An upward step's piece: the step, the probe `ldur wzr, [sp, #-4]` (the freed frame's last word), the exit.
+fn stepped_up(k: i64, slot: u64) -> Vec<u32> {
+    [vec![stack_step_up(k), 0xb85f_c3ff], exit_words(slot)].concat()
+}
+/// The checked piece of a step `step` (an `add` or `sub` of `sp` by an immediate) past what a probe alone keeps in
+/// reach: `sub x23, sp, x24` (the guest's stack pointer), the step into x15 from x23, the test of x15's top half
+/// (`ubfx x23, x15, #32, #32`, `cbnz x23` to the tail), `add sp, x24, w15, uxtw` (the stack pointer cut to the
+/// window), the exit, and the tail that faults on the slot's top byte.
+fn checked_step(step: u32, slot: u64) -> Vec<u32> {
+    let into_x15_from_x23 = (step & !0x3ff) | 23 << 5 | 15;
+    [
+        vec![
+            0xcb38_63f7,
+            into_x15_from_x23,
+            0xd360_fdf7,
+            0xb500_00d7,
+            0x8b2f_431f,
+        ],
+        exit_words(slot),
+        vec![0xd260_030f, 0x397f_fdff, 0],
+    ]
+    .concat()
+}
+
 #[test]
 fn every_stack_step_a_probe_alone_keeps_in_reach_is_the_step_the_probe_and_the_exit() {
     let steps = (1..4096).chain((1..=15).map(|j| j << 12));
     for k in steps {
+        let exit = exit_slot(3, GUEST + 4, false);
         assert_eq!(
             translated(stack_step(k), 3, GUEST, false),
-            stepped(k, exit_slot(3, GUEST + 4, false)),
+            stepped(k, exit),
             "sub sp, sp, #{k}"
         );
+        assert_eq!(
+            translated(stack_step_up(k), 3, GUEST, false),
+            stepped_up(k, exit),
+            "add sp, sp, #{k}"
+        );
     }
+}
+
+#[test]
+fn a_stack_step_past_0xf000_is_checked_and_cut_not_the_proof_s_stepped_piece() {
+    // stack.rs proves `stepped` confined only for `0 < k <= 0xf000` (60 KiB, what the pool's reservation below a
+    // window covers with the probe's page): every larger step must get the checked piece, which sets the stack pointer
+    // only to the window's base plus a 32-bit cut.
+    let mut checked = 0;
+    for j in 16..4096 {
+        let k = j << 12;
+        for slot in [1, 3, 2047] {
+            let exit = exit_slot(slot, GUEST + 4, false);
+            for word in [stack_step(k), stack_step_up(k)] {
+                assert_eq!(
+                    translated(word, slot, GUEST, false),
+                    checked_step(word, exit),
+                    "{word:#010x} (a step of {k:#x}) slot {slot}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 4080 * 3 * 2);
 }
 
 #[test]

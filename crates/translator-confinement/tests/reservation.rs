@@ -19,8 +19,9 @@ const POOL_BELOW: u64 = 1 << 16;
 const STACK_STEP: u64 = 60 << 10;
 
 /// Words drawn from every form, each also with its base register (bits 5 to 9) the stack pointer and with its
-/// destination (bits 0 to 4) register 31; and every stack step a probe alone keeps in reach (rule c: `add` or `sub` of
-/// `sp` by at most 60 KiB, which random immediates seldom draw), with the largest negative offsets from `sp`.
+/// destination (bits 0 to 4) register 31; and every `add` and `sub` of `sp` by an immediate, shifted or not (rule c
+/// keeps a step of at most 60 KiB in reach with a probe alone; a larger one must be checked, and random immediates
+/// seldom draw either), with the largest negative offsets from `sp`.
 fn words() -> Vec<u32> {
     let mut rng = fastrand::Rng::with_seed(0x5e5e_7e5e);
     let mut words = Vec::new();
@@ -30,12 +31,16 @@ fn words() -> Vec<u32> {
             words.extend([word, form.word(word | 0x1f << 5), form.word(word | 0x1f)]);
         }
     }
-    for imm in 1..=15 {
-        // `sub sp, sp, #imm, lsl #12` and `add sp, sp, #imm, lsl #12`.
-        words.extend([0xd140_03ff | imm << 10, 0x9140_03ff | imm << 10]);
+    for imm in 0..4096 {
+        // `sub sp, sp, #imm{, lsl #12}` and `add sp, sp, #imm{, lsl #12}`.
+        for shift in [0, 1 << 22] {
+            words.extend([
+                0xd100_03ff | shift | imm << 10,
+                0x9100_03ff | shift | imm << 10,
+            ]);
+        }
     }
     words.extend([
-        0xd13f_fbff, // sub sp, sp, #4095
         0xada0_07e0, // stp q0, q1, [sp, #-1024]!
         0xad60_07e0, // ldp q0, q1, [sp, #-1024]
         0x3cd0_03e0, // ldur q0, [sp, #-256]
@@ -146,7 +151,7 @@ fn a_push_at_the_window_s_base_writes_below_it() {
 #[test]
 fn the_pieces_reach_a_stack_step_below_a_window_which_the_pool_s_reservation_covers() {
     let pieces = pieces(SLOT);
-    assert!(pieces.len() > 30_000, "{} pieces", pieces.len());
+    assert!(pieces.len() > 60_000, "{} pieces", pieces.len());
     let reach = reach_below(&pieces);
     // A full stack step from the window's base leaves the stack pointer 60 KiB below it, where its probe (`ldr wzr,
     // [sp]`) reads; nothing reaches lower.
