@@ -926,12 +926,42 @@ fn permission_byte(s: &mut InstructionSink<'_>, table: Table, at: u32, page: u32
     s.i32_add().i32_load8_u(memarg(MEMORY_STATE, 0, 0));
 }
 
-/// The permission table bit of the page an access needs.
+/// The permission table bits of the page an access needs.
 pub(crate) fn page_bit(access: Access) -> u8 {
     match access {
         Access::Read => PAGE_READ,
         Access::Write => PAGE_WRITE,
+        Access::Modify => PAGE_READ | PAGE_WRITE,
     }
+}
+
+/// Push the memory fault hook's arguments for a fault of the access at the address in i64 local `fault_at`: that
+/// address as the program computed it, its untagged form in i64 local `address` and the program's in `tagged` having
+/// the same distance from it, then whether the fault is a write. A modifying access's fault is a read where the
+/// page cannot be read; `page` is an i64 local to work in.
+pub(crate) fn push_fault(
+    s: &mut InstructionSink<'_>,
+    table: Table,
+    access: Access,
+    (fault_at, address, tagged): (u32, u32, u32),
+    page: u32,
+) {
+    s.local_get(fault_at)
+        .local_get(tagged)
+        .i64_add()
+        .local_get(address)
+        .i64_sub();
+    match access {
+        Access::Read => s.i32_const(0),
+        Access::Write => s.i32_const(1),
+        Access::Modify => {
+            permission_byte(s, table, fault_at, page);
+            s.i32_const(PAGE_READ.into())
+                .i32_and()
+                .i32_const(0)
+                .i32_ne()
+        }
+    };
 }
 
 /// Pop an i32 and raise the thread's stop when it is not zero: the flag, or with the progress count a limit
@@ -1987,10 +2017,12 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
     fn check(&mut self, address: u32, bytes: u32, access: Access, _which: u8) {
         let this = page_bit(access);
         let (page, fault_at) = (self.local(ValType::I64), self.local(ValType::I64));
+        let tagged = self.local(ValType::I64);
         self.sites[Reason::MemoryFault as usize] += 1;
         let pc = self.offset;
         let progress = self.progress();
         let mut s = self.sink();
+        s.local_get(address).local_set(tagged);
         G::data_address(&mut s, address);
         s.local_set(address);
         permission_fast(&mut s, Table::GLOBALS, address, this, page);
@@ -1998,9 +2030,14 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         save::<G>(&mut s, progress, |s| {
             s.i64_const(pc as i64);
         });
-        s.local_get(fault_at)
-            .i32_const(i32::from(access == Access::Write))
-            .call(F_MEMORY_FAULT)
+        push_fault(
+            &mut s,
+            Table::GLOBALS,
+            access,
+            (fault_at, address, tagged),
+            page,
+        );
+        s.call(F_MEMORY_FAULT)
             .call(Layout::<G>::F_UNWIND)
             .unreachable()
             .end()

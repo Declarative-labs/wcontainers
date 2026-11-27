@@ -2893,10 +2893,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         if self.omit.permissions {
             return;
         }
-        let this = match access {
-            Access::Read => PAGE_READ,
-            Access::Write => PAGE_WRITE,
-        };
+        let this = page_bit(access);
         // An instruction whose access the plan does not know (cache maintenance) checks exactly.
         let plan = self
             .plan
@@ -2916,6 +2913,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             return;
         }
         let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
+        let tagged = self.temporary(ValType::I64);
         let offset = self.at.offset;
         // A kept run's check is rare, so it reads the table's place from the module's globals rather than
         // keeping it alive through the loop.
@@ -2949,15 +2947,15 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 // An address the table allows is one data accesses use as it is, so only one it does not is
                 // made what they use and tried again.
                 permission_fast(&mut s, table, address, this, page);
+                s.local_get(address).local_set(tagged);
                 G::data_address(&mut s, address);
                 s.local_set(address);
                 permission_exact::<G>(&mut s, address, bytes, this, fault_at, exact);
                 self.sites[Reason::MemoryFault as usize] += 1;
                 self.save(Pc::Offset(offset), true);
                 let mut s = self.sink();
-                s.local_get(fault_at)
-                    .i32_const(i32::from(access == Access::Write))
-                    .call(F_MEMORY_FAULT)
+                push_fault(&mut s, table, access, (fault_at, address, tagged), page);
+                s.call(F_MEMORY_FAULT)
                     .call(Layout::<G>::F_UNWIND)
                     .unreachable()
                     .end()

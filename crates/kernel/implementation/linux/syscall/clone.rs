@@ -320,6 +320,12 @@ fn copy_map<C: Executor + 'static>(
             && !map.take_guards(mapping.start, mapping.end).is_empty();
         if mapping.on_fork.skip {
             map.remove(mapping.start, mapping.end);
+            // The copy maps the same shared pages as the parent; the child lets go of them before
+            // its range is cleared, or the clearing would reach the parent's pages.
+            if mapping.shared || matches!(mapping.backing, crate::memory::Backing::File { .. }) {
+                cpu.unmap_views(memory, mapping.start, length)
+                    .map_err(errno::from_cpu)?;
+            }
             cpu.set_permissions(
                 memory,
                 mapping.start,

@@ -1483,6 +1483,14 @@ impl AddressMap {
         let had_code = removed
             .iter()
             .any(|old| old.permissions.contains(Permissions::EXECUTE));
+        // A replaced file mapping lets go of the file's pages first, as `unmap` does: else the
+        // clearing below writes zeros into the file, and the new pages stay a view of it.
+        for old in &removed {
+            if matches!(old.backing, Backing::File { .. }) {
+                cpu.unmap_shared(memory, old.start, old.end - old.start)
+                    .map_err(errno::from_cpu)?;
+            }
+        }
         self.clear_used(cpu, memory, mapping.start, mapping.end)?;
         self.apply(cpu, memory, &mapping)?;
         if had_code && !mapping.permissions.contains(Permissions::EXECUTE) {

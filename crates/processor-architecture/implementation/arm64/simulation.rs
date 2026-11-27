@@ -11,7 +11,7 @@ use crate::branch::is_outside_lower_addresses;
 use crate::encoding::{IMM16, RD, RDVL_IMM6, RT};
 use crate::load_store::scalable_access::{simulate_scalable_access, to_scalable_access};
 use crate::load_store::scalable_element_access::{
-    simulate_element_access, to_element_access, to_undecided_register,
+    simulate_element_access, to_element_access, to_suppressible_load,
 };
 use crate::memory::{read_bytes, read_permission};
 use crate::operand::RegisterThirtyOne;
@@ -19,9 +19,9 @@ use crate::registers::write_register;
 use crate::sve::simulate_scalable;
 use crate::system_register::{simulate_system_register_move, to_undecided_registers};
 use crate::{
-    AccessDirection, Arm64, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
-    InstructionFetch, PagePermission, PreciseInstruction, Processor, ProcessorExpectation,
-    RegisterValueExpectation, User, VectorLengthReading, WaitForInterruptBehavior, WaitInstruction,
+    AccessDirection, Arm64, ConditionFlags, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
+    InstructionFetch, PagePermission, PreciseInstruction, Processor, ProcessorExpectation, User,
+    VectorLengthReading, WaitForInterruptBehavior, WaitInstruction,
 };
 
 impl<Level: PrivilegeLevel> Simulator<Arm64<Level>>
@@ -48,20 +48,19 @@ where
         if let Self::ElementAccess { instruction, .. } = *self
             && completed
             && let Ok(word) = fetch(memory.mutations, processor.program_counter)
-            && let Some(register) = to_undecided_register(instruction, processor, word)
         {
-            expectation.vector_registers[register] = RegisterValueExpectation::NonDeterministic;
-            expectation.first_fault_register = RegisterValueExpectation::NonDeterministic;
+            expectation.suppressible_load = to_suppressible_load(instruction, processor, word);
         }
         if let Some((register, condition_flags)) = undecided {
-            if let Some(expected) = expectation
+            if let Some(uncompared) = expectation
+                .uncompared
                 .general_purpose_registers
                 .get_mut(register as usize)
             {
-                *expected = RegisterValueExpectation::NonDeterministic;
+                *uncompared = u64::MAX;
             }
             if condition_flags {
-                expectation.condition_flags = RegisterValueExpectation::NonDeterministic;
+                expectation.uncompared.condition_flags = ConditionFlags::all();
             }
         }
         Ok(expectation)

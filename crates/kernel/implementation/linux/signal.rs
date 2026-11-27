@@ -1189,9 +1189,11 @@ impl Kernel {
         registers.sp = word(frame::SP);
         registers.pc = word(frame::PC);
         let pstate = word(frame::PSTATE);
-        // `valid_native_regs`: only the flags of a user mode state; anything else is a bad frame.
-        let valid = pstate & !wcontainers_abi::pstate::NZCV == 0;
-        registers.pstate = pstate & wcontainers_abi::pstate::NZCV;
+        // `valid_native_regs`: only the flags and PSTATE's controls of a user mode state; anything
+        // else is a bad frame.
+        let kept = wcontainers_abi::pstate::NZCV | crate::running::PROCESS_STATE_CONTROLS;
+        let valid = pstate & !kept == 0;
+        registers.pstate = pstate & kept;
         // `parse_user_sigframe`: the records up to the end, which must include the vectors.
         let mut offset = frame::RESERVED;
         let limit = frame::RESERVED + frame::RESERVED_SIZE;

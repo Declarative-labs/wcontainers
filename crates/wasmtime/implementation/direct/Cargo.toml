@@ -1,0 +1,38 @@
+[package]
+name = "wcontainers-wasmtime-direct"
+description = "wasmtime's own unsafe embedding calls behind the wasmtime trait, each use of unsafe one marked line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-wasmtime = { path = "../.." }
+wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
+# The reservation and its mappings; a file's seals, size and the host's page size, with safe calls.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "mm", "param"] }
+# The module that defines the one memory each host memory is made into.
+wasm-encoder = "0.263.0"
+wcontainers-executor = { path = "../../../executor" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+# The one place a pointer's promise is made, and every copy of the bytes.
+wcontainers-volatile-bytes-pointer = { path = "../../../volatile-bytes/implementation/pointer" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+
+[dev-dependencies]
+wcontainers-wasmtime-conformance = { path = "../../conformance" }
+
+# The bindings of an outside API: it denies unsafe code, so that each of its uses is marked.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

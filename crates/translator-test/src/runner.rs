@@ -1512,7 +1512,8 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 caller.data_mut().exact_mark = None;
                 let kind = TrapKind::from_i32(kind).expect("known trap");
                 let stopped = match kind {
-                    TrapKind::Undefined | TrapKind::Unsupported => {
+                    // The runner's offer reads the counter, so no read traps.
+                    TrapKind::Undefined | TrapKind::Unsupported | TrapKind::SystemAccess => {
                         Stopped::Exit(Exit::IllegalInstruction)
                     }
                     TrapKind::Breakpoint => Stopped::Exit(Exit::Breakpoint {

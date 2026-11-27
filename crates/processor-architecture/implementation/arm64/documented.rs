@@ -81,7 +81,12 @@ const fn to_system_operation(instruction: Instruction<Infallible>) -> Option<Doc
         // A hint: no feature CHKFEAT checks is turned on for the program, so it leaves X16 as it is.
         | I::Chkfeat
         // A range prefetch, whose effect a single instruction's state does not show.
-        | I::Rprfm => DocumentedOperation::NoOperation,
+        | I::Rprfm
+        // [PACM](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/PACM--Pointer-authentication-modifier-) sets PSTATE.PACM only where IsPACMEnabled(), which SCTLR2_EL1.EnPACM0 clear makes false.
+        | I::Pacm
+        // SRLS and SLBND of [FEAT_RLCS](https://developer.arm.com/documentation/109697/2026_09/Feature-descriptions/The-Armv9-8-architecture-extension) only scope the ordering of releases.
+        | I::SrlsHiHints
+        | I::SlbndHiHints => DocumentedOperation::NoOperation,
         I::Svc => DocumentedOperation::SupervisorCall,
         I::Udf | I::Hvc | I::Smc | I::Hlt | I::Dcps1 | I::Dcps2 | I::Dcps3 | I::Eret | I::Drps => {
             DocumentedOperation::Undefined
