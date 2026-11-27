@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use wcontainers_abi::{Access, LOWEST_ADDRESS, PAGE_SIZE, Permissions, SystemCallRequest};
 use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_executor::memory_space::{MemorySpace, PageTable};
+use wcontainers_executor::memory_space::{MapMemoryError, MemorySpace, PageTable};
 use wcontainers_executor::{
     Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
     TrapHandler,
@@ -43,6 +43,8 @@ const WORD: u64 = size_of::<u64>() as u64;
 const INSTRUCTION: u64 = size_of::<u32>() as u64;
 /// Where the second code page of a test starts.
 const SECOND_CODE: u64 = LOWEST_ADDRESS + PAGE_SIZE;
+/// The most windows a space's guest memory holds at once, window 0 among them.
+const HOST_WINDOWS: u64 = 8;
 /// A value the tests store.
 const STORED: u64 = 0x0123_4567_89AB_CDEF;
 /// The single-precision 1.0 (<https://en.wikipedia.org/wiki/Single-precision_floating-point_format>).
@@ -808,4 +810,196 @@ fn bytes_across_a_window_end_go_to_a_sink_and_come_from_a_source() {
     let mut source: VecDeque<u8> = (0..4 * WORD).map(|byte| byte as u8).collect();
     assert_eq!(view.write_from(&mut source), Ok(4 * size_of::<u64>()));
     assert_eq!(read_word(&memory, WINDOW + WORD), 0x1F1E_1D1C_1B1A_1918);
+}
+
+/// Gives the pages of the addresses reading and writing.
+fn writable(table: &mut Table, addresses: std::ops::Range<u64>) {
+    allow(table, addresses, Permissions::READ | Permissions::WRITE);
+}
+
+/// Maps one page of the other table's space at the address.
+fn map_page(table: &mut Table, at: u64, other: &Table, from: u64) {
+    table
+        .map_from(at..at + PAGE_SIZE, other, from)
+        .expect("a mapping");
+}
+
+#[test]
+fn a_copy_over_mapped_pages_from_pages_never_written_leaves_them_zero_and_its_own() {
+    let executor = executor();
+    let (memory, mut table) = executor.create_guest_memory().expect("a space");
+    let (other, mut other_table) = executor.create_guest_memory().expect("a space");
+    let (third, mut third_table) = executor.create_guest_memory().expect("a space");
+    let at = 2 * WINDOW + 16 * PAGE_SIZE;
+    // This space: data before and in the first two pages, the last two mapped from the third space.
+    writable(&mut table, at - 3 * PAGE_SIZE..at + 4 * PAGE_SIZE);
+    fill(&memory, at - 3 * PAGE_SIZE..at + 4 * PAGE_SIZE, u64::MIN);
+    let third_at = 6 * WINDOW;
+    writable(&mut third_table, third_at..third_at + 2 * PAGE_SIZE);
+    fill(&third, third_at..third_at + 2 * PAGE_SIZE, STORED);
+    table
+        .map_from(
+            at + 2 * PAGE_SIZE..at + 4 * PAGE_SIZE,
+            &third_table,
+            third_at,
+        )
+        .expect("a mapping");
+    // The other space: data in the first two pages, the last two given permissions but never written.
+    let from = 4 * WINDOW + 8 * PAGE_SIZE;
+    writable(&mut other_table, from..from + 4 * PAGE_SIZE);
+    fill(&other, from..from + 2 * PAGE_SIZE, STORED * 3);
+    table
+        .copy_from(at..at + 4 * PAGE_SIZE, &other_table, from)
+        .expect("a copy");
+    for page in 0..4 {
+        for offset in [WORD, PAGE_SIZE - WORD] {
+            let address = at + page * PAGE_SIZE + offset;
+            let expected = if page < 2 {
+                filled(from + page * PAGE_SIZE + offset, STORED * 3)
+            } else {
+                u64::MIN
+            };
+            assert_eq!(read_word(&memory, address), expected, "at {address:#x}");
+        }
+    }
+    // The last two pages are this space's own: the third space keeps its bytes, and a copy of them is not shared.
+    write(&memory, at + 2 * PAGE_SIZE, &STORED.to_le_bytes());
+    assert_eq!(read_word(&third, third_at), filled(third_at, STORED));
+    let (copy, mut copy_table) = executor.create_guest_memory().expect("a space");
+    copy_table
+        .copy_from(
+            at + 2 * PAGE_SIZE..at + 3 * PAGE_SIZE,
+            &table,
+            at + 2 * PAGE_SIZE,
+        )
+        .expect("a copy");
+    assert_eq!(read_word(&copy, at + 2 * PAGE_SIZE), STORED);
+    write(&copy, at + 2 * PAGE_SIZE, &u64::MAX.to_le_bytes());
+    assert_eq!(read_word(&memory, at + 2 * PAGE_SIZE), STORED);
+    // Zeroing the page clears what this space shows there.
+    memory
+        .zero(at + 2 * PAGE_SIZE..at + 3 * PAGE_SIZE)
+        .expect("the addresses");
+    assert_eq!(read_word(&memory, at + 2 * PAGE_SIZE), u64::MIN);
+}
+
+#[test]
+fn a_copy_of_pages_mapped_from_out_of_order_places_shows_each_one() {
+    let executor = executor();
+    let (memory, mut table) = executor.create_guest_memory().expect("a space");
+    let (_other, mut other_table) = executor.create_guest_memory().expect("a space");
+    let (third, mut third_table) = executor.create_guest_memory().expect("a space");
+    let third_at = 3 * WINDOW;
+    writable(&mut third_table, third_at..third_at + 8 * PAGE_SIZE);
+    fill(&third, third_at..third_at + 8 * PAGE_SIZE, STORED);
+    // The other space's pages show the third space's pages 5, 4, then 2 twice.
+    let from = 5 * WINDOW + 2 * PAGE_SIZE;
+    for (page, third_page) in [(0, 5), (1, 4), (2, 2), (3, 2)] {
+        map_page(
+            &mut other_table,
+            from + page * PAGE_SIZE,
+            &third_table,
+            third_at + third_page * PAGE_SIZE,
+        );
+    }
+    writable(&mut other_table, from..from + 4 * PAGE_SIZE);
+    let at = WINDOW + 3 * PAGE_SIZE;
+    table
+        .copy_from(at..at + 4 * PAGE_SIZE, &other_table, from)
+        .expect("a copy");
+    for (page, third_page) in [(0, 5), (1, 4), (2, 2), (3, 2)] {
+        let address = at + page * PAGE_SIZE + WORD;
+        assert_eq!(
+            read_word(&memory, address),
+            filled(third_at + third_page * PAGE_SIZE + WORD, STORED),
+            "page {page}"
+        );
+    }
+}
+
+#[test]
+fn a_copy_of_a_page_mapped_then_unmapped_is_not_shared() {
+    let executor = executor();
+    let (memory, mut table) = executor.create_guest_memory().expect("a space");
+    let (other, mut other_table) = executor.create_guest_memory().expect("a space");
+    let (third, mut third_table) = executor.create_guest_memory().expect("a space");
+    let third_at = 7 * WINDOW;
+    writable(&mut third_table, third_at..third_at + PAGE_SIZE);
+    fill(&third, third_at..third_at + PAGE_SIZE, STORED);
+    let from = 2 * WINDOW + 5 * PAGE_SIZE;
+    map_page(&mut other_table, from, &third_table, third_at);
+    other_table
+        .unmap_from(from..from + PAGE_SIZE)
+        .expect("an unmapping");
+    writable(&mut other_table, from..from + PAGE_SIZE);
+    write(&other, from, &STORED.to_le_bytes());
+    let at = 4 * WINDOW + 5 * PAGE_SIZE;
+    table
+        .copy_from(at..at + PAGE_SIZE, &other_table, from)
+        .expect("a copy");
+    assert_eq!(read_word(&memory, at), STORED);
+    write(&memory, at, &u64::MAX.to_le_bytes());
+    assert_eq!(read_word(&other, from), STORED, "the copy is not shared");
+    assert_eq!(read_word(&third, third_at), filled(third_at, STORED));
+}
+
+#[test]
+fn a_mapping_either_space_has_no_window_left_for_is_refused_and_changes_nothing() {
+    let executor = executor();
+    let (memory, mut table) = executor.create_guest_memory().expect("a space");
+    let (other, mut other_table) = executor.create_guest_memory().expect("a space");
+    // Each space gives every window its guest memory holds; the other's last page holds a word.
+    for window in 1..HOST_WINDOWS {
+        writable(&mut table, window * WINDOW..window * WINDOW + PAGE_SIZE);
+        writable(
+            &mut other_table,
+            window * WINDOW..window * WINDOW + PAGE_SIZE,
+        );
+    }
+    let from = WINDOW;
+    write(&other, from, &STORED.to_le_bytes());
+    let past = HOST_WINDOWS * WINDOW;
+    assert_eq!(
+        table.map_from(past..past + PAGE_SIZE, &other_table, from),
+        Err(MapMemoryError::OutOfMemory),
+        "this space has no window left"
+    );
+    assert_eq!(
+        table.map_from(WINDOW..WINDOW + PAGE_SIZE, &other_table, past),
+        Err(MapMemoryError::OutOfMemory),
+        "the other space has no window left"
+    );
+    assert_eq!(read_word(&memory, WINDOW), u64::MIN, "nothing was mapped");
+    write(&memory, WINDOW, &u64::MAX.to_le_bytes());
+    assert_eq!(read_word(&other, from), STORED);
+}
+
+#[test]
+fn a_copy_across_a_window_the_other_space_never_placed_lands_the_pages_after_it() {
+    let executor = executor();
+    let (memory, mut table) = executor.create_guest_memory().expect("a space");
+    let (other, mut other_table) = executor.create_guest_memory().expect("a space");
+    // The other space has the last page of window 2 and the first of window 4; window 3 has no place.
+    let from = 3 * WINDOW - PAGE_SIZE;
+    writable(&mut other_table, from..3 * WINDOW);
+    writable(&mut other_table, 4 * WINDOW..4 * WINDOW + PAGE_SIZE);
+    fill(&other, from..3 * WINDOW, STORED);
+    fill(&other, 4 * WINDOW..4 * WINDOW + PAGE_SIZE, STORED);
+    let at = 5 * WINDOW - PAGE_SIZE;
+    let length = WINDOW + 2 * PAGE_SIZE;
+    table
+        .copy_from(at..at + length, &other_table, from)
+        .expect("a copy");
+    assert_eq!(read_word(&memory, at + WORD), filled(from + WORD, STORED));
+    let after = at + WINDOW + PAGE_SIZE;
+    assert_eq!(
+        read_word(&memory, after + WORD),
+        filled(4 * WINDOW + WORD, STORED),
+        "the page after the gap"
+    );
+    assert_eq!(
+        read_word(&memory, 5 * WINDOW + PAGE_SIZE),
+        u64::MIN,
+        "the gap"
+    );
 }
