@@ -1063,3 +1063,95 @@ coming back through it), then faults and stops (signal stack, handler, raw mask)
 
 For the owner, still open (written above, "For the owner (one question)"): may a behavior source say which addresses
 a state's memory may use (`BehaviorSource::addresses()`)?
+
+## Form I's entry: code runs in this process until it calls the floor (run of 2026-11-27, second)
+
+### The start of this run (MEASURED: `git status`, `git log`, `git fetch`)
+
+The work the brief called uncommitted was already committed and pushed by the run before (origin tip 03b15216f, the
+section above); the worktree was clean. His main (fetched: ac696ea19) was already inside; the owner's interface files
+(every `crates/*/interface.rs` his main holds) are byte-identical to his main (`git diff --quiet`: 0). The four
+interface files this branch adds (kvm, hypervisor-framework, linux-process, linux-socket-options) are the tracks'
+API crates, not on his main.
+
+### Built (commits c019fd1cd, 041ebbda8, b7c8eae95; pushed, origin tip b7c8eae95)
+
+- `crates/linux-process`, three more items. `map_code(address, code)`: a memory file of the bytes, sealed against
+  shrinking, growing and every write, then mapped shared, readable and executable, `MAP_FIXED_NOREPLACE` (one marked
+  line): no one, this process included, can change code that runs. `exit_code()`: the 16 bytes of an exit (`stp x23,
+  x30, [x28, #256]`, `ldr x23, [x28, #272]`, `blr x23`, `udf`). `run_code(&mut RunFrame)`: one naked function of
+  assembly, which keeps x19 to x30, d8 to d15, FPCR and TPIDR_EL0 on the thread's stack, loads every register from
+  the frame (x28 the frame, x23 the code's first address) and branches; an exit saves every register the code left
+  into the frame, puts the thread's back and returns the exit's address. New plain types in the interface:
+  `Arm64Registers`, `RunFrame` (32 words the code owns, at x28 + 0, then 4 words of the run, then the registers).
+- `crates/executor/implementation/in-process`, module `run`: `floor()` maps one page of exits at the in-process way's
+  entries (`IN_PROCESS_ENTRIES`' page), once per process; `InProcessThread` holds a frame, `enter(way, state, page,
+  float, at)` takes the stop crate's `in_process::rejoin`, `run()` gives `Exit::Call(code)` from the exit's address,
+  and `hardware()`, `page()`, `after()` give what `in_process::resolve` reads. Compile-time checks tie the exits to
+  the way: x28 is `PAGE`, x23 is `SCRATCH`, an exit is one entry, the page and the 4 words after it fit the frame.
+- No new trait. No owner file changed. The `Executor` itself is not written yet: the run is the step it loops on.
+
+### Tests (MEASURED)
+
+- linux-process suite, 2 new: `maps_code_no_one_can_write` (refuses an unaligned address, part of a page, nothing:
+  `EINVAL`; a mapped place: `EEXIST`; maps `r-xs`; a write through `/proc/self/mem` is refused and the bytes stay;
+  the drop unmaps); `runs_code_until_an_exit_and_keeps_the_thread_s_own` (code that changes TPIDR_EL0, FPCR's rounding
+  mode, sp, d8 and x19, then exits: every register in the frame is what it left, x23 the exit, x28 the frame, pc and
+  x30 after the branch, the frame's own words untouched; after it the test thread's thread-local reads its value and
+  1/3 rounds as before; then two threads run it at once).
+- in-process tests/run.rs, 3 new, on translated code of the in-process way run natively in this process
+  (`ldr x1, [x2]`, `add x3, x1, #5`, `str x3, [x2, #8]`, `add x15, x24, #1`, `movz x8, #172`, `svc #0`):
+  each resolves through `in_process::resolve` to `Stop::Syscall` with every one of the 31 registers the guest's
+  (x15 and x24, which the way withholds, among them), pc after the `svc`, sp unchanged, the store in the memory's
+  window. `two_memories_run_apart_each_in_its_own_window` (slots of one pool, runs A, B, A: each reads and writes only
+  its own); `a_thousand_runs_leave_the_thread_its_own` (1,000 runs on one thread, the guest's thread pointer kept
+  apart from the thread's, its thread-local and rounding as before).
+- A race in the old suite fixed: `refuses_a_page_at_a_bad_address_or_length` searched the same page as
+  `maps_a_fixed_page_and_unmaps_it_on_drop` and, run at once, mapped the page the other had just checked was unmapped
+  (1 failure, job 20261127-061904); it now searches its own region.
+
+Before the push (Graviton4, job 20261127-062112, load 43 to 46): `cargo fmt --check` of the four crates 0; clippy
+`--all-targets -D warnings` of them and host-process and its zygote 0; the in-process and linux-process tests ten
+times in a row, each time memory 9, run 3, slots 1, linux-process 14 passed, 0 failed. Xeon (job 20261127-062129):
+clippy 0; linux-process 10 passed, three times.
+
+At the pushed b7c8eae95 (Linux 7.0.0-1018-aws, rustc 1.99.0, 12 jobs), linux-process's three crates, in-process,
+host-process, its zygote and arm64-stop; tests with `--skip behavior_source --skip
+agrees_with_precise_instruction_set` (the cases that wait on the owner's question and the instruction track):
+- Graviton4 (job 20261127-062450, load 43 at the start, up to 198 from other jobs): `cargo fmt --check` 0; clippy
+  `--all-targets -D warnings` 0; tests exit 0, 43 test binaries, 164 passed, 0 failed, 6 ignored (1,377 s, most of it
+  differential in this build).
+- Xeon (job 20261127-062456): clippy 0; tests exit 0, 77 passed, 0 failed, 2 ignored (in-process is empty there).
+
+Not run: `cargo reviewable check` (its naming rules ask a decision model over the network; no build of it on the
+machines this run); the hostile-guest suite as a whole (in_process_attacks ran in host-process above: passed).
+
+### Security (MEASURED, the root manifest's command, and `#[expect(unsafe_code` marks)
+
+- linux-process: lines 11 -> 12 (`map_code`'s mmap), all in `direct`; marks 11 -> 13. The 13th is the attribute
+  `#[unsafe(naked)]` of the run, which the command leaves out (it starts `#[`); its mark sits on the module `entering`,
+  since rustc refuses `expect` on a naked function (E0736). That mark is UNSOUND: a safe fn runs whatever code the
+  frame's pc names on its own stack; only the translated code's promise (it reaches its window and its frame alone)
+  keeps this process's memory as Rust holds it. FOR THE ORCHESTRATOR (one line): `run_code` is safe by signature and
+  UNSOUND by Rust's rules, as every entry into other code is; ruling 2 put it here; say whether an UNSOUND mark is
+  acceptable for it, or which form you want.
+- in-process 0 -> 0; host-process 0; zygote 0 by the command (its two marks unchanged); arm64-stop 0.
+- New dependencies: none from outside; in-process now depends on arm64-stop (ours), and in its tests on the
+  translator, guest-cpu and arm64 (ours).
+- A signal that reaches a thread while its guest code runs is taken on the guest's stack inside the window: the next
+  piece (the signal stack) closes that. Until then nothing of form I runs outside these tests.
+
+### RI's bar, state
+
+Item 1: the four seeded in_process_way tests run on unicorn and in a P stub; on form I natively, the six instructions
+above pass; the window-edge test needs faults (next piece). Item 2: two I memories each see only their own bytes,
+natively (above); a P memory beside them in one embedder waits on the executor. Item 3 holds. Items 4 to 6 wait on
+the executor, 5 and 6 also on X2, X3. Item 7: holds (0 in in-process; linux-process 13 marks, 1 UNSOUND, above).
+
+Next piece, waiting on no other track: faults and stops (a signal stack per thread and the fault handler, both marked
+methods in linux-process `direct`, the raw mask), so that the mark, a guest fault and an unmapped slot end a run as a
+`Taken::Access`; then `Executor` and `ExecutionInterrupter` written as a loop of "run until the next trap, then ask
+the handler"; the slot table's pages (map_code within a reservation) for pieces that jump.
+
+For the owner, still open (written above): may a behavior source say which addresses a state's memory may use
+(`BehaviorSource::addresses()`)?
