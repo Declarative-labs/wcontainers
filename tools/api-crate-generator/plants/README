@@ -1,8 +1,16 @@
-Planted defects and the commands that run them (from the repository's root, inside `nix develop`, on Linux):
+Planted defects and the commands that run them (from the repository's root, inside `nix develop`, on Linux). Every
+command pins one test thread (RUST_TEST_THREADS=1): the recorder's tests read process-wide counts.
 
+  export RUST_TEST_THREADS=1
   python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/direct3d-12.tsv -- \
     cargo test -q --release -p wcontainers-direct3d-12-direct -p wcontainers-direct3d-12-recorder \
     -p wcontainers-direct3d-12-hostile -p wcontainers-direct3d-12-conformance
+  python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/direct3d-11.tsv -- \
+    cargo test -q -p wcontainers-direct3d-11-direct -p wcontainers-direct3d-11-recorder \
+    -p wcontainers-directx-graphics-infrastructure-recorder
+  python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/directx-graphics-infrastructure.tsv -- \
+    cargo test -q -p wcontainers-directx-graphics-infrastructure-direct -p wcontainers-directx-graphics-infrastructure-recorder \
+    -p wcontainers-direct3d-11-recorder
   python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/lengths.tsv -- \
     cargo test -q --release -p wcontainers-direct3d-11-direct --lib lengths
   python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/lengths.tsv -- \

@@ -340,6 +340,9 @@ impl Classifier<'_, '_> {
                 Override::Lent(lent, until) if *lent == field.name => Kind::LentUntil { what: format!("memory the system lends until {until}"), line: true },
                 _ => match &field.ty {
                     Type::PtrConst(..) | Type::PtrMut(..) => self.of_pointer(&field.ty, &field.attributes, out, Some((record, id)), &field_place, &Override::None, true),
+                    // A field of pointer width src/api.rs `UINT64_JUDGED` judges a number by the header's declaration (an
+                    // offset, a size): never an address.
+                    Type::ISize | Type::USize if crate::api::UINT64_JUDGED.iter().any(|(owner, name, judged)| *owner == record.name && *name == field.name && *judged == crate::api::Uint64::Number) => Kind::Number,
                     other => self.of_value(other, &field.attributes, out, Some((record, id)), &field_place),
                 },
             };

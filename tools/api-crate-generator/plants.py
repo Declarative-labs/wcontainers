@@ -11,8 +11,8 @@
 
 One plant per field of every copy function (data.rs: a field a decoder reads is read from zero bytes instead; a field an
 encoder writes is not written), per argument of every call into the system (call.rs: a value passed as its type's
-default, a pointer as null) and per argument of every call into the implementation (serve.rs: passed as its type's
-default), and the named plants the independent checks asked for. The list is text, one plant a line, tab-separated:
+default, a pointer as null) and per argument of every call into the implementation (serve.rs: see `serve_plants`), and
+the named plants the independent checks asked for. The list is text, one plant a line, tab-separated:
 id, file, the function the plant is in (`*`: anywhere in the file), the text replaced (with \\n for new lines), the text
 put in its place.
 
@@ -147,18 +147,55 @@ def call_plants(path, text):
     return plants
 
 
+def decoder_sizes(folder):
+    """The size in bytes of each structure a decoder of the folder's data.rs reads, by the decoder's name."""
+    path = os.path.join(folder, "data.rs")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as handle:
+        data = handle.read()
+    return {m.group(2): int(m.group(1)) for m in re.finditer(r"/// Reads `[^`]+` from the (\d+) bytes[^\n]*\n(?:#\[[^\n]*\n)*pub(?:\(crate\))? fn (decode_[a-z0-9_]+)\(", data)}
+
+
 def serve_plants(path, text):
+    """One plant per argument of every call into the implementation: a value passed as its type's default; an optional
+    object or value as none; an array as empty; a structure the glue decoded as the structure of zero bytes; an object
+    as the call's other object of the same kind where the call has one (as its name tells), else the call not made."""
     plants = []
+    sizes = decoder_sizes(os.path.dirname(path))
     for name, start, end in functions(text):
         body = text[start:end]
+        guard = re.search(r"guarded\((None|Err\([A-Z_]+\)|[A-Za-z_:()]+), move \|\|", body)
+        refusal = guard.group(1) if guard else "None"
         for match in re.finditer(r"\.value\(\)\s*\.([a-z_0-9]+)\(", body):
             open_at = match.end() - 1
             close = matching(body, open_at)
             arguments = body[open_at + 1:close]
-            for index, (s, e) in enumerate(split_arguments(arguments)):
-                whole = body[match.start():close + 1]
-                default = " &Default::default()" if arguments[s:e].strip().startswith("&") else " Default::default()"
-                planted = whole[:open_at - match.start() + 1] + arguments[:s] + default + arguments[e:] + ")"
+            parts = split_arguments(arguments)
+            objects = [index for index, (s, e) in enumerate(parts) if re.fullmatch(r"[a-z_0-9]+_found\.(?:value|get)\(\)", arguments[s:e].strip())]
+            whole = body[match.start():close + 1]
+            for index, (s, e) in enumerate(parts):
+                argument = arguments[s:e].strip()
+                variable = argument.lstrip("&").split(".")[0].strip()
+                decoded = re.search(rf"let {re.escape(variable)}\b[^;]*?(decode_[a-z0-9_]+)\(", body, re.S)
+                if index in objects:
+                    # Another object of the same kind, as its name tells (`dst_buffer_found`, `src_buffer_found`).
+                    kind = variable.removesuffix("_found").split("_")[-1]
+                    others = [other for other in objects if other != index and arguments[parts[other][0]:parts[other][1]].strip().split(".")[0].removesuffix("_found").split("_")[-1] == kind]
+                    if others:
+                        s2, e2 = parts[others[0]]
+                        new = " " + arguments[s2:e2].strip()
+                    else:
+                        new = " { return " + refusal + "; }"
+                elif argument.startswith("&") and decoded and decoded.group(1) in sizes:
+                    new = f" &{decoded.group(1)}(&[u8::MIN; {sizes[decoded.group(1)]}])"
+                elif argument.startswith("&") and not decoded:
+                    new = " &[]"
+                elif argument.startswith("&"):
+                    new = " &Default::default()"
+                else:
+                    new = " Default::default()"
+                planted = whole[:open_at - match.start() + 1] + arguments[:s] + new + arguments[e:] + ")"
                 plants.append((path, f"{name}.{match.group(1)}.argument{index}", name, whole, planted))
     return plants
 

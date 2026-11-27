@@ -665,7 +665,12 @@ impl Writer<'_, '_> {
     /// The expression of one argument, with the lines that bind what it needs (each of which leaves the call with
     /// `skip` when an object is missing); none when the driver cannot make it.
     #[allow(clippy::too_many_arguments, reason = "the argument's own parts")]
-    fn argument(&self, name: &str, ty: &str, scope: &[usize], codecs: &Codecs, prelude: &mut String, counter: &mut usize, skip: &str, riid: Option<&str>) -> Option<String> {
+    fn argument(&self, place: &str, name: &str, ty: &str, scope: &[usize], codecs: &Codecs, prelude: &mut String, counter: &mut usize, skip: &str, riid: Option<&str>) -> Option<String> {
+        // A value src/api.rs `SUITE_ARGUMENTS` gives for this argument of this method: valid by the method's documented
+        // rules, so that the call reaches the implementation through both glues and is compared.
+        if let Some((_, _, value)) = crate::api::SUITE_ARGUMENTS.iter().find(|(at, argument, _)| *at == place && *argument == name) {
+            return Some((*value).to_string());
+        }
         let t = ty.trim();
         if riid.is_some() && t.ends_with("Guid") {
             return riid.map(|iid| format!("&{iid}"));
@@ -686,6 +691,12 @@ impl Writer<'_, '_> {
                 && let Some(value) = codecs.shapes.known(data, super::record::salt_of(name), true).filter(|value| value != "None")
             {
                 return Some(format!("Some(&{value})"));
+            }
+            // An array given or not: one element, as every array the suite passes.
+            if (inner.starts_with("&[") || inner.starts_with("&'_ ["))
+                && let Some(value) = self.argument(place, name, inner, scope, codecs, prelude, counter, skip, riid).filter(|value| value != "&[]")
+            {
+                return Some(format!("Some({value})"));
             }
             return Some("None".to_string());
         }
@@ -756,9 +767,6 @@ impl Writer<'_, '_> {
         }
         if bare.contains("Foreign") || bare.contains("impl ") || bare.contains("dyn ") {
             return None;
-        }
-        if let Some(first) = codecs.first_values.get(bare) {
-            return Some(format!("{reference}{first}"));
         }
         let _ = name;
         Some(format!("{reference}Default::default()"))
@@ -913,7 +921,7 @@ impl Writer<'_, '_> {
     /// One call of the driver or a maker: the lines that bind its receiver (`this`, of kind `bind`) and arguments, and
     /// the call; none when an argument cannot be made.
     #[allow(clippy::too_many_arguments, reason = "the call's own parts")]
-    fn driven_call(&self, bind: Option<usize>, receiver_type: &str, trait_path: &str, rust_name: &str, inputs: &[(String, String)], scope: &[usize], codecs: &Codecs, skip: &str, riid: Option<(&str, &str)>) -> Option<(String, String)> {
+    fn driven_call(&self, place: &str, bind: Option<usize>, receiver_type: &str, trait_path: &str, rust_name: &str, inputs: &[(String, String)], scope: &[usize], codecs: &Codecs, skip: &str, riid: Option<(&str, &str)>) -> Option<(String, String)> {
         let mut prelude = String::new();
         let receiver = match bind {
             Some(kind) => {
@@ -930,7 +938,7 @@ impl Writer<'_, '_> {
         let mut args = Vec::new();
         for (name, ty) in inputs {
             let iid = riid.filter(|(riid_name, _)| riid_name == name).map(|(_, iid)| iid);
-            args.push(self.argument(name, ty, scope, codecs, &mut prelude, &mut counter, skip, iid)?);
+            args.push(self.argument(place, name, ty, scope, codecs, &mut prelude, &mut counter, skip, iid)?);
         }
         // By the trait's path, the receiver's type inferred: the linter's conformance_untested_method reads a call of
         // `Trait::method(value)`, not one through a qualified self type (`<T as Trait>::method`).
@@ -981,7 +989,7 @@ impl Writer<'_, '_> {
         }
         let pattern = if parts.len() > 1 { format!("({})", (0..parts.len()).map(|p| format!("p{p}")).collect::<Vec<_>>().join(", ")) } else { "p0".to_string() };
         if !stores.is_empty()
-            && let Some((prelude, call)) = self.driven_call(bind, receiver_type, trait_path, rust_name, inputs, scope, codecs, "None", None)
+            && let Some((prelude, call)) = self.driven_call(place, bind, receiver_type, trait_path, rust_name, inputs, scope, codecs, "None", None)
         {
             makers.push(Maker { place: place.to_string(), prelude, call, fallible, pattern, stores });
         }
@@ -992,7 +1000,7 @@ impl Writer<'_, '_> {
         if let (Some((path, kinds)), Some(riid)) = (unknown, riid) {
             for kind in kinds {
                 let Some(iid) = g.kinds[kind].newest.first().map(|newest| self.iid(newest)) else { continue };
-                if let Some((prelude, call)) = self.driven_call(bind, receiver_type, trait_path, rust_name, inputs, scope, codecs, "None", Some((&riid, &iid))) {
+                if let Some((prelude, call)) = self.driven_call(place, bind, receiver_type, trait_path, rust_name, inputs, scope, codecs, "None", Some((&riid, &iid))) {
                     let pattern = format!("{path}::{}(p0)", g.kinds[kind].name);
                     makers.push(Maker { place: format!("{place} for {}", g.kinds[kind].name), prelude, call, fallible, pattern, stores: vec![(kind, "p0".to_string())] });
                 }
@@ -1050,7 +1058,7 @@ impl Writer<'_, '_> {
                 let (inputs, result) = self.trait_signature(method, sig_api, "Self::Api", &place);
                 self.current.set(saved);
                 let rust_name = Self::method_name(method);
-                if let Some((prelude, call)) = self.driven_call(Some(k), &system(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
+                if let Some((prelude, call)) = self.driven_call(&place, Some(k), &system(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
                     calls.push((format!("{place} on {}", g.kinds[k].name), prelude, call));
                 }
                 if let Some((prelude, call)) = self.fuzzed_call(Some(k), &system(k), &trait_path, &rust_name, &inputs, &scope, codecs) {
@@ -1068,7 +1076,7 @@ impl Writer<'_, '_> {
                 continue;
             }
             let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
-            if let Some((prelude, call)) = self.driven_call(None, "Api", &top_trait, &rust_name, &inputs, &scope, codecs, "false", None) {
+            if let Some((prelude, call)) = self.driven_call(&function.name, None, "Api", &top_trait, &rust_name, &inputs, &scope, codecs, "false", None) {
                 calls.push((function.name.clone(), prelude, call));
             }
             if let Some((prelude, call)) = self.fuzzed_call(None, "Api", &top_trait, &rust_name, &inputs, &scope, codecs) {
@@ -1180,11 +1188,6 @@ fn split_top(list: &str) -> Vec<String> {
 pub(super) struct Codecs {
     decoders: BTreeMap<String, (String, String, u64)>,
     defaults: BTreeSet<String>,
-    /// The structures of one public integer field (`pub struct Handle(pub usize);`), by path.
-    newtypes: BTreeSet<String>,
-    /// The first value of each enumeration that has no value 0, by the enumeration's path: what the suite passes for
-    /// it (0 would be refused by the glue before the implementation sees it, as no value of the enumeration).
-    first_values: BTreeMap<String, String>,
     /// The data modules the hostile crate includes: module name and path from the crate.
     modules: Vec<(String, String)>,
     /// Every structure and enumeration of the set as the interface crates write them, for known values made without
@@ -1204,6 +1207,10 @@ pub(super) struct Shapes {
     values: BTreeMap<String, Vec<(String, i64)>>,
     /// The structures and enumerations of one public integer field.
     newtypes: BTreeSet<String>,
+    /// The integer type of each structure or enumeration of one public integer field, by path.
+    inner: BTreeMap<String, String>,
+    /// The value of each `usize` constant (an array's length), by path.
+    lengths: BTreeMap<String, usize>,
 }
 
 /// The Rust integer types a known value is written for as a literal.
@@ -1259,10 +1266,114 @@ impl Shapes {
         }
         let (fields, union) = self.structs.get(ty)?;
         if *union {
-            return self.zero(ty);
+            return self.union_known(ty, salt).or_else(|| self.zero(ty));
         }
         let parts: Option<Vec<String>> = fields.iter().enumerate().map(|(at, (name, field))| self.known(field, salt + KNOWN_STEP * (at + 1), valid).map(|value| format!("{name}: {value}"))).collect();
         parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
+    }
+
+    /// A known value of the C union `ty` the same in every member: bytes of 1 to 126 (salted; no `f32` or `f64` of them
+    /// is a NaN or an infinity), the widest member read from them, the bytes it does not read (its padding) made zero,
+    /// and every member read from those bytes as C lays it out. None where a member's layout is not known here (a `bool`,
+    /// whose C type the Rust form does not say).
+    fn union_known(&self, ty: &str, salt: usize) -> Option<String> {
+        let (fields, _) = self.structs.get(ty)?;
+        let (size, _) = self.layout(ty)?;
+        let mut bytes: Vec<u8> = (0..size).map(|at| u8::try_from(1 + (salt + at) % KNOWN_SPAN).unwrap_or(1)).collect();
+        let mut widest: Option<(usize, &str)> = None;
+        for (_, field) in fields {
+            let (field_size, _) = self.layout(field)?;
+            if widest.is_none_or(|(most, _)| field_size > most) {
+                widest = Some((field_size, field));
+            }
+        }
+        let (_, widest) = widest?;
+        let mut read = vec![false; size];
+        self.read_value(widest, &bytes, 0, &mut read)?;
+        for (byte, was_read) in bytes.iter_mut().zip(&read) {
+            if !was_read {
+                *byte = 0;
+            }
+        }
+        let mut ignored = vec![false; size];
+        let parts: Option<Vec<String>> = fields.iter().map(|(name, field)| self.read_value(field, &bytes, 0, &mut ignored).map(|value| format!("{name}: {value}"))).collect();
+        parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
+    }
+
+    /// The C size and alignment of `ty` as the Rust form names it (x86-64 and ARM64 Windows); none where not known here.
+    fn layout(&self, ty: &str) -> Option<(usize, usize)> {
+        let ty = ty.trim();
+        match ty {
+            "u8" | "i8" => return Some((1, 1)),
+            "u16" | "i16" => return Some((2, 2)),
+            "u32" | "i32" | "f32" => return Some((4, 4)),
+            "u64" | "i64" | "f64" | "usize" | "isize" => return Some((8, 8)),
+            _ => {}
+        }
+        if let Some((element, length)) = self.array_of(ty) {
+            let (size, align) = self.layout(element)?;
+            return Some((size.checked_mul(length)?, align));
+        }
+        if let Some(inner) = self.inner.get(ty) {
+            return self.layout(inner);
+        }
+        let (fields, union) = self.structs.get(ty)?;
+        let (mut size, mut align) = (0_usize, 1_usize);
+        for (_, field) in fields {
+            let (field_size, field_align) = self.layout(field)?;
+            align = align.max(field_align);
+            size = if *union { size.max(field_size) } else { size.next_multiple_of(field_align) + field_size };
+        }
+        Some((size.next_multiple_of(align), align))
+    }
+
+    /// The element type and length of an array type `[T; N]` (N a literal or a constant of the set).
+    fn array_of<'t>(&self, ty: &'t str) -> Option<(&'t str, usize)> {
+        let (element, length) = ty.strip_prefix('[')?.strip_suffix(']')?.rsplit_once(';')?;
+        let length = length.trim();
+        let length = length.parse().ok().or_else(|| self.lengths.get(length).copied())?;
+        Some((element.trim(), length))
+    }
+
+    /// A Rust expression of the value of type `ty` that C reads from `bytes` at `at` (little-endian), marking each byte
+    /// read in `read`; none where the layout is not known here.
+    fn read_value(&self, ty: &str, bytes: &[u8], at: usize, read: &mut [bool]) -> Option<String> {
+        let ty = ty.trim();
+        let integer = |size: usize, read: &mut [bool]| -> Option<u64> {
+            let mut value = 0_u64;
+            for index in (0..size).rev() {
+                value = (value << 8) | u64::from(*bytes.get(at + index)?);
+                *read.get_mut(at + index)? = true;
+            }
+            Some(value)
+        };
+        match ty {
+            "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" => {
+                let (size, _) = self.layout(ty)?;
+                return integer(size, read).map(|value| format!("{value:#x}_{ty}"));
+            }
+            "f32" => return integer(4, read).map(|value| format!("f32::from_bits({value:#x})")),
+            "f64" => return integer(8, read).map(|value| format!("f64::from_bits({value:#x})")),
+            _ => {}
+        }
+        if let Some((element, length)) = self.array_of(ty) {
+            let (size, _) = self.layout(element)?;
+            let items: Option<Vec<String>> = (0..length).map(|index| self.read_value(element, bytes, at + index * size, read)).collect();
+            return items.map(|items| format!("[{}]", items.join(", ")));
+        }
+        if let Some(inner) = self.inner.get(ty) {
+            return self.read_value(inner, bytes, at, read).map(|value| format!("{ty}({value})"));
+        }
+        let (fields, union) = self.structs.get(ty)?;
+        let mut offset = 0_usize;
+        let mut parts = Vec::new();
+        for (name, field) in fields {
+            let (field_size, field_align) = self.layout(field)?;
+            let field_at = if *union { 0 } else { offset.next_multiple_of(field_align) };
+            parts.push(format!("{name}: {}", self.read_value(field, bytes, at + field_at, read)?));
+            offset = field_at + field_size;
+        }
+        Some(format!("{ty} {{ {} }}", parts.join(", ")))
     }
 
     /// A Rust expression of type `ty` that is all zero bytes, made only of literals.
@@ -1311,36 +1422,8 @@ fn codecs(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Codecs {
     let mut decoders = BTreeMap::new();
     let mut defaults = BTreeSet::new();
     let mut newtypes = BTreeSet::new();
-    let mut first_values = BTreeMap::new();
     let mut modules = Vec::new();
     for spec in g.apis.iter() {
-        if let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join("enumerations.rs")) {
-            let mut firsts: BTreeMap<String, String> = BTreeMap::new();
-            let mut zeros: BTreeSet<String> = BTreeSet::new();
-            // A flag set's 0 is no flag, a value of its own: only a selector without 0 is given its first value.
-            let mut header_name = "";
-            for line in text.lines() {
-                if let Some(rest) = line.strip_prefix("/// The header's `") {
-                    header_name = rest.split('`').next().unwrap_or_default();
-                } else if let Some(rest) = line.strip_prefix("pub struct ") {
-                    let flags = g.read.records.iter().any(|(key, record)| key.1 == header_name && crate::metadata::attribute_named(&record.attributes, "Flags").is_some());
-                    if flags {
-                        zeros.insert(rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect());
-                    }
-                }
-            }
-            for rest in text.lines().filter_map(|line| line.strip_prefix("pub const ")) {
-                let Some((name, rest)) = rest.split_once(": ") else { continue };
-                let Some((ty, value)) = rest.split_once(" = ") else { continue };
-                if value.trim_end_matches(';') == format!("{ty}(0)") {
-                    zeros.insert(ty.to_string());
-                }
-                firsts.entry(ty.to_string()).or_insert_with(|| name.to_string());
-            }
-            for (ty, name) in firsts.into_iter().filter(|(ty, _)| !zeros.contains(ty)) {
-                first_values.insert(format!("{}::enumerations::{ty}", alias(spec)), format!("{}::enumerations::{name}", alias(spec)));
-            }
-        }
         for (file, module) in [("structures.rs", "structures"), ("enumerations.rs", "enumerations")] {
             let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join(file)) else { continue };
             for rest in text.lines().filter_map(|line| line.strip_prefix("pub struct ")) {
@@ -1391,7 +1474,7 @@ fn codecs(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Codecs {
         }
     }
     let shapes = shapes_of(g, crates, &newtypes);
-    Codecs { decoders, defaults, newtypes, first_values, modules, shapes }
+    Codecs { decoders, defaults, modules, shapes }
 }
 
 /// Writes API `api`'s hostile crate under its folder, and returns the report's line.
@@ -1704,7 +1787,7 @@ impl Writer<'_, '_> {
                 let (inputs, result) = self.trait_signature(method, sig_api, "Self::Api", &place);
                 self.current.set(saved);
                 let rust_name = Self::method_name(method);
-                if let Some((prelude, call)) = self.driven_call(Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
+                if let Some((prelude, call)) = self.driven_call(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
                     let logged = compared(&place, glued.is_some(), &result, &prelude, &call);
                     calls.push((format!("{place} on {}", g.kinds[k].name), prelude, check(&result, &logged, &scope)));
                 }
@@ -1718,7 +1801,7 @@ impl Writer<'_, '_> {
             let mut renamed = function.clone();
             renamed.name = crate::names::strip_first(&function.name, spec.function_prefixes).to_string();
             let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
-            if let Some((prelude, call)) = self.driven_call(None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", None) {
+            if let Some((prelude, call)) = self.driven_call(&function.name, None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", None) {
                 let logged = compared(&function.name, self.glue_of(function, &function.name).is_ok(), &result, &prelude, &call);
                 calls.push((function.name.clone(), prelude, check(&result, &logged, &scope)));
             }
@@ -1726,9 +1809,16 @@ impl Writer<'_, '_> {
                 makers.extend(self.makers_of(&function.name, None, "A", &top, &rust_name, &inputs, &result, &glued, &scope, codecs));
             }
         }
-        let _ = writeln!(text, "/// Makes an object of every kind it can, by every method that hands one out, in rounds until none is new.\nfn make_all<A: {top}>(o: &mut Objects<A>) -> usize {{\n    for _ in 0..6 {{\n        let before = o.kinds_held();");
+        // The methods that create an object first, then the others that hand out an object of their own kind; only when
+        // none of those makes a new one, those that hand out an interface by id: an object a creation made carries the
+        // description the serving glue recorded, which the length rules read.
+        makers.sort_by_key(|maker| (maker.place.contains(" for "), !maker.place.contains("::Create")));
+        let _ = writeln!(text, "/// Makes an object of every kind it can, by every method that hands one out, in rounds until none is new: first by\n/// the methods that hand out an object of their own kind, then by those too that hand out an interface by id.\nfn make_all<A: {top}>(o: &mut Objects<A>) -> usize {{\n    for by_id in [false, true] {{\n    for _ in 0..6 {{\n        let before = o.kinds_held();");
         for maker in &makers {
-            let wanted: Vec<String> = maker.stores.iter().map(|(k, _)| format!("o.k{k}.is_none()")).collect();
+            let mut wanted: Vec<String> = maker.stores.iter().map(|(k, _)| format!("o.k{k}.is_none()")).collect();
+            if maker.place.contains(" for ") {
+                wanted = vec![format!("by_id && ({})", wanted.join(" || "))];
+            }
             let answer = if maker.fallible { "answer.ok()" } else { "Some(answer)" };
             let _ = writeln!(text, "        // {}\n        if {} {{\n            let answer = {{\n                let o = &*o;\n                made(|| {{\n{}        let answer = {};\n        {answer}\n                }})\n            }};", maker.place, wanted.join(" || "), maker.prelude, maker.call);
             if let [(kind, var)] = maker.stores.as_slice() {
@@ -1741,7 +1831,7 @@ impl Writer<'_, '_> {
                 let _ = writeln!(text, "            }}\n        }}");
             }
         }
-        let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    o.kinds_held()\n}}\n");
+        let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    }}\n    o.kinds_held()\n}}\n");
         let _ = writeln!(text, "/// Calls every method on every object held, and the exports, each answer checked, and notes in `answers` what each\n/// method both glues carry to the implementation answered.\nfn drive<A: {top}>(o: &Objects<A>, answers: &Answers) -> Driven {{\n    let mut driven = Driven::default();");
         for (place, prelude, call) in &calls {
             if call.contains("answers.") {
@@ -1758,8 +1848,8 @@ impl Writer<'_, '_> {
         let _ = writeln!(text, "/// Makes an object of every kind the implementation makes and calls every method of every kind and every export on\n/// them: no method panics, a failure is negative, an object handed out equals its clone.\npub fn every_method_answers<A: {top}>(api: A) {{\n    let mut o = Objects::new(api);\n    let kinds = make_all(&mut o);\n    let driven = drive(&o, &Answers::default());\n    println!(\"SUITE {}: kinds made {{kinds}}, calls {{CALLS}}: called {{}}, skipped {{}}, panicked {{}}\", driven.called, driven.skipped, driven.panicked);\n    assert_eq!(driven.panicked, 0, \"a method panicked\");\n    assert_eq!(driven.called + driven.skipped, CALLS, \"a call was neither made nor skipped\");\n}}\n", spec.folder);
         let _ = writeln!(text, "/// Makes an object of every kind and drives every method as `every_method_answers` does, and returns what each\n/// method both glues carry to the implementation answered, in the order called.\npub fn answers_of<A: {top}>(api: A) -> Vec<String> {{\n    let mut o = Objects::new(api);\n    make_all(&mut o);\n    let answers = Answers::default();\n    drive(&o, &answers);\n    answers.lines()\n}}\n");
         let _ = writeln!(text, "/// Drives `api` and `reference` alike and compares every answer noted, field by field, in the order called: `api` is\n/// `reference` served and called through both glues, so each answer must be what the implementation gave.\npub fn every_answer_equals_the_reference<A: {top}, R: {top}>(api: A, reference: R) {{\n    let got = answers_of(api);\n    let wanted = answers_of(reference);\n    println!(\"ANSWERS {}: the reference answered {{}} of {{COMPARED}}, through both glues {{}}\", wanted.len(), got.len());\n    let differing: Vec<String> = got.iter().zip(&wanted).enumerate().filter(|(_, (got, wanted))| got != wanted).map(|(at, (got, wanted))| format!(\"answer {{at}}: through both glues {{got}}, the implementation {{wanted}}\")).collect();\n    for line in &differing {{\n        println!(\"DIFFERS {{line}}\");\n    }}\n    assert_eq!(differing, Vec::<String>::new(), \"answers differ through both glues\");\n    assert_eq!(got.len(), wanted.len(), \"through both glues, a different number of answers\");\n    assert_eq!(wanted.len(), COMPARED, \"the reference answered a different number of answers than the suite notes\");\n}}\n", spec.folder);
-        let _ = writeln!(text, "/// As `answers_of`, with what the implementation received during each compared call after its answer (`logged` and\n/// `since`: the implementation's own log of the arguments it received).\npub fn answers_received_of<A: {top}>(api: A, logged: fn() -> usize, since: fn(usize) -> Vec<String>) -> Vec<String> {{\n    let mut o = Objects::new(api);\n    make_all(&mut o);\n    let answers = Answers::with_received((logged, since));\n    drive(&o, &answers);\n    answers.lines()\n}}\n\n/// As `every_answer_equals_the_reference`, and every argument the implementation received through both glues equals\n/// what it received from the same call made directly: nothing the caller passed is dropped, zeroed or mixed up on the\n/// way. A method whose call through both glues differs by design (a check of the glue's on an argument the suite\n/// passes, an answer the glue gives from its own record, a bit a row clears) must be one of `refused` (src/api.rs\n/// `SUITE_DIFFERENT`, each with the reason).\npub fn every_answer_and_argument_equals_the_reference<A: {top}, R: {top}>(api: A, reference: R, logged: fn() -> usize, since: fn(usize) -> Vec<String>, refused: &[&str]) {{\n    let wanted = answers_received_of(reference, logged, since);\n    let got = answers_received_of(api, logged, since);\n    let mut differing = Vec::new();\n    let mut accepted = Vec::new();\n    for (at, (got_line, wanted_line)) in got.iter().zip(&wanted).enumerate() {{\n        if got_line == wanted_line {{\n            continue;\n        }}\n        // The method's place: the text before \" -> \", \" wrote \" or \" on \" (a line of a call not made, or of what the\n        // implementation received, names the kind too).\n        let place = got_line.split(\" -> \").next().unwrap_or_default().split(\" wrote \").next().unwrap_or_default().split(\" on \").next().unwrap_or_default().split(\": \").next().unwrap_or_default().to_string();\n        if refused.contains(&place.as_str()) || refused.iter().any(|entry| got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])) {{\n            accepted.push(place);\n        }} else {{\n            differing.push(format!(\"{{at}}: through both glues {{got_line}}, directly {{wanted_line}}\"));\n        }}\n    }}\n    accepted.dedup();\n    println!(\"ANSWERS AND ARGUMENTS {}: {{}} lines directly, {{}} through both glues; {{}} methods differing as src/api.rs SUITE_DIFFERENT states: {{accepted:?}}\", wanted.len(), got.len(), accepted.len());\n    for line in &differing {{\n        println!(\"DIFFERS {{line}}\");\n    }}\n    assert_eq!(differing, Vec::<String>::new(), \"answers or arguments differ through both glues\");\n    assert_eq!(got.len(), wanted.len(), \"through both glues, a different number of answers\");\n}}\n", spec.folder);
-        let _ = writeln!(text, "/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also\n/// compares every answer of the value with the reference's.\n#[macro_export]\nmacro_rules! tests {{\n    ($value:expr) => {{\n        #[test]\n        fn every_method_answers() {{\n            $crate::every_method_answers($value);\n        }}\n    }};\n    ($value:expr, $reference:expr) => {{\n        $crate::tests!($value);\n\n        #[test]\n        fn every_answer_equals_the_reference() {{\n            $crate::every_answer_equals_the_reference($value, $reference);\n        }}\n    }};\n    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr) => {{\n        // One test, so that no other drive adds to the implementation's log of arguments while it is read.\n        #[test]\n        fn every_method_answers_and_every_answer_and_argument_equals_the_reference() {{\n            $crate::every_method_answers($value);\n            $crate::every_answer_and_argument_equals_the_reference($value, $reference, $logged, $since, $refused);\n        }}\n    }};\n}}");
+        let _ = writeln!(text, "/// As `answers_of`, with what the implementation received during each compared call after its answer (`logged` and\n/// `since`: the implementation's own log of the arguments it received).\npub fn answers_received_of<A: {top}>(api: A, logged: fn() -> usize, since: fn(usize) -> Vec<String>) -> Vec<String> {{\n    let mut o = Objects::new(api);\n    make_all(&mut o);\n    let answers = Answers::with_received((logged, since));\n    drive(&o, &answers);\n    answers.lines()\n}}\n\n/// As `every_answer_equals_the_reference`, and every argument the implementation received through both glues equals\n/// what it received from the same call made directly: nothing the caller passed is dropped, zeroed or mixed up on the\n/// way. A method whose call through both glues differs by design (a check of the glue's on an argument the suite\n/// passes, an answer the glue gives from its own record, a bit a row clears) must be one of `refused` (src/api.rs\n/// `SUITE_DIFFERENT`, each with the reason). A call the calling glue makes of its own for a method (`extra`: the method and\n/// the line, src/api.rs `SUITE_EXTRA_CALLS`) is taken out of what the implementation received before the comparison.\npub fn every_answer_and_argument_equals_the_reference<A: {top}, R: {top}>(api: A, reference: R, logged: fn() -> usize, since: fn(usize) -> Vec<String>, refused: &[&str], extra: &[(&str, &str)]) {{\n    let wanted = answers_received_of(reference, logged, since);\n    let got = answers_received_of(api, logged, since);\n    let mut differing = Vec::new();\n    let mut accepted = Vec::new();\n    for (at, (got_line, wanted_line)) in got.iter().zip(&wanted).enumerate() {{\n        if got_line == wanted_line {{\n            continue;\n        }}\n        // The method's place: the text before \" -> \", \" wrote \" or \" on \" (a line of a call not made, or of what the\n        // implementation received, names the kind too).\n        let place = got_line.split(\" -> \").next().unwrap_or_default().split(\" wrote \").next().unwrap_or_default().split(\" on \").next().unwrap_or_default().split(\": \").next().unwrap_or_default().to_string();\n        let mut without_extra = got_line.clone();\n        for (_, line) in extra.iter().filter(|(at, _)| *at == place) {{\n            for form in [format!(\", \\\"{{line}}\\\"\"), format!(\"\\\"{{line}}\\\", \"), format!(\"\\\"{{line}}\\\"\")] {{\n                without_extra = without_extra.replace(&form, \"\");\n            }}\n        }}\n        if without_extra == *wanted_line {{\n            continue;\n        }}\n        if refused.contains(&place.as_str()) || refused.iter().any(|entry| got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])) {{\n            accepted.push(place);\n        }} else {{\n            differing.push(format!(\"{{at}}: through both glues {{got_line}}, directly {{wanted_line}}\"));\n        }}\n    }}\n    accepted.dedup();\n    println!(\"ANSWERS AND ARGUMENTS {}: {{}} lines directly, {{}} through both glues; {{}} methods differing as src/api.rs SUITE_DIFFERENT states: {{accepted:?}}\", wanted.len(), got.len(), accepted.len());\n    for line in &differing {{\n        println!(\"DIFFERS {{line}}\");\n    }}\n    assert_eq!(differing, Vec::<String>::new(), \"answers or arguments differ through both glues\");\n    assert_eq!(got.len(), wanted.len(), \"through both glues, a different number of answers\");\n}}\n", spec.folder);
+        let _ = writeln!(text, "/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also\n/// compares every answer of the value with the reference's.\n#[macro_export]\nmacro_rules! tests {{\n    ($value:expr) => {{\n        #[test]\n        fn every_method_answers() {{\n            $crate::every_method_answers($value);\n        }}\n    }};\n    ($value:expr, $reference:expr) => {{\n        $crate::tests!($value);\n\n        #[test]\n        fn every_answer_equals_the_reference() {{\n            $crate::every_answer_equals_the_reference($value, $reference);\n        }}\n    }};\n    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr, $extra:expr) => {{\n        // One test, so that no other drive adds to the implementation's log of arguments while it is read.\n        #[test]\n        fn every_method_answers_and_every_answer_and_argument_equals_the_reference() {{\n            $crate::every_method_answers($value);\n            $crate::every_answer_and_argument_equals_the_reference($value, $reference, $logged, $since, $refused, $extra);\n        }}\n    }};\n}}");
         let mut imports: Vec<String> = Vec::new();
         for other in g.apis.iter() {
             let named = text.lines().any(|line| !line.starts_with("//") && line.contains(&format!("{}::", alias(other))));
@@ -1817,12 +1907,18 @@ pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_fo
             // values, never a type's default); the hostile implementation's answers are its lies, so only checked.
             let run = if implementation == "recorder" {
                 let recorder_crate = format!("{}_recorder", package(spec).replace('-', "_"));
-                format!("//! The conformance suite of {}, run on this implementation through both glues (`served`), every answer and every\n//! argument the implementation received compared with the same call made on the implementation directly.\n\n{suite_crate}::tests!(\n    {direct_crate}::served({value}),\n    {value},\n    {recorder_crate}::arguments_logged,\n    {recorder_crate}::arguments_since,\n    &[{refused}]\n);\n", spec.folder, refused = crate::api::SUITE_DIFFERENT.iter().map(|(place, _)| format!("\"{place}\"")).collect::<Vec<_>>().join(", "))
+                format!("//! The conformance suite of {}, run on this implementation through both glues (`served`), every answer and every\n//! argument the implementation received compared with the same call made on the implementation directly.\n\n{suite_crate}::tests!(\n    {direct_crate}::served({value}),\n    {value},\n    {recorder_crate}::arguments_logged,\n    {recorder_crate}::arguments_since,\n    &[{refused}],\n    &[{extra}]\n);\n", spec.folder, refused = crate::api::SUITE_DIFFERENT.iter().map(|(place, _)| format!("\"{place}\"")).collect::<Vec<_>>().join(", "), extra = crate::api::SUITE_EXTRA_CALLS.iter().map(|(place, line, _)| format!("(\"{place}\", \"{line}\")")).collect::<Vec<_>>().join(", "))
             } else {
                 format!("//! The conformance suite of {}, run on this implementation through both glues (`served`).\n\n{suite_crate}::tests!({direct_crate}::served({value}));\n", spec.folder)
             };
             std::fs::write(place.join("conformance_through_glues.rs"), format!("//! {}\n//!\n{run}", crate::emit::HEADER)).map_err(|error| error.to_string())?;
             test.push_str("\n[[test]]\nname = \"conformance_through_glues\"\npath = \"conformance_through_glues.rs\"\n");
+            if implementation == "recorder" && serve_text.contains("pub fn refusals_reached") {
+                // Its own process: the count is the whole program's.
+                let refusals = format!("//! {}\n//!\n//! Every method the serving glue of {} refuses by its form is refused by the calling glue first, on its own: the\n//! conformance suite's whole drive through both glues reaches no refusal entry of the serving glue.\n\n#[test]\nfn no_call_reaches_a_refusal_of_the_serving_glue() {{\n    let answers = {suite_crate}::answers_of({direct_crate}::served({value}));\n    assert!(!answers.is_empty());\n    assert_eq!({direct_crate}::refusals_reached(), 0);\n}}\n", crate::emit::HEADER, spec.folder);
+                std::fs::write(place.join("refusals_through_glues.rs"), refusals).map_err(|error| error.to_string())?;
+                test.push_str("\n[[test]]\nname = \"refusals_through_glues\"\npath = \"refusals_through_glues.rs\"\n");
+            }
             if !manifest.contains(&format!("{}-direct = ", package(spec))) {
                 runs.push("(no direct dependency)");
             }
@@ -1890,6 +1986,24 @@ fn shapes_of(g: &crate::emit::Generator<'_>, crates: &Path, newtypes: &BTreeSet<
     let mut shapes = Shapes { newtypes: newtypes.clone(), ..Shapes::default() };
     for spec in g.apis.iter() {
         let own = alias(spec);
+        for (file, module) in [("structures.rs", "structures"), ("enumerations.rs", "enumerations")] {
+            let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join(file)) else { continue };
+            for rest in text.lines().filter_map(|line| line.strip_prefix("pub struct ")) {
+                let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                if let Some(inner) = rest[name.len()..].strip_prefix("(pub ").and_then(|inner| inner.strip_suffix(");")) {
+                    shapes.inner.insert(format!("{own}::{module}::{name}"), inner.to_string());
+                }
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join("constants.rs")) {
+            for rest in text.lines().filter_map(|line| line.strip_prefix("pub const ")) {
+                if let Some((name, value)) = rest.split_once(": usize = ")
+                    && let Ok(length) = value.trim_end_matches(';').replace('_', "").parse()
+                {
+                    shapes.lengths.insert(format!("{own}::constants::{name}"), length);
+                }
+            }
+        }
         if let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join("structures.rs")) {
             let mut union = false;
             let mut current: Option<(String, Vec<(String, String)>, bool)> = None;

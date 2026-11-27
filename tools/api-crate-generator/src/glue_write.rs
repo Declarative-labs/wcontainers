@@ -1029,6 +1029,9 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
                 continue;
             }
             let place = format!("{}::{}", slot.interface.1, slot.method.name);
+            if !serve.contains("static REFUSALS_REACHED") {
+                serve.push_str(REFUSAL_COUNT);
+            }
             serve.push_str(&refusal_entry(&format!("{}_refused", slot.name), &place, &refusal));
             let writes: Vec<String> = refusal.params.iter().filter_map(|(param, _, writes)| match writes {
                 Writes::Null => Some(format!("null through {param}")),
@@ -1109,12 +1112,14 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     let mut library = String::new();
     let mut exports_fn = String::new();
     let mut export_fields = Vec::new();
+    let mut system_entries = Vec::new();
     for function in &functions {
         match writer.glue_of(function, &function.name) {
             Ok(glued) => {
                 let name = snake(&function.name);
                 let entry = format!("export_{name}");
                 serve.push_str(&writer.serving_entry(&entry, function, &glued, None, &top, &function.name));
+                system_entries.push((function.name.clone(), name.clone(), writer.c_signature(&glued, function)));
                 export_fields.push((name, writer.fn_type(&glued, function, false), entry, glued));
                 writer.outcomes.borrow_mut().entry(function.name.clone()).or_default().serving.insert("glued: the export calls the implementation".to_string());
                 writer.glued.borrow_mut().push(function.name.clone());
@@ -1168,6 +1173,9 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
             let _ = writeln!(exports_fn, "    #[expect(unsafe_code, reason = \"our own serving glue's exports, which take what the metadata gives\")]");
             let _ = writeln!(exports_fn, "    // SAFETY: each entry of `library` is this crate's serving export of that name, written from the same metadata.");
             let _ = writeln!(exports_fn, "    unsafe {{ crate::System{top_name}::new(library) }}\n}}\n");
+            if let Some(dll) = spec.library {
+                exports_fn.push_str(&system_library(top_name, dll, &system_entries));
+            }
         }
     }
     // Held lookups of base-interface pointers (`ResourceRef` and the like) for the serving glue.
@@ -1369,6 +1377,9 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         "//! {HEADER}\n//!\n//! {} through its C ABI: the serving glue (raw C calls in, any implementation of the traits out) and the\n//! calling glue (the C side's objects as an implementation of the traits). Every `unsafe` of the API is here, each marked.\n\n#[path = \"abi.rs\"]\npub mod abi;\n#[path = \"call.rs\"]\nmod call;\n#[path = \"data.rs\"]\nmod data;\n{lengths_module}#[path = \"serve.rs\"]\nmod serve;\n\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use abi::*;\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use call::*;\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use serve::*;\n\nuse wcontainers_component_object_model_direct::GlueKey;\n\n#[expect(unsafe_code, reason = \"the glue's key, which only this crate's glue holds\")]\n// SAFETY: kept in this private static and passed only to the COM crate's glue functions.\nstatic KEY: GlueKey = unsafe {{ GlueKey::new() }};\n",
         spec.summary.trim_end_matches('.')
     );
+    // A codec no glue of the crate calls is reached by nothing: it is not written.
+    let users = format!("{lib}{abi_text}{serving}{calling}");
+    let data = without_unused_codecs(&data, &users);
     let mut files = vec![("implementation.rs", lib), ("abi.rs", abi_text), ("serve.rs", serving), ("call.rs", calling), ("data.rs", data)];
     if has_lengths {
         // Only the rules of the shapes this set has: a slice's interface crate holds only the descriptions it names.
@@ -1401,6 +1412,11 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         all.push_str(&text);
         std::fs::write(folder.join(name), text).map_err(|error| format!("{name}: {error}"))?;
     }
+    // A caller under `forbid` reaching the system's library through `system()` (Windows only), with hostile arguments.
+    if let Some(test) = system_test(spec.folder).filter(|_| spec.library.is_some() && !system_entries.is_empty()) {
+        std::fs::create_dir_all(folder.join("tests")).map_err(|error| error.to_string())?;
+        std::fs::write(folder.join("tests").join("system.rs"), format!("//! {HEADER}\n//!\n{test}")).map_err(|error| format!("tests/system.rs: {error}"))?;
+    }
     let mut manifest = format!(
         "[package]\nname = \"{}-direct\"\ndescription = \"{} through its C ABI: both glues, and every unsafe of the API, each marked.\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\npath = \"implementation.rs\"\n\n[dependencies]\n",
         package(spec),
@@ -1429,6 +1445,9 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     Ok(report)
 }
 
+/// The count of calls that reached an entry the serving glue refuses by its form, and how a test reads it.
+const REFUSAL_COUNT: &str = "/// How many calls reached an entry this serving glue refuses by its form, in the whole program.\nstatic REFUSALS_REACHED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);\n\n/// Returns how many calls reached an entry this serving glue refuses by its form, in the whole program: none, where\n/// every caller is the calling glue, which refuses each such call itself.\npub fn refusals_reached() -> usize {\n    REFUSALS_REACHED.load(core::sync::atomic::Ordering::Relaxed)\n}\n\n";
+
 /// The entry of a method no form of the glue carries (`refusal`): it reads nothing, calls nothing, writes COM's null
 /// through each out-pointer and zeros through each value out of a fixed size, and answers the API's refusal.
 fn refusal_entry(fn_name: &str, place: &str, refusal: &super::Refusal) -> String {
@@ -1440,14 +1459,15 @@ fn refusal_entry(fn_name: &str, place: &str, refusal: &super::Refusal) -> String
         list.push(format!("{prefix}p{at}: {c}"));
     }
     let returns = if refusal.returned == "()" { String::new() } else { format!(" -> {}", refusal.returned) };
-    let _ = writeln!(text, "/// `{place}` as the C side calls it, refused by its form: nothing is read, the method is not called, and it\n/// answers {}.", refusal.stated);
+    let _ = writeln!(text, "/// `{place}` as the C side calls it, refused by its form: nothing is read, the method is not called, and it\n/// answers {}. The call is counted (`refusals_reached`).", refusal.stated);
     if writes.is_empty() {
-        let _ = writeln!(text, "pub extern \"system\" fn {fn_name}({}){returns} {{\n    {}\n}}\n", list.join(", "), refusal.answer);
+        let _ = writeln!(text, "pub extern \"system\" fn {fn_name}({}){returns} {{\n    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);\n    {}\n}}\n", list.join(", "), refusal.answer);
         return text;
     }
     let _ = writeln!(text, "///\n/// # Safety\n/// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.");
     let _ = writeln!(text, "#[expect(unsafe_code, reason = \"{place}, which the C side calls\")]");
     let _ = writeln!(text, "pub unsafe extern \"system\" fn {fn_name}({}){returns} {{", list.join(", "));
+    let _ = writeln!(text, "    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);");
     for (at, (param, _, writes)) in refusal.params.iter().enumerate() {
         let Some(bytes) = writes.bytes() else { continue };
         let promise = if *writes == Writes::Null { "`Out`: one pointer to write (COM's null on failure)" } else { "`Out`: one value of this size to write" };
@@ -1457,6 +1477,80 @@ fn refusal_entry(fn_name: &str, place: &str, refusal: &super::Refusal) -> String
     }
     let _ = writeln!(text, "    {}\n}}\n", refusal.answer);
     text
+}
+
+/// The system's own library on Windows, linked by name (`dll`, e.g. `d3d11.dll`), and the safe constructor of the
+/// calling glue over it: each entry (C name, field name, C parameters and result) is declared with the parameters the
+/// metadata gives and taken as that field of `Library`, so the promise `new` asks for is kept here, not by its caller.
+fn system_library(top_name: &str, dll: &str, entries: &[(String, String, (Vec<(String, String)>, String))]) -> String {
+    let mut text = String::new();
+    if entries.is_empty() {
+        return text;
+    }
+    let link = dll.strip_suffix(".dll").unwrap_or(dll);
+    let _ = writeln!(text, "#[cfg(windows)]\n#[link(name = \"{link}\")]");
+    let _ = writeln!(text, "#[expect(unsafe_code, reason = \"{dll}'s own exports, declared with the parameters the metadata gives\")]");
+    let _ = writeln!(text, "unsafe extern \"system\" {{");
+    for (c_name, field, (parameters, returned)) in entries {
+        let list: Vec<String> = parameters.iter().map(|(name, c)| format!("{name}: {c}")).collect();
+        let returns = if returned == "()" { String::new() } else { format!(" -> {returned}") };
+        let _ = writeln!(text, "    #[link_name = \"{c_name}\"]\n    fn system_{field}({}){returns};", list.join(", "));
+    }
+    let _ = writeln!(text, "}}\n");
+    let fields: Vec<String> = entries.iter().map(|(_, field, _)| format!("{field}: system_{field}")).collect();
+    let _ = writeln!(text, "#[cfg(windows)]\nimpl crate::System{top_name} {{");
+    let _ = writeln!(text, "    /// Returns the API over the system's {dll}, linked by name: each entry is that library's own export of its");
+    let _ = writeln!(text, "    /// name, declared here with the parameters the metadata gives.");
+    let _ = writeln!(text, "    pub fn system() -> crate::System{top_name} {{");
+    let _ = writeln!(text, "        let library = Library {{ {} }};", fields.join(", "));
+    let _ = writeln!(text, "        #[expect(unsafe_code, reason = \"{dll}'s own exports, linked by name above\")]");
+    let _ = writeln!(text, "        // SAFETY: each entry of `library` is {dll}'s export of that name, declared above with the metadata's parameters.");
+    let _ = writeln!(text, "        unsafe {{ crate::System{top_name}::new(library) }}\n    }}\n}}\n");
+    text
+}
+
+/// `data` without the codecs (`encode_*`, `decode_*`, each with its doc comment) that neither `users` nor another codec
+/// kept names, removed until none is left unused.
+fn without_unused_codecs(data: &str, users: &str) -> String {
+    let mut lines: Vec<&str> = data.lines().collect();
+    loop {
+        // Each codec: its doc comment's line, its own line and its last line (the closing brace at the line's start).
+        let mut codecs = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            let Some(name) = line.strip_prefix("pub fn ").and_then(|rest| rest.split('(').next()) else { continue };
+            if !(name.starts_with("encode_") || name.starts_with("decode_")) || at == 0 || !lines[at - 1].starts_with("/// ") {
+                continue;
+            }
+            let Some(end) = lines[at..].iter().position(|line| *line == "}").map(|offset| at + offset) else { continue };
+            codecs.push((name.to_string(), at - 1, end));
+        }
+        let named = |name: &str, text: &str| text.match_indices(name).any(|(at, _)| {
+            let before = text[..at].chars().next_back().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+            let after = text[at + name.len()..].chars().next().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+            before && after
+        });
+        let unused = codecs.iter().find(|(name, start, end)| {
+            let others: String = lines.iter().enumerate().filter(|(at, _)| at < start || at > end).map(|(_, line)| *line).collect::<Vec<_>>().join("\n");
+            !named(name, users) && !named(name, &others)
+        });
+        let Some((_, start, end)) = unused else { break };
+        let (start, end) = (*start, *end);
+        let blank = usize::from(lines.get(end + 1).is_some_and(|line| line.is_empty()));
+        lines.drain(start..=end + blank);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// The Windows test of an API's `system()` (templates/system), for the APIs that have one.
+fn system_test(folder: &str) -> Option<&'static str> {
+    match folder {
+        "direct3d-11" => Some(include_str!("../templates/system/direct3d-11.rs")),
+        "directx-graphics-infrastructure" => Some(include_str!("../templates/system/directx-graphics-infrastructure.rs")),
+        "direct3d-12" => Some(include_str!("../templates/system/direct3d-12.rs")),
+        _ => None,
+    }
 }
 
 /// Adds `use` lines for every crate of the set a direct crate's file names by alias.

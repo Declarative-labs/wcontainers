@@ -105,6 +105,8 @@ const REASONS: &[(Match, &[Reliance])] = &[
     (Match::Contains("IUnknown::QueryInterface's"), &[Reliance::CallerPromise, Reliance::Layout]),
     (Match::Contains("the promise that each entry is the library's export"), &[Reliance::LibraryExport]),
     (Match::Contains("exports that take what the metadata gives"), &[Reliance::LibraryExport, Reliance::Layout]),
+    (Match::Contains("own exports, declared with the parameters the metadata gives"), &[Reliance::LibraryExport, Reliance::Layout]),
+    (Match::Contains("own exports, linked by name above"), &[Reliance::LibraryExport]),
     (Match::Contains("the glue's key"), &[Reliance::GlueKey]),
     (Match::Contains("the key to the glue's bookkeeping"), &[Reliance::GlueKey]),
     (Match::Contains("a block of ours whose Box was given up"), &[Reliance::LentUntilEnd]),

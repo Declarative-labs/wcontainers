@@ -256,3 +256,227 @@ fn a_buffer_is_of_the_buffer_dimension_and_checked_by_its_documented_ranges() {
         assert_eq!(crate::lengths::checked_buffer(&desc(width, usage)), checked, "width {width} usage {usage}");
     }
 }
+
+/// DXGI_FORMAT_R8G8B8A8_UNORM (28), 4 bytes a texel; R32G32B32A32_FLOAT (2), 16; NV12 (103), planar, which the table
+/// does not cover; DXGI_FORMAT_UNKNOWN (0).
+const RGBA8: i32 = 28;
+const RGBA32F: i32 = 2;
+const NV12: i32 = 103;
+const UNKNOWN: i32 = 0;
+
+/// Each texture kind is its D3D11_RESOURCE_DIMENSION: TEXTURE1D 2, TEXTURE2D 3, TEXTURE3D 4.
+#[test]
+fn each_texture_is_of_its_documented_dimension() {
+    use direct3d_11::enumerations::ResourceDimension;
+    assert_eq!(crate::lengths::type_of_texture_1d(&texture_1d_desc(8, 1, 1, RGBA8)), ResourceDimension(2));
+    assert_eq!(crate::lengths::type_of_texture_2d(&texture_2d_desc(8, 8, 1, 1, RGBA8)), ResourceDimension(3));
+    assert_eq!(crate::lengths::type_of_texture_3d(&texture_3d_desc(8, 8, 8, 1, RGBA8)), ResourceDimension(4));
+}
+
+/// A description reads back with MipLevels 0 as the full chain (D3D11_TEXTURE*_DESC: "Use 1 for a multisampled
+/// texture; or 0 to generate a full set of subtextures"): log2 of the longest side, plus one; any other count as given,
+/// and every other field as given.
+#[test]
+fn a_description_reads_back_with_its_full_chain() {
+    // 512 texels: 10 levels (512 down to 1).
+    let line = crate::lengths::resolved_texture_1d(&texture_1d_desc(512, 0, 3, RGBA8));
+    assert_eq!(line, direct3d_11::structures::Texture1DDesc { mip_levels: 10, ..texture_1d_desc(512, 0, 3, RGBA8) });
+    assert_eq!(crate::lengths::resolved_texture_1d(&texture_1d_desc(512, 4, 3, RGBA8)), texture_1d_desc(512, 4, 3, RGBA8));
+    // 64 x 16: the longest side 64, 7 levels.
+    let picture = crate::lengths::resolved_texture_2d(&texture_2d_desc(64, 16, 0, 2, RGBA8));
+    assert_eq!(picture, direct3d_11::structures::Texture2DDesc { mip_levels: 7, ..texture_2d_desc(64, 16, 0, 2, RGBA8) });
+    // 16 x 64: the height is the longest, 7 levels too.
+    assert_eq!(crate::lengths::resolved_texture_2d(&texture_2d_desc(16, 64, 0, 1, RGBA8)).mip_levels, 7);
+    assert_eq!(crate::lengths::resolved_texture_2d(&texture_2d_desc(64, 16, 2, 2, RGBA8)), texture_2d_desc(64, 16, 2, 2, RGBA8));
+    // 2 x 3 x 4: the depth is the longest, 3 levels; 2 x 8 x 4: the height, 4 levels.
+    let volume = crate::lengths::resolved_texture_3d(&texture_3d_desc(2, 3, 4, 0, RGBA8));
+    assert_eq!(volume, direct3d_11::structures::Texture3DDesc { mip_levels: 3, ..texture_3d_desc(2, 3, 4, 0, RGBA8) });
+    assert_eq!(crate::lengths::resolved_texture_3d(&texture_3d_desc(2, 8, 4, 0, RGBA8)).mip_levels, 4);
+    assert_eq!(crate::lengths::resolved_texture_3d(&texture_3d_desc(2, 3, 4, 2, RGBA8)), texture_3d_desc(2, 3, 4, 2, RGBA8));
+}
+
+/// A side of `u32` holds 32 levels at most, so a count of 32 or more is no texture: 31 levels of one slice are 31
+/// subresources, 32 none.
+#[test]
+fn thirty_two_levels_are_no_texture() {
+    assert_eq!(crate::lengths::subresources_texture_1d(&texture_1d_desc(1, 31, 1, RGBA8)), Some(31));
+    assert_eq!(crate::lengths::subresources_texture_1d(&texture_1d_desc(1, 32, 1, RGBA8)), None);
+    assert_eq!(crate::lengths::subresources_texture_2d(&texture_2d_desc(1, 1, 31, 2, RGBA8)), Some(62));
+    assert_eq!(crate::lengths::subresources_texture_2d(&texture_2d_desc(1, 1, 32, 2, RGBA8)), None);
+}
+
+/// D3D11_TEXTURE1D_DESC's ranges (d3d11.h): width 1 to D3D11_REQ_TEXTURE1D_U_DIMENSION (16384), array size 1 to
+/// D3D11_REQ_TEXTURE1D_ARRAY_AXIS_DIMENSION (2048), mip levels up to the full chain, a declared usage (0 to 3), a format
+/// the table covers. Each case breaks one range alone.
+#[test]
+fn a_texture_1d_is_checked_by_its_documented_ranges() {
+    let with_usage = |usage: i32| direct3d_11::structures::Texture1DDesc { usage: direct3d_11::enumerations::Usage(usage), ..texture_1d_desc(512, 1, 1, RGBA8) };
+    for (desc, checked) in [
+        (texture_1d_desc(512, 10, 1, RGBA8), true),
+        (texture_1d_desc(512, 11, 1, RGBA8), false),
+        (texture_1d_desc(512, 0, 1, RGBA8), true),
+        (texture_1d_desc(0, 1, 1, RGBA8), false),
+        (texture_1d_desc(16384, 1, 1, RGBA8), true),
+        (texture_1d_desc(16385, 1, 1, RGBA8), false),
+        (texture_1d_desc(1, 1, 0, RGBA8), false),
+        (texture_1d_desc(1, 1, 2048, RGBA8), true),
+        (texture_1d_desc(1, 1, 2049, RGBA8), false),
+        (texture_1d_desc(512, 1, 1, UNKNOWN), false),
+        (texture_1d_desc(512, 1, 1, NV12), false),
+        (with_usage(3), true),
+        (with_usage(4), false),
+        (with_usage(-1), false),
+    ] {
+        assert_eq!(crate::lengths::checked_texture_1d(&desc), checked, "{desc:?}");
+    }
+}
+
+/// D3D11_TEXTURE2D_DESC's ranges (d3d11.h): sides 1 to D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION (16384), array size 1 to
+/// 2048, sample count 1 to D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT (32), mip levels up to the full chain, a declared usage, a
+/// format the table covers, and no more bytes than the largest resource (2048 MiB): 16384 x 8192 texels of 16 bytes
+/// are exactly that, 16384 x 16384 twice it.
+#[test]
+fn a_texture_2d_is_checked_by_its_documented_ranges() {
+    let with_usage = |usage: i32| direct3d_11::structures::Texture2DDesc { usage: direct3d_11::enumerations::Usage(usage), ..texture_2d_desc(64, 16, 1, 1, RGBA8) };
+    let with_samples = |count: u32| direct3d_11::structures::Texture2DDesc { sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count, quality: 0 }, ..texture_2d_desc(64, 16, 1, 1, RGBA8) };
+    for (desc, checked) in [
+        (texture_2d_desc(64, 16, 7, 1, RGBA8), true),
+        (texture_2d_desc(64, 16, 8, 1, RGBA8), false),
+        (texture_2d_desc(16, 64, 7, 1, RGBA8), true),
+        (texture_2d_desc(0, 16, 1, 1, RGBA8), false),
+        (texture_2d_desc(64, 0, 1, 1, RGBA8), false),
+        (texture_2d_desc(16385, 16, 1, 1, RGBA8), false),
+        (texture_2d_desc(64, 16385, 1, 1, RGBA8), false),
+        (texture_2d_desc(64, 16, 1, 0, RGBA8), false),
+        (texture_2d_desc(1, 1, 1, 2048, RGBA8), true),
+        (texture_2d_desc(1, 1, 1, 2049, RGBA8), false),
+        (texture_2d_desc(64, 16, 1, 1, UNKNOWN), false),
+        (texture_2d_desc(64, 16, 1, 1, NV12), false),
+        (texture_2d_desc(16384, 8192, 1, 1, RGBA32F), true),
+        (texture_2d_desc(16384, 16384, 1, 1, RGBA32F), false),
+        (with_usage(3), true),
+        (with_usage(4), false),
+        (with_samples(0), false),
+        (with_samples(32), true),
+        (with_samples(33), false),
+    ] {
+        assert_eq!(crate::lengths::checked_texture_2d(&desc), checked, "{desc:?}");
+    }
+}
+
+/// D3D11_TEXTURE3D_DESC's ranges (d3d11.h): sides 1 to D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION (2048), mip levels up to
+/// the full chain, a declared usage, a format the table covers, and no more bytes than the largest resource: 2048 x 2048
+/// x 2048 texels of 16 bytes are 64 times it.
+#[test]
+fn a_texture_3d_is_checked_by_its_documented_ranges() {
+    let with_usage = |usage: i32| direct3d_11::structures::Texture3DDesc { usage: direct3d_11::enumerations::Usage(usage), ..texture_3d_desc(64, 64, 64, 1, RGBA8) };
+    for (desc, checked) in [
+        (texture_3d_desc(64, 64, 64, 7, RGBA8), true),
+        (texture_3d_desc(64, 64, 64, 8, RGBA8), false),
+        (texture_3d_desc(4, 4, 64, 7, RGBA8), true),
+        (texture_3d_desc(4, 4, 64, 8, RGBA8), false),
+        (texture_3d_desc(0, 4, 4, 1, RGBA8), false),
+        (texture_3d_desc(4, 0, 4, 1, RGBA8), false),
+        (texture_3d_desc(4, 4, 0, 1, RGBA8), false),
+        (texture_3d_desc(2048, 4, 4, 1, RGBA8), true),
+        (texture_3d_desc(2049, 4, 4, 1, RGBA8), false),
+        (texture_3d_desc(4, 2049, 4, 1, RGBA8), false),
+        (texture_3d_desc(4, 4, 2049, 1, RGBA8), false),
+        (texture_3d_desc(64, 64, 64, 1, UNKNOWN), false),
+        (texture_3d_desc(64, 64, 64, 1, NV12), false),
+        (texture_3d_desc(2048, 2048, 2048, 1, RGBA32F), false),
+        (with_usage(3), true),
+        (with_usage(4), false),
+    ] {
+        assert_eq!(crate::lengths::checked_texture_3d(&desc), checked, "{desc:?}");
+    }
+}
+
+/// A swap chain of `count` buffers of `width` x `height` texels of `format`, `samples` samples.
+fn swap_chain(width: u32, height: u32, format: i32, count: u32, samples: u32) -> directx_graphics_infrastructure::structures::SwapChainDesc {
+    use directx_graphics_infrastructure::{enumerations, structures};
+    structures::SwapChainDesc {
+        buffer_desc: structures::ModeDesc {
+            width,
+            height,
+            refresh_rate: structures::Rational { numerator: 60, denominator: 1 },
+            format: enumerations::Format(format),
+            scanline_ordering: enumerations::ModeScanlineOrder::default(),
+            scaling: enumerations::ModeScaling::default(),
+        },
+        sample_desc: structures::SampleDesc { count: samples, quality: 0 },
+        buffer_usage: enumerations::Usage::default(),
+        buffer_count: count,
+        output_window: component_object_model::structures::Hwnd(0),
+        windowed: true,
+        swap_effect: enumerations::SwapEffect::default(),
+        flags: 0,
+    }
+}
+
+/// DXGI_SWAP_CHAIN_DESC's ranges: BufferCount 1 to 16; sides up to 16384, 0 meaning the window's; a format the table
+/// covers or DXGI_FORMAT_UNKNOWN; a sample count of 1 to 32; and the buffers no more bytes than the largest resource:
+/// two of 16384 x 16384 texels of 4 bytes are exactly 2048 MiB, three are past it.
+#[test]
+fn a_swap_chain_is_checked_by_its_documented_ranges() {
+    for (desc, checked) in [
+        (swap_chain(800, 600, RGBA8, 1, 1), true),
+        (swap_chain(0, 0, UNKNOWN, 1, 1), true),
+        (swap_chain(800, 600, NV12, 1, 1), false),
+        (swap_chain(16384, 600, RGBA8, 1, 1), true),
+        (swap_chain(16385, 600, RGBA8, 1, 1), false),
+        (swap_chain(800, 16385, RGBA8, 1, 1), false),
+        (swap_chain(800, 600, RGBA8, 0, 1), false),
+        (swap_chain(800, 600, RGBA8, 16, 1), true),
+        (swap_chain(800, 600, RGBA8, 17, 1), false),
+        (swap_chain(800, 600, RGBA8, 1, 0), false),
+        (swap_chain(800, 600, RGBA8, 1, 32), true),
+        (swap_chain(800, 600, RGBA8, 1, 33), false),
+        (swap_chain(16384, 16384, RGBA8, 2, 1), true),
+        (swap_chain(16384, 16384, RGBA8, 3, 1), false),
+        (swap_chain(16384, 16384, UNKNOWN, 16, 1), true),
+    ] {
+        assert_eq!(crate::lengths::checked_swap_chain(&desc), checked, "{desc:?}");
+    }
+}
+
+/// What the serving glue lends for a buffer: twice its bytes, or 64 KiB for a small one (65536 bytes), never more.
+#[test]
+fn the_memory_lent_for_a_buffer_is_bounded() {
+    for (width, length, lent) in [(100, 65_536, true), (100, 65_537, false), (100_000, 200_000, true), (100_000, 200_001, false), (100, 0, true)] {
+        assert_eq!(crate::lengths::within_served_bound_buffer(&buffer_desc(width), 0, length), lent, "width {width} length {length}");
+    }
+}
+
+/// What the serving glue lends for a texture's subresource: its rows each padded to a page (4096 bytes), every row and
+/// slice, or 64 KiB for a small one; nothing for a subresource past the texture.
+#[test]
+fn the_memory_lent_for_a_texture_is_bounded() {
+    // 16384 texels of 16 bytes: one row of 262144 bytes, already a whole number of pages.
+    let line = texture_1d_desc(16384, 1, 1, RGBA32F);
+    assert!(crate::lengths::within_served_bound_texture_1d(&line, 0, 262_144));
+    assert!(!crate::lengths::within_served_bound_texture_1d(&line, 0, 262_145));
+    assert!(!crate::lengths::within_served_bound_texture_1d(&line, 1, 1));
+    // 2048 x 64 of 4 bytes: rows of 8192 bytes, 64 of them, 524288; its second level 1024 x 32: rows of 4096, 131072.
+    let picture = texture_2d_desc(2048, 64, 2, 1, RGBA8);
+    assert!(crate::lengths::within_served_bound_texture_2d(&picture, 0, 524_288));
+    assert!(!crate::lengths::within_served_bound_texture_2d(&picture, 0, 524_289));
+    assert!(crate::lengths::within_served_bound_texture_2d(&picture, 1, 131_072));
+    assert!(!crate::lengths::within_served_bound_texture_2d(&picture, 1, 131_073));
+    assert!(!crate::lengths::within_served_bound_texture_2d(&picture, 2, 1));
+    // 100 x 64 of 4 bytes: rows of 400 bytes padded to 4096, 64 of them, 262144.
+    let narrow = texture_2d_desc(100, 64, 1, 1, RGBA8);
+    assert!(crate::lengths::within_served_bound_texture_2d(&narrow, 0, 262_144));
+    assert!(!crate::lengths::within_served_bound_texture_2d(&narrow, 0, 262_145));
+    // 8 x 8 of 4 bytes: 8 padded rows are 32768 bytes, so 64 KiB is lent, no more.
+    let small = texture_2d_desc(8, 8, 1, 1, RGBA8);
+    assert!(crate::lengths::within_served_bound_texture_2d(&small, 0, 65_536));
+    assert!(!crate::lengths::within_served_bound_texture_2d(&small, 0, 65_537));
+    // 1024 x 8 x 8 of 4 bytes: rows of 4096, 8 rows a slice, 8 slices, 262144.
+    let volume = texture_3d_desc(1024, 8, 8, 1, RGBA8);
+    assert!(crate::lengths::within_served_bound_texture_3d(&volume, 0, 262_144));
+    assert!(!crate::lengths::within_served_bound_texture_3d(&volume, 0, 262_145));
+    assert!(!crate::lengths::within_served_bound_texture_3d(&volume, 1, 1));
+    // A format the table does not cover lends nothing.
+    assert!(!crate::lengths::within_served_bound_texture_2d(&texture_2d_desc(64, 64, 1, 1, NV12), 0, 1));
+}

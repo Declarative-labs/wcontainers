@@ -444,3 +444,70 @@ fn create_query_hands_out_the_kind_the_object_answers() {
     assert!(made(1).is_err(), "a query of the 11.0 runtime, answering no ID3D11Query1, is refused");
     println!("CREATE QUERY: 6 predicates as predicates, 10 queries as queries, a query without ID3D11Query1 refused");
 }
+
+/// One byte more than the reference says the serving glue lends: C touches it, and AddressSanitizer must stop it.
+extern "C" fn one_past_the_lent_memory(row_pitch: u32, depth_pitch: u32) -> u64 {
+    lent_by_reference(row_pitch, depth_pitch) + 1
+}
+
+/// The shapes `touch_one_past_the_lent_memory` is run for, each as `EXACT_SHAPE` names it, with a resource of each whose
+/// lent memory at the recorder's pitches (rows of 4096 bytes, slices of 65536) is within what the serving glue lends.
+const SHAPES: [(&str, Resource); 4] = [
+    ("buffer", Resource::Buffer(256)),
+    ("texture_1d", Resource::Texture1D { width: 300, mips: 0, array: 2, format: 28 }),
+    ("texture_2d", Resource::Texture2D { width: 37, height: 23, mips: 0, array: 2, format: 28 }),
+    ("texture_3d", Resource::Texture3D { width: 19, height: 16, depth: 7, mips: 0, format: 28 }),
+];
+
+/// Under AddressSanitizer (`EXACT_ASAN` set, as plants/exact-under-asan.sh sets it): the memory the serving glue lends
+/// for a mapped subresource ends exactly where the reference says, for a buffer and each texture shape: C touching one
+/// byte past it is stopped with a heap-buffer-overflow, each shape in a process of its own (this test binary again).
+/// Without AddressSanitizer nothing would stop the touch, so the test checks nothing there.
+#[test]
+fn one_byte_past_the_lent_memory_is_stopped() {
+    if std::env::var_os("EXACT_ASAN").is_none() {
+        return;
+    }
+    let program = std::env::current_exe().expect("this test binary");
+    for (shape, _) in SHAPES {
+        let run = std::process::Command::new(&program)
+            .args(["--exact", "touch_one_past_the_lent_memory", "--ignored", "--test-threads=1"])
+            .env("EXACT_SHAPE", shape)
+            .output()
+            .expect("this test binary, run again");
+        let errors = String::from_utf8_lossy(&run.stderr);
+        assert!(!run.status.success() && errors.contains("heap-buffer-overflow"), "{shape}: C touched one byte past the memory lent and was not stopped");
+    }
+}
+
+/// Maps the first subresource of the `EXACT_SHAPE` resource through the serving glue and touches one byte more than
+/// the reference says it lends (run by `one_byte_past_the_lent_memory_is_stopped`, where AddressSanitizer stops it).
+#[test]
+#[ignore = "run by one_byte_past_the_lent_memory_is_stopped in a process of its own"]
+fn touch_one_past_the_lent_memory() {
+    let wanted = std::env::var("EXACT_SHAPE").unwrap_or_default();
+    let (_, resource) = SHAPES.into_iter().find(|(shape, _)| *shape == wanted).expect("a shape EXACT_SHAPE names");
+    let library = exports(Recorder);
+    let (mut device, mut context) = (0_usize, 0_usize);
+    #[expect(unsafe_code, reason = "exact.c's caller, given the serving glue's own D3D11CreateDevice")]
+    // SAFETY: `create` is the serving glue's export, which takes what d3d11.h declares; the two outs are ours.
+    let status = unsafe { exact_create_device(library.d_3d11_create_device as usize, &mut device, &mut context) };
+    assert!(status >= 0, "a device through the serving glue: {status:#x}");
+    let (kind, desc) = described(resource);
+    let layout = initial_layout(resource).expect("a format the reference covers");
+    let lengths: Vec<u64> = layout.iter().map(|(_, _, length)| *length).collect();
+    let pitches: Vec<u32> = layout.iter().map(|(pitch, _, _)| *pitch).collect();
+    let slice_pitches: Vec<u32> = layout.iter().map(|(_, slice, _)| *slice).collect();
+    let mut made = 0_usize;
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: `device` is the serving glue's device; `desc` holds the description's bytes; the three arrays hold one
+    // entry per subresource, `count` of them.
+    let status = unsafe { exact_create(device, kind, desc.as_ptr(), u32::try_from(lengths.len()).unwrap_or(0), lengths.as_ptr(), pitches.as_ptr(), slice_pitches.as_ptr(), &mut made) };
+    assert!(status >= 0 && made != 0, "{resource:?}: created: {status:#x}");
+    TOUCHING.with(|touching| touching.set((resource, 0)));
+    let mut touched = 0_u64;
+    #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
+    // SAFETY: `context` and `made` are the serving glue's; `one_past_the_lent_memory` takes two words and returns one.
+    let status = unsafe { exact_map(context, made, 0, READ_WRITE, one_past_the_lent_memory, &mut touched) };
+    assert!(status >= 0, "{resource:?}: mapped: {status:#x}");
+}

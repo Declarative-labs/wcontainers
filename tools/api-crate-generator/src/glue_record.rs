@@ -33,6 +33,31 @@ pub(super) fn salt_of(place: &str) -> usize {
     usize::try_from(folded % 1_000_003).unwrap_or(0)
 }
 
+/// An expression of which objects an argument of objects holds (`name`, of Rust type `ty`): whether an optional object is
+/// there, and for an array, whether each element is there or how many there are; none for an argument of no such form
+/// (one object, which is always there, or bytes).
+fn presence_of(name: &str, ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if !ty.contains("Self") || ty.contains("impl ") || ty.contains("dyn ") || ty.contains("VolatileBytes") {
+        return None;
+    }
+    fn slice_of(ty: &str) -> Option<&str> {
+        ty.strip_prefix("&[").or_else(|| ty.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']')).map(str::trim)
+    }
+    if let Some(inner) = ty.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')).map(str::trim) {
+        return Some(match slice_of(inner) {
+            Some(element) if element.starts_with("Option<") => format!("{name}.map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>())"),
+            Some(_) => format!("{name}.map(<[_]>::len)"),
+            None => format!("{name}.is_some()"),
+        });
+    }
+    match slice_of(ty) {
+        Some(element) if element.starts_with("Option<") => Some(format!("{name}.iter().map(|item| item.is_some()).collect::<Vec<_>>()")),
+        Some(_) => Some(format!("{name}.len()")),
+        None => None,
+    }
+}
+
 /// The recorder's log, objects, bytes and helpers, the same in every recorder crate.
 pub(super) const RECORDER_BASE: &str = r#"use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -292,7 +317,11 @@ impl Writer<'_, '_> {
             let mut shown: Vec<String> = Vec::new();
             let mut shown_values: Vec<String> = Vec::new();
             for (name, ty) in inputs {
-                if ty.contains("Self") || ty.contains("impl ") || ty.contains("dyn ") || ty.contains("VolatileBytes") {
+                if let Some(presence) = presence_of(name, ty) {
+                    // Objects are not compared by value: which are there is, so that a glue dropping one is seen.
+                    shown.push(format!("{name}={{:?}}"));
+                    shown_values.push(presence);
+                } else if ty.contains("Self") || ty.contains("impl ") || ty.contains("dyn ") || ty.contains("VolatileBytes") {
                     shown.push(format!("{name}=an object or the caller's bytes"));
                 } else {
                     shown.push(format!("{name}={{:?}}"));
