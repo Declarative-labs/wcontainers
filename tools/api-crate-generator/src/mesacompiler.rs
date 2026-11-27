@@ -50,6 +50,11 @@ const STAGE_MARK: &str = "@";
 const METHOD: &str = "@METHOD@";
 const STAGE_DOC: &str = "@STAGE_DOC@";
 
+/// The trait of `stage` the stages a function of `STAGES_TAKEN` takes implement: `TakesPreparedPointsAsSquares`.
+fn taken_marker(function: &str) -> String {
+    format!("Takes{}", type_name(function))
+}
+
 fn by_stage(handle: &str) -> bool {
     BY_STAGE.contains(&handle)
 }
@@ -947,6 +952,23 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
         } else {
             vec![(type_name(handle), said.trim().to_string(), String::new())]
         };
+        if by_stage(handle) {
+            // One type generic over the stage (a zero-sized type of `stage`), one drop, one mark; a type a stage aliases it.
+            let ty = type_name(handle);
+            let _ = writeln!(
+                glue_types,
+                "/// A `struct {handle}` the bridge made, of the stage `S` names, given back by `{handle}_free` when dropped. Not `Send`:\n/// no fact of the bridge's is relied on for a shader moved between threads.\n#[derive(Debug)]\npub struct {ty}<S> {{\n    nir: NonNull<c_void>,\n    _stage: PhantomData<fn() -> S>,\n    _thread: PhantomData<*const ()>,\n}}\n\nimpl<S> {ty}<S> {{\n    /// Takes a shader the bridge made; None for null.\n    fn owning(nir: *mut c_void) -> Option<{ty}<S>> {{\n        NonNull::new(nir).map(|nir| {ty} {{ nir, _stage: PhantomData, _thread: PhantomData }})\n    }}{into_raw}}}\n\nimpl<S> Drop for {ty}<S> {{\n    fn drop(&mut self) {{\n        #[expect(unsafe_code, reason = \"bridge.h: {handle}_free gives back a {handle} the bridge made, of any stage\")]\n        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.\n        unsafe {{ {handle}_free(self.nir.as_ptr()) }};\n    }}\n}}\n"
+            );
+            marks += 1;
+            for (alias, said, of_stage) in kinds {
+                let stage = alias.trim_start_matches(&ty);
+                let _ = write!(interface, "{}", doc(&BTreeMap::new(), "", &said, "    "));
+                let _ = writeln!(interface, "    type {alias};\n");
+                let _ = writeln!(type_bindings, "    type {alias} = {alias};");
+                let _ = writeln!(glue_types, "/// A `struct {handle}`{of_stage}.\npub type {alias} = {ty}<stage::{stage}>;\n");
+            }
+            continue;
+        }
         for (ty, said, of_stage) in kinds {
             let _ = write!(interface, "{}", doc(&BTreeMap::new(), "", &said, "    "));
             let _ = writeln!(interface, "    type {ty};\n");
@@ -959,6 +981,22 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
         }
     }
     let _ = writeln!(interface, "    /// The compiler, ready (Mesa's type tables taken for the process).\n    fn new() -> Self;\n");
+    let mut stage_module = String::from("/// The stages of `enum wc_stage`, each a zero-sized type a shader by stage names, and for each function that takes\n/// only some stages a trait those stages implement.\npub mod stage {\n");
+    for stage in stages(&header) {
+        let _ = writeln!(stage_module, "    /// `{}`.\n    #[derive(Debug)]\n    pub struct {};\n", stage.enumerator, stage.pascal);
+    }
+    for (function, taken) in STAGES_TAKEN {
+        let marker = taken_marker(function);
+        let _ = writeln!(stage_module, "    /// The stages `{function}` takes.\n    pub trait {marker} {{}}\n");
+        for (enumerator, _) in *taken {
+            let stage = stages(&header).into_iter().find(|stage| stage.enumerator == *enumerator).ok_or_else(|| format!("{function}: no stage {enumerator}"))?;
+            let _ = writeln!(stage_module, "    impl {marker} for {} {{}}\n", stage.pascal);
+        }
+    }
+    stage_module.push_str("}\n");
+    glue_types.insert_str(0, &stage_module);
+    glue_types.insert(stage_module.len(), '\n');
+    let mut generic_glue = String::new();
     for function in &header.functions {
         let (c_ret, ret) = return_of(function, &header)?;
         let (params, out_param, written) = parameters(function, &header)?;
@@ -1080,13 +1118,40 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
         if instances.is_empty() {
             return Err(format!("{}: offered for no stage", function.name));
         }
-        let marks_each = marks - marks_before;
-        marks += marks_each * (instances.len() - 1);
-        for (method, stage, stage_doc) in &instances {
-            offered += 1;
-            let fill = |text: &str| text.replace(METHOD, method).replace(STAGE_DOC, stage_doc).replace(STAGE_MARK, stage);
-            interface.push_str(&fill(&method_text));
-            calls.push_str(&fill(&glue_text));
+        let _ = marks_before;
+        if staged {
+            // One glue function generic over the stage, its marks once; each stage's method calls it.
+            let bound = if STAGES_TAKEN.iter().any(|(name, _)| *name == function.name) { format!(": stage::{}", taken_marker(&function.name)) } else { String::new() };
+            let generic = |text: &str| text.replace(&format!("{STAGE_MARK}::"), "::<S>::").replace(STAGE_MARK, "<S>");
+            let mut lines = glue_text.lines();
+            let first = lines.next().unwrap_or_default();
+            let glue_name = method_name(&function.name);
+            let header_line = generic(&first.replacen(&format!("fn {METHOD}(&self, "), &format!("fn {glue_name}<S{bound}>("), 1));
+            let _ = writeln!(generic_glue, "/// The glue of the bridge's `{}`, for a shader of any stage it takes.\n{}", function.name, header_line.trim_start());
+            for line in lines {
+                let mut line = generic(line.strip_prefix("    ").unwrap_or(line));
+                if !bound.is_empty() {
+                    // The bound is what keeps a stage the function does not take out: the mark names it.
+                    line = line.replace("of the stage its type names (", &format!("of the stage its type names, one that `stage::{}` is implemented for, the stages STAGES_TAKEN lists for it (", taken_marker(&function.name)));
+                }
+                let _ = writeln!(generic_glue, "{line}");
+            }
+            let arguments: Vec<String> = signature_params.iter().map(|param| param.split(':').next().unwrap_or_default().trim().to_string()).collect();
+            let call_header = first.to_string();
+            let call_text = format!("{call_header}\n        {glue_name}({})\n    }}\n\n", arguments.join(", "));
+            for (method, stage, stage_doc) in &instances {
+                offered += 1;
+                let fill = |text: &str| text.replace(METHOD, method).replace(STAGE_DOC, stage_doc).replace(STAGE_MARK, stage);
+                interface.push_str(&fill(&method_text));
+                calls.push_str(&fill(&call_text));
+            }
+        } else {
+            for (method, stage, stage_doc) in &instances {
+                offered += 1;
+                let fill = |text: &str| text.replace(METHOD, method).replace(STAGE_DOC, stage_doc).replace(STAGE_MARK, stage);
+                interface.push_str(&fill(&method_text));
+                calls.push_str(&fill(&glue_text));
+            }
         }
     }
     let _ = writeln!(interface, "}}");
@@ -1103,7 +1168,7 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
     )?;
     let template = include_str!("../templates/mesa-compiler/direct.rs");
     let direct_text = format!(
-        "{HEADER}{template}\n// ----- The bridge's structures as it lays them out. -----\n\n{mirrors}// ----- The bridge's functions. -----\n\n#[expect(unsafe_code, reason = \"bridge.h declares these functions; each is reached only through the method that marks its call\")]\nunsafe extern \"C\" {{\n{externs}}}\n\n{glue_types}\nimpl wcontainers_mesa_compiler::MesaCompiler for Bridge {{\n{type_bindings}\n    fn new() -> Bridge {{\n        Bridge::started()\n    }}\n\n{calls}}}\n"
+        "{HEADER}{template}\n// ----- The bridge's structures as it lays them out. -----\n\n{mirrors}// ----- The bridge's functions. -----\n\n#[expect(unsafe_code, reason = \"bridge.h declares these functions; each is reached only through the method that marks its call\")]\nunsafe extern \"C\" {{\n{externs}}}\n\n{glue_types}\n{generic_glue}impl wcontainers_mesa_compiler::MesaCompiler for Bridge {{\n{type_bindings}\n    fn new() -> Bridge {{\n        Bridge::started()\n    }}\n\n{calls}}}\n"
     );
     write(direct.join("implementation.rs"), &direct_text)?;
     write(direct.join("Cargo.toml"), include_str!("../templates/mesa-compiler/direct.toml"))?;
