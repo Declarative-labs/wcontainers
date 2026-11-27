@@ -22,7 +22,8 @@ use wcontainers_executor::{
     InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
 use wcontainers_guest_cpu::{Guest, HookBody, Personality, TrapKind};
-use wcontainers_processor_architecture_arm64::encoding::{IMM16, RT};
+use wcontainers_processor_architecture_arm64::encoding::{Field, IMM16, RT};
+use wcontainers_processor_architecture_arm64::system_instruction::to_cache_maintenance_syndrome;
 use wcontainers_processor_architecture_arm64::system_register::{
     SYSTEM_REGISTER, SystemRegisterEncoding,
 };
@@ -47,6 +48,8 @@ const CPU_HOOK_ARGUMENTS: usize = 8;
 type CpuHookIndex = usize;
 /// The bit of an MRS or MSR word that is set in an MRS, [L](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-).
 const SYSTEM_MOVE_READ_BIT: u32 = 21;
+/// The op0 field of a system instruction's word: 2 or 3 in an MRS or MSR (register), 0 in an MSR (immediate).
+const SYSTEM_OP0: Field = Field::new(19, 2);
 
 /// How a thread runs.
 #[derive(Clone, Copy)]
@@ -677,12 +680,33 @@ fn memory_fault(caller: &mut Caller<'_, ThreadData>, computed: u64, write: bool)
     } else {
         AccessDirection::Read
     };
-    caller.data_mut().ending = Some(Ending::Raised(Exception::DataAbort {
-        status: fault_status(&space, address),
-        access: direction,
-        address: computed,
-    }));
+    let status = fault_status(&space, address);
+    let exception = if is_cache_maintenance(caller.data()) {
+        Exception::Undecoded {
+            syndrome: to_cache_maintenance_syndrome(status),
+            fault_address: computed,
+        }
+    } else {
+        Exception::DataAbort {
+            status,
+            access: direction,
+            address: computed,
+        }
+    };
+    caller.data_mut().ending = Some(Ending::Raised(exception));
     contract::UNWIND_LEAVE
+}
+
+/// Whether the thread's instruction is DC CVAC or DC CIVAC, whose fault is a data abort of cache maintenance.
+fn is_cache_maintenance(data: &ThreadData) -> bool {
+    let pc = program_counter(data);
+    let mut word = [0; INSTRUCTION_BYTES];
+    pc.is_multiple_of(INSTRUCTION_BYTES as u64)
+        && space_of(data).read(pc, &mut word)
+        && matches!(
+            wcontainers_arm64::decode(u32::from_le_bytes(word)),
+            wcontainers_arm64::Instruction::CleanCache { .. }
+        )
 }
 
 /// The load code hook: puts a piece for the address in place, or ends the run at a fetch fault or the end of a step.
@@ -858,12 +882,12 @@ fn alignment_fault(data: &ThreadData, pc: u64, address: u64) -> Exception {
     }
 }
 
-/// Returns the fields EL1 is given of a trapped MRS or MSR, the instruction word given.
+/// Returns the fields EL1 is given of a trapped MRS, MSR (register) or MSR (immediate), the instruction word given.
 fn to_system_access(word: u32) -> SystemAccess {
     let encoding = SystemRegisterEncoding::from_field(SYSTEM_REGISTER.read(word));
     let field = |value: u32| u8::try_from(value).expect("a field of a system register's encoding");
     SystemAccess {
-        op0: field(encoding.op0),
+        op0: field(SYSTEM_OP0.read(word)),
         op1: field(encoding.op1),
         crn: field(encoding.crn),
         crm: field(encoding.crm),
