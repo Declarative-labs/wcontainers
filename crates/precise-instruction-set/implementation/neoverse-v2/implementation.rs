@@ -32,6 +32,7 @@ impl PreciseInstructionSet<Arm64<User>> for NeoverseV2 {
             failed_store_exclusive: None,
             store_exclusive_overlap: None,
             misaligned_exclusive: None,
+            misaligned_ordered_or_atomic: None,
             fault_address_tag: None,
         };
         let precise =

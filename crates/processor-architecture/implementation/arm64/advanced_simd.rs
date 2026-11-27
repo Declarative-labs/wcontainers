@@ -304,6 +304,54 @@ pub enum AdvancedSimdOperation {
     },
 }
 
+/// The feature some encodings of an Advanced SIMD instruction need beyond the one its list row names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OptionalEncoding {
+    /// immh 001x, half precision: [FEAT_FP16](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_FP16), as the decode of
+    /// [SCVTF (vector, fixed-point)](https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/SCVTF--vector--fixed-point---Signed-fixed-point-convert-to-floating-point--vector--) has it.
+    HalfPrecisionFixedPoint,
+    /// size 11, 64-bit elements: [FEAT_PMULL](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-0-architecture-extension#:~:text=FEAT_PMULL), as the decode of
+    /// [PMULL](https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/PMULL--PMULL2--Polynomial-multiply-long-) has it.
+    PolynomialMultiplyLongOfDoublewords,
+}
+
+/// The immh of a half-precision fixed-point conversion, its low bit aside.
+const HALF_PRECISION_IMMH: u32 = 0b0010;
+/// The size of PMULL of 64-bit elements.
+const DOUBLEWORD_SIZE: u32 = 0b11;
+
+/// The optional encodings of each instruction that has some, none for every other instruction.
+pub const fn to_optional_encoding(
+    instruction: Instruction<Infallible>,
+) -> Option<OptionalEncoding> {
+    use Instruction as I;
+    Some(match instruction {
+        I::ScvtfScalarImmediate
+        | I::UcvtfScalarImmediate
+        | I::FcvtzsScalarImmediate
+        | I::FcvtzuScalarImmediate
+        | I::ScvtfVectorImmediateImmediate
+        | I::UcvtfVectorImmediateImmediate
+        | I::FcvtzsVectorImmediateImmediate
+        | I::FcvtzuVectorImmediateImmediate => OptionalEncoding::HalfPrecisionFixedPoint,
+        I::PmullAsimddiffL => OptionalEncoding::PolynomialMultiplyLongOfDoublewords,
+        _ => return None,
+    })
+}
+
+/// Whether the word is one of the instruction's optional encodings.
+pub const fn is_optional_encoding(instruction: Instruction<Infallible>, word: u32) -> bool {
+    match to_optional_encoding(instruction) {
+        Some(OptionalEncoding::HalfPrecisionFixedPoint) => {
+            IMMH.read(word) & !1 == HALF_PRECISION_IMMH
+        }
+        Some(OptionalEncoding::PolynomialMultiplyLongOfDoublewords) => {
+            SIZE.read(word) == DOUBLEWORD_SIZE
+        }
+        None => false,
+    }
+}
+
 /// The operation of each modeled instruction of this module, none for every other instruction.
 pub const fn to_advanced_simd_operation(
     instruction: Instruction<Infallible>,

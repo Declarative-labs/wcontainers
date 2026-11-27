@@ -478,6 +478,18 @@ struct SystemChoices {
     features: SystemFeatures,
 }
 
+/// The syndrome of the data abort a cache maintenance instruction takes at EL0 with the fault status given.
+pub const fn to_cache_maintenance_syndrome(status: FaultStatus) -> u64 {
+    CACHE_MAINTENANCE_ABORT
+        | match status {
+            FaultStatus::TranslationFaultLevel0 => TRANSLATION_FAULT_LEVEL_0,
+            FaultStatus::TranslationFaultLevel3 => TRANSLATION_FAULT_LEVEL_3,
+            FaultStatus::PermissionFaultLevel3 | FaultStatus::AlignmentFault => {
+                PERMISSION_FAULT_LEVEL_3
+            }
+        }
+}
+
 /// SYS by what its encoding does at EL0.
 fn simulate_system<LevelSpecific, Architecture>(
     processor: &mut Processor<LevelSpecific>,
@@ -550,14 +562,7 @@ where
         A::CleanOrInvalidate => match find_fault(memory, location, 1, AccessDirection::Read) {
             None => Ok(()),
             Some((_, status)) => Err(Exception::Undecoded {
-                syndrome: CACHE_MAINTENANCE_ABORT
-                    | match status {
-                        FaultStatus::TranslationFaultLevel0 => TRANSLATION_FAULT_LEVEL_0,
-                        FaultStatus::TranslationFaultLevel3 => TRANSLATION_FAULT_LEVEL_3,
-                        FaultStatus::PermissionFaultLevel3 | FaultStatus::AlignmentFault => {
-                            PERMISSION_FAULT_LEVEL_3
-                        }
-                    },
+                syndrome: to_cache_maintenance_syndrome(status),
                 fault_address: to_fault_address(address, location, tag),
             }),
         },
