@@ -1483,7 +1483,7 @@ fn length(addresses: &Range<u64>) -> usize {
 ///
 /// Where the executor is wrong, two more: the instructions its agreement sets aside, and the generator the behavior
 /// source's tests take. Such an executor shows no one known behavior for the instructions set aside, so the behavior
-/// source's measuring test is not run on it (the agreement checks every other instruction's behavior instead).
+/// source's measuring test leaves their states out.
 #[macro_export]
 macro_rules! tests {
     (@executor $executor:expr, $set:expr, $generator:expr, $set_aside:expr) => {
@@ -1648,11 +1648,12 @@ macro_rules! tests {
             }
 
             #[test]
-            #[ignore = "the executor shows no one known behavior for the instructions its agreement sets aside"]
             fn measured_behavior_agrees_with_the_source() {
-                $crate::wcontainers_behavior_source_conformance::measured_behavior_agrees_with_the_source(
+                let set_aside: Vec<_> = $set_aside.iter().map(|(instruction, _)| *instruction).collect();
+                $crate::wcontainers_behavior_source_conformance::measured_behavior_agrees_with_the_source_but_set_aside(
                     $executor,
                     $source_generator,
+                    &set_aside,
                 );
             }
 
