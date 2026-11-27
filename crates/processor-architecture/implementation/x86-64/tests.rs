@@ -73,6 +73,9 @@ fn simulate(
         xcr0: expected.xcr0,
         xinuse: expected.xinuse,
         xsave_tracking: expected.xsave_tracking,
+        tile_configuration: expected.tile_configuration,
+        tile_data: expected.tile_data.clone(),
+        xfd: expected.xfd,
     };
     (processor, after.memory_mutations[start..].to_vec())
 }

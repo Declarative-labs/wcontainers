@@ -45,12 +45,14 @@ use wcontainers_processor_architecture_x86_64::reciprocal::find_reciprocal_form;
 use wcontainers_processor_architecture_x86_64::segment::find_segment_form;
 use wcontainers_processor_architecture_x86_64::optional::find_optional_form;
 use wcontainers_processor_architecture_x86_64::xsave::find_state_form;
+use wcontainers_processor_architecture_x86_64::amx::find_amx_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
     STACK_POINTER, VECTOR_REGISTERS, X86_64, ZERO_PROCESSOR,
 };
 
+pub mod amx;
 pub mod avx;
 pub mod avx512_integer;
 pub mod branch;
@@ -327,6 +329,16 @@ pub enum OperandType {
     RestoredOver,
     /// JCXZ's operand size, code address, displacement and RCX together.
     CountJump,
+    /// XCR0 and IA32_XFD with TILECFG before, for an AMX form.
+    TileState(amx::ConfigurationSet),
+    /// The tiles an AMX form names, this many.
+    TileNames(usize),
+    /// Where an AMX form's memory operand lies, for a form that writes it, and for one that moves tile rows.
+    TilePlacement { write: bool, rows: bool },
+    /// The 64 bytes LDTILECFG reads.
+    TileConfigurationImage,
+    /// What the tiles hold.
+    TileContents(amx::ContentSet),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -538,6 +550,13 @@ pub enum OperandValue {
     XrstorTracking(Option<(u64, u64)>),
     WaitSource { register: usize, value: u64 },
     CountJump(compatibility::CountJump),
+    TileState(amx::TileState),
+    /// The destination's or the one tile's name, then the sources'.
+    TileNames([u8; 3]),
+    TilePlacement(amx::Placement),
+    /// An index into [`amx::list_images`].
+    TileConfigurationImage(usize),
+    TileContents(amx::Contents),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -623,6 +642,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_state_form(instruction) {
             return xsave::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_amx_form(instruction) {
+            return amx::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -888,6 +910,11 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::XrstorTracking => xsave::generate_trackings(),
             OperandType::RestoredOver => xsave::generate_restored_over(),
             OperandType::CountJump => compatibility::generate_cases(),
+            OperandType::TileState(set) => amx::generate_states(set),
+            OperandType::TileNames(count) => amx::generate_names(count),
+            OperandType::TilePlacement { write, rows } => amx::generate_placements(write, rows),
+            OperandType::TileConfigurationImage => amx::generate_images(),
+            OperandType::TileContents(set) => amx::generate_contents(set),
         };
         values.into_iter()
     }
@@ -992,6 +1019,9 @@ impl X86_64InputDomain {
         }
         if let Some(form) = find_state_form(instruction) {
             return xsave::build_state(form, &typed);
+        }
+        if let Some(form) = find_amx_form(instruction) {
+            return amx::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -1176,6 +1206,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_segment_form(instruction).is_some()
         || find_optional_form(instruction).is_some()
         || find_state_form(instruction).is_some()
+        || find_amx_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

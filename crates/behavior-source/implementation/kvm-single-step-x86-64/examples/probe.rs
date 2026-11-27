@@ -148,7 +148,7 @@ mod on_chip {
             .map(|(number, value)| format!("xmm{number} {value:032x}"))
             .collect();
         format!(
-            "{:x?} ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {} xinuse {:#x} pkru {:#x} tracking {:x?}",
+            "{:x?} ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {} xinuse {:#x} pkru {:#x} tracking {:x?} xcr0 {:#x} xfd {:#x}",
             processor.general_purpose_registers,
             processor.instruction_pointer,
             processor.flags,
@@ -160,6 +160,8 @@ mod on_chip {
             processor.xinuse,
             processor.pkru,
             processor.xsave_tracking,
+            processor.xcr0,
+            processor.xfd,
         ) + &render_x87(&processor.x87)
     }
 
@@ -314,6 +316,22 @@ mod on_chip {
         }
         if expected.x87 != observed.x87 {
             lines.push(format!("\n    x87 {:x?}\n      / {:x?}", expected.x87, observed.x87));
+        }
+        if expected.tile_configuration != observed.tile_configuration {
+            lines.push(format!("\n    tilecfg {:02x?}\n      / {:02x?}", expected.tile_configuration, observed.tile_configuration));
+        }
+        // The first doublewords of the tiles where the two differ: tile, row, column, simulated, executed.
+        let (simulated_tiles, executed_tiles) = (expected.tile_data.as_bytes(), observed.tile_data.as_bytes());
+        let differing: Vec<String> = (0..simulated_tiles.len() / 4)
+            .filter(|index| simulated_tiles[4 * index..4 * index + 4] != executed_tiles[4 * index..4 * index + 4])
+            .take(8)
+            .map(|index| {
+                let read = |bytes: &[u8]| u32::from_le_bytes(bytes[4 * index..4 * index + 4].try_into().expect("four bytes"));
+                format!("tmm{}[{}][{}] {:08x} / {:08x}", index / 256, index / 16 % 16, index % 16, read(simulated_tiles), read(executed_tiles))
+            })
+            .collect();
+        if !differing.is_empty() {
+            lines.push(format!("\n    tiles {}", differing.join(", ")));
         }
         let mut pages: Vec<u64> = simulated
             .memory_mutations

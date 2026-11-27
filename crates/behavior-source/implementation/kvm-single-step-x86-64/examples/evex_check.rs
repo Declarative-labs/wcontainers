@@ -96,6 +96,9 @@ mod on_chip {
             xcr0: expected.xcr0,
             xinuse: expected.xinuse,
             xsave_tracking: expected.xsave_tracking,
+            tile_configuration: expected.tile_configuration,
+            tile_data: expected.tile_data.clone(),
+            xfd: expected.xfd,
         }
     }
 

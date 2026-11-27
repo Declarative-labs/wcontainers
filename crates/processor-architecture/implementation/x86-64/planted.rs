@@ -19,6 +19,30 @@ use crate::opmask::{OpmaskOperation, find_opmask_form};
 use crate::optional::{OptionalForm, OptionalOperation};
 use crate::{Flags, Instruction};
 
+/// TILELOADD, TILELOADDT1 and TILESTORED.
+const TILE_MOVES: [Instruction; 3] =
+    [Instruction::TileloaddTmmu32Memu32, Instruction::Tileloaddt1Tmmu32Memu32, Instruction::TilestoredMemu32Tmmu32];
+/// TILELOADD and TILELOADDT1.
+const TILE_LOADS: [Instruction; 2] = [TILE_MOVES[0], TILE_MOVES[1]];
+/// TDPBSSD, TDPBSUD, TDPBUSD, TDPBUUD and TDPBF16PS.
+const TILE_DOTS: [Instruction; 5] = [
+    Instruction::TdpbssdTmmi32Tmm4i8Tmm4i8,
+    Instruction::TdpbsudTmmi32Tmm4i8Tmm4u8,
+    Instruction::TdpbusdTmmi32Tmm4u8Tmm4i8,
+    Instruction::TdpbuudTmmu32Tmm4u8Tmm4u8,
+    Instruction::Tdpbf16psTmmf32Tmm2bf16Tmm2bf16,
+];
+/// The AMX forms that use TILEDATA: the tile moves, TILEZERO and the dot products.
+const AMX_DATA: [Instruction; 9] = [
+    TILE_MOVES[0], TILE_MOVES[1], TILE_MOVES[2], Instruction::TilezeroTmmu32,
+    TILE_DOTS[0], TILE_DOTS[1], TILE_DOTS[2], TILE_DOTS[3], TILE_DOTS[4],
+];
+/// Every AMX form modeled.
+const AMX: [Instruction; 12] = [
+    Instruction::LdtilecfgMem, Instruction::SttilecfgMem, Instruction::Tilerelease,
+    AMX_DATA[0], AMX_DATA[1], AMX_DATA[2], AMX_DATA[3], AMX_DATA[4], AMX_DATA[5], AMX_DATA[6], AMX_DATA[7], AMX_DATA[8],
+];
+
 /// Who planted a bug first.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Origin {
@@ -62,6 +86,8 @@ pub enum Origin {
     StateAndXsave,
     /// The family of the x87 transcendental forms, JCXZ and the forms the chip source refused.
     X87AndRefused,
+    /// The family of AMX's tile forms and XBEGIN.
+    AmxAndTransaction,
 }
 
 /// The forms a bug shows on.
@@ -1360,6 +1386,42 @@ pub enum Bug {
     SixteenBitJumpTargetWhole,
     /// A step in compatibility mode keeps RSP's upper half.
     CompatibilityStepKeepsStackUpperHalf,
+
+    // AMX's tile forms and XBEGIN.
+    /// The tile forms run whatever XCR0 enables.
+    TilesWithoutExtendedControl,
+    /// The tile forms that use TILEDATA run though XFD disables it.
+    TilesIgnoreFeatureDisable,
+    /// TILERELEASE leaves XINUSE's tile bits set.
+    TileReleaseKeepsInUse,
+    /// TILEZERO zeroes only the rows the tile is configured with.
+    TileZeroOnlyConfiguredRows,
+    /// TDPBSUD and TDPBUSD read the sources' signs the other way round.
+    TileDotSignsSwapped,
+    /// TILELOADD and TILESTORED take a start row at or past the tile's rows.
+    TileStartRowUnchecked,
+    /// TDP takes tiles whose shapes do not fit together.
+    TileDotShapesUnchecked,
+    /// STTILECFG stores the start row as 0.
+    TileConfigurationStoreDropsStartRow,
+    /// TILELOADD and TILESTORED step by the index register's value, not scaled.
+    TileRowStrideUnscaled,
+    /// TILELOADD zeroes no row it then fails to load.
+    TileLoadKeepsUpperRows,
+    /// TILELOADD loads whole rows of 64 bytes whatever the tile's width.
+    TileLoadWholeRows,
+    /// A tile form that completes leaves the start row as it was.
+    TileStoreKeepsStartRow,
+    /// TDPBF16PS adds each half's sum to the destination in turn, not their sum.
+    TileBfloat16PairsSummedIntoDestination,
+    /// XBEGIN's abort leaves RAX as it was.
+    TransactionAbortKeepsAccumulator,
+    /// XBEGIN's abort writes the status into EAX alone, keeping RAX's upper half.
+    TransactionAbortKeepsUpperHalf,
+    /// XBEGIN with the 0x66 prefix wraps its fallback to 16 bits, as a near jump does.
+    TransactionFallbackWrapsToSixteenBits,
+    /// XBEGIN goes on at the next instruction, as a transaction that began would.
+    TransactionBeginFallsThrough,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1989,6 +2051,23 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CountJumpTestsDoubleword, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
     row(Bug::SixteenBitJumpTargetWhole, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
     row(Bug::CompatibilityStepKeepsStackUpperHalf, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
+    row(Bug::TilesWithoutExtendedControl, "the AMX forms", Family::Forms(&AMX), Origin::AmxAndTransaction),
+    row(Bug::TilesIgnoreFeatureDisable, "the AMX forms that use TILEDATA", Family::Forms(&AMX_DATA), Origin::AmxAndTransaction),
+    row(Bug::TileReleaseKeepsInUse, "TILERELEASE", Family::Forms(&[Instruction::Tilerelease]), Origin::AmxAndTransaction),
+    row(Bug::TileZeroOnlyConfiguredRows, "TILEZERO", Family::Forms(&[Instruction::TilezeroTmmu32]), Origin::AmxAndTransaction),
+    row(Bug::TileDotSignsSwapped, "TDPBSUD, TDPBUSD", Family::Forms(&[Instruction::TdpbsudTmmi32Tmm4i8Tmm4u8, Instruction::TdpbusdTmmi32Tmm4u8Tmm4i8]), Origin::AmxAndTransaction),
+    row(Bug::TileStartRowUnchecked, "TILELOADD, TILELOADDT1, TILESTORED", Family::Forms(&TILE_MOVES), Origin::AmxAndTransaction),
+    row(Bug::TileDotShapesUnchecked, "TDPBSSD to TDPBF16PS", Family::Forms(&TILE_DOTS), Origin::AmxAndTransaction),
+    row(Bug::TileConfigurationStoreDropsStartRow, "STTILECFG", Family::Forms(&[Instruction::SttilecfgMem]), Origin::AmxAndTransaction),
+    row(Bug::TileRowStrideUnscaled, "TILELOADD, TILELOADDT1, TILESTORED", Family::Forms(&TILE_MOVES), Origin::AmxAndTransaction),
+    row(Bug::TileLoadKeepsUpperRows, "TILELOADD, TILELOADDT1", Family::Forms(&TILE_LOADS), Origin::AmxAndTransaction),
+    row(Bug::TileLoadWholeRows, "TILELOADD, TILELOADDT1", Family::Forms(&TILE_LOADS), Origin::AmxAndTransaction),
+    row(Bug::TileStoreKeepsStartRow, "the AMX forms that write a tile or store one", Family::Forms(&AMX_DATA), Origin::AmxAndTransaction),
+    row(Bug::TileBfloat16PairsSummedIntoDestination, "TDPBF16PS", Family::Forms(&[Instruction::Tdpbf16psTmmf32Tmm2bf16Tmm2bf16]), Origin::AmxAndTransaction),
+    row(Bug::TransactionAbortKeepsAccumulator, "XBEGIN", Family::Forms(&[Instruction::XbeginRelbrz]), Origin::AmxAndTransaction),
+    row(Bug::TransactionAbortKeepsUpperHalf, "XBEGIN", Family::Forms(&[Instruction::XbeginRelbrz]), Origin::AmxAndTransaction),
+    row(Bug::TransactionFallbackWrapsToSixteenBits, "XBEGIN", Family::Forms(&[Instruction::XbeginRelbrz]), Origin::AmxAndTransaction),
+    row(Bug::TransactionBeginFallsThrough, "XBEGIN", Family::Forms(&[Instruction::XbeginRelbrz]), Origin::AmxAndTransaction),
 ];
 
 const FISTTP: &[Instruction] =

@@ -11,6 +11,17 @@
 //!
 //! A repeated string form steps one iteration, as the architecture's model of it does.
 //!
+//! XBEGIN is not stepped: an abort drops the trap. It runs with the trap flag clear and a hardware breakpoint at each
+//! place it may go on at, the next instruction and the fallback, either of which ends the run before it runs. Nor are
+//! TILELOADD, TILELOADDT1 and TILESTORED: under the trap flag the chip stops one part-way, at a row it restarts from,
+//! before a row that faults; they run with a breakpoint at the next instruction.
+//!
+//! The host process asks Linux for guest tile permission before it makes a machine, so that a state may hold XCR0
+//! with AMX's tiles, which the handler then restores and saves apart from the rest, writing IA32_XFD first and
+//! releasing the tiles after; the host sets XCR0 before a state whose XCR0 differs from the last. The host never
+//! writes IA32_XFD itself: Linux restores a guest's TILEDATA under the XFD it is given, which faults in the host's
+//! kernel where TILEDATA is in use and XFD disables it.
+//!
 //! A state the source cannot hold is refused, with a [`Refusal`] that names why, before anything of it is written:
 //! memory outside the program's addresses (where the source keeps its own pages), RFLAGS bits a program cannot set,
 //! and the instructions it cannot step (see [`check_steppable`]). A run that ends otherwise than the model has it is
@@ -28,8 +39,8 @@ use std::time::{Duration, Instant};
 use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
 use kvm_bindings::{
-    KVM_CAP_DISABLE_QUIRKS2, KVM_MAX_CPUID_ENTRIES, KVM_X86_QUIRK_FIX_HYPERCALL_INSN, Msrs, kvm_enable_cap, kvm_msr_entry,
-    kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
+    KVM_CAP_DISABLE_QUIRKS2, KVM_MAX_CPUID_ENTRIES, KVM_X86_QUIRK_FIX_HYPERCALL_INSN, Msrs, kvm_debugregs, kvm_enable_cap,
+    kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
 };
 use kvm_ioctls::{Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 use wcontainers_behavior_source::BehaviorSource;
@@ -37,6 +48,7 @@ use wcontainers_kvm::Kvm;
 use wcontainers_kvm_direct::DirectKvm;
 use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
+use wcontainers_processor_architecture_x86_64::amx::{TILE_COMPONENTS, TILE_DATA_COMPONENT, TileData, check_configuration};
 use wcontainers_processor_architecture_x86_64::xsave;
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
@@ -59,6 +71,7 @@ use crate::layout::{
     list_descriptors, to_gate, to_gate_privilege, to_index, to_interrupt_stack, to_kernel,
 };
 use crate::layout::{AREA_MARKER, OBSERVED_AREA, PHASE_READ, PHASE_STEP_FAILED, TRACKED_AREA_BYTES, TRACKING_CODE, TrackingSteps};
+use crate::layout::{TILES_AFTER, TILES_BEFORE, XSAVE_TILE_CONFIGURATION, XSAVE_TILE_DATA};
 
 mod handler;
 mod layout;
@@ -239,8 +252,11 @@ const LINUX_WAIT_CONTROL: u64 = 100_000;
 const SAVED_FLAGS: usize = 11;
 /// DR6.BS: the #DB is the trap after a single step.
 const SINGLE_STEP: u64 = 1 << 14;
-/// DR6 as reset.
+/// DR6.B0 and B1: the #DB is the fault of breakpoint 0 or 1.
+const BREAKPOINTS: u64 = 0b11;
+/// DR6 and DR7 as reset.
 const DEBUG_STATUS_RESET: u64 = 0xFFFF_0FF0;
+const DEBUG_CONTROL_RESET: u64 = 0x400;
 const DEBUG_VECTOR: u64 = 1;
 /// The page fault's error code bits.
 const FAULT_PRESENT: u32 = 1 << 0;
@@ -291,6 +307,11 @@ pub struct SingleStepMachine {
     pub check_mismatches: u64,
     /// Set during a run and after a failed one, when the CPU may be anywhere: the next state makes a new machine.
     renew_machine: bool,
+    /// AMX TILES: whether Linux gave this process guest tile permission, and the XCR0 the CPU holds.
+    tiles_permitted: bool,
+    extended_control: u64,
+    /// XBEGIN: whether the CPU's debug registers hold breakpoints.
+    breakpoints_armed: bool,
 }
 
 /// INCREMENTAL MEMORY: what the guest holds between states when loading incrementally.
@@ -319,6 +340,8 @@ impl SingleStepMachine {
     }
 
     pub fn with_options(options: Options) -> Result<Self, SetUpError> {
+        // A host without AMX refuses; its states never hold the tiles.
+        let tiles_permitted = DirectKvm::request_guest_tile_permission().is_ok();
         let kvm = KvmSystem::new().map_err(|error| refused("opening KVM", error))?;
         let machine = kvm.create_vm().map_err(|error| refused("making the machine", error))?;
         machine
@@ -385,6 +408,9 @@ impl SingleStepMachine {
             runs: 0,
             check_mismatches: 0,
             renew_machine: false,
+            tiles_permitted,
+            extended_control: EXTENDED_CONTROL_0,
+            breakpoints_armed: false,
         };
         executor.set_up()?;
         Ok(executor)
@@ -549,6 +575,7 @@ impl SingleStepMachine {
         processor: &Processor,
         memory: &[MemoryDelta<'_, X86_64>],
         steps: TrackingSteps,
+        stepped: bool,
     ) -> Option<Vec<MemoryDelta<'static, X86_64>>> {
         let started = Instant::now();
         self.writable.clear();
@@ -560,7 +587,10 @@ impl SingleStepMachine {
             }
             MemoryLoading::Incremental | MemoryLoading::Checked => Some(self.prepare(memory)),
         };
-        let slot = to_slot(processor, self.read_page_table(), steps);
+        let slot = to_slot(processor, self.read_page_table(), steps, stepped);
+        if slot.tile_request != 0 {
+            self.write_tiles(processor);
+        }
         // The handler reads the image before (up to its last component loaded) and the fields up to the registers
         // before; it writes the rest.
         let end = to_image_end(processor.xinuse & SAVED_COMPONENTS);
@@ -569,6 +599,64 @@ impl SingleStepMachine {
         self.write_bytes(SLOT + inputs.start as u64, &slot.as_bytes()[inputs]);
         self.time_loading += started.elapsed();
         held
+    }
+
+    /// AMX TILES: writes the header and TILECFG of the image the handler restores the tiles from, and TILEDATA where
+    /// XINUSE marks it.
+    fn write_tiles(&mut self, processor: &Processor) {
+        let in_use = processor.xinuse & TILE_COMPONENTS;
+        self.write_bytes(TILES_BEFORE + XSAVE_HEADER as u64, &in_use.to_le_bytes());
+        self.write_bytes(TILES_BEFORE + XSAVE_TILE_CONFIGURATION as u64, &processor.tile_configuration);
+        if in_use & TILE_DATA_COMPONENT != 0 {
+            self.write_bytes(TILES_BEFORE + XSAVE_TILE_DATA as u64, processor.tile_data.as_bytes());
+        }
+    }
+
+    /// AMX TILES: TILECFG, TILEDATA and their XINUSE bits as the handler saved them.
+    fn read_tiles(&self, processor: &mut Processor) {
+        let header = u64::from_le_bytes(self.read_bytes(TILES_AFTER + XSAVE_HEADER as u64, 8).try_into().expect("eight bytes"));
+        let in_use = header & TILE_COMPONENTS;
+        processor.xinuse |= in_use;
+        self.read_into(TILES_AFTER + XSAVE_TILE_CONFIGURATION as u64, &mut processor.tile_configuration);
+        processor.tile_data = TileData::ZERO;
+        if in_use & TILE_DATA_COMPONENT != 0 {
+            self.read_into(TILES_AFTER + XSAVE_TILE_DATA as u64, processor.tile_data.as_mut_bytes());
+            if processor.tile_data.is_zero() {
+                processor.tile_data = TileData::ZERO;
+            }
+        }
+    }
+
+    /// AMX TILES: makes the CPU hold the state's XCR0, where it differs from what it holds; the handler has released
+    /// the tiles after the last state, so no tile state is in use while it changes.
+    fn set_extended_state(&mut self, processor: &Processor) -> Result<(), Refusal> {
+        if processor.xcr0 != self.extended_control {
+            let mut extended = kvm_xcrs { nr_xcrs: 1, ..kvm_xcrs::default() };
+            extended.xcrs[0] = kvm_xcr { xcr: 0, value: processor.xcr0, ..kvm_xcr::default() };
+            self.cpu.set_xcrs(&extended).map_err(|error| Refusal::KvmFailed(format!("setting XCR0: {error}")))?;
+            self.extended_control = processor.xcr0;
+        }
+        Ok(())
+    }
+
+    /// XBEGIN: puts an execute breakpoint at each address, or none.
+    fn set_breakpoints(&mut self, addresses: Option<[u64; 2]>) -> Result<(), Refusal> {
+        if addresses.is_none() && !self.breakpoints_armed {
+            return Ok(());
+        }
+        let mut registers = kvm_debugregs { dr6: DEBUG_STATUS_RESET, dr7: DEBUG_CONTROL_RESET, ..kvm_debugregs::default() };
+        if let Some(addresses) = addresses {
+            for (number, address) in addresses.into_iter().enumerate() {
+                registers.db[number] = address;
+                // Lx enables the breakpoint; its R/W and LEN bits stay 0, an instruction fetch.
+                registers.dr7 |= 1 << (2 * number);
+            }
+        }
+        self.cpu
+            .set_debug_regs(&registers)
+            .map_err(|error| Refusal::KvmFailed(format!("setting the breakpoints: {error}")))?;
+        self.breakpoints_armed = addresses.is_some();
+        Ok(())
     }
 
     fn load_fully(&mut self, memory: &[MemoryDelta<'_, X86_64>]) {
@@ -848,7 +936,13 @@ impl SingleStepMachine {
     ) -> Result<(), Refusal> {
         let started = Instant::now();
         let slot = self.read_slot_outputs();
-        *processor = to_processor(&slot).inspect_err(|_| self.renew_machine = true)?;
+        let (xcr0, xfd) = (processor.xcr0, processor.xfd);
+        let stop = if self.breakpoints_armed { BREAKPOINTS } else { SINGLE_STEP };
+        *processor = to_processor(&slot, stop).inspect_err(|_| self.renew_machine = true)?;
+        (processor.xcr0, processor.xfd) = (xcr0, xfd);
+        if xcr0 & TILE_COMPONENTS != 0 {
+            self.read_tiles(processor);
+        }
         let mut after = std::mem::take(&mut self.page);
         for writable in &self.writable {
             let before = &self.bytes_before[writable.before.clone()];
@@ -994,15 +1088,18 @@ impl BehaviorSource for SingleStepMachine {
         if self.renew_machine {
             self.renew()?;
         }
-        check_holdable(processor, memory)?;
+        check_holdable(processor, memory, self.tiles_permitted)?;
         check_steppable(processor, memory)?;
         let steps = to_tracking_steps(processor, memory)?;
+        let continuations = find_breakpoint_continuations(processor, memory);
+        self.set_extended_state(processor)?;
+        self.set_breakpoints(continuations)?;
         let tracked = steps.load_area != 0 || steps.completed_area != 0 || steps.excepted_area != 0;
         let mut tries = 0;
         let held = loop {
             // XRSTOR TRACKING: a run the host preempted lost the tracking, so it runs again.
             let switches = tracked.then(read_involuntary_switches);
-            let held = self.load(processor, memory, steps);
+            let held = self.load(processor, memory, steps, continuations.is_none());
             if held.is_some() && self.options.loading == MemoryLoading::Checked && !self.check_guest_holds(memory) {
                 self.check_mismatches += 1;
             }
@@ -1031,11 +1128,12 @@ impl BehaviorSource for SingleStepMachine {
 }
 
 /// The slot that loads the processor under the page table.
-fn to_slot(processor: &Processor, page_table: u64, tracking: TrackingSteps) -> Slot {
+fn to_slot(processor: &Processor, page_table: u64, tracking: TrackingSteps, stepped: bool) -> Slot {
+    let trap = if stepped { TRAP } else { 0 };
     let registers = Registers {
         general: processor.general_purpose_registers,
         instruction_pointer: processor.instruction_pointer,
-        flags: processor.flags.bits() | RESERVED_ONE | INTERRUPT_ENABLE | TRAP,
+        flags: processor.flags.bits() | RESERVED_ONE | INTERRUPT_ENABLE | trap,
         code_segment: u64::from(processor.code_segment),
         stack_segment: u64::from(USER_DATA),
         fs_base: processor.fs_base,
@@ -1071,6 +1169,8 @@ fn to_slot(processor: &Processor, page_table: u64, tracking: TrackingSteps) -> S
         before_xsave: image,
         after_xsave: image,
         page_table,
+        tile_request: processor.xcr0 & TILE_COMPONENTS,
+        feature_disable: processor.xfd,
         vector: NOT_RUN,
         error_code: 0,
         fault_address: 0,
@@ -1100,7 +1200,7 @@ fn to_image_end(components: u64) -> usize {
 /// pages, or a permission to part of a page; when its RFLAGS sets a bit a program at ring 3 cannot set (TF, RF, a
 /// reserved bit); when its instruction pointer or a segment base is not canonical or its MXCSR sets a reserved bit;
 /// or when its pages do not fit the arena.
-fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
+fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>], tiles_permitted: bool) -> Result<(), Refusal> {
     for delta in memory {
         let addresses = match delta {
             MemoryDelta::PermissionAssignment { addresses, .. } => {
@@ -1129,9 +1229,11 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if processor.mxcsr > u32::from(u16::MAX) {
         return Err(Refusal::MxcsrReservedBits(processor.mxcsr));
     }
-    if processor.xcr0 != EXTENDED_CONTROL_0 {
-        return Err(Refusal::NotModeled("XCR0 other than the source's, Linux's without AMX"));
+    let tiles = processor.xcr0 & TILE_COMPONENTS;
+    if processor.xcr0 & !TILE_COMPONENTS != EXTENDED_CONTROL_0 || !(tiles == 0 || (tiles == TILE_COMPONENTS && tiles_permitted)) {
+        return Err(Refusal::NotModeled("XCR0 other than Linux's with or without AMX's tiles, which only a host that gives them holds"));
     }
+    check_tiles_holdable(processor)?;
     if !xsave::is_consistent(processor) {
         return Err(Refusal::NotModeled("XINUSE with a bit outside XCR0, or clear for a component out of its initial configuration"));
     }
@@ -1161,14 +1263,65 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     Ok(())
 }
 
+/// AMX TILES: refuses tile state the chip cannot hold as the state has it.
+///
+/// # Errors
+///
+/// When IA32_XFD sets a bit but TILEDATA's, or that one where XCR0 does not enable the tiles; when XCR0 does not
+/// enable the tiles and the state holds any; when XFD disables TILEDATA and it is in use; when TILECFG is one
+/// LDTILECFG refuses, which XRSTOR loads as zeros; when TILEDATA is in use with no tiles configured, which XRSTOR
+/// leaves initial on this chip; or when XINUSE marks a tile component unused that is not initial.
+fn check_tiles_holdable(processor: &Processor) -> Result<(), Refusal> {
+    let tiles = processor.xcr0 & TILE_COMPONENTS != 0;
+    let configured = processor.tile_configuration != [0; 64];
+    let holds_data = !processor.tile_data.is_zero();
+    if processor.xfd & !TILE_DATA_COMPONENT != 0 || (processor.xfd != 0 && !tiles) {
+        return Err(Refusal::NotModeled("IA32_XFD other than none, or TILEDATA's where XCR0 enables the tiles"));
+    }
+    if !tiles && (configured || holds_data || processor.xinuse & TILE_COMPONENTS != 0) {
+        return Err(Refusal::NotModeled("tile state where XCR0 does not enable the tiles"));
+    }
+    if processor.xfd != 0 && (holds_data || processor.xinuse & TILE_DATA_COMPONENT != 0) {
+        return Err(Refusal::NotModeled("TILEDATA in use while XFD disables it"));
+    }
+    if check_configuration(&processor.tile_configuration, false) != Some(processor.tile_configuration) {
+        return Err(Refusal::NotModeled("a TILECFG LDTILECFG refuses"));
+    }
+    if !configured && (holds_data || processor.xinuse & TILE_DATA_COMPONENT != 0) {
+        return Err(Refusal::NotModeled("TILEDATA in use with no tiles configured"));
+    }
+    let marked = |component: u64| processor.xinuse & component != 0;
+    if (configured && !marked(TILE_COMPONENTS & !TILE_DATA_COMPONENT)) || (holds_data && !marked(TILE_DATA_COMPONENT)) {
+        return Err(Refusal::NotModeled("XINUSE marking a tile component unused that is not initial"));
+    }
+    Ok(())
+}
+
+/// The addresses an instruction run between breakpoints may go on at: XBEGIN's next instruction and fallback (where
+/// it is canonical), a tile load's or store's next instruction; none for an instruction that is stepped.
+fn find_breakpoint_continuations(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Option<[u64; 2]> {
+    let address = processor.instruction_pointer;
+    let bytes: [u8; 15] = read_bytes(memory, address);
+    let decoded = Decoder::with_ip(64, &bytes, address, DecoderOptions::NONE).decode();
+    match decoded.mnemonic() {
+        Mnemonic::Xbegin => {
+            let fallback = decoded.near_branch_target();
+            Some([decoded.next_ip(), if is_canonical(fallback) { fallback } else { decoded.next_ip() }])
+        }
+        Mnemonic::Tileloadd | Mnemonic::Tileloaddt1 | Mnemonic::Tilestored => Some([decoded.next_ip(); 2]),
+        _ => None,
+    }
+}
+
 /// Refuses, before anything is written, the instructions the source cannot step from ring 3 with the trap flag.
 ///
 /// # Errors
 ///
-/// For a MOV SS that loads SS (it steps two instructions) and XBEGIN (its abort drops the trap). VMCALL runs, which KVM
-/// answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk that rewrites it is off; SYSENTER, UMWAIT and
-/// TPAUSE run under the MSRs Linux sets. Then for each instruction whose result under Linux differs from the source's
-/// guest, the table of settings on the page says why: INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's
+/// For a MOV SS that loads SS (it steps two instructions); XBEGIN runs between breakpoints instead. VMCALL runs, which
+/// KVM answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk that rewrites it is off; SYSENTER, UMWAIT
+/// and TPAUSE run under the MSRs Linux sets; AMX's forms run under the state's XCR0 and IA32_XFD. Then for each
+/// instruction whose result under Linux differs from the source's guest, the table of settings on the page says why:
+/// INT 0x80. LAR, LSL, VERR and VERW run: the guest's
 /// descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under UMIP is the program's outcome at this
 /// level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
@@ -1196,15 +1349,8 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         _ if loads_stack_segment => Some("it loads SS, which holds off the trap until after the next instruction"),
         // RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers IA32_TSC_AUX and the random
         // source decide; RDTSC, RDTSCP, UMWAIT and TPAUSE fault under CR4.TSD.
-        // This chip's transactions always abort, and an aborting XBEGIN drops the single step's trap.
-        Mnemonic::Xbegin => Some("it aborts, which drops the trap, so the chip runs the fallback's first instruction too"),
         Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
             Some("Linux takes it as a 32-bit system call")
-        }
-        // Linux's XCR0 on this chip enables AMX's tiles, which KVM refuses a guest unless the host process asks for
-        // them with arch_prctl(ARCH_REQ_XCOMP_GUEST_PERM), a call the source does not make.
-        _ if decoded.cpuid_features().iter().any(|feature| format!("{feature:?}").starts_with("AMX")) => {
-            Some("Linux traps its first use of the tiles with #NM, where the source's XCR0 gives #UD")
         }
         _ => None,
     };
@@ -1225,7 +1371,7 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
 ///
 /// When the handler did not save the slot, the exception did not come from ring 3, or the run changed state the
 /// processor does not model: the selectors, IF, IOPL or VM.
-fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
+fn to_processor(slot: &Slot, stop: u64) -> Result<Processor, Refusal> {
     let after = &slot.after;
     if slot.vector == NOT_RUN {
         return Err(Refusal::SlotNotRun);
@@ -1275,7 +1421,7 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         let value = u64::from_le_bytes(after_x87[at..at + size_of::<u64>()].try_into().expect("eight bytes"));
         if saved & OPMASK_COMPONENT == 0 { 0 } else { value }
     });
-    let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & SINGLE_STEP != 0;
+    let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & stop != 0;
     let exception = if system_enter {
         Some(Exception::SystemEnter)
     } else if completed {
@@ -1318,6 +1464,9 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         code_segment: code_segment as u16,
         xcr0: EXTENDED_CONTROL_0,
         xinuse: saved & SAVED_COMPONENTS,
+        tile_configuration: [0; 64],
+        tile_data: TileData::ZERO,
+        xfd: 0,
         // The handler's own XRSTOR64 at ring 0 leaves no tracking a program's XSAVEOPT can use; the reading step gives
         // any other.
         xsave_tracking: None,
