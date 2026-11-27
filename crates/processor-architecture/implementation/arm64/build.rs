@@ -231,7 +231,11 @@ fn main() {
          fn bake(&self, env: &databake::CrateEnv) -> databake::TokenStream {\n        \
          env.insert(env!(\"CARGO_CRATE_NAME\"));\n        match *self {\n",
     );
-    for name in variants.iter().map(String::as_str).chain([UNLISTED_VARIANT]) {
+    for name in variants
+        .iter()
+        .map(String::as_str)
+        .chain([UNLISTED_VARIANT])
+    {
         writeln!(
             out,
             "            Self::{name} => {{\n                \
