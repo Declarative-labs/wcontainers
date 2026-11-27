@@ -5,7 +5,7 @@ use wcontainers_abi::{LOWEST_ADDRESS, PAGE_SIZE};
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
-use wcontainers_executor_conformance::AGREEMENT_EXECUTORS;
+use wcontainers_executor_conformance::{AGREEMENT_EXECUTORS, Sampled};
 use wcontainers_executor_unicorn::standin::StandIn;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
@@ -86,12 +86,15 @@ fn find_shown_behavior(
 
 /// An unallocated Advanced SIMD three same (FP16) word, on which QEMU's decoder asserts.
 const EMULATOR_ABORTING_WORD: u32 = 0x0EC0_1DCD;
-/// MRS X0, DAIF, which EL1 traps at EL0 and unicorn stops on as undefined.
-const TRAPPED_WORD: u32 = 0xD53B_4220;
+/// WFET X1, which unicorn stops on as undefined with no syndrome to tell a trap to EL1 from an undefined instruction.
+///
+/// An MRS or MSR stopped so is no such state: the arm64 list names what EL0 reaches of each register, so MRS X0, DAIF
+/// executes as the trap the list names (SCTLR_EL1.UMA is clear).
+const UNTOLD_STOP_WORD: u32 = 0xD503_1001;
 
 /// The states the stand-in refuses: one whose instruction would end the host process, one whose stop it cannot tell.
 fn list_unexecutable_states() -> Vec<ExecutionState<'static, Arm64<User>>> {
-    [EMULATOR_ABORTING_WORD, TRAPPED_WORD]
+    [EMULATOR_ABORTING_WORD, UNTOLD_STOP_WORD]
         .map(|word| ExecutionState {
             processor: Processor {
                 program_counter: LOWEST_ADDRESS,
@@ -655,10 +658,20 @@ const SET_ASIDE: [(Instruction<Infallible>, &str); SET_ASIDE_COUNT] = [
     (Instruction::Sm4eVector, ABSENT_FEATURES),
 ];
 
+/// How many states of each instruction the behavior source's tests run, one after another on one stand-in.
+///
+/// MEASURED 2026-11-27 on a Neoverse V2 (AWS Graviton4): the stand-in takes 0.68 ms for a state, so every state of the
+/// list (33 million) takes six hours for each pass; 256 of each gives 596,536 states, about seven minutes a pass.
+const BEHAVIOR_SOURCE_STATES: usize = 256;
+
 wcontainers_executor_conformance::tests!(
     StandIn::new(),
     list_stand_in_behaviors(),
     CriticalValueCut::default(),
     list_unexecutable_states(),
-    &SET_ASIDE
+    &SET_ASIDE,
+    Sampled {
+        generator: CriticalValueCut::default(),
+        at_most: BEHAVIOR_SOURCE_STATES,
+    }
 );

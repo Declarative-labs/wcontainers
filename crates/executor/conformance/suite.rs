@@ -110,6 +110,35 @@ const DATA_PERMISSIONS: Permissions = Permissions::READ.union(Permissions::WRITE
 /// machine one job takes.
 pub const AGREEMENT_EXECUTORS: usize = 12;
 
+/// A generator that gives at most `at_most` of the states another gives for each instruction, spread evenly over them
+/// from the first.
+///
+/// The behavior source's tests run every state on one executor, one after another; an executor that takes a large part
+/// of a millisecond for each runs them on a sample in a time a test run allows.
+pub struct Sampled<Generator> {
+    pub generator: Generator,
+    pub at_most: usize,
+}
+
+impl<Architecture, Generator> DistinguishingStateGenerator<Architecture> for Sampled<Generator>
+where
+    Architecture: ProcessorArchitecture,
+    Generator: DistinguishingStateGenerator<Architecture>,
+{
+    // The sample is taken once all the states are known, so they are held in a vector.
+    type States<'generator>
+        = std::vec::IntoIter<ExecutionState<'static, Architecture>>
+    where
+        Self: 'generator;
+
+    fn generate_states(&self, instruction: Architecture::Instruction) -> Self::States<'_> {
+        let states: Vec<_> = self.generator.generate_states(instruction).collect();
+        let step = states.len().div_ceil(self.at_most).max(1);
+        let sample: Vec<_> = states.into_iter().step_by(step).collect();
+        sample.into_iter()
+    }
+}
+
 /// What one instruction's states gave in the instruction agreement.
 #[derive(Default)]
 struct InstructionOutcome {
@@ -1450,14 +1479,14 @@ fn length(addresses: &Range<u64>) -> usize {
 /// Runs each suite function above as its own test on its values, made anew for every test, and the behavior source's.
 ///
 /// The values are an executor, the precise instruction set it should agree with, the generator of the states and the
-/// states the executor cannot execute, none for an executor whose error is `Infallible`; and, where the executor is
-/// wrong, the instructions its agreement sets aside, none when left out.
+/// states the executor cannot execute, none for an executor whose error is `Infallible`.
+///
+/// Where the executor is wrong, two more: the instructions its agreement sets aside, and the generator the behavior
+/// source's tests take. Such an executor shows no one known behavior for the instructions set aside, so the behavior
+/// source's measuring test is not run on it (the agreement checks every other instruction's behavior instead).
 #[macro_export]
 macro_rules! tests {
-    ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr) => {
-        $crate::tests!($executor, $set, $generator, $unexecutable, &[]);
-    };
-    ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr, $set_aside:expr) => {
+    (@executor $executor:expr, $set:expr, $generator:expr, $set_aside:expr) => {
         #[test]
         fn agrees_with_precise_instruction_set() {
             $crate::agrees_with_precise_instruction_set(|| $executor, $set, $generator, $set_aside);
@@ -1582,6 +1611,9 @@ macro_rules! tests {
         fn write_from_drains_the_standard_sources() {
             $crate::write_from_drains_the_standard_sources($executor);
         }
+    };
+    ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr) => {
+        $crate::tests!(@executor $executor, $set, $generator, &[]);
 
         mod behavior_source {
             use super::*;
@@ -1591,6 +1623,48 @@ macro_rules! tests {
                 $generator,
                 $unexecutable
             );
+        }
+    };
+    ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr, $set_aside:expr, $source_generator:expr) => {
+        $crate::tests!(@executor $executor, $set, $generator, $set_aside);
+
+        mod behavior_source {
+            use super::*;
+
+            #[test]
+            fn execute_agrees_with_execute_in_place() {
+                $crate::wcontainers_behavior_source_conformance::execute_agrees_with_execute_in_place(
+                    $executor,
+                    $source_generator,
+                );
+            }
+
+            #[test]
+            fn execution_is_deterministic() {
+                $crate::wcontainers_behavior_source_conformance::execution_is_deterministic(
+                    $executor,
+                    $source_generator,
+                );
+            }
+
+            #[test]
+            #[ignore = "the executor shows no one known behavior for the instructions its agreement sets aside"]
+            fn measured_behavior_agrees_with_the_source() {
+                $crate::wcontainers_behavior_source_conformance::measured_behavior_agrees_with_the_source(
+                    $executor,
+                    $source_generator,
+                );
+            }
+
+            #[test]
+            fn next_state_after_an_error_executes_as_on_a_fresh_source() {
+                $crate::wcontainers_behavior_source_conformance::next_state_after_an_error_executes_as_on_a_fresh_source(
+                    $executor,
+                    $executor,
+                    $source_generator,
+                    $unexecutable,
+                );
+            }
         }
     };
 }
