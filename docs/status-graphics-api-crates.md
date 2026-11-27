@@ -1648,6 +1648,62 @@ implementations track's job gi-r17w/20261127-152816-967143 ended 7 seconds later
 run again. (3) My first mutation run shared arm-run's CARGO_TARGET_DIR across mutants (its results were void); the
 runs above give each mutant its own copy.
 
+## The check of c424e2a3b fixed: survivors, the caps glue, the flat form, the OpenGL ES glue (2026-11-27; logs wcontainers-scratch/graphics-api-crates/r18/)
+
+His main 1f24bddad merged first (03ce3bcbf, clean). Measured on x86-64 at e569dad64 (job gac-i/20261127-224505-2549690,
+r18/final/): the generator's 55 unit tests, its 2 Win32 tests and 3 written tests pass, clippy 0; gallium's crates
+clippy 0, the direct crate's 2 + 5 + 5 tests pass; the OpenGL ES and EGL crates generated twice identical, check (Linux
+and wasm32) and clippy 0, the suite 17 + 1 + 1 over Mesa's EGL by default and under AddressSanitizer; the Mesa
+compiler's suite 11 of 11.
+
+**The generator's survivors.** Each removed where nothing reaches it (the mapping-rule arms and guards no written file
+changes: `i8`/`i64` numbers, unions held by value other than pipe_color_union, the bit-field colon's guards, the dead
+EGL forms, a turn's made kind, wc_glsl_to_nir-style returns of a number beside an out parameter, the out parameter's
+unused generality), or tested by a unit test that feeds the form (the header reader's conditionals, `(void)` lists,
+typedef enumerations, field families, nested bodies, every Mesa compiler row and the forms no row takes; gallium's check
+against a header missing a pointer, a structure, a pointer in scope and not planned; each signature form and each
+refused one; the filled values' widths and flags; the values' operators, define depth and cycles; the recording's
+returns; the Khronos value widths; a slice's own count). Depth limits became "each structure entered once". The Win32
+commands are tested by tests/windows.rs: the census against reports/census.txt (Direct3D11 92 interfaces, 521 methods,
+189 structs; Dxgi 47 and 191; Direct3D12 101 and 389; Direct3D10 55 and 341: the brief's census), and generate,
+once-check and layout-check each run to their end. Two defects found by the tests: the size of a `const void *` was
+skipped only after it (buffer_subdata's trait kept `size` beside its `data`: now gone, NOTE for the implementations
+track), and a `num_` after the first parameter counted the object as its list.
+
+The EGL stand-in is kept: fuzz-khronos.sh builds it, and it now also logs every call's arguments (below); it is written
+into crates/opengl-es/implementation/direct/fake/ so the written test compares it.
+
+**The caps glue.** The recording implementation's `filling_caps(seed)` sets every field of every stage's shader caps,
+the caps and the compute caps to a value of its own (two seeds, every flag true in one); caller.c's
+`wc_caller_caps_filled` holds Mesa's screen to those values field by field (1,264 checks, each named in served.rs's
+CAPS_CHECKS); the two caps Mesa derives are held to Mesa's rule (u_screen.c:209 to 221) in what the implementation
+received. The generator writes caps-plants.txt: 799 plants (one per field of each `_to` copy and each `of`, one per
+argument of the caps glue, the stage asked, `&&`). Flattening functions from Mesa of the filled structures, which
+nothing calls, are no longer written.
+
+**The Mesa compiler's flat form.** declarations_right states every geometry and tessellation declaration
+(bridge/flat.c geometry_of, tessellation_of) from programs declaring each value; the second vertex stream comes from
+SPIR-V (spirv/streams.geom: the bridge's GLSL allows one stream), and its flattening now gathers a geometry
+program's streams (it gave 0). 23 plants added to the Mesa compiler's list.
+
+**The OpenGL ES calling glue.** tests/arguments.rs builds the stand-in, calls each of the 156 methods with arguments of
+its own and compares the line the stand-in logged with what the registry says the call passes: 156 checked, 0
+otherwise. The generator writes plants.txt (468 plants, one per argument of each entry call). The fuzz now calls
+glFinish and glClientWaitSync (timeout 0): 156 of 156 methods reached.
+
+MEASURED, plant lists (each plant alone, x86-64):
+
+| List | Plants | Caught | Named |
+|---|---|---|---|
+| gallium caps-plants.txt (new) | 799 | 799 | 799 |
+| gallium plants.txt | 270 | 270 | 263 (7 by a crash; served cases now run alone, rerun pending) |
+| mesa-compiler plants.txt | 134 | 134 | 134 |
+| opengl-es plants.txt (new) | 468 | 468 | 468 |
+
+MEASURED, cargo-mutants 27.1.0: gallium direct (held.rs, registry.rs, implementation.rs) 74 mutants, 60 caught, 0
+missed, 14 unviable; the generator, at the tree before e569dad64's last fixes, 1,520 mutants, 1,478 caught, 3 missed
+(is_count's `&&`, count_of's two guards: each now tested), 5 timeouts, 34 unviable.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
