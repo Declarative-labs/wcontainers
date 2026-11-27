@@ -8,10 +8,15 @@
  * count far past any real one. It keeps the state the glue asks about (bindings, pixel store values, vertex
  * attributes) truthfully: the glue's marks rely on those answers.
  *
- * Built as libEGL.so.1; the OpenGL ES commands are reached through eglGetProcAddress (fake_gl.c, generated, holds
- * the commands no state is kept for and the table of every name). */
+ * With FAKE_LOG set it writes each OpenGL ES call's arguments to the file it names, one line a call (the direct crate's
+ * tests/arguments.rs reads them): the command, then each argument, a number as C has it, a float to 9 digits, an address
+ * as `p` or `null`, an offset into a bound buffer as its number.
+ *
+ * Built as libEGL.so.1; the OpenGL ES commands are reached through eglGetProcAddress (the part written after this
+ * template holds the commands no state is kept for and the table of every name). */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -54,6 +59,27 @@ static void fake_start(void) {
     region_poisoned = (int (*)(const volatile void *, size_t))dlsym(RTLD_DEFAULT, "__asan_region_is_poisoned");
     if (getenv("FAKE_SAY")) fprintf(stderr, "FAKE: lies %d, AddressSanitizer's region check %s\n", fake.lies, region_poisoned ? "found" : "absent");
 }
+
+/* One call's line in the log FAKE_LOG names, when it names one. */
+static void fake_log(const char *format, ...) {
+    static FILE *file;
+    static int opened;
+    if (!opened) {
+        opened = 1;
+        const char *path = getenv("FAKE_LOG");
+        if (path) file = fopen(path, "w");
+    }
+    if (!file) return;
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(file, format, arguments);
+    va_end(arguments);
+    fputc('\n', file);
+    fflush(file);
+}
+
+/* An address as the log writes it. */
+#define FAKE_ADDRESS(pointer) ((pointer) ? "p" : "null")
 
 /* What the stand-in reached, said at the end when FAKE_SAY is set: a run that reached nothing proves nothing. */
 __attribute__((destructor)) static void fake_end(void) {
@@ -149,7 +175,12 @@ int fake_pack_bound(void) { return fake.pack_buffer != 0; }
 
 /* ----- The OpenGL ES commands whose state the glue asks about. ----- */
 
+/* Every extension the set names. */
+#define EXTENSION_COUNT 25
+static const char *const extensions[EXTENSION_COUNT] = {"GL_ANGLE_polygon_mode", "GL_ANGLE_provoking_vertex", "GL_EXT_blend_func_extended", "GL_EXT_clip_control", "GL_EXT_clip_cull_distance", "GL_EXT_color_buffer_float", "GL_EXT_depth_clamp", "GL_EXT_disjoint_timer_query", "GL_EXT_float_blend", "GL_EXT_occlusion_query_boolean", "GL_EXT_polygon_offset_clamp", "GL_EXT_robustness", "GL_EXT_texture_compression_bptc", "GL_EXT_texture_compression_rgtc", "GL_EXT_texture_compression_s3tc", "GL_EXT_texture_filter_anisotropic", "GL_EXT_texture_format_BGRA8888", "GL_EXT_texture_mirror_clamp_to_edge", "GL_EXT_texture_norm16", "GL_KHR_parallel_shader_compile", "GL_KHR_texture_compression_astc_ldr", "GL_OES_draw_buffers_indexed", "GL_OES_texture_float_linear", "GL_OES_texture_half_float", "GL_OES_viewport_array"};
+
 void fake_glBindBuffer(uint32_t target, uint32_t buffer) {
+    fake_log("glBindBuffer %lld %lld", (long long)target, (long long)buffer);
     switch (target) {
     case 0x8892: fake.array_buffer = buffer; break;
     case 0x8893: fake.element_buffer = buffer; break;
@@ -159,6 +190,7 @@ void fake_glBindBuffer(uint32_t target, uint32_t buffer) {
 }
 
 void fake_glDeleteBuffers(int32_t count, const uint32_t *buffers) {
+    fake_log("glDeleteBuffers %lld %s", (long long)count, FAKE_ADDRESS(buffers));
     if (count < 0) return;
     fake_read("glDeleteBuffers", buffers, (size_t)count * sizeof *buffers);
     for (int32_t at = 0; at < count; at++) {
@@ -175,6 +207,7 @@ void fake_glDeleteBuffers(int32_t count, const uint32_t *buffers) {
 }
 
 void fake_glGenBuffers(int32_t count, uint32_t *buffers) {
+    fake_log("glGenBuffers %lld %s", (long long)count, FAKE_ADDRESS(buffers));
     if (count < 0) return;
     fake_write("glGenBuffers", buffers, (size_t)count * sizeof *buffers);
     for (int32_t at = 0; at < count; at++) buffers[at] = fake.next_name++;
@@ -182,6 +215,7 @@ void fake_glGenBuffers(int32_t count, uint32_t *buffers) {
 
 void fake_glPixelStorei(uint32_t name, int32_t value) {
     static const uint32_t names[2][6] = {{0x0CF5, 0x0CF2, 0x0CF3, 0x0CF4, 0x806E, 0x806D}, {0x0D05, 0x0D02, 0x0D03, 0x0D04, 0, 0}};
+    fake_log("glPixelStorei %lld %lld", (long long)name, (long long)value);
     if (value < 0) return;
     for (int pack = 0; pack < 2; pack++)
         for (int at = 0; at < 6; at++)
@@ -192,6 +226,7 @@ void fake_glPixelStorei(uint32_t name, int32_t value) {
 }
 
 void fake_glGetIntegerv(uint32_t name, int32_t *values) {
+    fake_log("glGetIntegerv %lld %s", (long long)name, FAKE_ADDRESS(values));
     /* The most any name writes, as the glue's room assumes: 64. */
     fake_write("glGetIntegerv", values, 64 * sizeof *values);
     int32_t answer = (int32_t)fake_value();
@@ -201,7 +236,7 @@ void fake_glGetIntegerv(uint32_t name, int32_t *values) {
     case 0x88EF: answer = (int32_t)fake.unpack_buffer; break;
     case 0x88ED: answer = (int32_t)fake.pack_buffer; break;
     case 0x8869: answer = fake.lies ? (int32_t)(fake_next() & 0x7FFFFFFF) : ATTRIBUTES; break; /* MAX_VERTEX_ATTRIBS */
-    case 0x821D: answer = fake.lies ? (int32_t)(fake_next() & 0x7FFFFFFF) : 3; break;          /* NUM_EXTENSIONS */
+    case 0x821D: answer = fake.lies ? (int32_t)(fake_next() & 0x7FFFFFFF) : EXTENSION_COUNT; break; /* NUM_EXTENSIONS */
     case 0x0CF5: answer = fake.store[0][0]; break;
     case 0x0CF2: answer = fake.store[0][1]; break;
     case 0x0CF3: answer = fake.store[0][2]; break;
@@ -217,6 +252,7 @@ void fake_glGetIntegerv(uint32_t name, int32_t *values) {
 }
 
 void fake_glGetVertexAttribiv(uint32_t index, uint32_t name, int32_t *values) {
+    fake_log("glGetVertexAttribiv %lld %lld %s", (long long)index, (long long)name, FAKE_ADDRESS(values));
     fake_write("glGetVertexAttribiv", values, 16 * sizeof *values);
     if (index >= ATTRIBUTES) return;
     if (name == 0x8622) values[0] = fake.attributes[index].enabled;              /* VERTEX_ATTRIB_ARRAY_ENABLED */
@@ -230,17 +266,25 @@ static void attribute_pointer(uint32_t index, const void *pointer) {
 }
 
 void fake_glVertexAttribPointer(uint32_t index, int32_t size, uint32_t type, uint8_t normalized, int32_t stride, const void *pointer) {
+    fake_log("glVertexAttribPointer %lld %lld %lld %lld %lld %lld", (long long)index, (long long)size, (long long)type, (long long)normalized, (long long)stride, (long long)(intptr_t)pointer);
     (void)size; (void)type; (void)normalized; (void)stride;
     attribute_pointer(index, pointer);
 }
 
 void fake_glVertexAttribIPointer(uint32_t index, int32_t size, uint32_t type, int32_t stride, const void *pointer) {
+    fake_log("glVertexAttribIPointer %lld %lld %lld %lld %lld", (long long)index, (long long)size, (long long)type, (long long)stride, (long long)(intptr_t)pointer);
     (void)size; (void)type; (void)stride;
     attribute_pointer(index, pointer);
 }
 
-void fake_glEnableVertexAttribArray(uint32_t index) { if (index < ATTRIBUTES) fake.attributes[index].enabled = 1; }
-void fake_glDisableVertexAttribArray(uint32_t index) { if (index < ATTRIBUTES) fake.attributes[index].enabled = 0; }
+void fake_glEnableVertexAttribArray(uint32_t index) {
+    fake_log("glEnableVertexAttribArray %lld", (long long)index);
+    if (index < ATTRIBUTES) fake.attributes[index].enabled = 1;
+}
+void fake_glDisableVertexAttribArray(uint32_t index) {
+    fake_log("glDisableVertexAttribArray %lld", (long long)index);
+    if (index < ATTRIBUTES) fake.attributes[index].enabled = 0;
+}
 
 /* A draw reads each enabled attribute: from its buffer, or from the caller's memory at its pointer when it has none. */
 static void draw(const char *command) {
@@ -248,13 +292,16 @@ static void draw(const char *command) {
         if (fake.attributes[index].enabled && fake.attributes[index].buffer == 0) fake_read(command, fake.attributes[index].pointer, 16);
 }
 
-void fake_glDrawArrays(uint32_t mode, int32_t first, int32_t count) { (void)mode; (void)first; if (count > 0) draw("glDrawArrays"); }
+void fake_glDrawArrays(uint32_t mode, int32_t first, int32_t count) {
+    fake_log("glDrawArrays %lld %lld %lld", (long long)mode, (long long)first, (long long)count);
+    if (count > 0) draw("glDrawArrays");
+}
 void fake_glDrawArraysInstanced(uint32_t mode, int32_t first, int32_t count, int32_t instances) {
-    (void)mode; (void)first;
+    fake_log("glDrawArraysInstanced %lld %lld %lld %lld", (long long)mode, (long long)first, (long long)count, (long long)instances);
     if (count > 0 && instances > 0) draw("glDrawArraysInstanced");
 }
 void fake_glDrawElementsInstanced(uint32_t mode, int32_t count, uint32_t type, const void *indices, int32_t instances) {
-    (void)mode;
+    fake_log("glDrawElementsInstanced %lld %lld %lld %lld %lld", (long long)mode, (long long)count, (long long)type, (long long)(intptr_t)indices, (long long)instances);
     if (count <= 0 || instances <= 0) return;
     size_t each = type == 0x1401 ? 1 : type == 0x1403 ? 2 : type == 0x1405 ? 4 : 0;
     if (each == 0) return;
@@ -262,22 +309,20 @@ void fake_glDrawElementsInstanced(uint32_t mode, int32_t count, uint32_t type, c
     draw("glDrawElementsInstanced");
 }
 
-static const char *const extensions[] = {"GL_EXT_clip_control", "GL_OES_draw_buffers_indexed", "GL_EXT_disjoint_timer_query"};
-
 const uint8_t *fake_glGetString(uint32_t name) {
-    (void)name;
+    fake_log("glGetString %lld", (long long)name);
     if (fake.lies && fake_next() % 4 == 0) return NULL;
     return (const uint8_t *)"OpenGL ES 3.2 fake";
 }
 
 const uint8_t *fake_glGetStringi(uint32_t name, uint32_t index) {
-    (void)name;
+    fake_log("glGetStringi %lld %lld", (long long)name, (long long)index);
     if (fake.lies && fake_next() % 4 == 0) return NULL;
-    return (const uint8_t *)extensions[index % 3];
+    return (const uint8_t *)extensions[index % EXTENSION_COUNT];
 }
 
 void *fake_glMapBufferRange(uint32_t target, intptr_t offset, intptr_t length, uint32_t access) {
-    (void)target; (void)offset; (void)access;
+    fake_log("glMapBufferRange %lld %lld %lld %lld", (long long)target, (long long)offset, (long long)length, (long long)access);
     if (length <= 0 || length > (1 << 20) || fake.mapped || (fake.lies && fake_next() % 4 == 0)) return NULL;
     fake.mapped = malloc((size_t)length);
     if (fake.mapped) memset(fake.mapped, 0x5A, (size_t)length);
@@ -285,7 +330,7 @@ void *fake_glMapBufferRange(uint32_t target, intptr_t offset, intptr_t length, u
 }
 
 uint8_t fake_glUnmapBuffer(uint32_t target) {
-    (void)target;
+    fake_log("glUnmapBuffer %lld", (long long)target);
     free(fake.mapped);
     fake.mapped = NULL;
     return 1;
@@ -300,9 +345,15 @@ void *fake_handle(void) {
     return &tokens[fake_next() % sizeof tokens];
 }
 
-void *fake_glFenceSync(uint32_t condition, uint32_t flags) { (void)condition; (void)flags; return fake_handle(); }
+void *fake_glFenceSync(uint32_t condition, uint32_t flags) {
+    fake_log("glFenceSync %lld %lld", (long long)condition, (long long)flags);
+    return fake_handle();
+}
 
-uint32_t fake_glGetError(void) { return fake.lies ? (uint32_t)fake_next() : 0; }
+uint32_t fake_glGetError(void) {
+    fake_log("glGetError");
+    return fake.lies ? (uint32_t)fake_next() : 0;
+}
 
 /* ----- EGL. ----- */
 
@@ -395,28 +446,33 @@ void *eglGetProcAddress(const char *name) {
 /* ----- Every other OpenGL ES command of the set: the most its parameters reach, read or written. ----- */
 
 static void fake_glActiveTexture(uint32_t p0) {
+    fake_log("glActiveTexture %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glAttachShader(uint32_t p0, uint32_t p1) {
+    fake_log("glAttachShader %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glBeginQuery(uint32_t p0, uint32_t p1) {
+    fake_log("glBeginQuery %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glBeginTransformFeedback(uint32_t p0) {
+    fake_log("glBeginTransformFeedback %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glBindBufferBase(uint32_t p0, uint32_t p1, uint32_t p2) {
+    fake_log("glBindBufferBase %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -424,6 +480,7 @@ static void fake_glBindBufferBase(uint32_t p0, uint32_t p1, uint32_t p2) {
 }
 
 static void fake_glBindBufferRange(uint32_t p0, uint32_t p1, uint32_t p2, intptr_t p3, intptr_t p4) {
+    fake_log("glBindBufferRange %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -433,35 +490,41 @@ static void fake_glBindBufferRange(uint32_t p0, uint32_t p1, uint32_t p2, intptr
 }
 
 static void fake_glBindFramebuffer(uint32_t p0, uint32_t p1) {
+    fake_log("glBindFramebuffer %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glBindRenderbuffer(uint32_t p0, uint32_t p1) {
+    fake_log("glBindRenderbuffer %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glBindSampler(uint32_t p0, uint32_t p1) {
+    fake_log("glBindSampler %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glBindTexture(uint32_t p0, uint32_t p1) {
+    fake_log("glBindTexture %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glBindVertexArray(uint32_t p0) {
+    fake_log("glBindVertexArray %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glBlendColor(float p0, float p1, float p2, float p3) {
+    fake_log("glBlendColor %.9g %.9g %.9g %.9g", (double)p0, (double)p1, (double)p2, (double)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -470,12 +533,14 @@ static void fake_glBlendColor(float p0, float p1, float p2, float p3) {
 }
 
 static void fake_glBlendEquationSeparate(uint32_t p0, uint32_t p1) {
+    fake_log("glBlendEquationSeparate %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glBlendFuncSeparate(uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3) {
+    fake_log("glBlendFuncSeparate %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -484,6 +549,7 @@ static void fake_glBlendFuncSeparate(uint32_t p0, uint32_t p1, uint32_t p2, uint
 }
 
 static void fake_glBlitFramebuffer(int32_t p0, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7, uint32_t p8, uint32_t p9) {
+    fake_log("glBlitFramebuffer %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, (long long)p6, (long long)p7, (long long)p8, (long long)p9);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -498,6 +564,7 @@ static void fake_glBlitFramebuffer(int32_t p0, int32_t p1, int32_t p2, int32_t p
 }
 
 static void fake_glBufferData(uint32_t p0, intptr_t p1, const void * p2, uint32_t p3) {
+    fake_log("glBufferData %lld %lld %s %lld", (long long)p0, (long long)p1, FAKE_ADDRESS(p2), (long long)p3);
     if (p2 && p1 > 0) fake_read("glBufferData", p2, (size_t)p1);
     (void)fake_value();
     (void)p0;
@@ -507,6 +574,7 @@ static void fake_glBufferData(uint32_t p0, intptr_t p1, const void * p2, uint32_
 }
 
 static void fake_glBufferSubData(uint32_t p0, intptr_t p1, intptr_t p2, const void * p3) {
+    fake_log("glBufferSubData %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p2 > 0) fake_read("glBufferSubData", p3, (size_t)p2 * 1 * 1);
     (void)fake_value();
     (void)p0;
@@ -516,12 +584,14 @@ static void fake_glBufferSubData(uint32_t p0, intptr_t p1, intptr_t p2, const vo
 }
 
 static uint32_t fake_glCheckFramebufferStatus(uint32_t p0) {
+    fake_log("glCheckFramebufferStatus %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
     return (uint32_t)fake_value();
 }
 
 static void fake_glClearBufferfi(uint32_t p0, int32_t p1, float p2, int32_t p3) {
+    fake_log("glClearBufferfi %lld %lld %.9g %lld", (long long)p0, (long long)p1, (double)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -530,6 +600,7 @@ static void fake_glClearBufferfi(uint32_t p0, int32_t p1, float p2, int32_t p3) 
 }
 
 static void fake_glClearBufferfv(uint32_t p0, int32_t p1, const float * p2) {
+    fake_log("glClearBufferfv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_read("glClearBufferfv", p2, 4 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -538,6 +609,7 @@ static void fake_glClearBufferfv(uint32_t p0, int32_t p1, const float * p2) {
 }
 
 static void fake_glClearBufferiv(uint32_t p0, int32_t p1, const int32_t * p2) {
+    fake_log("glClearBufferiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_read("glClearBufferiv", p2, 4 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -546,6 +618,7 @@ static void fake_glClearBufferiv(uint32_t p0, int32_t p1, const int32_t * p2) {
 }
 
 static void fake_glClearBufferuiv(uint32_t p0, int32_t p1, const uint32_t * p2) {
+    fake_log("glClearBufferuiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_read("glClearBufferuiv", p2, 4 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -554,6 +627,7 @@ static void fake_glClearBufferuiv(uint32_t p0, int32_t p1, const uint32_t * p2) 
 }
 
 static uint32_t fake_glClientWaitSync(void * p0, uint32_t p1, uint64_t p2) {
+    fake_log("glClientWaitSync %s %lld %llu", FAKE_ADDRESS(p0), (long long)p1, (unsigned long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -562,6 +636,7 @@ static uint32_t fake_glClientWaitSync(void * p0, uint32_t p1, uint64_t p2) {
 }
 
 static void fake_glColorMask(uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3) {
+    fake_log("glColorMask %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -570,11 +645,13 @@ static void fake_glColorMask(uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3) {
 }
 
 static void fake_glCompileShader(uint32_t p0) {
+    fake_log("glCompileShader %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glCompressedTexSubImage2D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, uint32_t p6, int32_t p7, const void * p8) {
+    fake_log("glCompressedTexSubImage2D %lld %lld %lld %lld %lld %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, (long long)p6, (long long)p7, FAKE_ADDRESS(p8));
     if (!fake_unpack_bound() && p7 > 0) fake_read("glCompressedTexSubImage2D", p8, (size_t)p7);
     (void)fake_value();
     (void)p0;
@@ -589,6 +666,7 @@ static void fake_glCompressedTexSubImage2D(uint32_t p0, int32_t p1, int32_t p2, 
 }
 
 static void fake_glCompressedTexSubImage3D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7, uint32_t p8, int32_t p9, const void * p10) {
+    fake_log("glCompressedTexSubImage3D %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, (long long)p6, (long long)p7, (long long)p8, (long long)p9, FAKE_ADDRESS(p10));
     if (!fake_unpack_bound() && p9 > 0) fake_read("glCompressedTexSubImage3D", p10, (size_t)p9);
     (void)fake_value();
     (void)p0;
@@ -605,6 +683,7 @@ static void fake_glCompressedTexSubImage3D(uint32_t p0, int32_t p1, int32_t p2, 
 }
 
 static void fake_glCopyBufferSubData(uint32_t p0, uint32_t p1, intptr_t p2, intptr_t p3, intptr_t p4) {
+    fake_log("glCopyBufferSubData %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -614,6 +693,7 @@ static void fake_glCopyBufferSubData(uint32_t p0, uint32_t p1, intptr_t p2, intp
 }
 
 static void fake_glCopyTexSubImage2D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7) {
+    fake_log("glCopyTexSubImage2D %lld %lld %lld %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, (long long)p6, (long long)p7);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -626,6 +706,7 @@ static void fake_glCopyTexSubImage2D(uint32_t p0, int32_t p1, int32_t p2, int32_
 }
 
 static void fake_glCopyTexSubImage3D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7, int32_t p8) {
+    fake_log("glCopyTexSubImage3D %lld %lld %lld %lld %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, (long long)p6, (long long)p7, (long long)p8);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -639,22 +720,26 @@ static void fake_glCopyTexSubImage3D(uint32_t p0, int32_t p1, int32_t p2, int32_
 }
 
 static uint32_t fake_glCreateProgram(void) {
+    fake_log("glCreateProgram");
     (void)fake_value();
     return (uint32_t)fake_value();
 }
 
 static uint32_t fake_glCreateShader(uint32_t p0) {
+    fake_log("glCreateShader %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
     return (uint32_t)fake_value();
 }
 
 static void fake_glCullFace(uint32_t p0) {
+    fake_log("glCullFace %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glDeleteFramebuffers(int32_t p0, const uint32_t * p1) {
+    fake_log("glDeleteFramebuffers %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_read("glDeleteFramebuffers", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -662,11 +747,13 @@ static void fake_glDeleteFramebuffers(int32_t p0, const uint32_t * p1) {
 }
 
 static void fake_glDeleteProgram(uint32_t p0) {
+    fake_log("glDeleteProgram %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glDeleteQueries(int32_t p0, const uint32_t * p1) {
+    fake_log("glDeleteQueries %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_read("glDeleteQueries", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -674,6 +761,7 @@ static void fake_glDeleteQueries(int32_t p0, const uint32_t * p1) {
 }
 
 static void fake_glDeleteRenderbuffers(int32_t p0, const uint32_t * p1) {
+    fake_log("glDeleteRenderbuffers %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_read("glDeleteRenderbuffers", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -681,6 +769,7 @@ static void fake_glDeleteRenderbuffers(int32_t p0, const uint32_t * p1) {
 }
 
 static void fake_glDeleteSamplers(int32_t p0, const uint32_t * p1) {
+    fake_log("glDeleteSamplers %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_read("glDeleteSamplers", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -688,16 +777,19 @@ static void fake_glDeleteSamplers(int32_t p0, const uint32_t * p1) {
 }
 
 static void fake_glDeleteShader(uint32_t p0) {
+    fake_log("glDeleteShader %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glDeleteSync(void * p0) {
+    fake_log("glDeleteSync %s", FAKE_ADDRESS(p0));
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glDeleteTextures(int32_t p0, const uint32_t * p1) {
+    fake_log("glDeleteTextures %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_read("glDeleteTextures", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -705,6 +797,7 @@ static void fake_glDeleteTextures(int32_t p0, const uint32_t * p1) {
 }
 
 static void fake_glDeleteVertexArrays(int32_t p0, const uint32_t * p1) {
+    fake_log("glDeleteVertexArrays %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_read("glDeleteVertexArrays", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -712,33 +805,39 @@ static void fake_glDeleteVertexArrays(int32_t p0, const uint32_t * p1) {
 }
 
 static void fake_glDepthFunc(uint32_t p0) {
+    fake_log("glDepthFunc %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glDepthMask(uint8_t p0) {
+    fake_log("glDepthMask %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glDepthRangef(float p0, float p1) {
+    fake_log("glDepthRangef %.9g %.9g", (double)p0, (double)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glDetachShader(uint32_t p0, uint32_t p1) {
+    fake_log("glDetachShader %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glDisable(uint32_t p0) {
+    fake_log("glDisable %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glDrawBuffers(int32_t p0, const uint32_t * p1) {
+    fake_log("glDrawBuffers %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_read("glDrawBuffers", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -746,28 +845,34 @@ static void fake_glDrawBuffers(int32_t p0, const uint32_t * p1) {
 }
 
 static void fake_glEnable(uint32_t p0) {
+    fake_log("glEnable %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glEndQuery(uint32_t p0) {
+    fake_log("glEndQuery %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glEndTransformFeedback(void) {
+    fake_log("glEndTransformFeedback");
     (void)fake_value();
 }
 
 static void fake_glFinish(void) {
+    fake_log("glFinish");
     (void)fake_value();
 }
 
 static void fake_glFlush(void) {
+    fake_log("glFlush");
     (void)fake_value();
 }
 
 static void fake_glFramebufferRenderbuffer(uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3) {
+    fake_log("glFramebufferRenderbuffer %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -776,6 +881,7 @@ static void fake_glFramebufferRenderbuffer(uint32_t p0, uint32_t p1, uint32_t p2
 }
 
 static void fake_glFramebufferTexture2D(uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3, int32_t p4) {
+    fake_log("glFramebufferTexture2D %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -785,6 +891,7 @@ static void fake_glFramebufferTexture2D(uint32_t p0, uint32_t p1, uint32_t p2, u
 }
 
 static void fake_glFramebufferTextureLayer(uint32_t p0, uint32_t p1, uint32_t p2, int32_t p3, int32_t p4) {
+    fake_log("glFramebufferTextureLayer %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -794,11 +901,13 @@ static void fake_glFramebufferTextureLayer(uint32_t p0, uint32_t p1, uint32_t p2
 }
 
 static void fake_glFrontFace(uint32_t p0) {
+    fake_log("glFrontFace %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glGenFramebuffers(int32_t p0, uint32_t * p1) {
+    fake_log("glGenFramebuffers %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_write("glGenFramebuffers", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -806,6 +915,7 @@ static void fake_glGenFramebuffers(int32_t p0, uint32_t * p1) {
 }
 
 static void fake_glGenQueries(int32_t p0, uint32_t * p1) {
+    fake_log("glGenQueries %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_write("glGenQueries", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -813,6 +923,7 @@ static void fake_glGenQueries(int32_t p0, uint32_t * p1) {
 }
 
 static void fake_glGenRenderbuffers(int32_t p0, uint32_t * p1) {
+    fake_log("glGenRenderbuffers %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_write("glGenRenderbuffers", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -820,6 +931,7 @@ static void fake_glGenRenderbuffers(int32_t p0, uint32_t * p1) {
 }
 
 static void fake_glGenSamplers(int32_t p0, uint32_t * p1) {
+    fake_log("glGenSamplers %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_write("glGenSamplers", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -827,6 +939,7 @@ static void fake_glGenSamplers(int32_t p0, uint32_t * p1) {
 }
 
 static void fake_glGenTextures(int32_t p0, uint32_t * p1) {
+    fake_log("glGenTextures %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_write("glGenTextures", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -834,6 +947,7 @@ static void fake_glGenTextures(int32_t p0, uint32_t * p1) {
 }
 
 static void fake_glGenVertexArrays(int32_t p0, uint32_t * p1) {
+    fake_log("glGenVertexArrays %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     if (p0 > 0) fake_write("glGenVertexArrays", p1, (size_t)p0 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -841,11 +955,13 @@ static void fake_glGenVertexArrays(int32_t p0, uint32_t * p1) {
 }
 
 static void fake_glGenerateMipmap(uint32_t p0) {
+    fake_log("glGenerateMipmap %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glGetBooleanv(uint32_t p0, uint8_t * p1) {
+    fake_log("glGetBooleanv %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     fake_write("glGetBooleanv", p1, 64 * sizeof(uint8_t));
     (void)fake_value();
     (void)p0;
@@ -853,6 +969,7 @@ static void fake_glGetBooleanv(uint32_t p0, uint8_t * p1) {
 }
 
 static void fake_glGetFloatv(uint32_t p0, float * p1) {
+    fake_log("glGetFloatv %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     fake_write("glGetFloatv", p1, 64 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -860,6 +977,7 @@ static void fake_glGetFloatv(uint32_t p0, float * p1) {
 }
 
 static void fake_glGetInteger64v(uint32_t p0, int64_t * p1) {
+    fake_log("glGetInteger64v %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     fake_write("glGetInteger64v", p1, 64 * sizeof(int64_t));
     (void)fake_value();
     (void)p0;
@@ -867,6 +985,7 @@ static void fake_glGetInteger64v(uint32_t p0, int64_t * p1) {
 }
 
 static void fake_glGetInternalformativ(uint32_t p0, uint32_t p1, uint32_t p2, int32_t p3, int32_t * p4) {
+    fake_log("glGetInternalformativ %lld %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, (long long)p3, FAKE_ADDRESS(p4));
     if (p3 > 0) fake_write("glGetInternalformativ", p4, (size_t)p3 * 1 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -877,6 +996,7 @@ static void fake_glGetInternalformativ(uint32_t p0, uint32_t p1, uint32_t p2, in
 }
 
 static void fake_glGetProgramInfoLog(uint32_t p0, int32_t p1, int32_t * p2, uint8_t * p3) {
+    fake_log("glGetProgramInfoLog %lld %lld %s %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2), FAKE_ADDRESS(p3));
     fake_write("glGetProgramInfoLog", p2, sizeof(int32_t));
     if (p1 > 0) fake_write("glGetProgramInfoLog", p3, (size_t)p1 * 1 * sizeof(uint8_t));
     (void)fake_value();
@@ -887,6 +1007,7 @@ static void fake_glGetProgramInfoLog(uint32_t p0, int32_t p1, int32_t * p2, uint
 }
 
 static void fake_glGetProgramiv(uint32_t p0, uint32_t p1, int32_t * p2) {
+    fake_log("glGetProgramiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_write("glGetProgramiv", p2, 16 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -895,6 +1016,7 @@ static void fake_glGetProgramiv(uint32_t p0, uint32_t p1, int32_t * p2) {
 }
 
 static void fake_glGetQueryObjectuiv(uint32_t p0, uint32_t p1, uint32_t * p2) {
+    fake_log("glGetQueryObjectuiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_write("glGetQueryObjectuiv", p2, 16 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -903,6 +1025,7 @@ static void fake_glGetQueryObjectuiv(uint32_t p0, uint32_t p1, uint32_t * p2) {
 }
 
 static void fake_glGetShaderInfoLog(uint32_t p0, int32_t p1, int32_t * p2, uint8_t * p3) {
+    fake_log("glGetShaderInfoLog %lld %lld %s %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2), FAKE_ADDRESS(p3));
     fake_write("glGetShaderInfoLog", p2, sizeof(int32_t));
     if (p1 > 0) fake_write("glGetShaderInfoLog", p3, (size_t)p1 * 1 * sizeof(uint8_t));
     (void)fake_value();
@@ -913,6 +1036,7 @@ static void fake_glGetShaderInfoLog(uint32_t p0, int32_t p1, int32_t * p2, uint8
 }
 
 static void fake_glGetShaderiv(uint32_t p0, uint32_t p1, int32_t * p2) {
+    fake_log("glGetShaderiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_write("glGetShaderiv", p2, 16 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -921,6 +1045,7 @@ static void fake_glGetShaderiv(uint32_t p0, uint32_t p1, int32_t * p2) {
 }
 
 static void fake_glGetSynciv(void * p0, uint32_t p1, int32_t p2, int32_t * p3, int32_t * p4) {
+    fake_log("glGetSynciv %s %lld %lld %s %s", FAKE_ADDRESS(p0), (long long)p1, (long long)p2, FAKE_ADDRESS(p3), FAKE_ADDRESS(p4));
     fake_write("glGetSynciv", p3, sizeof(int32_t));
     if (p2 > 0) fake_write("glGetSynciv", p4, (size_t)p2 * 1 * sizeof(int32_t));
     (void)fake_value();
@@ -932,6 +1057,7 @@ static void fake_glGetSynciv(void * p0, uint32_t p1, int32_t p2, int32_t * p3, i
 }
 
 static uint32_t fake_glGetUniformBlockIndex(uint32_t p0, const uint8_t * p1) {
+    fake_log("glGetUniformBlockIndex %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     fake_read_text("glGetUniformBlockIndex", p1);
     (void)fake_value();
     (void)p0;
@@ -940,6 +1066,7 @@ static uint32_t fake_glGetUniformBlockIndex(uint32_t p0, const uint8_t * p1) {
 }
 
 static int32_t fake_glGetUniformLocation(uint32_t p0, const uint8_t * p1) {
+    fake_log("glGetUniformLocation %lld %s", (long long)p0, FAKE_ADDRESS(p1));
     fake_read_text("glGetUniformLocation", p1);
     (void)fake_value();
     (void)p0;
@@ -948,6 +1075,7 @@ static int32_t fake_glGetUniformLocation(uint32_t p0, const uint8_t * p1) {
 }
 
 static void fake_glInvalidateFramebuffer(uint32_t p0, int32_t p1, const uint32_t * p2) {
+    fake_log("glInvalidateFramebuffer %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glInvalidateFramebuffer", p2, (size_t)p1 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -956,17 +1084,20 @@ static void fake_glInvalidateFramebuffer(uint32_t p0, int32_t p1, const uint32_t
 }
 
 static void fake_glLinkProgram(uint32_t p0) {
+    fake_log("glLinkProgram %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glPolygonOffset(float p0, float p1) {
+    fake_log("glPolygonOffset %.9g %.9g", (double)p0, (double)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glReadPixels(int32_t p0, int32_t p1, int32_t p2, int32_t p3, uint32_t p4, uint32_t p5, void * p6) {
+    fake_log("glReadPixels %lld %lld %lld %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, FAKE_ADDRESS(p6));
     if (!fake_pack_bound()) fake_write("glReadPixels", p6, fake_transfer(p2, p3, 0, p4, p5, 1));
     (void)fake_value();
     (void)p0;
@@ -979,6 +1110,7 @@ static void fake_glReadPixels(int32_t p0, int32_t p1, int32_t p2, int32_t p3, ui
 }
 
 static void fake_glRenderbufferStorage(uint32_t p0, uint32_t p1, int32_t p2, int32_t p3) {
+    fake_log("glRenderbufferStorage %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -987,6 +1119,7 @@ static void fake_glRenderbufferStorage(uint32_t p0, uint32_t p1, int32_t p2, int
 }
 
 static void fake_glRenderbufferStorageMultisample(uint32_t p0, int32_t p1, uint32_t p2, int32_t p3, int32_t p4) {
+    fake_log("glRenderbufferStorageMultisample %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -996,6 +1129,7 @@ static void fake_glRenderbufferStorageMultisample(uint32_t p0, int32_t p1, uint3
 }
 
 static void fake_glSamplerParameterf(uint32_t p0, uint32_t p1, float p2) {
+    fake_log("glSamplerParameterf %lld %lld %.9g", (long long)p0, (long long)p1, (double)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1003,6 +1137,7 @@ static void fake_glSamplerParameterf(uint32_t p0, uint32_t p1, float p2) {
 }
 
 static void fake_glSamplerParameteri(uint32_t p0, uint32_t p1, int32_t p2) {
+    fake_log("glSamplerParameteri %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1010,6 +1145,7 @@ static void fake_glSamplerParameteri(uint32_t p0, uint32_t p1, int32_t p2) {
 }
 
 static void fake_glScissor(int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
+    fake_log("glScissor %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1018,6 +1154,7 @@ static void fake_glScissor(int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
 }
 
 static void fake_glShaderSource(uint32_t p0, int32_t p1, const uint8_t *const * p2, const int32_t * p3) {
+    fake_log("glShaderSource %lld %lld %s %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2), FAKE_ADDRESS(p3));
     for (int32_t k = 0; k < p1; k++) { fake_read("glShaderSource", &p2[k], sizeof *p2); fake_read("glShaderSource", &p3[k], sizeof *p3); if (p3[k] < 0) fake_read_text("glShaderSource", p2[k]); else fake_read("glShaderSource", p2[k], (size_t)p3[k]); }
     (void)fake_value();
     (void)p0;
@@ -1027,6 +1164,7 @@ static void fake_glShaderSource(uint32_t p0, int32_t p1, const uint8_t *const * 
 }
 
 static void fake_glStencilFunc(uint32_t p0, int32_t p1, uint32_t p2) {
+    fake_log("glStencilFunc %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1034,6 +1172,7 @@ static void fake_glStencilFunc(uint32_t p0, int32_t p1, uint32_t p2) {
 }
 
 static void fake_glStencilFuncSeparate(uint32_t p0, uint32_t p1, int32_t p2, uint32_t p3) {
+    fake_log("glStencilFuncSeparate %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1042,11 +1181,13 @@ static void fake_glStencilFuncSeparate(uint32_t p0, uint32_t p1, int32_t p2, uin
 }
 
 static void fake_glStencilMask(uint32_t p0) {
+    fake_log("glStencilMask %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glStencilOp(uint32_t p0, uint32_t p1, uint32_t p2) {
+    fake_log("glStencilOp %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1054,6 +1195,7 @@ static void fake_glStencilOp(uint32_t p0, uint32_t p1, uint32_t p2) {
 }
 
 static void fake_glStencilOpSeparate(uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3) {
+    fake_log("glStencilOpSeparate %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1062,6 +1204,7 @@ static void fake_glStencilOpSeparate(uint32_t p0, uint32_t p1, uint32_t p2, uint
 }
 
 static void fake_glTexParameteri(uint32_t p0, uint32_t p1, int32_t p2) {
+    fake_log("glTexParameteri %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1069,6 +1212,7 @@ static void fake_glTexParameteri(uint32_t p0, uint32_t p1, int32_t p2) {
 }
 
 static void fake_glTexStorage2D(uint32_t p0, int32_t p1, uint32_t p2, int32_t p3, int32_t p4) {
+    fake_log("glTexStorage2D %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1078,6 +1222,7 @@ static void fake_glTexStorage2D(uint32_t p0, int32_t p1, uint32_t p2, int32_t p3
 }
 
 static void fake_glTexStorage3D(uint32_t p0, int32_t p1, uint32_t p2, int32_t p3, int32_t p4, int32_t p5) {
+    fake_log("glTexStorage3D %lld %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1088,6 +1233,7 @@ static void fake_glTexStorage3D(uint32_t p0, int32_t p1, uint32_t p2, int32_t p3
 }
 
 static void fake_glTexSubImage2D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, uint32_t p6, uint32_t p7, const void * p8) {
+    fake_log("glTexSubImage2D %lld %lld %lld %lld %lld %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, (long long)p6, (long long)p7, FAKE_ADDRESS(p8));
     if (!fake_unpack_bound()) fake_read("glTexSubImage2D", p8, fake_transfer(p4, p5, 0, p6, p7, 0));
     (void)fake_value();
     (void)p0;
@@ -1102,6 +1248,7 @@ static void fake_glTexSubImage2D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3
 }
 
 static void fake_glTexSubImage3D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7, uint32_t p8, uint32_t p9, const void * p10) {
+    fake_log("glTexSubImage3D %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4, (long long)p5, (long long)p6, (long long)p7, (long long)p8, (long long)p9, FAKE_ADDRESS(p10));
     if (!fake_unpack_bound()) fake_read("glTexSubImage3D", p10, fake_transfer(p5, p6, p7, p8, p9, 0));
     (void)fake_value();
     (void)p0;
@@ -1118,6 +1265,7 @@ static void fake_glTexSubImage3D(uint32_t p0, int32_t p1, int32_t p2, int32_t p3
 }
 
 static void fake_glTransformFeedbackVaryings(uint32_t p0, int32_t p1, const uint8_t *const * p2, uint32_t p3) {
+    fake_log("glTransformFeedbackVaryings %lld %lld %s %lld", (long long)p0, (long long)p1, FAKE_ADDRESS(p2), (long long)p3);
     for (int32_t k = 0; k < p1; k++) { fake_read("glTransformFeedbackVaryings", &p2[k], sizeof *p2); fake_read_text("glTransformFeedbackVaryings", p2[k]); }
     (void)fake_value();
     (void)p0;
@@ -1127,12 +1275,14 @@ static void fake_glTransformFeedbackVaryings(uint32_t p0, int32_t p1, const uint
 }
 
 static void fake_glUniform1f(int32_t p0, float p1) {
+    fake_log("glUniform1f %lld %.9g", (long long)p0, (double)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glUniform1fv(int32_t p0, int32_t p1, const float * p2) {
+    fake_log("glUniform1fv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform1fv", p2, (size_t)p1 * 1 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1141,12 +1291,14 @@ static void fake_glUniform1fv(int32_t p0, int32_t p1, const float * p2) {
 }
 
 static void fake_glUniform1i(int32_t p0, int32_t p1) {
+    fake_log("glUniform1i %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glUniform1iv(int32_t p0, int32_t p1, const int32_t * p2) {
+    fake_log("glUniform1iv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform1iv", p2, (size_t)p1 * 1 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -1155,12 +1307,14 @@ static void fake_glUniform1iv(int32_t p0, int32_t p1, const int32_t * p2) {
 }
 
 static void fake_glUniform1ui(int32_t p0, uint32_t p1) {
+    fake_log("glUniform1ui %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glUniform1uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
+    fake_log("glUniform1uiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform1uiv", p2, (size_t)p1 * 1 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -1169,6 +1323,7 @@ static void fake_glUniform1uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
 }
 
 static void fake_glUniform2f(int32_t p0, float p1, float p2) {
+    fake_log("glUniform2f %lld %.9g %.9g", (long long)p0, (double)p1, (double)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1176,6 +1331,7 @@ static void fake_glUniform2f(int32_t p0, float p1, float p2) {
 }
 
 static void fake_glUniform2fv(int32_t p0, int32_t p1, const float * p2) {
+    fake_log("glUniform2fv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform2fv", p2, (size_t)p1 * 2 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1184,6 +1340,7 @@ static void fake_glUniform2fv(int32_t p0, int32_t p1, const float * p2) {
 }
 
 static void fake_glUniform2iv(int32_t p0, int32_t p1, const int32_t * p2) {
+    fake_log("glUniform2iv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform2iv", p2, (size_t)p1 * 2 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -1192,6 +1349,7 @@ static void fake_glUniform2iv(int32_t p0, int32_t p1, const int32_t * p2) {
 }
 
 static void fake_glUniform2uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
+    fake_log("glUniform2uiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform2uiv", p2, (size_t)p1 * 2 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -1200,6 +1358,7 @@ static void fake_glUniform2uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
 }
 
 static void fake_glUniform3fv(int32_t p0, int32_t p1, const float * p2) {
+    fake_log("glUniform3fv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform3fv", p2, (size_t)p1 * 3 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1208,6 +1367,7 @@ static void fake_glUniform3fv(int32_t p0, int32_t p1, const float * p2) {
 }
 
 static void fake_glUniform3i(int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
+    fake_log("glUniform3i %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1216,6 +1376,7 @@ static void fake_glUniform3i(int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
 }
 
 static void fake_glUniform3iv(int32_t p0, int32_t p1, const int32_t * p2) {
+    fake_log("glUniform3iv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform3iv", p2, (size_t)p1 * 3 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -1224,6 +1385,7 @@ static void fake_glUniform3iv(int32_t p0, int32_t p1, const int32_t * p2) {
 }
 
 static void fake_glUniform3uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
+    fake_log("glUniform3uiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform3uiv", p2, (size_t)p1 * 3 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -1232,6 +1394,7 @@ static void fake_glUniform3uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
 }
 
 static void fake_glUniform4fv(int32_t p0, int32_t p1, const float * p2) {
+    fake_log("glUniform4fv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform4fv", p2, (size_t)p1 * 4 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1240,6 +1403,7 @@ static void fake_glUniform4fv(int32_t p0, int32_t p1, const float * p2) {
 }
 
 static void fake_glUniform4iv(int32_t p0, int32_t p1, const int32_t * p2) {
+    fake_log("glUniform4iv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform4iv", p2, (size_t)p1 * 4 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -1248,6 +1412,7 @@ static void fake_glUniform4iv(int32_t p0, int32_t p1, const int32_t * p2) {
 }
 
 static void fake_glUniform4uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
+    fake_log("glUniform4uiv %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     if (p1 > 0) fake_read("glUniform4uiv", p2, (size_t)p1 * 4 * sizeof(uint32_t));
     (void)fake_value();
     (void)p0;
@@ -1256,6 +1421,7 @@ static void fake_glUniform4uiv(int32_t p0, int32_t p1, const uint32_t * p2) {
 }
 
 static void fake_glUniformBlockBinding(uint32_t p0, uint32_t p1, uint32_t p2) {
+    fake_log("glUniformBlockBinding %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1263,6 +1429,7 @@ static void fake_glUniformBlockBinding(uint32_t p0, uint32_t p1, uint32_t p2) {
 }
 
 static void fake_glUniformMatrix2fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix2fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix2fv", p3, (size_t)p1 * 4 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1272,6 +1439,7 @@ static void fake_glUniformMatrix2fv(int32_t p0, int32_t p1, uint8_t p2, const fl
 }
 
 static void fake_glUniformMatrix2x3fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix2x3fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix2x3fv", p3, (size_t)p1 * 6 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1281,6 +1449,7 @@ static void fake_glUniformMatrix2x3fv(int32_t p0, int32_t p1, uint8_t p2, const 
 }
 
 static void fake_glUniformMatrix2x4fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix2x4fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix2x4fv", p3, (size_t)p1 * 8 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1290,6 +1459,7 @@ static void fake_glUniformMatrix2x4fv(int32_t p0, int32_t p1, uint8_t p2, const 
 }
 
 static void fake_glUniformMatrix3fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix3fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix3fv", p3, (size_t)p1 * 9 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1299,6 +1469,7 @@ static void fake_glUniformMatrix3fv(int32_t p0, int32_t p1, uint8_t p2, const fl
 }
 
 static void fake_glUniformMatrix3x2fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix3x2fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix3x2fv", p3, (size_t)p1 * 6 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1308,6 +1479,7 @@ static void fake_glUniformMatrix3x2fv(int32_t p0, int32_t p1, uint8_t p2, const 
 }
 
 static void fake_glUniformMatrix3x4fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix3x4fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix3x4fv", p3, (size_t)p1 * 12 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1317,6 +1489,7 @@ static void fake_glUniformMatrix3x4fv(int32_t p0, int32_t p1, uint8_t p2, const 
 }
 
 static void fake_glUniformMatrix4fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix4fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix4fv", p3, (size_t)p1 * 16 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1326,6 +1499,7 @@ static void fake_glUniformMatrix4fv(int32_t p0, int32_t p1, uint8_t p2, const fl
 }
 
 static void fake_glUniformMatrix4x2fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix4x2fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix4x2fv", p3, (size_t)p1 * 8 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1335,6 +1509,7 @@ static void fake_glUniformMatrix4x2fv(int32_t p0, int32_t p1, uint8_t p2, const 
 }
 
 static void fake_glUniformMatrix4x3fv(int32_t p0, int32_t p1, uint8_t p2, const float * p3) {
+    fake_log("glUniformMatrix4x3fv %lld %lld %lld %s", (long long)p0, (long long)p1, (long long)p2, FAKE_ADDRESS(p3));
     if (p1 > 0) fake_read("glUniformMatrix4x3fv", p3, (size_t)p1 * 12 * sizeof(float));
     (void)fake_value();
     (void)p0;
@@ -1344,17 +1519,20 @@ static void fake_glUniformMatrix4x3fv(int32_t p0, int32_t p1, uint8_t p2, const 
 }
 
 static void fake_glUseProgram(uint32_t p0) {
+    fake_log("glUseProgram %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glVertexAttribDivisor(uint32_t p0, uint32_t p1) {
+    fake_log("glVertexAttribDivisor %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glViewport(int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
+    fake_log("glViewport %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1363,6 +1541,7 @@ static void fake_glViewport(int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
 }
 
 static void fake_glBlendEquationSeparateiOES(uint32_t p0, uint32_t p1, uint32_t p2) {
+    fake_log("glBlendEquationSeparateiOES %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1370,6 +1549,7 @@ static void fake_glBlendEquationSeparateiOES(uint32_t p0, uint32_t p1, uint32_t 
 }
 
 static void fake_glBlendFuncSeparateiOES(uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3, uint32_t p4) {
+    fake_log("glBlendFuncSeparateiOES %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1379,12 +1559,14 @@ static void fake_glBlendFuncSeparateiOES(uint32_t p0, uint32_t p1, uint32_t p2, 
 }
 
 static void fake_glClipControlEXT(uint32_t p0, uint32_t p1) {
+    fake_log("glClipControlEXT %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glColorMaskiOES(uint32_t p0, uint8_t p1, uint8_t p2, uint8_t p3, uint8_t p4) {
+    fake_log("glColorMaskiOES %lld %lld %lld %lld %lld", (long long)p0, (long long)p1, (long long)p2, (long long)p3, (long long)p4);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1394,18 +1576,21 @@ static void fake_glColorMaskiOES(uint32_t p0, uint8_t p1, uint8_t p2, uint8_t p3
 }
 
 static void fake_glDisableiOES(uint32_t p0, uint32_t p1) {
+    fake_log("glDisableiOES %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glEnableiOES(uint32_t p0, uint32_t p1) {
+    fake_log("glEnableiOES %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glGetQueryObjectui64vEXT(uint32_t p0, uint32_t p1, uint64_t * p2) {
+    fake_log("glGetQueryObjectui64vEXT %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_write("glGetQueryObjectui64vEXT", p2, 16 * sizeof(uint64_t));
     (void)fake_value();
     (void)p0;
@@ -1414,6 +1599,7 @@ static void fake_glGetQueryObjectui64vEXT(uint32_t p0, uint32_t p1, uint64_t * p
 }
 
 static void fake_glGetQueryivEXT(uint32_t p0, uint32_t p1, int32_t * p2) {
+    fake_log("glGetQueryivEXT %lld %lld %s", (long long)p0, (long long)p1, FAKE_ADDRESS(p2));
     fake_write("glGetQueryivEXT", p2, 16 * sizeof(int32_t));
     (void)fake_value();
     (void)p0;
@@ -1422,12 +1608,14 @@ static void fake_glGetQueryivEXT(uint32_t p0, uint32_t p1, int32_t * p2) {
 }
 
 static void fake_glPolygonModeANGLE(uint32_t p0, uint32_t p1) {
+    fake_log("glPolygonModeANGLE %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;
 }
 
 static void fake_glPolygonOffsetClampEXT(float p0, float p1, float p2) {
+    fake_log("glPolygonOffsetClampEXT %.9g %.9g %.9g", (double)p0, (double)p1, (double)p2);
     (void)fake_value();
     (void)p0;
     (void)p1;
@@ -1435,11 +1623,13 @@ static void fake_glPolygonOffsetClampEXT(float p0, float p1, float p2) {
 }
 
 static void fake_glProvokingVertexANGLE(uint32_t p0) {
+    fake_log("glProvokingVertexANGLE %lld", (long long)p0);
     (void)fake_value();
     (void)p0;
 }
 
 static void fake_glQueryCounterEXT(uint32_t p0, uint32_t p1) {
+    fake_log("glQueryCounterEXT %lld %lld", (long long)p0, (long long)p1);
     (void)fake_value();
     (void)p0;
     (void)p1;

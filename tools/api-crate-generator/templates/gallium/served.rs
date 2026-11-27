@@ -209,17 +209,14 @@ fn every_case_alone() {
     }
 }
 
-/// The case WCONTAINERS_GALLIUM_CASE names; where it names none, every case in this process.
+/// The case WCONTAINERS_GALLIUM_CASE names, in the process `every_case_alone` runs for it; where it names none, nothing:
+/// each case runs alone, so that one ending its process (a plant's crash) is told by `every_case_alone`'s name.
 #[test]
 fn one_case() {
-    let cases: Vec<i32> = match std::env::var(CASE_VARIABLE) {
-        Ok(which) => vec![which.parse().expect("a case number")],
-        Err(_) => (0..i32::try_from(EXPECTED.len()).unwrap_or(0)).collect(),
-    };
-    for which in cases {
-        match holds(which) {
-            Ok(()) => println!("CASE {which} HELD"),
-            Err(problem) => panic!("{problem}"),
-        }
+    let Ok(which) = std::env::var(CASE_VARIABLE) else { return };
+    let which: i32 = which.parse().expect("a case number");
+    match holds(which) {
+        Ok(()) => println!("CASE {which} HELD"),
+        Err(problem) => panic!("{problem}"),
     }
 }

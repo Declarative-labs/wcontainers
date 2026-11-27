@@ -19,6 +19,7 @@ const TEMPLATES: write::Templates = write::Templates {
     gl_direct_kept: include_str!("../../templates/khronos/opengl-es-direct-kept.rs"),
     gl_suite: include_str!("../../templates/khronos/opengl-es-suite.rs"),
     gl_suite_manifest: include_str!("../../templates/khronos/opengl-es-suite.toml"),
+    gl_direct_arguments: include_str!("../../templates/khronos/opengl-es-direct-arguments.rs"),
     fake: include_str!("../../templates/khronos/fake-egl.c"),
 };
 

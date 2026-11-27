@@ -6,10 +6,15 @@
  * count far past any real one. It keeps the state the glue asks about (bindings, pixel store values, vertex
  * attributes) truthfully: the glue's marks rely on those answers.
  *
- * Built as libEGL.so.1; the OpenGL ES commands are reached through eglGetProcAddress (fake_gl.c, generated, holds
- * the commands no state is kept for and the table of every name). */
+ * With FAKE_LOG set it writes each OpenGL ES call's arguments to the file it names, one line a call (the direct crate's
+ * tests/arguments.rs reads them): the command, then each argument, a number as C has it, a float to 9 digits, an address
+ * as `p` or `null`, an offset into a bound buffer as its number.
+ *
+ * Built as libEGL.so.1; the OpenGL ES commands are reached through eglGetProcAddress (the part written after this
+ * template holds the commands no state is kept for and the table of every name). */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -52,6 +57,27 @@ static void fake_start(void) {
     region_poisoned = (int (*)(const volatile void *, size_t))dlsym(RTLD_DEFAULT, "__asan_region_is_poisoned");
     if (getenv("FAKE_SAY")) fprintf(stderr, "FAKE: lies %d, AddressSanitizer's region check %s\n", fake.lies, region_poisoned ? "found" : "absent");
 }
+
+/* One call's line in the log FAKE_LOG names, when it names one. */
+static void fake_log(const char *format, ...) {
+    static FILE *file;
+    static int opened;
+    if (!opened) {
+        opened = 1;
+        const char *path = getenv("FAKE_LOG");
+        if (path) file = fopen(path, "w");
+    }
+    if (!file) return;
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(file, format, arguments);
+    va_end(arguments);
+    fputc('\n', file);
+    fflush(file);
+}
+
+/* An address as the log writes it. */
+#define FAKE_ADDRESS(pointer) ((pointer) ? "p" : "null")
 
 /* What the stand-in reached, said at the end when FAKE_SAY is set: a run that reached nothing proves nothing. */
 __attribute__((destructor)) static void fake_end(void) {
@@ -147,7 +173,10 @@ int fake_pack_bound(void) { return fake.pack_buffer != 0; }
 
 /* ----- The OpenGL ES commands whose state the glue asks about. ----- */
 
+/* EXTENSIONS */
+
 void fake_glBindBuffer(uint32_t target, uint32_t buffer) {
+    fake_log("glBindBuffer %lld %lld", (long long)target, (long long)buffer);
     switch (target) {
     case 0x8892: fake.array_buffer = buffer; break;
     case 0x8893: fake.element_buffer = buffer; break;
@@ -157,6 +186,7 @@ void fake_glBindBuffer(uint32_t target, uint32_t buffer) {
 }
 
 void fake_glDeleteBuffers(int32_t count, const uint32_t *buffers) {
+    fake_log("glDeleteBuffers %lld %s", (long long)count, FAKE_ADDRESS(buffers));
     if (count < 0) return;
     fake_read("glDeleteBuffers", buffers, (size_t)count * sizeof *buffers);
     for (int32_t at = 0; at < count; at++) {
@@ -173,6 +203,7 @@ void fake_glDeleteBuffers(int32_t count, const uint32_t *buffers) {
 }
 
 void fake_glGenBuffers(int32_t count, uint32_t *buffers) {
+    fake_log("glGenBuffers %lld %s", (long long)count, FAKE_ADDRESS(buffers));
     if (count < 0) return;
     fake_write("glGenBuffers", buffers, (size_t)count * sizeof *buffers);
     for (int32_t at = 0; at < count; at++) buffers[at] = fake.next_name++;
@@ -180,6 +211,7 @@ void fake_glGenBuffers(int32_t count, uint32_t *buffers) {
 
 void fake_glPixelStorei(uint32_t name, int32_t value) {
     static const uint32_t names[2][6] = {{0x0CF5, 0x0CF2, 0x0CF3, 0x0CF4, 0x806E, 0x806D}, {0x0D05, 0x0D02, 0x0D03, 0x0D04, 0, 0}};
+    fake_log("glPixelStorei %lld %lld", (long long)name, (long long)value);
     if (value < 0) return;
     for (int pack = 0; pack < 2; pack++)
         for (int at = 0; at < 6; at++)
@@ -190,6 +222,7 @@ void fake_glPixelStorei(uint32_t name, int32_t value) {
 }
 
 void fake_glGetIntegerv(uint32_t name, int32_t *values) {
+    fake_log("glGetIntegerv %lld %s", (long long)name, FAKE_ADDRESS(values));
     /* The most any name writes, as the glue's room assumes: 64. */
     fake_write("glGetIntegerv", values, 64 * sizeof *values);
     int32_t answer = (int32_t)fake_value();
@@ -199,7 +232,7 @@ void fake_glGetIntegerv(uint32_t name, int32_t *values) {
     case 0x88EF: answer = (int32_t)fake.unpack_buffer; break;
     case 0x88ED: answer = (int32_t)fake.pack_buffer; break;
     case 0x8869: answer = fake.lies ? (int32_t)(fake_next() & 0x7FFFFFFF) : ATTRIBUTES; break; /* MAX_VERTEX_ATTRIBS */
-    case 0x821D: answer = fake.lies ? (int32_t)(fake_next() & 0x7FFFFFFF) : 3; break;          /* NUM_EXTENSIONS */
+    case 0x821D: answer = fake.lies ? (int32_t)(fake_next() & 0x7FFFFFFF) : EXTENSION_COUNT; break; /* NUM_EXTENSIONS */
     case 0x0CF5: answer = fake.store[0][0]; break;
     case 0x0CF2: answer = fake.store[0][1]; break;
     case 0x0CF3: answer = fake.store[0][2]; break;
@@ -215,6 +248,7 @@ void fake_glGetIntegerv(uint32_t name, int32_t *values) {
 }
 
 void fake_glGetVertexAttribiv(uint32_t index, uint32_t name, int32_t *values) {
+    fake_log("glGetVertexAttribiv %lld %lld %s", (long long)index, (long long)name, FAKE_ADDRESS(values));
     fake_write("glGetVertexAttribiv", values, 16 * sizeof *values);
     if (index >= ATTRIBUTES) return;
     if (name == 0x8622) values[0] = fake.attributes[index].enabled;              /* VERTEX_ATTRIB_ARRAY_ENABLED */
@@ -228,17 +262,25 @@ static void attribute_pointer(uint32_t index, const void *pointer) {
 }
 
 void fake_glVertexAttribPointer(uint32_t index, int32_t size, uint32_t type, uint8_t normalized, int32_t stride, const void *pointer) {
+    fake_log("glVertexAttribPointer %lld %lld %lld %lld %lld %lld", (long long)index, (long long)size, (long long)type, (long long)normalized, (long long)stride, (long long)(intptr_t)pointer);
     (void)size; (void)type; (void)normalized; (void)stride;
     attribute_pointer(index, pointer);
 }
 
 void fake_glVertexAttribIPointer(uint32_t index, int32_t size, uint32_t type, int32_t stride, const void *pointer) {
+    fake_log("glVertexAttribIPointer %lld %lld %lld %lld %lld", (long long)index, (long long)size, (long long)type, (long long)stride, (long long)(intptr_t)pointer);
     (void)size; (void)type; (void)stride;
     attribute_pointer(index, pointer);
 }
 
-void fake_glEnableVertexAttribArray(uint32_t index) { if (index < ATTRIBUTES) fake.attributes[index].enabled = 1; }
-void fake_glDisableVertexAttribArray(uint32_t index) { if (index < ATTRIBUTES) fake.attributes[index].enabled = 0; }
+void fake_glEnableVertexAttribArray(uint32_t index) {
+    fake_log("glEnableVertexAttribArray %lld", (long long)index);
+    if (index < ATTRIBUTES) fake.attributes[index].enabled = 1;
+}
+void fake_glDisableVertexAttribArray(uint32_t index) {
+    fake_log("glDisableVertexAttribArray %lld", (long long)index);
+    if (index < ATTRIBUTES) fake.attributes[index].enabled = 0;
+}
 
 /* A draw reads each enabled attribute: from its buffer, or from the caller's memory at its pointer when it has none. */
 static void draw(const char *command) {
@@ -246,13 +288,16 @@ static void draw(const char *command) {
         if (fake.attributes[index].enabled && fake.attributes[index].buffer == 0) fake_read(command, fake.attributes[index].pointer, 16);
 }
 
-void fake_glDrawArrays(uint32_t mode, int32_t first, int32_t count) { (void)mode; (void)first; if (count > 0) draw("glDrawArrays"); }
+void fake_glDrawArrays(uint32_t mode, int32_t first, int32_t count) {
+    fake_log("glDrawArrays %lld %lld %lld", (long long)mode, (long long)first, (long long)count);
+    if (count > 0) draw("glDrawArrays");
+}
 void fake_glDrawArraysInstanced(uint32_t mode, int32_t first, int32_t count, int32_t instances) {
-    (void)mode; (void)first;
+    fake_log("glDrawArraysInstanced %lld %lld %lld %lld", (long long)mode, (long long)first, (long long)count, (long long)instances);
     if (count > 0 && instances > 0) draw("glDrawArraysInstanced");
 }
 void fake_glDrawElementsInstanced(uint32_t mode, int32_t count, uint32_t type, const void *indices, int32_t instances) {
-    (void)mode;
+    fake_log("glDrawElementsInstanced %lld %lld %lld %lld %lld", (long long)mode, (long long)count, (long long)type, (long long)(intptr_t)indices, (long long)instances);
     if (count <= 0 || instances <= 0) return;
     size_t each = type == 0x1401 ? 1 : type == 0x1403 ? 2 : type == 0x1405 ? 4 : 0;
     if (each == 0) return;
@@ -260,22 +305,20 @@ void fake_glDrawElementsInstanced(uint32_t mode, int32_t count, uint32_t type, c
     draw("glDrawElementsInstanced");
 }
 
-static const char *const extensions[] = {"GL_EXT_clip_control", "GL_OES_draw_buffers_indexed", "GL_EXT_disjoint_timer_query"};
-
 const uint8_t *fake_glGetString(uint32_t name) {
-    (void)name;
+    fake_log("glGetString %lld", (long long)name);
     if (fake.lies && fake_next() % 4 == 0) return NULL;
     return (const uint8_t *)"OpenGL ES 3.2 fake";
 }
 
 const uint8_t *fake_glGetStringi(uint32_t name, uint32_t index) {
-    (void)name;
+    fake_log("glGetStringi %lld %lld", (long long)name, (long long)index);
     if (fake.lies && fake_next() % 4 == 0) return NULL;
-    return (const uint8_t *)extensions[index % 3];
+    return (const uint8_t *)extensions[index % EXTENSION_COUNT];
 }
 
 void *fake_glMapBufferRange(uint32_t target, intptr_t offset, intptr_t length, uint32_t access) {
-    (void)target; (void)offset; (void)access;
+    fake_log("glMapBufferRange %lld %lld %lld %lld", (long long)target, (long long)offset, (long long)length, (long long)access);
     if (length <= 0 || length > (1 << 20) || fake.mapped || (fake.lies && fake_next() % 4 == 0)) return NULL;
     fake.mapped = malloc((size_t)length);
     if (fake.mapped) memset(fake.mapped, 0x5A, (size_t)length);
@@ -283,7 +326,7 @@ void *fake_glMapBufferRange(uint32_t target, intptr_t offset, intptr_t length, u
 }
 
 uint8_t fake_glUnmapBuffer(uint32_t target) {
-    (void)target;
+    fake_log("glUnmapBuffer %lld", (long long)target);
     free(fake.mapped);
     fake.mapped = NULL;
     return 1;
@@ -298,9 +341,15 @@ void *fake_handle(void) {
     return &tokens[fake_next() % sizeof tokens];
 }
 
-void *fake_glFenceSync(uint32_t condition, uint32_t flags) { (void)condition; (void)flags; return fake_handle(); }
+void *fake_glFenceSync(uint32_t condition, uint32_t flags) {
+    fake_log("glFenceSync %lld %lld", (long long)condition, (long long)flags);
+    return fake_handle();
+}
 
-uint32_t fake_glGetError(void) { return fake.lies ? (uint32_t)fake_next() : 0; }
+uint32_t fake_glGetError(void) {
+    fake_log("glGetError");
+    return fake.lies ? (uint32_t)fake_next() : 0;
+}
 
 /* ----- EGL. ----- */
 

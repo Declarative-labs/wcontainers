@@ -929,6 +929,223 @@ fn write_suite(set: &Set, classified: &Classified, egl: Option<(&Set, &Classifie
     text
 }
 
+// ----- The arguments test (tests/arguments.rs) and the calling glue's plant list. -----
+
+/// A value of its own for argument `at` of method `index` (each of a method's distinct, none zero, all below the room
+/// every byte range is given), in Rust and as the stand-in logs it.
+fn own_value(scalar: &Scalar, index: usize, at: usize) -> (String, String) {
+    let number = 1001 + 100 * (index % 60) + at;
+    match scalar.rust {
+        "bool" => ("true".to_string(), "1".to_string()),
+        "f32" | "f64" => (format!("{number}.5"), format!("{number}.5")),
+        "u8" | "i8" | "u16" | "i16" => {
+            let small = 1 + number % 100;
+            (small.to_string(), small.to_string())
+        }
+        _ => (number.to_string(), number.to_string()),
+    }
+}
+
+/// The values a pixel transfer's parameters take so that the transfer is one the glue sizes: 2 by 2 (by 1) of RGBA
+/// bytes, within the room given.
+fn pixel_value(method: &Method, at: usize) -> Option<(String, String)> {
+    let value = |text: &str, logged: &str| Some((text.to_string(), logged.to_string()));
+    for part in &method.parts {
+        let (width, height, depth, format, type_) = match part {
+            Part::PixelUnpack { width, height, depth, format, type_ } => (*width, *height, *depth, *format, *type_),
+            Part::PixelPack { width, height, format, type_ } => (*width, *height, None, *format, *type_),
+            _ => continue,
+        };
+        if at == width || at == height {
+            return value("2", "2");
+        }
+        if Some(at) == depth {
+            return value("1", "1");
+        }
+        if at == format {
+            return value("constants::RGBA", "6408");
+        }
+        if at == type_ {
+            return value("constants::UNSIGNED_BYTE", "5121");
+        }
+    }
+    None
+}
+
+/// The length of the slice at `at`: twice its count's multiplier, so that its count is 2.
+fn slice_length(method: &Method, at: usize) -> usize {
+    method
+        .parts
+        .iter()
+        .find_map(|part| match part {
+            Part::CountOf { slice, multiplier } if *slice == at => Some(2 * *multiplier),
+            _ => None,
+        })
+        .unwrap_or(2)
+}
+
+/// One method's call with arguments of its own, and the line the stand-in must log for it.
+fn argument_call(set: &Set, method: &Method, index: usize) -> (String, String) {
+    let mut prepared = Vec::new();
+    let mut arguments = Vec::new();
+    let mut logged = vec![method.command.name.clone()];
+    for (at, (part, param)) in method.parts.iter().zip(&method.command.params).enumerate() {
+        let name = param_name(param);
+        let (argument, log) = match part {
+            Part::Value(scalar) => {
+                let (text, log) = pixel_value(method, at).unwrap_or_else(|| own_value(scalar, index, at));
+                (Some(text), log)
+            }
+            Part::Handle { .. } => {
+                prepared.push(format!("let {name} = fence(gl);"));
+                (Some(format!("&{name}")), "p".to_string())
+            }
+            Part::CountOf { slice, multiplier } => (None, (slice_length(method, *slice) / multiplier).to_string()),
+            Part::SliceIn { elem } => {
+                prepared.push(format!("let {name} = vec![{}; {}];", zero(elem), slice_length(method, at)));
+                (Some(format!("&{name}")), "p".to_string())
+            }
+            Part::BoundedIn { elem, .. } => {
+                prepared.push(format!("let {name} = vec![{}; 1];", zero(elem)));
+                (Some(format!("&{name}")), "p".to_string())
+            }
+            Part::SliceOut { elem } => {
+                prepared.push(format!("let mut {name} = vec![{}; {}];", zero(elem), slice_length(method, at)));
+                (Some(format!("&mut {name}")), "p".to_string())
+            }
+            Part::GuardedOut { elem, .. } => {
+                prepared.push(format!("let mut {name} = vec![{}; 1];", zero(elem)));
+                (Some(format!("&mut {name}")), "p".to_string())
+            }
+            Part::TextIn => (Some("c\"name\"".to_string()), "p".to_string()),
+            // Two texts: their count is 2, as every slice's here.
+            Part::TextsIn { lengths: Some(_) } => (Some("&[b\"void main() {}\".as_slice(), b\"void main() {}\".as_slice()]".to_string()), "p".to_string()),
+            Part::TextsIn { lengths: None } => (Some("&[c\"name\", c\"name\"]".to_string()), "p".to_string()),
+            Part::BytesIn => {
+                prepared.push(format!("let {name} = vec![0_u8; {}];", slice_length(method, at)));
+                (Some(format!("&{name}")), "p".to_string())
+            }
+            Part::PixelUnpack { .. } => {
+                prepared.push(format!("let {name} = vec![0_u8; ROOM];"));
+                (Some(format!("PixelUnpack::Bytes(&{name})")), "p".to_string())
+            }
+            Part::PixelPack { .. } => {
+                prepared.push(format!("let mut {name} = vec![0_u8; ROOM];"));
+                (Some(format!("PixelPack::Bytes(&mut {name})")), "p".to_string())
+            }
+            Part::CompressedUnpack => {
+                prepared.push(format!("let {name} = vec![0_u8; 8];"));
+                (Some(format!("CompressedPixelUnpack::Bytes(&{name})")), "p".to_string())
+            }
+            Part::SizeOf { .. } => (None, "8".to_string()),
+            Part::ArrayBufferOffset | Part::ElementBufferOffset => (Some("16".to_string()), "16".to_string()),
+            Part::OptionalBytes { .. } => {
+                prepared.push(format!("let {name} = vec![0_u8; ROOM];"));
+                (Some(format!("Some({name}.as_slice())")), "p".to_string())
+            }
+            Part::SingleOut(_) | Part::LengthsOf { .. } | Part::WrittenOf => (None, "p".to_string()),
+            Part::NullOnly => (None, "null".to_string()),
+            Part::AttributeList | Part::HandlesOut { .. } => (Some("compile_error!(\"EGL form\")".to_string()), String::new()),
+        };
+        arguments.extend(argument);
+        logged.push(log);
+    }
+    let bind = if return_type(method).is_some() { "let _ = " } else { "" };
+    let call = format!("{bind}gl.{}({});", method_name(set, &method.command.name), arguments.join(", "));
+    // glGetError answers the glue's own refusal first, if one is pending: called twice, the second reaches the library.
+    let call = if method.command.name == "glGetError" { format!("{call}\n        {call}") } else { call };
+    let mut text = String::from("    {\n");
+    for line in &prepared {
+        let _ = writeln!(text, "        {line}");
+    }
+    let _ = writeln!(text, "        {call}");
+    let expected = logged.join(" ");
+    let _ = writeln!(text, "        calls.expect({:?}, {expected:?});\n    }}", method.command.name);
+    (text, expected)
+}
+
+/// tests/arguments.rs's `every_method`: each method called once with arguments of its own, its line checked.
+fn write_arguments(set: &Set, classified: &Classified) -> String {
+    let mut text = String::from("\n/// Each method called once with arguments of its own, the line the library logged for it checked.\nfn every_method(gl: &OpenGlEsContext, calls: &mut Calls) {\n");
+    for (index, method) in classified.methods.iter().enumerate() {
+        text.push_str(&argument_call(set, method, index).0);
+    }
+    text.push_str("}\n");
+    text
+}
+
+/// The head of the calling glue's plant list.
+const CALLS_PLANTS_HEAD: &str = "# The OpenGL ES calling glue's plant list (written by tools/api-crate-generator, src/khronos/write.rs `write_plants`): one\n# plant per argument of each method's call of its entry point (calls.rs), the argument replaced by zero or a null\n# address. Every plant must make tests/arguments.rs fail (every argument reaches the stand-in library as the method was\n# given it). Run from the repository's root, inside its `nix develop`:\n#   python3 -I tools/plants/run-plants.py crates/opengl-es/implementation/direct/plants.txt --workers 10\ntest: cargo test -q --release -p wcontainers-opengl-es-direct --test arguments\n";
+
+/// The calling glue's plant list, from calls.rs as written: for each method's call of its entry point, one plant per
+/// argument, the text changed being the call's line with as many lines before it as make it occur once.
+fn write_plants(set: &Set, classified: &Classified, calls: &str) -> Result<String, String> {
+    let mut out = String::from(CALLS_PLANTS_HEAD);
+    let lines: Vec<&str> = calls.lines().collect();
+    for method in &classified.methods {
+        let field = method_name(set, &method.command.name);
+        let opening = format!("    {} {{", signature(set, method, false));
+        let start = lines.iter().position(|line| *line == opening).ok_or_else(|| format!("calls.rs: no method {field}"))?;
+        let at = (start..lines.len()).find(|at| lines[*at].contains("unsafe { entry(")).ok_or_else(|| format!("calls.rs: {field} calls no entry"))?;
+        let line = lines[at];
+        let open = line.find("entry(").map(|found| found + "entry(".len()).ok_or("calls.rs: no call")?;
+        let close = line.rfind(") }").ok_or("calls.rs: no call's end")?;
+        let arguments = split_arguments(&line[open..close]);
+        if arguments.len() != method.parts.len() {
+            return Err(format!("calls.rs: {field} passes {} arguments for {} parameters", arguments.len(), method.parts.len()));
+        }
+        let mut first = at;
+        while calls.matches(&lines[first..=at].join("\n")).count() != 1 {
+            first = first.checked_sub(1).ok_or_else(|| format!("calls.rs: {field}: no text before its call makes it occur once"))?;
+        }
+        let before: String = lines[first..at].iter().map(|line| format!("{line}\n")).collect();
+        for (place, ((argument, part), param)) in arguments.iter().zip(&method.parts).zip(&method.command.params).enumerate() {
+            let ty = c_param_type(part, param);
+            let wrong = if ty.starts_with("*const") {
+                "core::ptr::null()"
+            } else if ty.starts_with("*mut") {
+                "core::ptr::null_mut()"
+            } else if ty == "f32" || ty == "f64" {
+                "0.0"
+            } else {
+                "0"
+            };
+            let mut changed = arguments.clone();
+            changed[place] = wrong.to_string();
+            let new_line = format!("{}{}{}", &line[..open], changed.join(", "), &line[close..]);
+            let _ = writeln!(
+                out,
+                "\nplant: calls.rs {} argument {place} ({argument}) as {wrong}\nfile: crates/opengl-es/implementation/direct/calls.rs\nold:\n{before}{line}\nnew:\n{before}{new_line}\nend",
+                method.command.name
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// A call's arguments split at its top-level commas.
+fn split_arguments(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0_i32;
+    let mut current = String::new();
+    for character in text.chars() {
+        match character {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut current).trim().to_string());
+                continue;
+            }
+            _ => {}
+        }
+        current.push(character);
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
+}
+
 pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], egl: Option<(&Set, &Classified)>, out: &std::path::Path, templates: &Templates) -> Result<String, String> {
     let mut report = String::new();
     for (set, classified) in sets.iter().zip(classified) {
@@ -951,7 +1168,8 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], egl:
         // The direct crate.
         let (runtime, direct_manifest) = if set.api == "egl" { (templates.egl_direct, templates.egl_manifest) } else { (templates.gl_direct, templates.gl_manifest) };
         write(direct.join("implementation.rs"), &format!("{}{runtime}", header(set)))?;
-        write(direct.join("calls.rs"), &write_calls(set, classified, registry)?)?;
+        let calls = write_calls(set, classified, registry)?;
+        write(direct.join("calls.rs"), &calls)?;
         write(direct.join("Cargo.toml"), direct_manifest)?;
         if set.api == "gles2" {
             // The stand-in library fuzz-khronos.sh fuzzes the glue over (it reads and writes the most each command may).
@@ -962,6 +1180,8 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], egl:
             std::fs::create_dir_all(&tests).map_err(|e| e.to_string())?;
             write(tests.join("conformance.rs"), &format!("{}{}", header(set), templates.gl_direct_test))?;
             write(tests.join("kept.rs"), &format!("{}{}", header(set), templates.gl_direct_kept))?;
+            write(tests.join("arguments.rs"), &format!("{}{}", header(set), templates.gl_direct_arguments.replace("// METHODS\n", &write_arguments(set, classified))))?;
+            write(direct.join("plants.txt"), &write_plants(set, classified, &calls)?)?;
             write(conformance.join("suite.rs"), &write_suite(set, classified, egl, templates.gl_suite))?;
             write(conformance.join("Cargo.toml"), templates.gl_suite_manifest)?;
         } else {
@@ -1000,6 +1220,7 @@ pub struct Templates {
     pub gl_direct_kept: &'static str,
     pub gl_suite: &'static str,
     pub gl_suite_manifest: &'static str,
+    pub gl_direct_arguments: &'static str,
     pub fake: &'static str,
 }
 
@@ -1054,6 +1275,22 @@ fn fake_method(method: &Method) -> String {
     let params: Vec<String> = types.iter().enumerate().map(|(at, ty)| format!("{ty} p{at}")).collect();
     let ret = c_return_type(&method.ret, &method.command).map_or("void".to_string(), |r| c_of(&r));
     let mut body = String::new();
+    // The call's line in the log: each argument as tests/arguments.rs expects it (`logged`).
+    let mut format = name.clone();
+    let mut logged_values = Vec::new();
+    for (at, (part, ty)) in method.parts.iter().zip(&types).enumerate() {
+        let (spec, value) = match part {
+            Part::ArrayBufferOffset | Part::ElementBufferOffset => ("%lld", format!("(long long)(intptr_t)p{at}")),
+            _ if ty.contains('*') => ("%s", format!("FAKE_ADDRESS(p{at})")),
+            _ if ty == "float" => ("%.9g", format!("(double)p{at}")),
+            _ if ty == "uint64_t" => ("%llu", format!("(unsigned long long)p{at}")),
+            _ => ("%lld", format!("(long long)p{at}")),
+        };
+        format.push(' ');
+        format.push_str(spec);
+        logged_values.push(value);
+    }
+    let _ = writeln!(body, "    fake_log(\"{format}\"{});", logged_values.iter().map(|value| format!(", {value}")).collect::<String>());
     for (at, part) in method.parts.iter().enumerate() {
         let size = |elem: &Scalar| format!("sizeof({})", c_of(elem.c));
         let counted = |bytes_each: String| {
@@ -1104,6 +1341,13 @@ fn fake_method(method: &Method) -> String {
 
 /// The fake's OpenGL ES part: each command not written by hand, and the table eglGetProcAddress answers from.
 fn write_fake(set: &Set, classified: &Classified, template: &str) -> String {
+    // Every extension the set names and each command names, so that each extension's command is reached.
+    let all: BTreeSet<&str> = set.extensions.iter().copied().chain(classified.methods.iter().flat_map(|method| method.extensions.iter().map(String::as_str))).collect();
+    let names: Vec<String> = all.iter().map(|extension| format!("\"{extension}\"")).collect();
+    let template = template.replace(
+        "/* EXTENSIONS */\n",
+        &format!("/* Every extension the set names. */\n#define EXTENSION_COUNT {}\nstatic const char *const extensions[EXTENSION_COUNT] = {{{}}};\n", names.len(), names.join(", ")),
+    );
     let mut text = format!(
         "/* Written by tools/api-crate-generator from Khronos's gl.xml and egl.xml, pinned in src/khronos/write.rs, and its template\n * templates/khronos/fake-egl.c. Do not edit. */\n{template}\n/* ----- Every other OpenGL ES command of the set: the most its parameters reach, read or written. ----- */\n\n"
     );
@@ -1132,8 +1376,28 @@ fn write_fake(set: &Set, classified: &Classified, template: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::classify::{Method, Part, Return};
+    use super::super::registry::{Command, Param};
     use super::super::sets::{EGL, OPENGL_ES};
-    use super::value_text;
+    use super::{count_of, value_text};
+
+    fn method(parts: Vec<Part>) -> Method {
+        let param = |name: &str| Param { name: name.to_string(), ptype: "GLsizei".to_string(), pointers: 0, is_const: false, inner_const: false, len: None };
+        let params = (0..parts.len()).map(|at| param(&format!("p{at}"))).collect();
+        Method { command: Command { name: "glTest".to_string(), ret: param("return"), params }, parts, ret: Return::Unit, extensions: Vec::new(), draw: false }
+    }
+
+    /// A slice's count is the parameter that names that slice, among several counts.
+    #[test]
+    fn each_slice_its_own_count() {
+        let elem = super::super::classify_scalar("GLint").expect("a scalar");
+        let counted = method(vec![Part::CountOf { slice: 2, multiplier: 1 }, Part::CountOf { slice: 3, multiplier: 4 }, Part::SliceIn { elem }, Part::SliceIn { elem }]);
+        assert_eq!(count_of(&counted, 2), Some((0, 1)));
+        assert_eq!(count_of(&counted, 3), Some((1, 4)));
+        let sized = method(vec![Part::SizeOf { data: 1 }, Part::CompressedUnpack, Part::SizeOf { data: 3 }, Part::CompressedUnpack]);
+        assert_eq!(count_of(&sized, 1), Some((0, 1)));
+        assert_eq!(count_of(&sized, 3), Some((2, 1)));
+    }
 
     /// A value keeps the width its number needs: EGL's past i32 a u32, GL's `ull` a u64; a cast to EGLint is its
     /// number, any other cast or expression none.

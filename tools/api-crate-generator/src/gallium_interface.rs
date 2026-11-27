@@ -132,11 +132,11 @@ fn is_count(function: &CFunction, at: usize) -> bool {
         && function.params[at..].iter().any(|later| later.pointers >= 1 && !later.base.contains("unsigned"))
 }
 
-/// Whether a parameter is the count of the list just before it (draw_vbo's `draws, num_draws`); never the first, the
-/// object the pointer is called on.
+/// Whether a parameter is the count of the list just before it (draw_vbo's `draws, num_draws`); the first parameter, the
+/// object the pointer is called on, is no list.
 fn counts_the_list_before(function: &CFunction, at: usize) -> bool {
     let param = &function.params[at];
-    let before = &function.params[at - 1];
+    let Some(before) = at.checked_sub(1).filter(|before| *before > 0).map(|before| &function.params[before]) else { return false };
     param.pointers == 0 && param.name.starts_with("num_") && before.pointers == 1 && !before.base.starts_with("const unsigned")
 }
 
@@ -893,6 +893,7 @@ mod tests {
         ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned size, const struct pipe_y *y)", &["size: u32", "y: &Y"], "");
         ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned x, const struct pipe_y *ys)", &["x: u32", "ys: &Y"], "");
         ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned num_ys, const struct pipe_y *ys)", &["ys: &[Y]"], "");
+        ok("f", READS, "void (*f)(struct pipe_context *ctx, unsigned num_x, enum pipe_y e)", &["num_x: u32", "e: u32"], "");
         ok("f", READS, "void (*f)(struct pipe_context *ctx, const unsigned *offsets, unsigned num_targets)", &["offsets: &[u32]", "num_targets: u32"], "");
         let binds: &'static [Role] = &[Role::Binds("SamplerView")];
         ok("f", binds, "void (*f)(struct pipe_context *ctx, unsigned start, unsigned num_views, struct pipe_sampler_view **views)", &["start: u32", "views: &[Option<&Arc<<Self::Screen as Gallium>::SamplerView>>]"], "");
