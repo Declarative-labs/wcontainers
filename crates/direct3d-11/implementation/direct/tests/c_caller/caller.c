@@ -8418,11 +8418,8 @@ static void call_slot(State *s, uint64_t which, void *right) {
         typedef void (*F)(void *, uint32_t, uint64_t);
         F f = (F)((*(void ***)right)[37]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        uint32_t a0 = (uint32_t)pick_value(s);
-        uint64_t a1 = (uint64_t)pick_value(s);
-        f(this, a0, a1);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
+        f(this, (uint32_t)pick_value(s), (uint64_t)pick_value(s));
+        s->counted[REFUSED]++;
         break;
     }
     case 530: { /* ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView */
@@ -8431,11 +8428,8 @@ static void call_slot(State *s, uint64_t which, void *right) {
         typedef void (*F)(void *, uint32_t, uint64_t);
         F f = (F)((*(void ***)right)[38]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        uint32_t a0 = (uint32_t)pick_value(s);
-        uint64_t a1 = (uint64_t)pick_value(s);
-        f(this, a0, a1);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
+        f(this, (uint32_t)pick_value(s), (uint64_t)pick_value(s));
+        s->counted[REFUSED]++;
         break;
     }
     case 531: { /* ID3D12GraphicsCommandList::SetComputeRootShaderResourceView */
@@ -8464,11 +8458,8 @@ static void call_slot(State *s, uint64_t which, void *right) {
         typedef void (*F)(void *, uint32_t, uint64_t);
         F f = (F)((*(void ***)right)[41]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        uint32_t a0 = (uint32_t)pick_value(s);
-        uint64_t a1 = (uint64_t)pick_value(s);
-        f(this, a0, a1);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
+        f(this, (uint32_t)pick_value(s), (uint64_t)pick_value(s));
+        s->counted[REFUSED]++;
         break;
     }
     case 534: { /* ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView */
@@ -8484,46 +8475,31 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 535: { /* ID3D12GraphicsCommandList::IASetIndexBuffer */
         void *this = pick_this(s, right);
         if (this == right) s->reached[535]++;
-        typedef void (*F)(void *, const uint8_t *);
+        typedef void (*F)(void *, uint8_t *);
         F f = (F)((*(void ***)right)[43]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        uint8_t *a0 = maybe_bytes(s, 16);
-        f(this, a0);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
-        free((void *)a0);
+        f(this, (uint8_t *)pick_object(s, 1));
+        s->counted[REFUSED]++;
         break;
     }
     case 536: { /* ID3D12GraphicsCommandList::IASetVertexBuffers */
         void *this = pick_this(s, right);
         if (this == right) s->reached[536]++;
-        typedef void (*F)(void *, uint32_t, uint32_t, const uint8_t *);
+        typedef void (*F)(void *, uint32_t, uint32_t, uint8_t *);
         F f = (F)((*(void ***)right)[44]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        uint64_t n1 = pick_count(s);
-        uint32_t a0 = (uint32_t)pick_value(s);
-        uint32_t a1 = (uint32_t)n1;
-        uint8_t *a2 = elements(s, n1, 16);
-        f(this, a0, a1, a2);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
-        free((void *)a2);
+        f(this, (uint32_t)pick_value(s), (uint32_t)pick_value(s), (uint8_t *)pick_object(s, 1));
+        s->counted[REFUSED]++;
         break;
     }
     case 537: { /* ID3D12GraphicsCommandList::SOSetTargets */
         void *this = pick_this(s, right);
         if (this == right) s->reached[537]++;
-        typedef void (*F)(void *, uint32_t, uint32_t, const uint8_t *);
+        typedef void (*F)(void *, uint32_t, uint32_t, uint8_t *);
         F f = (F)((*(void ***)right)[45]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        uint64_t n1 = pick_count(s);
-        uint32_t a0 = (uint32_t)pick_value(s);
-        uint32_t a1 = (uint32_t)n1;
-        uint8_t *a2 = elements(s, n1, 24);
-        f(this, a0, a1, a2);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
-        free((void *)a2);
+        f(this, (uint32_t)pick_value(s), (uint32_t)pick_value(s), (uint8_t *)pick_object(s, 1));
+        s->counted[REFUSED]++;
         break;
     }
     case 538: { /* ID3D12GraphicsCommandList::OMSetRenderTargets */
@@ -8785,8 +8761,7 @@ static void call_slot(State *s, uint64_t which, void *right) {
         F f = (F)((*(void ***)right)[11]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
         (void)f(this);
-        int ok = 1;
-        s->counted[ok ? SUCCEEDED : FAILED]++;
+        s->counted[REFUSED]++;
         break;
     }
     case 561: { /* ID3D12Resource::WriteToSubresource */

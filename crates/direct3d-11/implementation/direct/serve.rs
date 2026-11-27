@@ -15631,23 +15631,22 @@ pub unsafe extern "system" fn device_context_map<V: direct3d_11::DeviceContext>(
                 mapped_resource_value.row_pitch,
                 mapped_resource_value.depth_pitch,
             );
-            // No longer than the implementation's own bytes: the glue lends no memory it did not lend.
-            let lent_length = lent_length.filter(|length| {
-                u64::try_from(*length).is_ok_and(|length| {
-                    length
-                        <= wcontainers_volatile_bytes::VolatileBytes::len(
-                            &mapped_resource_value.data,
-                        )
-                })
+            // The memory lent is the glue's own: whole rows and slices at the pitches the C side is told (bounded by the
+            // description, lengths.rs `within_served_bound_*`); the implementation's bytes fill its start, the rest cleared.
+            let implementation_length =
+                wcontainers_volatile_bytes::VolatileBytes::len(&mapped_resource_value.data);
+            let past_implementation = lent_length.is_some_and(|length| {
+                u64::try_from(length).unwrap_or(u64::MAX) > implementation_length
             });
             let Some(shadow) = lent_length.and_then(Shadow::allocate) else {
                 found.value().unmap(resource_found.get(), subresource);
                 return Err(E_FAIL);
             };
             // Contents the API leaves undefined are cleared, not read; memory lent for reading only is not written back (an exception line of src/api.rs).
-            if map_type.0 == 4 {
+            if map_type.0 == 4 || past_implementation {
                 shadow.clear();
-            } else {
+            }
+            if map_type.0 != 4 {
                 shadow.fill_from(&mapped_resource_value.data);
             }
             let written_back = map_type.0 != 1;

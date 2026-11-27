@@ -2419,184 +2419,49 @@ impl<A: System> direct3d_12::GraphicsCommandList for SystemGraphicsCommandList<A
         root_parameter_index: u32,
         buffer_location: u64,
     ) {
-        #[expect(
-            unsafe_code,
-            reason = "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView, called out"
-        )]
-        // SAFETY: a live object whose table holds `ID3D12GraphicsCommandList::SetComputeRootConstantBufferView` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self
-                .object
-                .entry_points()
-                .graphics_command_list_set_compute_root_constant_buffer_view)(
-                self.object.raw(),
-                root_parameter_index,
-                buffer_location,
-            )
-        };
-        let () = returned;
+        let _ = root_parameter_index;
+        let _ = buffer_location;
+        // Refused by its form (the report's NOT GLUED): the system is not called.
     }
     fn set_graphics_root_constant_buffer_view(
         &self,
         root_parameter_index: u32,
         buffer_location: u64,
     ) {
-        #[expect(
-            unsafe_code,
-            reason = "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView, called out"
-        )]
-        // SAFETY: a live object whose table holds `ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self
-                .object
-                .entry_points()
-                .graphics_command_list_set_graphics_root_constant_buffer_view)(
-                self.object.raw(),
-                root_parameter_index,
-                buffer_location,
-            )
-        };
-        let () = returned;
+        let _ = root_parameter_index;
+        let _ = buffer_location;
+        // Refused by its form (the report's NOT GLUED): the system is not called.
     }
     fn set_compute_root_unordered_access_view(
         &self,
         root_parameter_index: u32,
         buffer_location: u64,
     ) {
-        #[expect(
-            unsafe_code,
-            reason = "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView, called out"
-        )]
-        // SAFETY: a live object whose table holds `ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self
-                .object
-                .entry_points()
-                .graphics_command_list_set_compute_root_unordered_access_view)(
-                self.object.raw(),
-                root_parameter_index,
-                buffer_location,
-            )
-        };
-        let () = returned;
+        let _ = root_parameter_index;
+        let _ = buffer_location;
+        // Refused by its form (the report's NOT GLUED): the system is not called.
     }
     fn ia_set_index_buffer(&self, view: Option<&direct3d_12::structures::IndexBufferView>) {
-        let view_bytes = view.map(|value| {
-            let mut bytes = Aligned::<
-                { size_of::<WindowsWin32GraphicsDirect3d12D3d12IndexBufferViewLayout>() },
-            >::default();
-            encode_windows_win32_graphics_direct_3d12_d_3d12_index_buffer_view(value, &mut bytes.0);
-            bytes
-        });
-        #[expect(
-            unsafe_code,
-            reason = "ID3D12GraphicsCommandList::IASetIndexBuffer, called out"
-        )]
-        // SAFETY: a live object whose table holds `ID3D12GraphicsCommandList::IASetIndexBuffer` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self
-                .object
-                .entry_points()
-                .graphics_command_list_ia_set_index_buffer)(
-                self.object.raw(),
-                view_bytes.as_ref().map_or(null(), |bytes| bytes.0.as_ptr()),
-            )
-        };
-        let () = returned;
+        let _ = view;
+        // Refused by its form (the report's NOT GLUED): the system is not called.
     }
     fn ia_set_vertex_buffers(
         &self,
         start_slot: u32,
         views: &[direct3d_12::structures::VertexBufferView],
     ) {
-        let Ok(num_views) = u32::try_from(views.len()) else {
-            return;
-        };
-        let Some(views_length) = views.len().checked_mul(16) else {
-            return;
-        };
-        let mut views_bytes = vec![u8::MIN; views_length.next_multiple_of(8)];
-        for (value, bytes) in views
-            .iter()
-            .zip(views_bytes.as_chunks_mut::<16>().0.iter_mut())
-        {
-            encode_windows_win32_graphics_direct_3d12_d_3d12_vertex_buffer_view(value, bytes);
-        }
-        let views_c: Vec<u64> = views_bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|word| u64::from_ne_bytes(*word))
-            .collect();
-        #[expect(
-            unsafe_code,
-            reason = "ID3D12GraphicsCommandList::IASetVertexBuffers, called out"
-        )]
-        // SAFETY: a live object whose table holds `ID3D12GraphicsCommandList::IASetVertexBuffers` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self
-                .object
-                .entry_points()
-                .graphics_command_list_ia_set_vertex_buffers)(
-                self.object.raw(),
-                start_slot,
-                num_views,
-                if views_c.is_empty() {
-                    null()
-                } else {
-                    views_c.as_ptr().cast::<u8>()
-                },
-            )
-        };
-        let () = returned;
+        let _ = start_slot;
+        let _ = views;
+        // Refused by its form (the report's NOT GLUED): the system is not called.
     }
     fn so_set_targets(
         &self,
         start_slot: u32,
         views: &[direct3d_12::structures::StreamOutputBufferView],
     ) {
-        let Ok(num_views) = u32::try_from(views.len()) else {
-            return;
-        };
-        let Some(views_length) = views.len().checked_mul(24) else {
-            return;
-        };
-        let mut views_bytes = vec![u8::MIN; views_length.next_multiple_of(8)];
-        for (value, bytes) in views
-            .iter()
-            .zip(views_bytes.as_chunks_mut::<24>().0.iter_mut())
-        {
-            encode_windows_win32_graphics_direct_3d12_d_3d12_stream_output_buffer_view(
-                value, bytes,
-            );
-        }
-        let views_c: Vec<u64> = views_bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|word| u64::from_ne_bytes(*word))
-            .collect();
-        #[expect(
-            unsafe_code,
-            reason = "ID3D12GraphicsCommandList::SOSetTargets, called out"
-        )]
-        // SAFETY: a live object whose table holds `ID3D12GraphicsCommandList::SOSetTargets` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self
-                .object
-                .entry_points()
-                .graphics_command_list_so_set_targets)(
-                self.object.raw(),
-                start_slot,
-                num_views,
-                if views_c.is_empty() {
-                    null()
-                } else {
-                    views_c.as_ptr().cast::<u8>()
-                },
-            )
-        };
-        let () = returned;
+        let _ = start_slot;
+        let _ = views;
+        // Refused by its form (the report's NOT GLUED): the system is not called.
     }
     fn om_set_render_targets(
         &self,
@@ -2761,15 +2626,8 @@ impl<A: System> direct3d_12::Resource for SystemResource<A> {
         )
     }
     fn get_gpu_virtual_address(&self) -> u64 {
-        #[expect(
-            unsafe_code,
-            reason = "ID3D12Resource::GetGPUVirtualAddress, called out"
-        )]
-        // SAFETY: a live object whose table holds `ID3D12Resource::GetGPUVirtualAddress` where the metadata orders it; every pointer passed is ours for the call.
-        let returned = unsafe {
-            (self.object.entry_points().resource_get_gpu_virtual_address)(self.object.raw())
-        };
-        returned
+        // Refused by its form (the report's NOT GLUED): the system is not called.
+        Default::default()
     }
 }
 

@@ -147,6 +147,17 @@ static uint32_t map_row_pitch, map_depth_pitch;
 static uint64_t map_length;
 static void *mapped_block;
 
+/* A sum of every byte the system read, so that no read is optimized away. */
+static volatile uint64_t read_sum;
+
+/* Reads each of `length` bytes at `bytes`, one by one, as the system would. */
+static void read_exactly(const void *bytes, uint64_t length) {
+    const volatile uint8_t *at = bytes;
+    uint64_t sum = 0;
+    for (uint64_t index = 0; index < length; index++) sum += at[index];
+    read_sum += sum;
+}
+
 /* What the system saw: creations, uploads, maps, unmaps, and calls of a slot it does not serve. */
 static atomic_ullong seen[5];
 
@@ -215,11 +226,7 @@ static HRESULT query_interface(void *this, const uint8_t *iid, void **out) {
 /* Reads exactly the expected length of each initial subresource the test named. */
 static HRESULT create(int kind, const void *desc, const SUBRESOURCE_DATA *initial, void **out) {
     if (!desc || !out) return E_INVALIDARG;
-    for (size_t at = 0; initial && at < expected_count; at++) {
-        uint8_t *copy = malloc((size_t)expected[at]);
-        memcpy(copy, initial[at].pSysMem, (size_t)expected[at]);
-        free(copy);
-    }
+    for (size_t at = 0; initial && at < expected_count; at++) read_exactly(initial[at].pSysMem, expected[at]);
     Object *object = calloc(1, sizeof *object);
     object->table = resource_table;
     object->references = 1;
@@ -307,10 +314,7 @@ static void unmap(void *this, void *resource, uint32_t subresource) {
 static void update_subresource(void *this, void *resource, uint32_t subresource, const uint32_t *region,
                                const void *bytes, uint32_t row_pitch, uint32_t depth_pitch) {
     (void)this, (void)resource, (void)subresource, (void)region, (void)row_pitch, (void)depth_pitch;
-    uint64_t length = expected_count ? expected[0] : 0;
-    uint8_t *copy = malloc((size_t)length);
-    memcpy(copy, bytes, (size_t)length);
-    free(copy);
+    read_exactly(bytes, expected_count ? expected[0] : 0);
     atomic_fetch_add(&seen[1], 1);
 }
 

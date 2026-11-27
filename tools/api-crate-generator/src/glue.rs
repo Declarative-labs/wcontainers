@@ -723,7 +723,56 @@ impl<'g, 'a> Writer<'g, 'a> {
         Ok(Refusal { params, returned, answer, stated })
     }
 
+    /// Every UINT64 `ty` reaches, as (method or structure, parameter or field): the type itself (a parameter of
+    /// `owner` named `name`), what it points at, and the fields of each structure or union it holds, once per structure.
+    fn uint64s(&self, owner: &str, name: &str, ty: &Type, seen: &mut BTreeSet<String>, found: &mut Vec<(String, String)>) {
+        match ty {
+            Type::U64 | Type::I64 => found.push((owner.to_string(), name.to_string())),
+            Type::PtrConst(..) | Type::PtrMut(..) => {
+                if let Some((inner, _, _)) = pointee(ty) {
+                    self.uint64s(owner, name, inner, seen, found);
+                }
+            }
+            Type::ArrayFixed(inner, _) => self.uint64s(owner, name, inner, seen, found),
+            _ => {
+                let Some(record_key) = named(ty) else { return };
+                let Some(record) = self.g.read.records.get(&record_key) else { return };
+                if !matches!(record.kind, RecordKind::Struct | RecordKind::Union) || !seen.insert(record_key.1.clone()) {
+                    return;
+                }
+                for field in &record.fields {
+                    self.uint64s(&record.name, &field.name, &field.ty, seen, found);
+                }
+            }
+        }
+    }
+
     fn glue_of(&self, method: &Method, place: &str) -> Result<Glued, String> {
+        // Direct3D 12's GPU virtual addresses (D3D12_GPU_VIRTUAL_ADDRESS, a UINT64 the metadata does not name) are
+        // addresses, not numbers: each UINT64 the method reaches is judged by src/api.rs `UINT64_JUDGED`; an address, or
+        // one not judged, refuses the method until a (resource, offset) line carries it (default deny).
+        if place.starts_with("ID3D12") {
+            let mut seen = BTreeSet::new();
+            let mut found = Vec::new();
+            for param in &method.params {
+                self.uint64s(place, &param.name, &param.ty, &mut seen, &mut found);
+            }
+            self.uint64s(place, "return", &method.return_type, &mut seen, &mut found);
+            let refused: Vec<String> = found
+                .into_iter()
+                .filter_map(|(owner, field)| match crate::api::UINT64_JUDGED.iter().find(|(o, f, _)| *o == owner && *f == field) {
+                    Some((_, _, crate::api::Uint64::Number)) => None,
+                    Some((_, _, crate::api::Uint64::GpuAddress)) => Some(format!("{owner}.{field}: a GPU virtual address, carried only as (resource, offset) checked against the resource's recorded size, a line not yet written")),
+                    None => {
+                        eprintln!("UNJUDGED UINT64 {owner}.{field}");
+                        Some(format!("{owner}.{field}: a UINT64 src/api.rs has not judged an address or a number"))
+                    }
+                })
+                .collect();
+            if !refused.is_empty() {
+                return Err(refused.join("; "));
+            }
+        }
         // A count the trait drops (it follows from a slice's length) is a `Count`; a count by value of arrays out only is
         // kept in the trait as a value (the room the caller asks for); a count by pointer of an array out is the room in
         // and the number written out. The same rule as the trait's (src/emit.rs `signature`).

@@ -923,3 +923,55 @@ pub fn by_name(name: &str) -> Option<&'static [&'static Api]> {
 pub fn names() -> Vec<&'static str> {
     SETS.iter().map(|(set, _)| *set).collect()
 }
+
+/// What a UINT64 of Direct3D 12 is: d3d12.h names its GPU virtual addresses `D3D12_GPU_VIRTUAL_ADDRESS`, a type the
+/// metadata drops, so each UINT64 a carried method reaches is judged here by the header's declaration (the glue refuses
+/// one not judged).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Uint64 {
+    /// A number: a size, an offset into a resource the method names, a fence value, a mask.
+    Number,
+    /// A `D3D12_GPU_VIRTUAL_ADDRESS`: an address in the GPU's memory, carried only as (resource, offset) checked against
+    /// the resource's recorded size; until that line is written, the method is refused.
+    GpuAddress,
+}
+
+/// Each UINT64 of the Direct3D 12 subset's methods and structures, as (method or structure, parameter, field or
+/// `return`), judged by d3d12.h's declaration.
+pub const UINT64_JUDGED: &[(&str, &str, Uint64)] = &[
+    ("ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView", "BufferLocation", Uint64::GpuAddress),
+    ("ID3D12GraphicsCommandList::SetComputeRootConstantBufferView", "BufferLocation", Uint64::GpuAddress),
+    ("ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView", "BufferLocation", Uint64::GpuAddress),
+    ("ID3D12GraphicsCommandList::SetComputeRootShaderResourceView", "BufferLocation", Uint64::GpuAddress),
+    ("ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView", "BufferLocation", Uint64::GpuAddress),
+    ("ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView", "BufferLocation", Uint64::GpuAddress),
+    ("ID3D12Resource::GetGPUVirtualAddress", "return", Uint64::GpuAddress),
+    ("D3D12_VERTEX_BUFFER_VIEW", "BufferLocation", Uint64::GpuAddress),
+    ("D3D12_INDEX_BUFFER_VIEW", "BufferLocation", Uint64::GpuAddress),
+    ("D3D12_STREAM_OUTPUT_BUFFER_VIEW", "BufferLocation", Uint64::GpuAddress),
+    ("D3D12_STREAM_OUTPUT_BUFFER_VIEW", "BufferFilledSizeLocation", Uint64::GpuAddress),
+    ("D3D12_STREAM_OUTPUT_BUFFER_VIEW", "SizeInBytes", Uint64::Number),
+    ("ID3D12GraphicsCommandList::ResolveQueryData", "AlignedDestinationBufferOffset", Uint64::Number),
+    ("D3D12_CONSTANT_BUFFER_VIEW_DESC", "BufferLocation", Uint64::GpuAddress),
+    ("D3D12_GPU_DESCRIPTOR_HANDLE", "ptr", Uint64::GpuAddress),
+    ("D3D12_RESOURCE_DESC", "Width", Uint64::Number),
+    ("D3D12_RESOURCE_DESC", "Alignment", Uint64::Number),
+    ("D3D12_HEAP_DESC", "SizeInBytes", Uint64::Number),
+    ("D3D12_HEAP_DESC", "Alignment", Uint64::Number),
+    ("D3D12_PLACED_SUBRESOURCE_FOOTPRINT", "Offset", Uint64::Number),
+    ("D3D12_BUFFER_SRV", "FirstElement", Uint64::Number),
+    ("D3D12_BUFFER_UAV", "FirstElement", Uint64::Number),
+    ("D3D12_BUFFER_UAV", "CounterOffsetInBytes", Uint64::Number),
+    ("ID3D12Fence::GetCompletedValue", "return", Uint64::Number),
+    ("ID3D12Fence::SetEventOnCompletion", "Value", Uint64::Number),
+    ("ID3D12Fence::Signal", "Value", Uint64::Number),
+    ("ID3D12CommandQueue::Signal", "Value", Uint64::Number),
+    ("ID3D12CommandQueue::Wait", "Value", Uint64::Number),
+    ("ID3D12Device::CreateFence", "InitialValue", Uint64::Number),
+    ("ID3D12GraphicsCommandList::CopyBufferRegion", "DstOffset", Uint64::Number),
+    ("ID3D12GraphicsCommandList::CopyBufferRegion", "SrcOffset", Uint64::Number),
+    ("ID3D12GraphicsCommandList::CopyBufferRegion", "NumBytes", Uint64::Number),
+    ("ID3D12Device::GetCopyableFootprints", "BaseOffset", Uint64::Number),
+    ("ID3D12Device::GetCopyableFootprints", "pRowSizeInBytes", Uint64::Number),
+    ("ID3D12Device::GetCopyableFootprints", "pTotalBytes", Uint64::Number),
+];

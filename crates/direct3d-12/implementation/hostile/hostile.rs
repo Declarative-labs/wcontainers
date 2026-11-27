@@ -2216,10 +2216,7 @@ impl<A: Hostile> direct3d_12::GraphicsCommandList for HostileGraphicsCommandList
     ) {
         let _ = &root_parameter_index;
         let _ = &buffer_location;
-        record(format!(
-            "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView(root_parameter_index={:?}, buffer_location={:?})",
-            root_parameter_index, buffer_location
-        ));
+        record("ID3D12GraphicsCommandList::SetComputeRootConstantBufferView()".to_string());
     }
     fn set_graphics_root_constant_buffer_view(
         &self,
@@ -2228,10 +2225,7 @@ impl<A: Hostile> direct3d_12::GraphicsCommandList for HostileGraphicsCommandList
     ) {
         let _ = &root_parameter_index;
         let _ = &buffer_location;
-        record(format!(
-            "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView(root_parameter_index={:?}, buffer_location={:?})",
-            root_parameter_index, buffer_location
-        ));
+        record("ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView()".to_string());
     }
     fn set_compute_root_unordered_access_view(
         &self,
@@ -2240,10 +2234,7 @@ impl<A: Hostile> direct3d_12::GraphicsCommandList for HostileGraphicsCommandList
     ) {
         let _ = &root_parameter_index;
         let _ = &buffer_location;
-        record(format!(
-            "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView(root_parameter_index={:?}, buffer_location={:?})",
-            root_parameter_index, buffer_location
-        ));
+        record("ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView()".to_string());
     }
     fn ia_set_index_buffer(&self, view: Option<&direct3d_12::structures::IndexBufferView>) {
         let _ = &view;
@@ -2256,10 +2247,7 @@ impl<A: Hostile> direct3d_12::GraphicsCommandList for HostileGraphicsCommandList
     ) {
         let _ = &start_slot;
         let _ = &views;
-        record(format!(
-            "ID3D12GraphicsCommandList::IASetVertexBuffers(start_slot={:?})",
-            start_slot
-        ));
+        record("ID3D12GraphicsCommandList::IASetVertexBuffers()".to_string());
     }
     fn so_set_targets(
         &self,
@@ -2268,10 +2256,7 @@ impl<A: Hostile> direct3d_12::GraphicsCommandList for HostileGraphicsCommandList
     ) {
         let _ = &start_slot;
         let _ = &views;
-        record(format!(
-            "ID3D12GraphicsCommandList::SOSetTargets(start_slot={:?})",
-            start_slot
-        ));
+        record("ID3D12GraphicsCommandList::SOSetTargets()".to_string());
     }
     fn om_set_render_targets(
         &self,
@@ -4977,82 +4962,6 @@ pub fn drive_where(
             true
         });
     }
-    // ID3D12GraphicsCommandList::SetComputeRootConstantBufferView on GraphicsCommandList
-    if wanted(ID_3D12_GRAPHICS_COMMAND_LIST) {
-        driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::GraphicsCommandList::set_compute_root_constant_buffer_view(
-                this,
-                Default::default(),
-                Default::default(),
-            );
-            true
-        });
-    }
-    // ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView on GraphicsCommandList
-    if wanted(ID_3D12_GRAPHICS_COMMAND_LIST) {
-        driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::GraphicsCommandList::set_graphics_root_constant_buffer_view(
-                this,
-                Default::default(),
-                Default::default(),
-            );
-            true
-        });
-    }
-    // ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView on GraphicsCommandList
-    if wanted(ID_3D12_GRAPHICS_COMMAND_LIST) {
-        driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::GraphicsCommandList::set_compute_root_unordered_access_view(
-                this,
-                Default::default(),
-                Default::default(),
-            );
-            true
-        });
-    }
-    // ID3D12GraphicsCommandList::IASetIndexBuffer on GraphicsCommandList
-    if wanted(ID_3D12_GRAPHICS_COMMAND_LIST) {
-        driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::GraphicsCommandList::ia_set_index_buffer(this, None);
-            true
-        });
-    }
-    // ID3D12GraphicsCommandList::IASetVertexBuffers on GraphicsCommandList
-    if wanted(ID_3D12_GRAPHICS_COMMAND_LIST) {
-        driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::GraphicsCommandList::ia_set_vertex_buffers(
-                this,
-                Default::default(),
-                &[],
-            );
-            true
-        });
-    }
-    // ID3D12GraphicsCommandList::SOSetTargets on GraphicsCommandList
-    if wanted(ID_3D12_GRAPHICS_COMMAND_LIST) {
-        driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::GraphicsCommandList::so_set_targets(this, Default::default(), &[]);
-            true
-        });
-    }
     // ID3D12GraphicsCommandList::BeginQuery on GraphicsCommandList
     if wanted(ID_3D12_GRAPHICS_COMMAND_LIST) {
         driven.attempt(|| {
@@ -5113,16 +5022,6 @@ pub fn drive_where(
             true
         });
     }
-    // ID3D12Resource::GetGPUVirtualAddress on Resource
-    if wanted(ID_3D12_RESOURCE) {
-        driven.attempt(|| {
-            let Some(this) = o.k59.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::Resource::get_gpu_virtual_address(this);
-            true
-        });
-    }
     // D3D12CreateDevice
     if wanted(D_3D12_CREATE_DEVICE) {
         driven.attempt(|| {
@@ -5150,8 +5049,6 @@ const ID_3D12_DEVICE: &str = "ID3D12Device";
 const ID_3D12_FENCE: &str = "ID3D12Fence";
 /// The interface (or export) `ID3D12GraphicsCommandList`, by its name in the header.
 const ID_3D12_GRAPHICS_COMMAND_LIST: &str = "ID3D12GraphicsCommandList";
-/// The interface (or export) `ID3D12Resource`, by its name in the header.
-const ID_3D12_RESOURCE: &str = "ID3D12Resource";
 /// The interface (or export) `ID3DBlob`, by its name in the header.
 const ID_3D_BLOB: &str = "ID3DBlob";
 /// The interface (or export) `ID3DDestructionNotifier`, by its name in the header.
@@ -5578,85 +5475,8 @@ fn fuzz_26(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
-/// ID3D12GraphicsCommandList::SetComputeRootConstantBufferView on GraphicsCommandList, of random arguments.
-fn fuzz_27(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
-        return false;
-    };
-    let count = r.below(SLICE_LENGTHS);
-    let _ = <direct3d_12_direct::SystemGraphicsCommandList<Api> as direct3d_12::GraphicsCommandList>::set_compute_root_constant_buffer_view(this, r.value::<u32>(), r.value::<u64>());
-    true
-}
-
-/// ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView on GraphicsCommandList, of random arguments.
-fn fuzz_28(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
-        return false;
-    };
-    let count = r.below(SLICE_LENGTHS);
-    let _ = <direct3d_12_direct::SystemGraphicsCommandList<Api> as direct3d_12::GraphicsCommandList>::set_graphics_root_constant_buffer_view(this, r.value::<u32>(), r.value::<u64>());
-    true
-}
-
-/// ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView on GraphicsCommandList, of random arguments.
-fn fuzz_29(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
-        return false;
-    };
-    let count = r.below(SLICE_LENGTHS);
-    let _ = <direct3d_12_direct::SystemGraphicsCommandList<Api> as direct3d_12::GraphicsCommandList>::set_compute_root_unordered_access_view(this, r.value::<u32>(), r.value::<u64>());
-    true
-}
-
-/// ID3D12GraphicsCommandList::IASetIndexBuffer on GraphicsCommandList, of random arguments.
-fn fuzz_30(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
-        return false;
-    };
-    let count = r.below(SLICE_LENGTHS);
-    let v1 = if r.coin() {
-        Some(
-            &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_index_buffer_view(
-                &r.bytes(16),
-            ),
-        )
-    } else {
-        None
-    };
-    let _ = <direct3d_12_direct::SystemGraphicsCommandList<Api> as direct3d_12::GraphicsCommandList>::ia_set_index_buffer(this, v1);
-    true
-}
-
-/// ID3D12GraphicsCommandList::IASetVertexBuffers on GraphicsCommandList, of random arguments.
-fn fuzz_31(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
-        return false;
-    };
-    let count = r.below(SLICE_LENGTHS);
-    let s1: Vec<_> = (0..count)
-        .map(|_| {
-            data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_vertex_buffer_view(
-                &r.bytes(16),
-            )
-        })
-        .collect();
-    let _ = <direct3d_12_direct::SystemGraphicsCommandList<Api> as direct3d_12::GraphicsCommandList>::ia_set_vertex_buffers(this, r.value::<u32>(), s1.as_slice());
-    true
-}
-
-/// ID3D12GraphicsCommandList::SOSetTargets on GraphicsCommandList, of random arguments.
-fn fuzz_32(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
-        return false;
-    };
-    let count = r.below(SLICE_LENGTHS);
-    let s1: Vec<_> = (0..count).map(|_| data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_stream_output_buffer_view(&r.bytes(24))).collect();
-    let _ = <direct3d_12_direct::SystemGraphicsCommandList<Api> as direct3d_12::GraphicsCommandList>::so_set_targets(this, r.value::<u32>(), s1.as_slice());
-    true
-}
-
 /// ID3D12GraphicsCommandList::BeginQuery on GraphicsCommandList, of random arguments.
-fn fuzz_33(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_27(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5669,7 +5489,7 @@ fn fuzz_33(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::EndQuery on GraphicsCommandList, of random arguments.
-fn fuzz_34(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_28(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5682,7 +5502,7 @@ fn fuzz_34(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D12GraphicsCommandList::ResolveQueryData on GraphicsCommandList, of random arguments.
-fn fuzz_35(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_29(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -5697,21 +5517,8 @@ fn fuzz_35(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
-/// ID3D12Resource::GetGPUVirtualAddress on Resource, of random arguments.
-fn fuzz_36(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k59.as_ref() else {
-        return false;
-    };
-    let count = r.below(SLICE_LENGTHS);
-    let _ =
-        <direct3d_12_direct::SystemResource<Api> as direct3d_12::Resource>::get_gpu_virtual_address(
-            this,
-        );
-    true
-}
-
 /// D3D12CreateDevice, of random arguments.
-fn fuzz_37(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_30(o: &Objects, r: &mut Rng) -> bool {
     let count = r.below(SLICE_LENGTHS);
     let _ = <Api as direct3d_12::Direct3D12>::create_device(
         &o.api,
@@ -5733,11 +5540,10 @@ fn drop_some(o: &mut Objects, r: &mut Rng, one_in: usize) {
 }
 
 /// Every method's fuzzer, picked from at random.
-const FUZZERS: [fn(&Objects, &mut Rng) -> bool; 38] = [
+const FUZZERS: [fn(&Objects, &mut Rng) -> bool; 31] = [
     fuzz_0, fuzz_1, fuzz_2, fuzz_3, fuzz_4, fuzz_5, fuzz_6, fuzz_7, fuzz_8, fuzz_9, fuzz_10,
     fuzz_11, fuzz_12, fuzz_13, fuzz_14, fuzz_15, fuzz_16, fuzz_17, fuzz_18, fuzz_19, fuzz_20,
     fuzz_21, fuzz_22, fuzz_23, fuzz_24, fuzz_25, fuzz_26, fuzz_27, fuzz_28, fuzz_29, fuzz_30,
-    fuzz_31, fuzz_32, fuzz_33, fuzz_34, fuzz_35, fuzz_36, fuzz_37,
 ];
 
 /// Calls `calls` methods picked at random, each of random arguments; every `REMAKE_EVERY` calls drops some objects and

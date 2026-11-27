@@ -660,10 +660,12 @@ impl Writer<'_, '_> {
                     }).unwrap_or_default();
                     let expression = coded.path.replace('<', "::<");
                     let _ = writeln!(inner, "            let lent_length = mapped_length_found(&{resource}_found, {subresource}, {name}_value.{row}, {name}_value.{depth});");
-                    let _ = writeln!(inner, "            // No longer than the implementation's own bytes: the glue lends no memory it did not lend.");
+                    let _ = writeln!(inner, "            // The memory lent is the glue's own: whole rows and slices at the pitches the C side is told (bounded by the");
+                    let _ = writeln!(inner, "            // description, lengths.rs `within_served_bound_*`); the implementation's bytes fill its start, the rest cleared.");
                     let mapped = format!("the Mapped `{name}` the implementation's {method_name} returned");
                     let length = model.ask(&mapped, "mapped", "len", format!("wcontainers_volatile_bytes::VolatileBytes::len(&{name}_value.{data})"));
-                    let _ = writeln!(inner, "            let lent_length = lent_length.filter(|length| u64::try_from(*length).is_ok_and(|length| length <= {length}));");
+                    let _ = writeln!(inner, "            let implementation_length = {length};");
+                    let _ = writeln!(inner, "            let past_implementation = lent_length.is_some_and(|length| u64::try_from(length).unwrap_or(u64::MAX) > implementation_length);");
                     let _ = writeln!(inner, "            let Some(shadow) = lent_length.and_then(Shadow::allocate) else {{");
                     let unmap = model.ask("the implementation's object of the entry", "api-trait", &until, format!("found.value().{until}({resource}_found.get(), {subresource});"));
                     let _ = writeln!(inner, "                {unmap}\n                return Err(E_FAIL);\n            }};");
@@ -673,7 +675,8 @@ impl Writer<'_, '_> {
                     }).unwrap_or_default();
                     let _ = writeln!(inner, "            // Contents the API leaves undefined are cleared, not read; memory lent for reading only is not written back (an exception line of src/api.rs).");
                     let fill = model.ask(&mapped, "mapped", "read_to", format!("shadow.fill_from(&{name}_value.{data});"));
-                    let _ = writeln!(inner, "            if {how}.0 == {discard} {{ shadow.clear(); }} else {{ {fill} }}");
+                    let _ = writeln!(inner, "            if {how}.0 == {discard} || past_implementation {{ shadow.clear(); }}");
+                    let _ = writeln!(inner, "            if {how}.0 != {discard} {{ {fill} }}");
                     let _ = writeln!(inner, "            let written_back = {how}.0 != {read_only};");
                     let _ = writeln!(inner, "            let {name}_record = {expression} {{ {data}: shadow.address(), {row}: {name}_value.{row}, {depth}: {name}_value.{depth} }};");
                     let _ = writeln!(inner, "            reservation.settle(Box::new((shadow, {name}_value.{data}, written_back)));");

@@ -363,11 +363,11 @@ pub(crate) struct GraphicsCommandListTable {
         unsafe extern "system" fn(Raw, u32, u64),
     pub(crate) graphics_command_list_set_graphics_root_unordered_access_view:
         unsafe extern "system" fn(Raw, u32, u64),
-    pub(crate) graphics_command_list_ia_set_index_buffer: unsafe extern "system" fn(Raw, *const u8),
+    pub(crate) graphics_command_list_ia_set_index_buffer: unsafe extern "system" fn(Raw, *mut u8),
     pub(crate) graphics_command_list_ia_set_vertex_buffers:
-        unsafe extern "system" fn(Raw, u32, u32, *const u8),
+        unsafe extern "system" fn(Raw, u32, u32, *mut u8),
     pub(crate) graphics_command_list_so_set_targets:
-        unsafe extern "system" fn(Raw, u32, u32, *const u8),
+        unsafe extern "system" fn(Raw, u32, u32, *mut u8),
     pub(crate) graphics_command_list_om_set_render_targets:
         unsafe extern "system" fn(Raw, u32, *const u8, i32, *const u8),
     pub(crate) graphics_command_list_clear_depth_stencil_view:

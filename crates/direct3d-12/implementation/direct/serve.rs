@@ -269,21 +269,22 @@ impl<V: direct3d_12::GraphicsCommandList> Tables<V> {
             graphics_command_list_set_graphics_root32_bit_constants:
                 graphics_command_list_set_graphics_root32_bit_constants_refused,
             graphics_command_list_set_compute_root_constant_buffer_view:
-                graphics_command_list_set_compute_root_constant_buffer_view::<V>,
+                graphics_command_list_set_compute_root_constant_buffer_view_refused,
             graphics_command_list_set_graphics_root_constant_buffer_view:
-                graphics_command_list_set_graphics_root_constant_buffer_view::<V>,
+                graphics_command_list_set_graphics_root_constant_buffer_view_refused,
             graphics_command_list_set_compute_root_shader_resource_view:
                 graphics_command_list_set_compute_root_shader_resource_view_refused,
             graphics_command_list_set_graphics_root_shader_resource_view:
                 graphics_command_list_set_graphics_root_shader_resource_view_refused,
             graphics_command_list_set_compute_root_unordered_access_view:
-                graphics_command_list_set_compute_root_unordered_access_view::<V>,
+                graphics_command_list_set_compute_root_unordered_access_view_refused,
             graphics_command_list_set_graphics_root_unordered_access_view:
                 graphics_command_list_set_graphics_root_unordered_access_view_refused,
-            graphics_command_list_ia_set_index_buffer: graphics_command_list_ia_set_index_buffer::<V>,
+            graphics_command_list_ia_set_index_buffer:
+                graphics_command_list_ia_set_index_buffer_refused,
             graphics_command_list_ia_set_vertex_buffers:
-                graphics_command_list_ia_set_vertex_buffers::<V>,
-            graphics_command_list_so_set_targets: graphics_command_list_so_set_targets::<V>,
+                graphics_command_list_ia_set_vertex_buffers_refused,
+            graphics_command_list_so_set_targets: graphics_command_list_so_set_targets_refused,
             graphics_command_list_om_set_render_targets:
                 graphics_command_list_om_set_render_targets::<V>,
             graphics_command_list_clear_depth_stencil_view:
@@ -386,7 +387,7 @@ impl<V: direct3d_12::Resource> Tables<V> {
         resource_map: resource_map_refused,
         resource_unmap: resource_unmap::<V>,
         resource_get_desc: resource_get_desc_refused,
-        resource_get_gpu_virtual_address: resource_get_gpu_virtual_address::<V>,
+        resource_get_gpu_virtual_address: resource_get_gpu_virtual_address_refused,
         resource_write_to_subresource: resource_write_to_subresource_refused,
         resource_read_from_subresource: resource_read_from_subresource_refused,
         resource_get_heap_properties: resource_get_heap_properties_refused,
@@ -4142,252 +4143,6 @@ pub(crate) unsafe extern "system" fn graphics_command_list_set_graphics_root_sig
     guarded((), body)
 }
 
-/// `ID3D12GraphicsCommandList::SetComputeRootConstantBufferView` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn graphics_command_list_set_compute_root_constant_buffer_view<
-    V: direct3d_12::GraphicsCommandList,
->(
-    this: Raw,
-    root_parameter_index: u32,
-    buffer_location: u64,
-) {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let root_parameter_index = root_parameter_index;
-            let buffer_location = buffer_location;
-            let () = found
-                .value()
-                .set_compute_root_constant_buffer_view(root_parameter_index, buffer_location);
-            drop(found);
-            Some(())
-        });
-        let _ = answer;
-    };
-    guarded((), body)
-}
-
-/// `ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn graphics_command_list_set_graphics_root_constant_buffer_view<
-    V: direct3d_12::GraphicsCommandList,
->(
-    this: Raw,
-    root_parameter_index: u32,
-    buffer_location: u64,
-) {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let root_parameter_index = root_parameter_index;
-            let buffer_location = buffer_location;
-            let () = found
-                .value()
-                .set_graphics_root_constant_buffer_view(root_parameter_index, buffer_location);
-            drop(found);
-            Some(())
-        });
-        let _ = answer;
-    };
-    guarded((), body)
-}
-
-/// `ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn graphics_command_list_set_compute_root_unordered_access_view<
-    V: direct3d_12::GraphicsCommandList,
->(
-    this: Raw,
-    root_parameter_index: u32,
-    buffer_location: u64,
-) {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let root_parameter_index = root_parameter_index;
-            let buffer_location = buffer_location;
-            let () = found
-                .value()
-                .set_compute_root_unordered_access_view(root_parameter_index, buffer_location);
-            drop(found);
-            Some(())
-        });
-        let _ = answer;
-    };
-    guarded((), body)
-}
-
-/// `ID3D12GraphicsCommandList::IASetIndexBuffer` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12GraphicsCommandList::IASetIndexBuffer, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn graphics_command_list_ia_set_index_buffer<
-    V: direct3d_12::GraphicsCommandList,
->(
-    this: Raw,
-    view: *const u8,
-) {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let mut view_bytes =
-                [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d12D3d12IndexBufferViewLayout>()];
-            let view_null = view.is_null();
-            #[expect(
-                unsafe_code,
-                reason = "ID3D12GraphicsCommandList::IASetIndexBuffer: pView, as the header declares it for the C side"
-            )]
-            // SAFETY: the metadata's `pView` is `In` and `Const`: one `IndexBufferView` of 16 bytes, readable for the call.
-            let view_read = unsafe { read_bytes(view, &mut view_bytes) };
-            let view = view_read.then(|| {
-                decode_windows_win32_graphics_direct_3d12_d_3d12_index_buffer_view(&view_bytes)
-            });
-            if !view_read && !view_null {
-                return None;
-            }
-            let () = found.value().ia_set_index_buffer(view.as_ref());
-            drop(found);
-            Some(())
-        });
-        let _ = answer;
-    };
-    guarded((), body)
-}
-
-/// `ID3D12GraphicsCommandList::IASetVertexBuffers` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12GraphicsCommandList::IASetVertexBuffers, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn graphics_command_list_ia_set_vertex_buffers<
-    V: direct3d_12::GraphicsCommandList,
->(
-    this: Raw,
-    start_slot: u32,
-    num_views: u32,
-    views: *const u8,
-) {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let start_slot = start_slot;
-            let views_count = usize::try_from(num_views)
-                .ok()
-                .filter(|count| *count <= 1 << 16)?;
-            let views_bytes = if views_count == 0 || views.is_null() {
-                Some(Vec::new())
-            } else {
-                #[expect(
-                    unsafe_code,
-                    reason = "ID3D12GraphicsCommandList::IASetVertexBuffers: pViews, as the header declares it for the C side"
-                )]
-                // SAFETY: the metadata's `NativeArrayInfo` names `NumViews` as the count of `pViews`: that many elements of 16 bytes, readable for the call.
-                unsafe {
-                    read_only_at(views, views_count * 16)
-                }
-            };
-            let views: Vec<_> = views_bytes?
-                .as_chunks::<16>()
-                .0
-                .iter()
-                .map(|element| {
-                    decode_windows_win32_graphics_direct_3d12_d_3d12_vertex_buffer_view(element)
-                })
-                .collect();
-            let () = found.value().ia_set_vertex_buffers(start_slot, &views);
-            drop(found);
-            Some(())
-        });
-        let _ = answer;
-    };
-    guarded((), body)
-}
-
-/// `ID3D12GraphicsCommandList::SOSetTargets` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12GraphicsCommandList::SOSetTargets, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn graphics_command_list_so_set_targets<
-    V: direct3d_12::GraphicsCommandList,
->(
-    this: Raw,
-    start_slot: u32,
-    num_views: u32,
-    views: *const u8,
-) {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let start_slot = start_slot;
-            let views_count = usize::try_from(num_views)
-                .ok()
-                .filter(|count| *count <= 1 << 16)?;
-            let views_bytes = if views_count == 0 || views.is_null() {
-                Some(Vec::new())
-            } else {
-                #[expect(
-                    unsafe_code,
-                    reason = "ID3D12GraphicsCommandList::SOSetTargets: pViews, as the header declares it for the C side"
-                )]
-                // SAFETY: the metadata's `NativeArrayInfo` names `NumViews` as the count of `pViews`: that many elements of 24 bytes, readable for the call.
-                unsafe {
-                    read_only_at(views, views_count * 24)
-                }
-            };
-            let views: Vec<_> = views_bytes?
-                .as_chunks::<24>()
-                .0
-                .iter()
-                .map(|element| {
-                    decode_windows_win32_graphics_direct_3d12_d_3d12_stream_output_buffer_view(
-                        element,
-                    )
-                })
-                .collect();
-            let () = found.value().so_set_targets(start_slot, &views);
-            drop(found);
-            Some(())
-        });
-        let _ = answer;
-    };
-    guarded((), body)
-}
-
 /// `ID3D12GraphicsCommandList::OMSetRenderTargets` as the C side calls it.
 ///
 /// # Safety
@@ -4747,6 +4502,24 @@ pub(crate) extern "system" fn graphics_command_list_set_graphics_root32_bit_cons
 ) {
 }
 
+/// `ID3D12GraphicsCommandList::SetComputeRootConstantBufferView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers no result (nothing done).
+pub(crate) extern "system" fn graphics_command_list_set_compute_root_constant_buffer_view_refused(
+    _this: Raw,
+    _p0: u32,
+    _p1: u64,
+) {
+}
+
+/// `ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers no result (nothing done).
+pub(crate) extern "system" fn graphics_command_list_set_graphics_root_constant_buffer_view_refused(
+    _this: Raw,
+    _p0: u32,
+    _p1: u64,
+) {
+}
+
 /// `ID3D12GraphicsCommandList::SetComputeRootShaderResourceView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
 /// answers no result (nothing done).
 pub(crate) extern "system" fn graphics_command_list_set_compute_root_shader_resource_view_refused(
@@ -4765,12 +4538,49 @@ pub(crate) extern "system" fn graphics_command_list_set_graphics_root_shader_res
 ) {
 }
 
+/// `ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers no result (nothing done).
+pub(crate) extern "system" fn graphics_command_list_set_compute_root_unordered_access_view_refused(
+    _this: Raw,
+    _p0: u32,
+    _p1: u64,
+) {
+}
+
 /// `ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
 /// answers no result (nothing done).
 pub(crate) extern "system" fn graphics_command_list_set_graphics_root_unordered_access_view_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
+) {
+}
+
+/// `ID3D12GraphicsCommandList::IASetIndexBuffer` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers no result (nothing done).
+pub(crate) extern "system" fn graphics_command_list_ia_set_index_buffer_refused(
+    _this: Raw,
+    _p0: *mut u8,
+) {
+}
+
+/// `ID3D12GraphicsCommandList::IASetVertexBuffers` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers no result (nothing done).
+pub(crate) extern "system" fn graphics_command_list_ia_set_vertex_buffers_refused(
+    _this: Raw,
+    _p0: u32,
+    _p1: u32,
+    _p2: *mut u8,
+) {
+}
+
+/// `ID3D12GraphicsCommandList::SOSetTargets` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers no result (nothing done).
+pub(crate) extern "system" fn graphics_command_list_so_set_targets_refused(
+    _this: Raw,
+    _p0: u32,
+    _p1: u32,
+    _p2: *mut u8,
 ) {
 }
 
@@ -4979,30 +4789,6 @@ pub(crate) unsafe extern "system" fn resource_unmap<V: direct3d_12::Resource>(
     guarded((), body)
 }
 
-/// `ID3D12Resource::GetGPUVirtualAddress` as the C side calls it.
-///
-/// # Safety
-/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D12Resource::GetGPUVirtualAddress, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn resource_get_gpu_virtual_address<V: direct3d_12::Resource>(
-    this: Raw,
-) -> u64 {
-    #[deny(unsafe_code)]
-    let body = move || {
-        let answer = guarded(None, move || {
-            let found = object::<V>(KEY, this.addr())?;
-            let returned = found.value().get_gpu_virtual_address();
-            drop(found);
-            Some((returned,))
-        });
-        answer.map_or(Default::default(), |written| written.0)
-    };
-    guarded(Default::default(), body)
-}
-
 /// `ID3D12Resource::Map` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
 /// answers E_NOTIMPL.
 ///
@@ -5041,6 +4827,12 @@ pub(crate) unsafe extern "system" fn resource_get_desc_refused(_this: Raw, p0: *
     // SAFETY: the metadata's `RetVal` is `Out`: one value of this size to write, or null, for the call.
     let _ = unsafe { write_bytes(p0, &[u8::MIN; 56]) };
     p0
+}
+
+/// `ID3D12Resource::GetGPUVirtualAddress` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
+/// answers zero.
+pub(crate) extern "system" fn resource_get_gpu_virtual_address_refused(_this: Raw) -> u64 {
+    Default::default()
 }
 
 /// `ID3D12Resource::WriteToSubresource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
