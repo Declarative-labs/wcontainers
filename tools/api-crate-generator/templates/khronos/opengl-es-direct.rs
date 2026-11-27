@@ -67,6 +67,8 @@ pub struct OpenGlEsContext {
     entries: calls::Entries,
     /// The first error of the glue's refusals since the last `get_error`.
     refused: Cell<u32>,
+    /// How many calls the glue itself refused since the context was made.
+    refusals: Cell<u64>,
     extensions: OnceCell<Vec<Vec<u8>>>,
     fences: RefCell<BTreeMap<u64, usize>>,
     next_fence: Cell<u64>,
@@ -82,6 +84,7 @@ impl OnEgl<Library> for OpenGlEsContext {
             binding,
             entries,
             refused: Cell::new(constants::NO_ERROR),
+            refusals: Cell::new(0),
             extensions: OnceCell::new(),
             fences: RefCell::new(BTreeMap::new()),
             next_fence: Cell::new(1),
@@ -169,8 +172,15 @@ impl OpenGlEsContext {
         }
     }
 
+    /// How many calls the glue itself refused, before reaching the library, since the context was made: a test tells
+    /// the glue's refusal from the library's own error by it.
+    pub fn refusals(&self) -> u64 {
+        self.refusals.get()
+    }
+
     /// Records a refusal; as OpenGL ES records errors, the first is kept until `get_error`.
     fn refuse(&self, error: u32) {
+        self.refusals.set(self.refusals.get().saturating_add(1));
         if self.refused.get() == constants::NO_ERROR {
             self.refused.set(error);
         }

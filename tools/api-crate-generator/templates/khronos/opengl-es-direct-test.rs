@@ -8,5 +8,11 @@ fn folder() -> Option<std::path::PathBuf> {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod direct {
-    wcontainers_opengl_es_conformance::tests!(wcontainers_egl_direct::Library, wcontainers_opengl_es_direct::OpenGlEsContext, super::folder());
+    wcontainers_opengl_es_conformance::tests!(
+        wcontainers_egl_direct::Library,
+        wcontainers_opengl_es_direct::OpenGlEsContext,
+        super::folder(),
+        wcontainers_opengl_es_direct::OpenGlEsContext::refusals,
+        wcontainers_egl_direct::Library::refusals
+    );
 }

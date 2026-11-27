@@ -542,7 +542,8 @@ fn egl_body(method: &Method) -> Body {
                 } else {
                     body.before.push(format!("let handle = {name};"));
                     body.before.push(format!("let Some({name}) = {check} else {};", refuse(error)));
-                    if command.name.starts_with("eglDestroy") {
+                    // Only the handle the call destroys ends: the display it is passed with lives on.
+                    if command.name.starts_with("eglDestroy") && !matches!(*kind, "Display" | "Config") {
                         body.after.push("if result != 0 { handle.held.end(); }".to_string());
                     }
                 }
@@ -866,9 +867,28 @@ fn write_suite(set: &Set, classified: &Classified, template: &str) -> String {
         let _ = writeln!(calls, "{{\n{text}        }}");
         called += 1;
     }
+    // Each extension's command, called with the context naming none of its extensions, must answer None.
+    let mut gated = String::new();
+    for method in classified.methods.iter().filter(|m| !m.extensions.is_empty()) {
+        let names: Vec<String> = method.extensions.iter().map(|e| format!("\"{e}\"")).collect();
+        let call = suite_call(set, method).replace("let _ = gl.", "let answered = gl.").replace(");\n", ").is_some();\n");
+        let call = call.trim_end().trim_start_matches(' ').to_string();
+        let call = call.strip_prefix('{').and_then(|c| c.strip_suffix('}')).map_or(call.clone(), |inner| inner.trim().to_string());
+        let _ = writeln!(
+            gated,
+            "    {{\n        {}\n        assert!(named(&[{}]) || !answered, \"{} answered with none of its extensions named\");\n    }}",
+            call.replace("\n                ", "\n        "),
+            names.join(", "),
+            method_name(set, &method.command.name)
+        );
+    }
     let count = classified.methods.len();
     let mut text = header(set);
     text.push_str(template);
+    let _ = writeln!(
+        text,
+        "\n/// Calls each extension's command; one answering while the context names none of its extensions fails.\nfn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {{\n    let seed = 0_usize;\n{gated}}}"
+    );
     let _ = writeln!(
         text,
         "\n/// The number of the trait's methods `call_one` calls ({called} of {count}: glClientWaitSync and glFinish are called by the\n/// scenarios, never with a picked timeout, which could wait for ever).\npub const METHODS: usize = {count};\n\n/// Calls the trait's method numbered `which`, with arguments picked by `seed`.\nfn call_one<G: OpenGlEs>(gl: &G, fence: &G::Fence, which: usize, seed: usize) {{\n    match which {{\n{calls}        _ => {{}}\n    }}\n}}"
