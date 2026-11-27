@@ -84,12 +84,24 @@ pub(super) fn execute_optional(
             Ok(())
         }
         OptionalOperation::TransactionBegin => {
-            let target = decoded.near_branch_target();
+            let mut target = decoded.near_branch_target();
+            if is_active(Bug::TransactionFallbackWrapsToSixteenBits) && decoded.code() == iced_x86::Code::Xbegin_rel16 {
+                target &= u64::from(u16::MAX);
+            }
             if !is_canonical(target) {
                 return Err(Exception::GeneralProtection { error_code: 0 });
             }
+            if is_active(Bug::TransactionBeginFallsThrough) {
+                processor.instruction_pointer = decoded.next_ip();
+                return Ok(());
+            }
             // The abort status is written as EAX, which clears RAX's upper half.
-            processor.general_purpose_registers[0] = 0;
+            let accumulator = &mut processor.general_purpose_registers[0];
+            if is_active(Bug::TransactionAbortKeepsUpperHalf) {
+                *accumulator &= !u64::from(u32::MAX);
+            } else if !is_active(Bug::TransactionAbortKeepsAccumulator) {
+                *accumulator = 0;
+            }
             processor.instruction_pointer = target;
             Ok(())
         }

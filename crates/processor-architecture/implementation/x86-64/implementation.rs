@@ -23,6 +23,7 @@ use core::{iter, slice};
 use iced_x86::Code;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
+pub mod amx;
 pub mod avx;
 pub mod avx512_integer;
 mod behavior;
@@ -66,6 +67,7 @@ pub mod x87_transcendental;
 #[cfg(test)]
 mod tests;
 
+pub use amx::{TILE_CONFIGURATION_BYTES, TileData};
 pub use behavior::{
     BitScanFlags, CarryBeyondWidth, CpuidReading, DoubleShiftFill, ExchangeMismatch, FlagRule, IntegerBehavior, OverflowAfterShift,
     ScanOfZero, SixteenBitSwap, StoreAcrossFault, UndefinedAuxiliaryCarry, UndefinedFlags, UndefinedResultFlags,
@@ -196,6 +198,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(segment::SEGMENT_FORMS.iter().map(|form| form.instruction))
         .chain(optional::OPTIONAL_FORMS.iter().map(|form| form.instruction))
         .chain(xsave::STATE_FORMS.iter().map(|form| form.instruction))
+        .chain(amx::AMX_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -253,6 +256,9 @@ impl ProcessorArchitecture for X86_64 {
             && observed.xinuse == expectation.xinuse
             && observed.xsave_tracking == expectation.xsave_tracking
             && observed.pasid == expectation.pasid
+            && observed.tile_configuration == expectation.tile_configuration
+            && observed.tile_data == expectation.tile_data
+            && observed.xfd == expectation.xfd
             && (observed.flags.bits() ^ expectation.flags.bits()) & !expectation.nondeterministic_flags.bits() == 0
     }
 }
@@ -271,8 +277,8 @@ fn meets_x87(observed: &X87, expectation: &ProcessorExpectation) -> bool {
 
 /// The registers a program at ring 3 reads and writes, and the exception its last instruction raised.
 ///
-/// TODO: temporary placeholder until the rest of the state is designed: APX's R16 to R31; AMX's tile
-/// configuration and tiles; CET's shadow stack pointer; the trap flag.
+/// TODO: temporary placeholder until the rest of the state is designed: APX's R16 to R31; CET's shadow stack pointer;
+/// the trap flag.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor {
     /// In the order of their encodings, RSP at [`STACK_POINTER`].
@@ -317,6 +323,14 @@ pub struct Processor {
     /// IA32_PASID's PASID where its valid bit is set, which Linux gives only a thread bound to a device; `None` as Linux
     /// starts a program.
     pub pasid: Option<u32>,
+    /// TILECFG, AMX's tile configuration, as LDTILECFG reads it and XSAVE saves it: zeros where no tiles are
+    /// configured, which XCR0's TILECFG bit enables.
+    pub tile_configuration: [u8; TILE_CONFIGURATION_BYTES],
+    /// TILEDATA, AMX's eight tiles, which XCR0's TILEDATA bit enables.
+    pub tile_data: TileData,
+    /// IA32_XFD, which a program cannot read: a set bit of a component XCR0 enables makes the forms that use it raise
+    /// #NM, as Linux arms TILEDATA's for a thread that has not asked for the tiles.
+    pub xfd: u64,
 }
 
 /// The PKRU Linux starts a program with.
@@ -397,6 +411,9 @@ pub struct ProcessorExpectation {
     pub xinuse: u64,
     pub xsave_tracking: Option<XsaveTracking>,
     pub pasid: Option<u32>,
+    pub tile_configuration: [u8; TILE_CONFIGURATION_BYTES],
+    pub tile_data: TileData,
+    pub xfd: u64,
     /// The flags the state before does not decide, as UMWAIT's and TPAUSE's CF, which are not compared.
     pub nondeterministic_flags: Flags,
 }
@@ -427,6 +444,9 @@ impl Processor {
             xinuse: self.xinuse,
             xsave_tracking: self.xsave_tracking,
             pasid: self.pasid,
+            tile_configuration: self.tile_configuration,
+            tile_data: self.tile_data.clone(),
+            xfd: self.xfd,
             nondeterministic_flags: Flags::empty(),
         }
     }
@@ -434,7 +454,7 @@ impl Processor {
 
 /// Every register zero, the flags clear, MXCSR at its default, no exception, the data segments null, CS Linux's and
 /// PKRU Linux's; XCR0 Linux's, the x87, SSE, AVX and PKRU components in use and the AVX-512 ones not, no XRSTOR
-/// tracked and no PASID.
+/// tracked, no PASID, no tiles and no component disabled.
 pub const ZERO_PROCESSOR: Processor = Processor {
     general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
     instruction_pointer: 0,
@@ -456,6 +476,9 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     xinuse: xsave::LEGACY_AND_KEY_COMPONENTS,
     xsave_tracking: None,
     pasid: None,
+    tile_configuration: [0; TILE_CONFIGURATION_BYTES],
+    tile_data: TileData::ZERO,
+    xfd: 0,
 };
 
 /// What the running program may do with a page; memory that was never given a permission is unmapped.
@@ -599,4 +622,9 @@ pub enum PreciseInstruction {
     },
     /// UMONITOR as the manual gives it: #GP(0) for a non-canonical address, else the faults a read of its byte raises.
     MonitorFaultsAsRead(Instruction),
+    /// A form of [`amx::AMX_FORMS`].
+    Amx {
+        instruction: Instruction,
+        behavior: amx::AmxBehavior,
+    },
 }

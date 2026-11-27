@@ -8,15 +8,15 @@ use std::mem::offset_of;
 
 use iced_x86::BlockEncoderOptions;
 use iced_x86::code_asm::{
-    AsmRegister64, AsmRegisterSegment, CodeAssembler, CodeLabel, al, ax, cr2, cr3, dr6, ds, dword_ptr, eax, edx, es,
+    AsmRegister64, AsmRegisterSegment, CodeAssembler, CodeLabel, al, ax, cr2, cr3, dr6, ds, dword_ptr, eax, ecx, edx, es,
     fs, gs, ptr, qword_ptr, r8, r9, r10, r11, r12, r13, r14, r15, rax, rbp, rbx, rcx, rdi, rdx, rsi, rsp,
 };
 
 use crate::layout::{
     AREA_MARKER, ENTRY_BYTES, HANDLER, HANDLER_BYTES, KERNEL_TABLE, LEVELS, LOADING_CODE_OFFSET, OBSERVED_AREA,
     PHASE_INSTRUCTION, PHASE_LOADING, PHASE_READ, PHASE_READING, PHASE_STEP_FAILED, READING_CODE_OFFSET, Registers,
-    SAVED_AREA, SAVED_COMPONENTS, SLOT, STACK_TOP, Slot, TRACKED_AREA_BYTES, TRACKING_CODE, TrackingSteps, USER,
-    pushes_error_code, to_index, to_kernel,
+    SAVED_AREA, SAVED_COMPONENTS, SLOT, STACK_TOP, Slot, TILES_AFTER, TILES_BEFORE, TRACKED_AREA_BYTES, TRACKING_CODE,
+    TrackingSteps, USER, pushes_error_code, to_index, to_kernel,
 };
 
 /// The general registers but RSP, by their numbers.
@@ -156,6 +156,33 @@ fn enter_tracking_code(a: &mut CodeAssembler, offset: u64, area: u64, request: u
     a.iretq()
 }
 
+/// AMX TILES: where the slot's tile request names components, writes the slot's IA32_XFD and restores them from the
+/// image at `image`, or saves them there and releases the tiles, so that the guest never holds TILEDATA in use while
+/// a state runs that does not, nor XFD set while TILEDATA is in use; EAX, ECX and EDX are free.
+fn move_tiles(a: &mut CodeAssembler, image: u64, save: bool) -> Result<(), iced_x86::IcedError> {
+    let mut done = a.create_label();
+    let request = to_slot(offset_of!(Slot, tile_request));
+    a.cmp(qword_ptr(request), 0)?;
+    a.je(done)?;
+    a.xor(edx, edx)?;
+    if save {
+        a.mov(eax, dword_ptr(request))?;
+        a.xsave64(ptr(to_kernel(image)))?;
+        a.tilerelease()?;
+    } else {
+        a.mov(ecx, FEATURE_DISABLE)?;
+        a.mov(eax, dword_ptr(to_slot(offset_of!(Slot, feature_disable))))?;
+        a.wrmsr()?;
+        a.mov(eax, dword_ptr(request))?;
+        a.xrstor64(ptr(to_kernel(image)))?;
+    }
+    a.set_label(&mut done)?;
+    a.nop()
+}
+
+/// IA32_XFD.
+const FEATURE_DISABLE: u32 = 0x1C4;
+
 /// XRSTOR TRACKING: RFLAGS of the tracking code: the trap flag, IF and the reserved bit.
 const TRACKING_FLAGS: i32 = 1 << 8 | 1 << 9 | 1 << 1;
 
@@ -187,6 +214,7 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.mov(eax, SAVED_COMPONENTS as u32)?;
     a.xor(edx, edx)?;
     a.xrstor64(ptr(to_slot(offset_of!(Slot, before_xsave))))?;
+    move_tiles(&mut a, TILES_BEFORE, false)?;
     // XRSTOR TRACKING: the loading XRSTOR at ring 3 restores the state's own image from the area, whose bytes wait in
     // the saved page meanwhile.
     let load_area = to_steps(offset_of!(TrackingSteps, load_area));
@@ -315,6 +343,7 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.mov(eax, SAVED_COMPONENTS as u32)?;
     a.xor(edx, edx)?;
     a.xsave64(ptr(to_slot(offset_of!(Slot, after_xsave))))?;
+    move_tiles(&mut a, TILES_AFTER, true)?;
     // XRSTOR TRACKING: the reading XSAVEOPT saves to the area, filled with the marker, while its bytes wait.
     let mut excepted = a.create_label();
     let mut reading = a.create_label();

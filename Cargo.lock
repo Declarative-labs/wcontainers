@@ -4971,6 +4971,7 @@ version = "0.1.0"
 dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
+ "libc",
  "thiserror",
  "wcontainers-kvm",
  "wcontainers-kvm-conformance",

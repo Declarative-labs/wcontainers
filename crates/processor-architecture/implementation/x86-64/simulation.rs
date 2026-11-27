@@ -86,6 +86,8 @@ mod optional_simulation;
 mod xsave_simulation;
 #[path = "compatibility_simulation.rs"]
 mod compatibility_simulation;
+#[path = "amx_simulation.rs"]
+mod amx_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -209,6 +211,12 @@ fn simulate_processor(
             // VCVTPS2PH to memory keeps the flags its computation set when its store faults.
             if matches!(behavior, PreciseInstruction::Optional { .. }) {
                 processor.mxcsr = changed.mxcsr;
+            }
+            // A tile load or store that faults part-way keeps the rows it moved and the row it restarts at.
+            if matches!(behavior, PreciseInstruction::Amx { .. }) {
+                processor.tile_configuration = changed.tile_configuration;
+                processor.tile_data = changed.tile_data.clone();
+                processor.xinuse = changed.xinuse;
             }
             // A form that names an MMX register leaves the x87 state in MMX's use when it then faults.
             if matches!(behavior, PreciseInstruction::MmxConvert { .. }) {
@@ -377,6 +385,9 @@ fn apply(
             xsave_simulation::execute_state(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::MonitorFaultsAsRead(_) => monitor::check_monitored_address(processor, memory, decoded),
+        PreciseInstruction::Amx { instruction, behavior } => {
+            amx_simulation::execute_amx(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
                 .iter()

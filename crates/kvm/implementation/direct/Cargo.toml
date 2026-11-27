@@ -23,11 +23,13 @@ wcontainers-volatile-bytes-shared-mapping = { path = "../../../volatile-bytes/im
 kvm-ioctls = "0.25.1"
 kvm-bindings = "0.14.2"
 thiserror = "2.0.21"
+# The arch_prctl system call that asks for guest tile permission.
+libc = "0.2.191"
 
 [dev-dependencies]
 wcontainers-kvm-conformance = { path = "../../conformance" }
 
-# The bindings of an outside API: it denies unsafe code, so that its 1 use is marked.
+# The bindings of an outside API: it denies unsafe code, so that its 2 uses are marked.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
