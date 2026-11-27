@@ -998,8 +998,6 @@ const NEAREST_OF_UNORM24: &str =
 const VALUE: &str = "{V}";
 /// The stored 24-bit value of a sampled depth `v.x`, by [`unorm24_functions`].
 const UNORM24_OF_SAMPLE: &str = "unorm24(v.x)";
-/// A texture sampled as floats.
-const FLOAT_TEXTURE: &str = "texture_2d<f32>";
 
 fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource) -> DepthProgram {
     let cover = cover(gpu);
@@ -1021,7 +1019,7 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
         DepthSource::Depth24 => {
             functions = unorm24_functions(gpu);
             (
-                FLOAT_TEXTURE,
+                "texture_2d<f32>",
                 NEAREST_OF_UNORM24.replace(VALUE, UNORM24_OF_SAMPLE),
             )
         }
@@ -1337,7 +1335,7 @@ fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat)
         ),
         AspectRead::Unorm24 => {
             functions = unorm24_functions(gpu);
-            (FLOAT_TEXTURE, UNORM24_OF_SAMPLE.to_string())
+            ("texture_2d<f32>", UNORM24_OF_SAMPLE.to_string())
         }
         AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),
         AspectRead::Stencil => ("texture_2d<u32>", "v.x".into()),
