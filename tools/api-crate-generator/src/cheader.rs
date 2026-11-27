@@ -34,6 +34,11 @@ pub struct Header {
     /// The structures declared without a body (`struct wc_spirv_shader;`): each a shader at one place of the bridge's
     /// typed chain, opaque to Rust.
     pub handles: Vec<String>,
+    /// Function pointer types (`typedef void (*pipe_draw_func)(...)`), by name.
+    pub function_types: BTreeMap<String, CFunction>,
+    /// A structure's function pointer members (Gallium's `struct pipe_screen`, `struct pipe_context`), each a function
+    /// named by its member.
+    pub callbacks: BTreeMap<String, Vec<CFunction>>,
 }
 
 impl Header {
@@ -86,6 +91,46 @@ fn clean(text: &str, defines: &mut BTreeMap<String, String>) -> String {
     kept
 }
 
+/// `void (*name)(struct pipe_context *, unsigned)` to a function named by the pointer's name.
+fn function_pointer(text: &str) -> Option<CFunction> {
+    let star = text.find("(*")?;
+    let close = star + text[star..].find(')')?;
+    let name = text[star + 2..close].trim().to_string();
+    let open = close + text[close..].find('(')?;
+    let end = text.rfind(')')?;
+    let mut ret = declaration(&format!("{} return", text[..star].trim()));
+    ret.name = "return".to_string();
+    let params = split_parameters(&text[open + 1..end])
+        .iter()
+        .map(|p| declaration(p))
+        .filter(|p| !(p.base == "void" && p.pointers == 0 && p.name.is_empty()))
+        .collect();
+    Some(CFunction { name, ret, params })
+}
+
+/// A parameter list split at its top-level commas.
+fn split_parameters(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0_i32;
+    let mut current = String::new();
+    for character in text.chars() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(character);
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 /// `const struct nir_shader *const sources[WC_STAGES]` to its parts.
 fn declaration(text: &str) -> CParam {
     let text = text.trim();
@@ -126,6 +171,12 @@ pub fn read(texts: &[String]) -> Header {
                     header.handles.push(name.to_string());
                     continue;
                 }
+                if let Some(typedef) = statement.trim().strip_prefix("typedef ") {
+                    if let Some(function) = function_pointer(typedef) {
+                        header.function_types.insert(function.name.clone(), function);
+                    }
+                    continue;
+                }
                 if let (Some(paren), Some(close)) = (statement.find('('), statement.rfind(')')) {
                     let mut ret = declaration(&statement[..paren]);
                     let name = std::mem::take(&mut ret.name);
@@ -147,7 +198,25 @@ pub fn read(texts: &[String]) -> Header {
                 let values = body.split(',').map(|v| v.split('=').next().unwrap_or_default().trim().to_string()).filter(|v| !v.is_empty()).collect();
                 header.enumerations.insert(name.trim().to_string(), values);
             } else if let Some(name) = head.strip_prefix("struct ") {
-                let fields = body.split(';').map(str::trim).filter(|f| !f.is_empty()).map(declaration).collect();
+                let mut fields = Vec::new();
+                let mut callbacks = Vec::new();
+                for member in body.split(';').map(str::trim).filter(|f| !f.is_empty()) {
+                    if let Some(function) = function_pointer(member) {
+                        callbacks.push(function);
+                        continue;
+                    }
+                    let field = declaration(member);
+                    if field.pointers == 0
+                        && let Some(typed) = header.function_types.get(field.base.trim())
+                    {
+                        callbacks.push(CFunction { name: field.name.clone(), ..typed.clone() });
+                        continue;
+                    }
+                    fields.push(field);
+                }
+                if !callbacks.is_empty() {
+                    header.callbacks.insert(name.trim().to_string(), callbacks);
+                }
                 header.structures.insert(name.trim().to_string(), fields);
             }
         }
@@ -202,6 +271,38 @@ fn row(function: &CFunction, param: &CParam, header: &Header) -> Option<&'static
         }
         _ => return None,
     })
+}
+
+/// Gallium's census (AC8): every function pointer member of the structures that hold them, with its parameters'
+/// types, and how often each type is taken across them (the driver's objects among them are the kinds a stage-typed
+/// trait gives each its own type).
+pub fn gallium_census(header: &Header) -> String {
+    let mut report = String::new();
+    let mut types: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total = 0;
+    for (structure, callbacks) in &header.callbacks {
+        let _ = writeln!(report, "STRUCTURE {structure}: {} function pointers", callbacks.len());
+        total += callbacks.len();
+        for function in callbacks {
+            let shown: Vec<String> = std::iter::once(&function.ret)
+                .chain(&function.params)
+                .map(|param| {
+                    let ty = format!("{}{}{}", param.base, "*".repeat(param.pointers), param.array.as_ref().map(|a| format!("[{a}]")).unwrap_or_default());
+                    *types.entry(ty.clone()).or_default() += 1;
+                    format!("{}:{ty}", param.name)
+                })
+                .collect();
+            let _ = writeln!(report, "  {}.{} {}", structure, function.name, shown.join(" "));
+        }
+    }
+    let _ = writeln!(report, "FUNCTION POINTERS {total}");
+    let mut by_count: Vec<(&String, &usize)> = types.iter().collect();
+    by_count.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let _ = writeln!(report, "TYPES {}", by_count.len());
+    for (ty, count) in by_count {
+        let _ = writeln!(report, "  {count} {ty}");
+    }
+    report
 }
 
 pub fn census(header: &Header) -> String {

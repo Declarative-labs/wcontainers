@@ -98,6 +98,20 @@ fn main() -> ExitCode {
             }
         };
     }
+    // Gallium's driver interface (AC8): the function pointers of p_screen.h and p_context.h.
+    if command == "gallium-census" {
+        let texts: Result<Vec<String>, String> = rest.iter().map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
+        return match texts {
+            Ok(texts) => {
+                print!("{}", cheader::gallium_census(&cheader::read(&texts)));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("api-crate-generator: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     // The Mesa compiler's crates from the bridge's headers.
     if let ("mesa-compiler", [flat, bridge, out]) = (command.as_str(), rest) {
         let texts: Result<Vec<String>, String> = [flat, bridge].iter().map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
