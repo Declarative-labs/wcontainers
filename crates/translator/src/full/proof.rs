@@ -785,7 +785,9 @@ impl<G: Guest> FullEmitter<'_, G> {
                     .local_set(low);
             }
         }
-        // The bytes covered: from low + from up to high + from + len, all within the table.
+        // The bytes covered: from low + from up to high + from + len, all within the table, and with address windows
+        // within window 0, where an address as computed is its place.
+        let windows = G::address_windows(self.code.offer);
         let mut s = self.sink();
         s.local_get(low)
             .i64_const(r.from)
@@ -798,11 +800,14 @@ impl<G: Guest> FullEmitter<'_, G> {
             .i64_const(r.from + i64::from(r.len) - 1)
             .i64_add()
             .local_tee(high);
-        Table::GLOBALS.pages.push(&mut s);
-        s.i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
-            .i64_shl()
-            .i64_ge_s()
-            .br_if(0);
+        if windows {
+            s.i64_const(WINDOW_BYTES as i64);
+        } else {
+            Table::GLOBALS.pages.push(&mut s);
+            s.i64_const(i64::from(wcontainers_abi::PAGE_SHIFT))
+                .i64_shl();
+        }
+        s.i64_ge_s().br_if(0);
         pages_allow(&mut s, low, high, r.this, a0);
     }
 

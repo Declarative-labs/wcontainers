@@ -2427,7 +2427,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         let at = self.temporary(ValType::I64);
         let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let table = self.table();
-        let exact = self.exact(table, page);
+        let exact = self.exact_as_computed(table, page);
         for chunk in (0..len).step_by(wcontainers_abi::PAGE_SIZE as usize) {
             let piece = (len - chunk).min(wcontainers_abi::PAGE_SIZE as _);
             self.sink()
@@ -2437,7 +2437,14 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 .local_set(at);
             let mut s = self.sink();
             permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, page);
-            permission_exact::<G>(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at, exact);
+            permission_exact::<G>(
+                &mut s,
+                (at, Placed::AsComputed),
+                piece,
+                PAGE_READ | PAGE_WRITE,
+                fault_at,
+                exact,
+            );
             let offset = self.at.offset;
             self.leave_to(offset);
             self.sink().end().end();
@@ -2469,6 +2476,17 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         Table {
             at: self.fixed(G_PERMISSIONS),
             pages: self.fixed(G_PERMISSION_PAGES),
+            windows: G::address_windows(self.code.offer),
+        }
+    }
+
+    /// Where an exact permission test of an address as the program computed it goes: with address windows in place,
+    /// since the module's function is given an address's place in the guest memory.
+    fn exact_as_computed(&mut self, table: Table, page: u32) -> Exact {
+        if table.windows {
+            Exact::InPlace(table, (page, self.temporary(ValType::I32)))
+        } else {
+            self.exact(table, page)
         }
     }
 
@@ -2918,7 +2936,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         // A kept run's check is rare, so it reads the table's place from the module's globals rather than
         // keeping it alive through the loop.
         let table = if self.plan.kept.contains_key(&offset) {
-            Table::GLOBALS
+            Table {
+                windows: G::address_windows(self.code.offer),
+                ..Table::GLOBALS
+            }
         } else {
             self.table()
         };
@@ -2950,7 +2971,17 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 s.local_get(address).local_set(tagged);
                 G::data_address(&mut s, address);
                 s.local_set(address);
-                permission_exact::<G>(&mut s, address, bytes, this, fault_at, exact);
+                if table.windows {
+                    place_in_window(&mut s, table, address, page);
+                }
+                permission_exact::<G>(
+                    &mut s,
+                    (address, Placed::InMemory),
+                    bytes,
+                    this,
+                    fault_at,
+                    exact,
+                );
                 self.sites[Reason::MemoryFault as usize] += 1;
                 self.save(Pc::Offset(offset), true);
                 let mut s = self.sink();
@@ -2967,6 +2998,12 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 }
             }
             CheckPlan::Group { from, len } => {
+                // With address windows the start is as the program computed it, which the module's function is not given.
+                let exact = if table.windows {
+                    Exact::InPlace(table, (page, self.temporary(ValType::I32)))
+                } else {
+                    exact
+                };
                 let start = self.temporary(ValType::I64);
                 self.sink()
                     .local_get(address)
@@ -2975,7 +3012,14 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                     .local_set(start);
                 let mut s = self.sink();
                 permission_fast(&mut s, table, start, this, page);
-                permission_exact::<G>(&mut s, start, len, this, fault_at, exact);
+                permission_exact::<G>(
+                    &mut s,
+                    (start, Placed::AsComputed),
+                    len,
+                    this,
+                    fault_at,
+                    exact,
+                );
                 self.leave_to(offset);
                 self.sink().end().end();
             }
@@ -2989,6 +3033,9 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let mut s = self.sink();
         G::data_address(&mut s, address);
         s.local_set(address);
+        if table.windows {
+            place_in_window(&mut s, table, address, page);
+        }
         permission_range(
             &mut s,
             table,

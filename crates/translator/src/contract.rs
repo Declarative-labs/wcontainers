@@ -67,6 +67,26 @@ pub const PERMISSIONS: &str = "permissions";
 /// or above `pages * PAGE_SIZE` fault.
 pub const PERMISSION_PAGES: &str = "permission_pages";
 
+// **Address windows.** A guest whose offer has them (`Guest::address_windows`) has 2^48 bytes of addresses,
+// cut into windows of [`WINDOW_BYTES`]. The window table, [`WINDOW_TABLE_BYTES`] that end where the permission
+// table starts, gives as an i64 where in the guest memory each window's bytes are, then the place given an address
+// above every window. Window 0 must be at 0, so that an address below [`WINDOW_BYTES`] is its own place in the
+// guest memory; the permission table byte of a place is that of its page, and the byte after the last of a window
+// says what the window's next addresses allow. An access checked on its own address, and found in window 0's pages
+// of the permission table, uses the address as it is; any other goes through the table, and a window the guest
+// does not have must give a place whose pages are at or past `permission_pages`. An access that runs past the end
+// of a window reaches the guest memory just past the window's place, which must then show the next window's first
+// page.
+
+/// The guest addresses one window holds: those a 32-bit offset reaches.
+pub const WINDOW_BYTES: u64 = 1 << u32::BITS;
+/// The windows of a guest with address windows: 2^48 bytes of addresses in windows of [`WINDOW_BYTES`].
+pub const WINDOWS: u64 = (1 << VIRTUAL_ADDRESS_BITS) / WINDOW_BYTES;
+/// The bits of a guest virtual address with address windows.
+pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
+/// The bytes of the window table: one i64 for each window and one for the addresses above them all.
+pub const WINDOW_TABLE_BYTES: u64 = (WINDOWS + 1) * size_of::<u64>() as u64;
+
 /// The lookup table, exported by the thread module. Slot 0 is always empty, so an address with no piece finds
 /// none. Slot [`EXACT_SLOT`] holds a piece for no address. The runner grows the table for the pieces it adds.
 pub const LOOKUP: &str = "lookup";
