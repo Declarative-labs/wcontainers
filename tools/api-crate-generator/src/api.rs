@@ -29,6 +29,8 @@ pub struct Api {
     pub supertraits: &'static [&'static str],
     /// Other interfaces an object kind answers through QueryInterface, as (kind's root interface, interfaces).
     pub faces: &'static [(&'static str, &'static [&'static str])],
+    /// Interfaces every object kind of the API answers through QueryInterface, beside its own faces.
+    pub every_kind: &'static [&'static str],
     /// A slice of the API: only these methods (`Interface::Method`) and exports, with the interfaces they need; empty
     /// for the whole API. The C tables keep every entry, those left out null.
     pub only: &'static [&'static str],
@@ -46,6 +48,15 @@ pub struct Api {
     /// none of its methods (but the pins) can do to a fact the marks rely on. An interface or export of the set no line
     /// judges fails the generator.
     pub effects: &'static [Effects],
+}
+
+impl Api {
+    /// The interfaces of other kinds an object of the kind rooted at `root` answers by QueryInterface: its own faces,
+    /// then those every kind of the API answers.
+    pub fn faces_of(&self, root: &str) -> Vec<&'static str> {
+        let own = self.faces.iter().filter(|(r, _)| *r == root).flat_map(|(_, faces)| faces.iter().copied());
+        own.chain(self.every_kind.iter().copied().filter(|face| *face != root)).collect()
+    }
 }
 
 /// One row for an exact method, and how the calling glue treats it.
@@ -277,6 +288,7 @@ pub const COMPONENT_OBJECT_MODEL: Api = Api {
     depends_on: &[],
     supertraits: &[],
     faces: &[],
+    every_kind: &[],
     only: &[],
     exceptions: &[],
     pins: &[],
@@ -301,6 +313,7 @@ pub const DIRECT3D_COMMON: Api = Api {
     depends_on: &["component-object-model"],
     supertraits: &[],
     faces: &[],
+    every_kind: &[],
     only: &[],
     exceptions: &[],
     pins: DIRECT3D_COMMON_PINS,
@@ -324,6 +337,7 @@ pub const DIRECTX_GRAPHICS_INFRASTRUCTURE: Api = Api {
     depends_on: &["component-object-model"],
     supertraits: &[],
     faces: &[],
+    every_kind: &[],
     only: &[],
     exceptions: &[
         // IDXGISwapChain::GetBuffer: "the interface type used to manipulate the buffer" is the API's that made the
@@ -370,17 +384,18 @@ pub const DIRECT3D_11: Api = Api {
     abstract_bases: &["ID3D11DeviceChild", "ID3D11Resource", "ID3D11View", "ID3D11Asynchronous"],
     depends_on: &["component-object-model", "direct3d-common", "directx-graphics-infrastructure"],
     supertraits: &["direct3d-common", "directx-graphics-infrastructure"],
-    // A resource answers d3dcommon's ID3DDestructionNotifier, which a program asks of it by QueryInterface to learn when
-    // the resource is destroyed (https://learn.microsoft.com/windows/win32/api/d3dcommon/nn-d3dcommon-id3ddestructionnotifier;
-    // which Direct3D 11 objects answer it on Windows is not yet seen there, AC9).
     faces: &[
         ("ID3D11Device", &["IDXGIDevice4", "ID3D11Multithread"]),
         ("ID3D11DeviceContext", &["ID3D11Multithread", "ID3DUserDefinedAnnotation"]),
-        ("ID3D11Buffer", &["IDXGIResource1", "ID3DDestructionNotifier"]),
-        ("ID3D11Texture1D", &["IDXGIResource1", "ID3DDestructionNotifier"]),
-        ("ID3D11Texture2D", &["IDXGIResource1", "IDXGISurface2", "ID3DDestructionNotifier"]),
-        ("ID3D11Texture3D", &["IDXGIResource1", "ID3DDestructionNotifier"]),
+        ("ID3D11Buffer", &["IDXGIResource1"]),
+        ("ID3D11Texture1D", &["IDXGIResource1"]),
+        ("ID3D11Texture2D", &["IDXGIResource1", "IDXGISurface2"]),
+        ("ID3D11Texture3D", &["IDXGIResource1"]),
     ],
+    // Every Direct3D object answers d3dcommon's ID3DDestructionNotifier: "To acquire an instance of this interface,
+    // call QueryInterface on a Direct3D object with the IID of ID3DDestructionNotifier"
+    // (https://learn.microsoft.com/windows/win32/api/d3dcommon/nn-d3dcommon-id3ddestructionotifier, READ 2026-11-27).
+    every_kind: &["ID3DDestructionNotifier"],
     only: &[],
     exceptions: DIRECT3D_11_EXCEPTIONS,
     pins: DIRECT3D_11_PINS,
@@ -711,6 +726,7 @@ pub const DIRECT3D_11_SLICE: Api = Api {
         "ID3D11Multithread::SetMultithreadProtected",
     ],
     faces: &[("ID3D11DeviceContext", &["ID3D11Multithread"]), ("ID3D11Texture2D", &["IDXGISurface"])],
+    every_kind: &[],
     ..DIRECT3D_11
 };
 

@@ -1116,8 +1116,8 @@ impl<'a> Generator<'a> {
                 .iter()
                 .map(|newest| format!("{}{}", self.trait_path(newest, api).trim_start_matches("crate::"), self.api_binding(newest)))
                 .collect();
-            if let Some((_, faces)) = spec.faces.iter().find(|(root, _)| *root == kind.root.1) {
-                for face in *faces {
+            {
+                for face in spec.faces_of(&kind.root.1).iter() {
                     if let Some(face_key) = self.interface_api.keys().find(|k| k.1 == *face) {
                         let face_kind = self.kind_of.get(face_key).map(|&k| &self.kinds[k]);
                         let face_newest = face_kind.and_then(|k| k.newest.iter().find(|n| self.bases_of(n).contains(face_key)).cloned()).unwrap_or_else(|| face_key.clone());

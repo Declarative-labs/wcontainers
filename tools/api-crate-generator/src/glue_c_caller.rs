@@ -418,11 +418,9 @@ impl Writer<'_, '_> {
         let g = self.g;
         let k = &g.kinds[kind];
         let mut keys: BTreeSet<Key> = k.ancestors.clone();
-        if let Some((_, faces)) = g.apis[k.api].faces.iter().find(|(root, _)| *root == k.root.1) {
-            for face in *faces {
-                if let Some(face_key) = g.interface_api.keys().find(|key| key.1 == *face) {
-                    keys.extend(g.bases_of(face_key));
-                }
+        for face in g.apis[k.api].faces_of(&k.root.1) {
+            if let Some(face_key) = g.interface_api.keys().find(|key| key.1 == face) {
+                keys.extend(g.bases_of(face_key));
             }
         }
         keys.iter().filter_map(|key| plan.index.get(key).copied()).collect()

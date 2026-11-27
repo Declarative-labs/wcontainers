@@ -852,10 +852,8 @@ impl Writer<'_, '_> {
             }
             // The interfaces of another API the kind's objects also answer.
             let faces: Vec<Key> = spec
-                .faces
-                .iter()
-                .filter(|(root, _)| *root == k.root.1)
-                .flat_map(|(_, faces)| faces.iter())
+                .faces_of(&k.root.1)
+                .into_iter()
                 .filter_map(|face| g.interface_api.keys().find(|key| key.1 == *face).cloned())
                 .collect();
             for face in &faces {

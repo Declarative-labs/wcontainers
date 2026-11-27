@@ -703,11 +703,7 @@ impl Writer<'_, '_> {
                             let kind = &self.g.kinds[kinds[0]];
                             let mut answers: Vec<String> = kind.ancestors.iter().map(|k| k.1.clone()).collect();
                             for api in self.g.apis.iter() {
-                                for (root, faces) in api.faces {
-                                    if *root == kind.root.1 {
-                                        answers.extend(faces.iter().map(|face| (*face).to_string()));
-                                    }
-                                }
+                                answers.extend(api.faces_of(&kind.root.1).iter().map(|face| (*face).to_string()));
                             }
                             let mut recorded: Vec<String> = Vec::new();
                             for exception in self.g.exceptions() {
@@ -991,10 +987,8 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         let fn_name = format!("{}_interfaces", snake(&kind.name));
         let mut bounds: Vec<String> = kind.newest.iter().map(|n| writer.trait_path(n)).collect();
         let faces: Vec<Key> = spec
-            .faces
-            .iter()
-            .filter(|(root, _)| *root == kind.root.1)
-            .flat_map(|(_, faces)| faces.iter())
+            .faces_of(&kind.root.1)
+            .into_iter()
             .filter_map(|face| g.interface_api.keys().find(|k| k.1 == *face).cloned())
             .collect();
         bounds.extend(faces.iter().map(|face| writer.trait_path(face)));
