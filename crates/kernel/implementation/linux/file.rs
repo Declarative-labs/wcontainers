@@ -247,12 +247,18 @@ impl FdTable {
         Ok(fd)
     }
 
-    /// Puts a file at a given descriptor, closing what was there for process `closer`; whether
-    /// something was.
-    pub(crate) fn set(&mut self, fd: i32, descriptor: Descriptor, closer: Pid) -> bool {
+    /// Puts a file at a given descriptor, closing what was there for process `closer` (`flushed`
+    /// when the caller flushes a backend file itself); whether something was.
+    pub(crate) fn set(
+        &mut self,
+        fd: i32,
+        descriptor: Descriptor,
+        closer: Pid,
+        flushed: bool,
+    ) -> bool {
         self.highest = self.highest.max(fd);
         let old = self.slots.insert(fd, descriptor);
-        old.map(|old| self.closed(old, closer, false)).is_some()
+        old.map(|old| self.closed(old, closer, flushed)).is_some()
     }
 
     /// Closes a descriptor for process `closer`; `flushed` when the caller has already flushed a
