@@ -712,6 +712,72 @@ Build around: the findings stay reported and counted.
 Next (AC3): the 57 methods not glued (objects and bytes out counted by pointer first); then AC10 (OpenGL ES and EGL), which
 waits on nothing for its trait layer.
 
+## AC10, OpenGL ES and EGL: the trait layer and the direct glue (2026-11-27)
+
+**GI7 can start from commit 9429dd43f** (pushed on `graphics-api-crates`): `crates/opengl-es` (trait `OpenGlEs`, and
+`OnEgl<E>` that makes a context over an EGL context), `crates/egl` (trait `Egl`), each with `implementation/direct`,
+and `crates/opengl-es/conformance`. His main (ac696ea19) was already in the branch (`git fetch` of his checkout, `git
+rev-list --count HEAD..FETCH_HEAD` 0, MEASURED).
+
+The generator's new front end (`tools/api-crate-generator/src/khronos/`, command `khronos`) reads Khronos's gl.xml
+(OpenGL-Registry 6af574a1) and egl.xml (EGL-Registry 8e56e86e), Apache-2.0, and ANGLE's gl_angle_ext.xml (6df81ae1,
+BSD-3-Clause), which declares glPolygonModeANGLE and glProvokingVertexANGLE (gl.xml does not); `fetch-registries.sh`
+checks each sha256. The commands carried are those of NEEDED-FROM-API-CRATES.md A1 to A4 (src/khronos/sets.rs). New
+tool dependency: roxmltree 0.20.0 (MIT or Apache-2.0), the XML reader; never in the product.
+
+**Default deny, by the registry's own attributes.** Every parameter gets a kind from its C type and gl.xml's `len`
+(`n`, `count*4`, `bufSize`, `1`) or an exception line of sets.rs, else the generator fails (it did, once, on
+glGetUniformBlockIndex's `len="COMPSIZE()"` text, now mapped as a zero-ended text). Rows: number, bool, offset (i64
+checked into isize), handle (GLsync and EGL's, as values of the glue's own types safe code cannot forge), slice in or
+out with its count derived from the slice (a vector count must divide exactly), one value out (returned), zero-ended
+text, texts with lengths, bytes. Exception lines (each READ in sets.rs with its reason): `Get*v` of a pname write
+into 64 values of the glue's and copy out as many as the caller's slice holds, refusing the three variable lists
+(COMPRESSED_TEXTURE_FORMATS, PROGRAM_BINARY_FORMATS, SHADER_BINARY_FORMATS); glClearBuffer*v read 4 of the glue's;
+pixels in and out (`PixelUnpack`, `PixelPack`, `CompressedPixelUnpack`) are the caller's bytes only with no pixel
+buffer bound and at least as long as the pixel store state makes the transfer (alignment, row length, skipped
+rows, pixels and images, OpenGL ES 3.2 §8.4.4.1), or an offset only with one bound; a format and type pair the glue
+does not know is refused; vertex attribute pointers and draw indices are offsets, refused with no buffer bound;
+every draw is refused while an enabled vertex attribute has no buffer (deleting a bound buffer leaves the attribute
+reading client memory at its offset); glMapBufferRange and glUnmapBuffer are offered only as `map_buffer_range_read`
+(map for reading, copy, unmap: NEEDED A3); eglCreateContext always gets robust buffer access (FORCED: OpenGL ES leaves
+an out-of-range read undefined otherwise); EGL attribute lists end at their first key EGL_NONE and a key with no
+value is refused. Extension commands answer `None` unless the context names the extension and gives the address. A
+refusal records the error the next `get_error` returns first (GL's INVALID_VALUE, INVALID_ENUM, INVALID_OPERATION,
+CONTEXT_LOST; EGL's BAD_*). Not offered: eglCreateWindowSurface (the window loan, his question in
+status-graphics-implementations.md; the needs file puts it last), eglTerminate (the display is shared),
+eglGetProcAddress and eglGetCurrentContext (the glue's own).
+
+**For GI7, the glow calls in trait terms** (READ, interface.rs): `create_*` are `gen_*(&mut [u32])` (or
+`create_program`/`create_shader`); `delete_*` take a slice; `get_parameter_*` are `get_integerv`/`get_floatv`/
+`get_booleanv`/`get_integer64v` into a slice; `get_parameter_string` is `get_string`; `supported_extensions` is
+`get_integerv(NUM_EXTENSIONS)` and `get_stringi`; `get_*_info_log` write into `&mut [u8]` and return the length;
+`get_*_status` are `get_shaderiv`/`get_programiv`/`get_synciv`; `buffer_data_size` is `buffer_data(target, size,
+None, usage)`; `get_buffer_sub_data` is `map_buffer_range_read`; `query_counter`, `get_query_parameter_u64` and the
+ten A2 calls carry their extension suffix (`query_counter_ext`, `clip_control_ext`, `enablei_oes`, ...); a uniform
+location is the `i32` the GL gives; values are `constants::*` without the `GL_`/`EGL_` prefix.
+
+MEASURED at 9429dd43f (x86-64 job gac-k, `.gack/run.sh`, log wcontainers-scratch/graphics-api-crates/ac10/tip-9429dd43f.log):
+
+| Bar | Result |
+|---|---|
+| Generator: build (every warning shown), tests | status 0, 0 warnings; 17 tests pass |
+| Written twice | IDENTICAL; and equal to the crates committed ("SAME AS WRITTEN") |
+| Carried | EGL 15 methods + `load`, 176 values; OpenGL ES 154 methods + 1 composed, 1,094 values; every parameter mapped (0 unmapped) |
+| `cargo check --all-targets`, the five packages; wasm32 check of the four library packages | 0; 0 |
+| `cargo clippy --all-targets -- -D warnings` | 0 |
+| The suite on `direct` over Mesa 26.2.4's EGL (nixpkgs, libglvnd, llvmpipe, `EGL_PLATFORM=surfaceless`) | 4 of 4 pass: draws_and_reads_back, refuses_what_would_reach_memory, robust_access_is_forced, every_method_is_called (8 rounds of every method with edge arguments) |
+| The same under AddressSanitizer (24 `__asan_report` symbols in the binary) | 4 of 4 pass, 0 reports |
+| Control: the pixel length check removed | status 101, "pixels one byte short", left 0 right 1281 |
+| Control: the draw check removed | status 101, "a draw whose enabled attribute lost its buffer", left 0 right 1282 |
+| Lines naming `unsafe` | egl 0, egl direct 95, opengl-es 0, opengl-es direct 792, conformance 0; marks 357 (39 + 318) |
+| Linter, the two crates | 2,794: summary_without_full_stop 1,270 (the values' link lines), magic_literal 805, public_outside_interface 199 (egl direct's `Binding`, which the OpenGL ES glue uses: the layout question below), function_summary_not_third_person 191, name_unanswered 185 and summary_unanswered 35 (the model rule sets, no key on the machine), the rest below 25 each |
+
+Not done in this run and left of AC10: the suite over ANGLE on Linux (no ANGLE build for Linux exists on the
+machines; the suite runs on Mesa, which the needs file names for the GLES list); moving gpu-webgl onto the trait
+(GI7's, and AC4's merge); the per-draw check's cost, not measured (two glGetVertexAttribiv per attribute per draw:
+INFERRED a few microseconds; a cache per vertex array is the way down if it matters); a hostile caller of the C
+side is not needed (no serving glue: these crates only call the library).
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
