@@ -9,11 +9,20 @@ mod foreign_implementation {
     mod slice;
 }
 
+use vstd::prelude::*;
+
+verus! {
+
 /// A source of bytes.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ByteSource {
     type Error;
 
     /// Reads bytes into the start of the buffer, once, and returns the number of bytes read.
-    fn read(&mut self, into: &mut [u8]) -> Result<usize, Self::Error>;
+    fn read(&mut self, into: &mut [u8]) -> (read: Result<usize, Self::Error>)
+        ensures
+            final(into)@.len() == old(into)@.len(),
+            read matches Ok(count) ==> count <= old(into)@.len(),
+    ;
+}
+
 }

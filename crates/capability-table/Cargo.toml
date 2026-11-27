@@ -1,0 +1,17 @@
+[package]
+name = "wcontainers-capability-table"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+wcontainers-kernel = { path = "../kernel" }
+
+[package.metadata.verus]
+verify = true
+
+[lints]
+workspace = true
