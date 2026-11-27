@@ -59,16 +59,12 @@ wc_spirv_to_nir(const uint32_t *words, size_t count, enum wc_stage stage, const 
    return nir;
 }
 
-/* Whether the shader is in the form Zink's writer takes in its native Vulkan mode (stage values and uniforms as
- * variables, read through derefs): not with its IO lowered, nor with the OpenGL driver's lowered loads, which the
- * writer stops the process on (an assertion in emit_intrinsic). */
+/* Whether a prepared shader's image and sampler variables fit the writer's arrays: it files each in an array of its
+ * own by its driver location (ntv_context's image_var and sampler_var, on the stack), which the preparation
+ * assigns; a location past them would be written past them. */
 static bool
-native_vulkan_form(nir_shader *nir)
+locations_fit(nir_shader *nir)
 {
-   if (nir->info.io_lowered)
-      return false;
-   /* The writer files each image and sampler variable in an array of its own by its driver location
-    * (ntv_context's image_var and sampler_var, on the stack): a location past them would be written past them. */
    nir_foreach_variable_with_modes(var, nir, nir_var_image) {
       if (var->data.driver_location >= PIPE_MAX_SHADER_IMAGES)
          return false;
@@ -77,13 +73,26 @@ native_vulkan_form(nir_shader *nir)
       if (var->data.driver_location >= PIPE_MAX_SHADER_SAMPLER_VIEWS)
          return false;
    }
+   return true;
+}
+
+/* Whether the shader is in the form Zink's writer takes in its native Vulkan mode (stage values and uniforms as
+ * variables, read through derefs): not with its IO lowered, nor with the OpenGL driver's lowered loads, which the
+ * writer stops the process on (an assertion in emit_intrinsic). */
+static bool
+native_vulkan_form(nir_shader *nir)
+{
+   if (nir->info.io_lowered)
+      return false;
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
-            /* Every deref chain starts at a variable: the writer takes each one's storage class from it (a cast
-             * has none, and the writer reads it through a null pointer). */
+            /* Every deref chain starts at a variable, but a block's reached through its Vulkan descriptor (a cast
+             * of a uniform or storage block's mode): the writer takes each other chain's storage class from its
+             * variable (a cast of another mode has none, and the writer reads it through a null pointer). */
             if (instr->type == nir_instr_type_deref) {
-               if (!nir_deref_instr_get_variable(nir_instr_as_deref(instr)))
+               nir_deref_instr *deref = nir_instr_as_deref(instr);
+               if (!nir_deref_instr_get_variable(deref) && (deref->modes & ~(nir_var_mem_ubo | nir_var_mem_ssbo)))
                   return false;
                continue;
             }
@@ -134,6 +143,10 @@ wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out)
    if (!copy)
       return false;
    ntv_shader_prepare(copy);
+   if (!locations_fit(copy)) {
+      ralloc_free(copy);
+      return false;
+   }
    struct spirv_shader *spirv = nir_to_spirv(copy, &info);
    ralloc_free(copy);
    if (!spirv)

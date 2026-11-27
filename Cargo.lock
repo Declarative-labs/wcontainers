@@ -4765,10 +4765,21 @@ name = "wcontainers-mesa-compiler"
 version = "0.1.0"
 
 [[package]]
-name = "wcontainers-mesa-compiler-direct"
+name = "wcontainers-mesa-compiler-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-mesa-compiler",
+]
+
+[[package]]
+name = "wcontainers-mesa-compiler-direct"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "serde",
+ "serde_json",
+ "wcontainers-mesa-compiler",
+ "wcontainers-mesa-compiler-conformance",
 ]
 
 [[package]]

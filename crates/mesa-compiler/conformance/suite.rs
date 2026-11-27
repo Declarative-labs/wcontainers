@@ -158,7 +158,7 @@ pub fn compiles_and_reads_back<M: MesaCompiler>() {
         let mut flattened = compiler.cloned(&shader).expect("the shader clones");
         let flat = compiler.flatten(&mut flattened, 0).expect("the shader flattens");
         assert!(!flat.instrs.is_empty(), "the flat form has instructions");
-        let words = compiler.to_spirv(&mut shader).expect("the shader is written as SPIR-V");
+        let words = compiler.to_spirv(&mut shader).unwrap_or_else(|| panic!("the program of stage {stage} is written as SPIR-V"));
         assert_eq!(words.first(), Some(&SPIRV_MAGIC));
         let back = compiler.spirv_to_nir(&words, stage, MAIN);
         // Mesa's reader refuses the sample mask as Zink writes it (an array of arrays stored as one value):
