@@ -348,8 +348,7 @@ impl StandaloneGpu for Gl<wcontainers_opengl_es_direct::OpenGlEsContext> {
 
     fn new(config: GlConfig) -> Result<Self, String> {
         let off: Vec<&str> = config.off.iter().map(String::as_str).collect();
-        let (gl, held) =
-            platform::context::<wcontainers_egl_direct::Library, _>(config.egl.as_deref())?;
+        let (gl, held) = platform::context(platform::library(config.egl.as_deref())?)?;
         let mut b = Gl::new(gl, UNUSABLE_UNIFORM_BLOCKS, &off);
         b.held = Some(held);
         Ok(b)

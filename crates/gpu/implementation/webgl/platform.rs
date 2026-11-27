@@ -250,7 +250,8 @@ pub(crate) use native::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, PoisonError};
     use wcontainers_egl::Egl;
     use wcontainers_egl::constants as egl;
     use wcontainers_opengl_es::OnEgl;
@@ -276,15 +277,29 @@ mod native {
         }
     }
 
-    /// Makes an OpenGL ES 3 context through the EGL library in `folder` (the system's where none is named),
-    /// with a 1 by 1 off-screen surface, since every picture is drawn into textures. The OpenGL ES crate makes
-    /// the context current on the calling thread before each call, and gives no window surface yet.
-    pub(crate) fn context<E: Egl + 'static, O: OnEgl<E>>(
+    /// The EGL library in `folder` (the system's where none is named), loaded once for the process: the
+    /// OpenGL ES crate unloads a library with its last handle, and Mesa's then loads its driver again for the
+    /// next context (55 ms a back end on the ARM64 build machine, MEASURED in the tenth run).
+    pub(crate) fn library(
         folder: Option<&Path>,
-    ) -> Result<(O, Held), String> {
-        let library = E::load(folder).ok_or_else(|| {
+    ) -> Result<wcontainers_egl_direct::Library, String> {
+        static LOADED: Mutex<Vec<(Option<PathBuf>, wcontainers_egl_direct::Library)>> =
+            Mutex::new(Vec::new());
+        let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, library)) = loaded.iter().find(|(named, _)| named.as_deref() == folder) {
+            return Ok(library.clone());
+        }
+        let library = <wcontainers_egl_direct::Library as Egl>::load(folder).ok_or_else(|| {
             format!("no EGL library giving every entry point by name in {folder:?}")
         })?;
+        loaded.push((folder.map(Path::to_path_buf), library.clone()));
+        Ok(library)
+    }
+
+    /// Makes an OpenGL ES 3 context through the EGL `library`, with a 1 by 1 off-screen surface, since every
+    /// picture is drawn into textures. The OpenGL ES crate makes the context current on the calling thread
+    /// before each call, and gives no window surface yet.
+    pub(crate) fn context<E: Egl + 'static, O: OnEgl<E>>(library: E) -> Result<(O, Held), String> {
         let display = library.get_display().ok_or("EGL gave no default display")?;
         library
             .initialize(&display)
