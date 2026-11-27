@@ -183,7 +183,8 @@ struct Handler<'table> {
     returning: usize,
     /// A table the handler gives the faulting page read and write permissions in, then answers retry.
     granting: Option<&'table mut InProcessPageTable>,
-    /// Set at the first interrupt.
+    /// Set at the first interrupt, which is then answered terminate; without it every interrupt, an end of a slice
+    /// among them, is answered continue.
     interrupted: Option<&'table AtomicBool>,
 }
 
@@ -216,10 +217,13 @@ impl TrapHandler for Handler<'_> {
 
     fn handle_interrupt(&mut self) -> InterruptResponse {
         self.interrupts += 1;
-        if let Some(interrupted) = self.interrupted {
-            interrupted.store(true, Ordering::Release);
+        match self.interrupted {
+            Some(interrupted) => {
+                interrupted.store(true, Ordering::Release);
+                InterruptResponse::Terminate
+            }
+            None => InterruptResponse::Continue,
         }
-        InterruptResponse::Terminate
     }
 }
 
@@ -652,7 +656,11 @@ fn an_interrupt_asked_before_the_execution_runs_is_taken_first() {
     let (memory, _table) = memory(&executor, &[BRANCH_TO_ITSELF], 0);
     let (execution, interrupter) = executor.prepare_execution(before(9), &memory);
     interrupter.interrupt();
-    let mut handler = Handler::default();
+    let interrupted = AtomicBool::new(false);
+    let mut handler = Handler {
+        interrupted: Some(&interrupted),
+        ..Handler::default()
+    };
     let ExecutionStop::Terminated(ended) = execution.run(&mut handler) else {
         panic!("form I never waits");
     };

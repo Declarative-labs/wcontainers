@@ -11,6 +11,10 @@ publish = false
 [lib]
 path = "implementation.rs"
 
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
 # The permissions, system calls and accesses the executor interface names.
 wcontainers-abi.workspace = true
@@ -44,6 +48,12 @@ wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
 # The open files the pool test holds, one a memory, past the usual soft limit.
 rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
+# The executor interface's suite, against a Neoverse V2's recorded behaviors on the states the ARM64 generator makes.
+wcontainers-executor-conformance = { path = "../../conformance" }
+wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
+wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
+wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
 
 [lints]
 workspace = true

@@ -5,8 +5,9 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use wcontainers_abi::{Access, Permissions, SystemCallNumber, SystemCallRequest};
 use wcontainers_arm64::thread_state::RegisterPage;
@@ -20,9 +21,10 @@ use wcontainers_executor::{
 };
 use wcontainers_executor_arm64_stop::in_process::{self, Resolution};
 use wcontainers_executor_arm64_stop::{
-    FloatStatus, GuestState, Piece, Resolved, SYSCALL_NUMBER, Stop, Taken,
+    FloatStatus, GuestState, Piece, Resolved, SYSCALL_NUMBER, Stop, Taken, access_first,
 };
 use wcontainers_guest_cpu::HostCode;
+use wcontainers_guest_cpu::position::{Stopping, span_at};
 use wcontainers_linux_process::{LinuxProcess, Pid, RUN_STOP_SIGNAL};
 use wcontainers_linux_process_direct::{DirectCodeMapping, DirectLinuxProcess};
 use wcontainers_processor_architecture::{
@@ -49,6 +51,10 @@ use crate::run::{Exit, InProcessThread};
 const CODE_AREA: u64 = (1 << 45) + (1 << 34);
 /// The bytes of the code area.
 const CODE_AREA_BYTES: u64 = 1 << 40;
+/// How long an execution runs with no trap before the handler is asked about an interrupt, as at one from outside: one
+/// tick of a kernel built with HZ at 1000, the slice of a Linux task that runs alone on its CPU
+/// (<https://github.com/torvalds/linux/blob/master/kernel/Kconfig.hz>).
+const SLICE: Duration = Duration::from_millis(1);
 /// The top byte of an address, which the chip ignores in an address of the lower half at EL0 (TCR_EL1.TBI0, as Linux
 /// sets it).
 const TAG: u64 = 0xff << 56;
@@ -88,9 +94,9 @@ impl InProcess {
         }
     }
 
-    /// The piece of the guest instruction `word` at `guest`, run in `way`, translated and mapped on first use; none
-    /// where the instruction cannot be translated or the code area is full.
-    fn piece(&mut self, way: Way, guest: u64, word: u32) -> Option<Rc<Loaded>> {
+    /// The piece of the guest instruction `word` at `guest`, run in `way`, translated and mapped on first use, and
+    /// whether it was translated now; none where the instruction cannot be translated or the code area is full.
+    fn piece(&mut self, way: Way, guest: u64, word: u32) -> Option<(Rc<Loaded>, bool)> {
         let Way::InProcess {
             slot, displaced, ..
         } = way
@@ -104,7 +110,7 @@ impl InProcess {
             word,
         };
         if let Some(loaded) = self.pieces.get(&key) {
-            return Some(Rc::clone(loaded));
+            return Some((Rc::clone(loaded), false));
         }
         let code = translate_native_for::<Arm64Translation>(
             &word.to_le_bytes(),
@@ -123,7 +129,7 @@ impl InProcess {
             _mapping: mapping,
         });
         self.pieces.insert(key, Rc::clone(&loaded));
-        Some(loaded)
+        Some((loaded, true))
     }
 }
 
@@ -207,8 +213,20 @@ impl BehaviorSource for InProcess {
         let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(*page)).collect();
         let mut thread = InProcessThread::new().map_err(|_| SingleInstructionRefusal::Host)?;
         let mut run = Run::new(self, &space, processor, &mut thread);
-        let trap = run.until_trap(&Interruption::default(), true);
+        let interruption = Interruption::default();
+        *interruption.target() = Some(rustix::thread::gettid());
         let pc = processor.program_counter;
+        let trap = sliced(&interruption, || {
+            loop {
+                let trap = run.until_trap(&interruption, true);
+                // A slice that ended before the instruction ran: neither its pc nor its count moved. Otherwise a slice
+                // that ended with the pc where it started ended in a branch to itself, run once or more.
+                if trap != Trap::Interrupt || run.state.pc != pc || run.state.count != 0 {
+                    break trap;
+                }
+            }
+        });
+        *interruption.target() = None;
         let exception = match trap {
             Trap::Landed | Trap::Interrupt => None,
             Trap::SystemCall(_) => Some(system_call(word_at(&space, pc))),
@@ -281,23 +299,26 @@ impl Execution for InProcessExecution<'_> {
         };
         *interruption.target() = Some(rustix::thread::gettid());
         let mut run = Run::new(executor, memory, &processor, &mut thread);
-        let exception = loop {
-            let trap = run.until_trap(&interruption, false);
-            match ask_handler(handler, trap, &mut run.state) {
-                Ok(()) => {}
-                Err(Ended::SystemCall) => {
-                    break Some(system_call(word_at(
-                        memory,
-                        run.state.pc - INSTRUCTION_SIZE,
-                    )));
+        let exception = sliced(&interruption, || {
+            loop {
+                let trap = run.until_trap(&interruption, false);
+                interruption.traps.fetch_add(1, Ordering::AcqRel);
+                match ask_handler(handler, trap, &mut run.state) {
+                    Ok(()) => {}
+                    Err(Ended::SystemCall) => {
+                        break Some(system_call(word_at(
+                            memory,
+                            run.state.pc - INSTRUCTION_SIZE,
+                        )));
+                    }
+                    Err(Ended::MemoryFault { address, access }) => {
+                        break Some(abort(memory, address, access));
+                    }
+                    Err(Ended::Interrupt) => break None,
+                    Err(Ended::Exception(exception)) => break Some(exception),
                 }
-                Err(Ended::MemoryFault { address, access }) => {
-                    break Some(abort(memory, address, access));
-                }
-                Err(Ended::Interrupt) => break None,
-                Err(Ended::Exception(exception)) => break Some(exception),
             }
-        };
+        });
         *interruption.target() = None;
         let processor = run.processor(exception);
         drop(thread);
@@ -452,9 +473,13 @@ impl<'run> Run<'run> {
             let word = word_at(self.memory, pc);
             let way = self.way();
             self.displace = false;
-            let Some(piece) = self.executor.piece(way, pc & !TAG, word) else {
+            let Some((piece, translated)) = self.executor.piece(way, pc & !TAG, word) else {
                 return Trap::Ended(Exception::UndefinedInstruction);
             };
+            // A translation is the executor's time, not the guest's: the slice starts again after it.
+            if translated {
+                interruption.traps.fetch_add(1, Ordering::AcqRel);
+            }
             self.thread
                 .enter(way, &self.state, self.page.clone(), &self.float, piece.at);
             match self.run_piece(way, &piece, interruption) {
@@ -568,17 +593,19 @@ impl<'run> Run<'run> {
                         return None;
                     }
                     Resolved::Stop(stop, state) => {
+                        let tag = access_tag(&piece, self.thread.hardware().pc, &state);
                         self.state = state;
                         self.page = page;
-                        return self.stopped(stop);
+                        return self.stopped(stop, tag);
                     }
                 },
             }
         }
     }
 
-    /// The trap a stop resolved to comes to; none where the guest goes on at its state's pc.
-    fn stopped(&mut self, stop: Stop) -> Option<Trap> {
+    /// The trap a stop resolved to comes to, a fault's address with the access's `tag`; none where the guest goes on at
+    /// its state's pc.
+    fn stopped(&mut self, stop: Stop, tag: u64) -> Option<Trap> {
         let pc = self.state.pc;
         Some(match stop {
             Stop::Landed(_) => Trap::Landed,
@@ -598,11 +625,58 @@ impl<'run> Run<'run> {
             }
             Stop::Alignment(_) => Trap::Ended(Exception::StackPointerAlignmentFault),
             Stop::MemoryFault { address, write } => Trap::MemoryFault {
-                address,
+                address: address | tag,
                 access: access_of(word_at(self.memory, pc), write),
             },
         })
     }
+}
+
+/// The top byte of the address the access at host address `pc` of the piece made from the state, which the in-process
+/// way's code drops before it reaches the window, so that no host fault reports it; zero for an instruction of no access.
+fn access_tag(piece: &Piece<'_>, pc: u64, state: &GuestState) -> u64 {
+    let Ok(offset) = u32::try_from(pc.wrapping_sub(piece.base)) else {
+        return 0;
+    };
+    match span_at(piece.spans, piece.length, offset) {
+        Some(span) => match &span.stopping {
+            Stopping::Access(operand) => {
+                access_first(operand, span.guest, &state.x, state.sp) & TAG
+            }
+            _ => 0,
+        },
+        None => 0,
+    }
+}
+
+/// Runs `body` while a slicer asks for an interrupt at the end of every slice in which the run took no trap, and sends
+/// the stop to its thread.
+fn sliced<Ran>(interruption: &Interruption, body: impl FnOnce() -> Ran) -> Ran {
+    let done = (Mutex::new(false), Condvar::new());
+    std::thread::scope(|scope| {
+        let done = &done;
+        scope.spawn(move || {
+            let (ended, wake) = done;
+            let mut ended = ended.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut seen = interruption.traps.load(Ordering::Acquire);
+            while !*ended {
+                ended = wake
+                    .wait_timeout(ended, SLICE)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+                let traps = interruption.traps.load(Ordering::Acquire);
+                if !*ended && traps == seen {
+                    interruption.interrupt();
+                }
+                seen = traps;
+            }
+        });
+        let ran = body();
+        let (ended, wake) = done;
+        *ended.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        wake.notify_all();
+        ran
+    })
 }
 
 /// Reads guest memory at `at` into `into`, zeros where it cannot.
@@ -738,11 +812,21 @@ struct Interruption {
     requested: AtomicBool,
     /// The host thread the run is on, while it runs.
     target: Mutex<Option<Pid>>,
+    /// The traps the run has taken and the pieces it has translated, which the slicer watches.
+    traps: AtomicU64,
 }
 
 impl Interruption {
     fn target(&self) -> MutexGuard<'_, Option<Pid>> {
         self.target.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Asks for an interrupt, which the run takes before its next entry, and stops a run of its code.
+    fn interrupt(&self) {
+        self.requested.store(true, Ordering::Release);
+        if let Some(thread) = *self.target() {
+            let _ = DirectLinuxProcess.tgkill(rustix::process::getpid(), thread, RUN_STOP_SIGNAL);
+        }
     }
 }
 
@@ -755,9 +839,6 @@ pub struct InProcessInterrupter {
 
 impl ExecutionInterrupter for InProcessInterrupter {
     fn interrupt(&self) {
-        self.interruption.requested.store(true, Ordering::Release);
-        if let Some(thread) = *self.interruption.target() {
-            let _ = DirectLinuxProcess.tgkill(rustix::process::getpid(), thread, RUN_STOP_SIGNAL);
-        }
+        self.interruption.interrupt();
     }
 }
