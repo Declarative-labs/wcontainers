@@ -258,22 +258,7 @@ fn write_interface(set: &Set, classified: &Classified) -> String {
         text.push_str(PIXEL_TYPES);
         text.push('\n');
     }
-    let kinds: BTreeSet<&str> = classified
-        .methods
-        .iter()
-        .flat_map(|m| {
-            m.parts
-                .iter()
-                .filter_map(|p| match p {
-                    Part::Handle { kind, .. } | Part::HandlesOut { kind, .. } => Some(*kind),
-                    _ => None,
-                })
-                .chain(match m.ret {
-                    Return::Handle(kind) => Some(kind),
-                    _ => None,
-                })
-        })
-        .collect();
+    let kinds = kinds_of(classified);
     if set.api == "egl" {
         let _ = writeln!(text, "/// EGL's library: each entry point this set carries as a safe method, each handle a value of the implementation's own type.");
     } else {
@@ -859,7 +844,60 @@ fn zero(elem: &Scalar) -> &'static str {
     }
 }
 
-fn write_suite(set: &Set, classified: &Classified, template: &str) -> String {
+/// The handle kinds a set's methods take or make: the trait's associated types.
+fn kinds_of(classified: &Classified) -> BTreeSet<&'static str> {
+    classified
+        .methods
+        .iter()
+        .flat_map(|m| {
+            m.parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Handle { kind, .. } | Part::HandlesOut { kind, .. } => Some(*kind),
+                    _ => None,
+                })
+                .chain(match m.ret {
+                    Return::Handle(kind) => Some(kind),
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
+/// The suite's wrapper `name` of the set's trait: every call that reaches a method of the wrapped implementation is
+/// counted by the method's place in the trait, so the fuzzing counts calls that reached each method, not the numbers
+/// it picked. The composed methods are forwarded and not counted (the fuzzing does not call them).
+fn write_counted(set: &Set, classified: &Classified, name: &str) -> String {
+    let inner = if set.api == "egl" { "E" } else { "G" };
+    let mut text = String::new();
+    let _ = writeln!(text, "\n/// An implementation of `{}` whose every call that reaches one of the wrapped implementation's methods is counted,\n/// by the method's place in the trait.", set.top);
+    let _ = writeln!(text, "pub struct {name}<'a, {inner}> {{\n    inner: &'a {inner},\n    calls: Vec<std::cell::Cell<u64>>,\n}}\n");
+    let _ = writeln!(
+        text,
+        "impl<'a, {inner}> {name}<'a, {inner}> {{\n    /// `inner` with no call counted.\n    pub fn new(inner: &'a {inner}) -> Self {{\n        {name} {{ inner, calls: (0..{}).map(|_| std::cell::Cell::new(0)).collect() }}\n    }}\n\n    fn reached(&self, at: usize) {{\n        if let Some(count) = self.calls.get(at) {{\n            count.set(count.get() + 1);\n        }}\n    }}\n\n    /// The calls that reached each method, by its place in the trait.\n    pub fn calls(&self) -> Vec<u64> {{\n        self.calls.iter().map(std::cell::Cell::get).collect()\n    }}\n}}\n",
+        classified.methods.len()
+    );
+    let _ = writeln!(text, "impl<{inner}: {}> {} for {name}<'_, {inner}> {{", set.top, set.top);
+    for kind in kinds_of(classified) {
+        let _ = writeln!(text, "    type {kind} = {inner}::{kind};");
+    }
+    if set.api == "egl" {
+        let _ = writeln!(text, "\n    /// A wrapper is made only of a library already loaded.\n    fn load(_folder: Option<&std::path::Path>) -> Option<Self> {{\n        None\n    }}");
+    }
+    for (at, method) in classified.methods.iter().enumerate() {
+        let arguments: Vec<String> = method.parts.iter().zip(&method.command.params).filter(|(part, param)| trait_type(part, param).is_some()).map(|(_, param)| param_name(param)).collect();
+        // Clippy does not count a trait implementation's parameters: no expectation here.
+        text.push('\n');
+        let _ = writeln!(text, "    {} {{\n        self.reached({at});\n        self.inner.{}({})\n    }}", signature(set, method, true), method_name(set, &method.command.name), arguments.join(", "));
+    }
+    for composed in set.composed {
+        let _ = writeln!(text, "\n    fn {0}(&self, target: u32, offset: i64, data: &mut [u8]) -> bool {{\n        self.inner.{0}(target, offset, data)\n    }}", composed.name);
+    }
+    text.push_str("}\n");
+    text
+}
+
+fn write_suite(set: &Set, classified: &Classified, egl: Option<(&Set, &Classified)>, template: &str) -> String {
     let mut calls = String::new();
     let skipped = ["glClientWaitSync", "glFinish"];
     let mut called = 0;
@@ -888,8 +926,15 @@ fn write_suite(set: &Set, classified: &Classified, template: &str) -> String {
         );
     }
     let count = classified.methods.len();
+    let not_fuzzed: Vec<String> = classified.methods.iter().enumerate().filter(|(_, m)| skipped.contains(&m.command.name.as_str())).map(|(at, _)| at.to_string()).collect();
     let mut text = header(set);
     text.push_str(template);
+    text.push_str(&write_counted(set, classified, "CountedGl"));
+    if let Some((egl_set, egl_classified)) = egl {
+        text.push_str(&write_counted(egl_set, egl_classified, "CountedEgl"));
+        let _ = writeln!(text, "\n/// The EGL methods of the trait (the counting wrapper's places).\npub const EGL_TRAIT_METHODS: usize = {};", egl_classified.methods.len());
+    }
+    let _ = writeln!(text, "\n/// The places of the methods `call_one` never calls (glClientWaitSync and glFinish).\npub const NOT_FUZZED: [usize; {}] = [{}];", not_fuzzed.len(), not_fuzzed.join(", "));
     let _ = writeln!(
         text,
         "\n/// Calls each extension's command; one answering while the context names none of its extensions fails.\nfn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {{\n    let seed = 0_usize;\n{gated}}}"
@@ -901,7 +946,7 @@ fn write_suite(set: &Set, classified: &Classified, template: &str) -> String {
     text
 }
 
-pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], out: &std::path::Path, templates: &Templates) -> Result<String, String> {
+pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], egl: Option<(&Set, &Classified)>, out: &std::path::Path, templates: &Templates) -> Result<String, String> {
     let mut report = String::new();
     for (set, classified) in sets.iter().zip(classified) {
         let folder = out.join("crates").join(set.folder);
@@ -933,7 +978,7 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], out:
             std::fs::create_dir_all(&tests).map_err(|e| e.to_string())?;
             write(tests.join("conformance.rs"), &format!("{}{}", header(set), templates.gl_direct_test))?;
             write(tests.join("kept.rs"), &format!("{}{}", header(set), templates.gl_direct_kept))?;
-            write(conformance.join("suite.rs"), &write_suite(set, classified, templates.gl_suite))?;
+            write(conformance.join("suite.rs"), &write_suite(set, classified, egl, templates.gl_suite))?;
             write(conformance.join("Cargo.toml"), templates.gl_suite_manifest)?;
         } else {
             std::fs::remove_dir(&conformance).map_err(|e| e.to_string())?;

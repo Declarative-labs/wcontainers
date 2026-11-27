@@ -1282,38 +1282,45 @@ pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64, c
     let _ = second.initialize(&second_display);
     let mut second_configs = vec![None; 2];
     let _ = second.choose_config(&second_display, &[egl::NONE], &mut second_configs);
-    let mut handles = Handles::<E> {
+    // Every call reaches the implementations through counting wrappers, so what is counted is calls that reached each
+    // method, not numbers picked.
+    let (made_gl, other_gl, made_egl) = (CountedGl::new(&made.gl), CountedGl::new(&other.gl), CountedEgl::new(&made.egl));
+    let mut handles = Handles::<CountedEgl<'_, E>> {
         displays: vec![made.display.clone(), made.display.clone(), made.display.clone(), second_display],
         configs: second_configs.into_iter().flatten().collect(),
         contexts: Vec::new(),
         surfaces: Vec::new(),
     };
+    // The pools start with handles every EGL method can take: configs that make pbuffers (a surfaceless display has
+    // no window configs, which an empty list asks for), a context and a pbuffer made from one (the calls that take a
+    // surface or a context are then reached from the first call on; the fuzzing makes and destroys more).
     let mut own = vec![None; 4];
-    let _ = made.egl.choose_config(&made.display, &[egl::NONE], &mut own);
+    let _ = made.egl.choose_config(&made.display, &[egl::SURFACE_TYPE, egl::PBUFFER_BIT, egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT, egl::NONE], &mut own);
     handles.configs.extend(own.into_iter().flatten());
+    if let Some(config) = handles.configs.last().cloned() {
+        handles.contexts.extend(made.egl.create_context(&made.display, &config, None, &CONTEXT_ES3));
+        handles.surfaces.extend(made.egl.create_pbuffer_surface(&made.display, &config, &[egl::WIDTH, 4, egl::HEIGHT, 4, egl::NONE]));
+    }
+    assert!(!handles.contexts.is_empty() && !handles.surfaces.is_empty(), "the fuzzing starts with a context and a pbuffer of its own");
     let methods = u64::try_from(METHODS).unwrap_or(0);
-    let mut gl_methods = vec![0_u64; METHODS];
-    let mut egl_methods = vec![0_u64; usize::try_from(EGL_METHODS).unwrap_or(0)];
+    let mut picked_calls = 0;
     for _ in 0..calls {
         let picked = next(&mut state);
+        picked_calls += 1;
         if picked % 1024 < EGL_SHARE {
             let which = (picked >> 10) % EGL_METHODS;
-            if let Some(count) = usize::try_from(which).ok().and_then(|at| egl_methods.get_mut(at)) {
-                *count += 1;
-            }
-            egl_call(&made.egl, &mut handles, which, &mut state);
+            egl_call(&made_egl, &mut handles, which, &mut state);
             continue;
         }
-        let gl = if (picked >> 10).is_multiple_of(4) { &other.gl } else { &made.gl };
+        let gl = if (picked >> 10).is_multiple_of(4) { &other_gl } else { &made_gl };
         let Some(fence) = chosen(&fences, &mut state) else { continue };
         let which = usize::try_from((picked >> 12) % methods).unwrap_or(0);
-        if let Some(count) = gl_methods.get_mut(which) {
-            *count += 1;
-        }
         call_one(gl, &fence, which, usize::try_from(next(&mut state) >> 1).unwrap_or(0));
     }
+    let gl_methods = made_gl.calls().iter().zip(other_gl.calls()).map(|(made, other)| made + other).collect();
+    let egl_methods = made_egl.calls();
     let _ = made.egl.make_current(&made.display, None, None, None);
-    Fuzzed { calls, refused: (counts.gl)(&made.gl) + (counts.gl)(&other.gl), egl_refused: (counts.egl)(&made.egl), gl_methods, egl_methods }
+    Fuzzed { calls: picked_calls, refused: (counts.gl)(&made.gl) + (counts.gl)(&other.gl), egl_refused: (counts.egl)(&made.egl), gl_methods, egl_methods }
 }
 
 /// What `fuzz` did.
@@ -1324,9 +1331,10 @@ pub struct Fuzzed {
     pub refused: u64,
     /// EGL calls the implementation refused itself.
     pub egl_refused: u64,
-    /// The calls of each OpenGL ES method, by its place in `call_one`.
+    /// The calls that reached each OpenGL ES method of the implementation, by its place in the trait.
     pub gl_methods: Vec<u64>,
-    /// The calls of each EGL method, by its place in `egl_call`.
+    /// The calls that reached each EGL method of the implementation, by its place in the trait (`load` never: the
+    /// library is loaded before).
     pub egl_methods: Vec<u64>,
 }
 
@@ -1346,18 +1354,24 @@ const MEASURE_DRAWS: u64 = 1_000;
 pub fn fuzz_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
     let (seed, calls) = (given("WCONTAINERS_FUZZ_SEED", FUZZ_SEED), given("WCONTAINERS_FUZZ_CALLS", FUZZ_CALLS));
     let fuzzed = fuzz::<E, G>(folder, seed, calls, counts);
-    let (gl_never, egl_never) = (never_called(&fuzzed.gl_methods), never_called(&fuzzed.egl_methods));
+    let gl_never: Vec<usize> = never_called(&fuzzed.gl_methods).into_iter().filter(|at| !NOT_FUZZED.contains(at)).collect();
+    let egl_never = never_called(&fuzzed.egl_methods);
     println!(
-        "FUZZ seed {seed} calls {}, refused by the implementation itself: OpenGL ES {}, EGL {}; methods called: OpenGL ES {} of {METHODS}, EGL {} of {EGL_METHODS}",
+        "FUZZ seed {seed} calls {}, refused by the implementation itself: OpenGL ES {}, EGL {}; methods reached: OpenGL ES {} of {} fuzzed, EGL {} of {EGL_TRAIT_METHODS}; calls reached: OpenGL ES {}, EGL {}",
         fuzzed.calls,
         fuzzed.refused,
         fuzzed.egl_refused,
-        METHODS - gl_never.len(),
-        fuzzed.egl_methods.len() - egl_never.len()
+        METHODS - NOT_FUZZED.len() - gl_never.len(),
+        METHODS - NOT_FUZZED.len(),
+        fuzzed.egl_methods.len() - egl_never.len(),
+        fuzzed.gl_methods.iter().sum::<u64>(),
+        fuzzed.egl_methods.iter().sum::<u64>()
     );
     // What the run is for: every method called with hostile arguments, the process still standing, and some calls
     // refused by the implementation itself (its checks were reached).
     assert_eq!(fuzzed.calls, calls, "every call picked");
+    assert_eq!(fuzzed.gl_methods.len(), METHODS, "a count for each OpenGL ES method");
+    assert_eq!(fuzzed.egl_methods.len(), EGL_TRAIT_METHODS, "a count for each EGL method");
     assert!(gl_never.is_empty() && egl_never.is_empty(), "methods never called in seed {seed}: OpenGL ES {gl_never:?}, EGL {egl_never:?}");
     assert!(fuzzed.refused > 0 && fuzzed.egl_refused > 0, "the implementation refused no call in seed {seed}: {} {}", fuzzed.refused, fuzzed.egl_refused);
 }
@@ -1514,6 +1528,937 @@ macro_rules! tests {
         }
     };
 }
+
+/// An implementation of `OpenGlEs` whose every call that reaches one of the wrapped implementation's methods is counted,
+/// by the method's place in the trait.
+pub struct CountedGl<'a, G> {
+    inner: &'a G,
+    calls: Vec<std::cell::Cell<u64>>,
+}
+
+impl<'a, G> CountedGl<'a, G> {
+    /// `inner` with no call counted.
+    pub fn new(inner: &'a G) -> Self {
+        CountedGl { inner, calls: (0..156).map(|_| std::cell::Cell::new(0)).collect() }
+    }
+
+    fn reached(&self, at: usize) {
+        if let Some(count) = self.calls.get(at) {
+            count.set(count.get() + 1);
+        }
+    }
+
+    /// The calls that reached each method, by its place in the trait.
+    pub fn calls(&self) -> Vec<u64> {
+        self.calls.iter().map(std::cell::Cell::get).collect()
+    }
+}
+
+impl<G: OpenGlEs> OpenGlEs for CountedGl<'_, G> {
+    type Fence = G::Fence;
+
+    fn active_texture(&self, texture: u32) {
+        self.reached(0);
+        self.inner.active_texture(texture)
+    }
+
+    fn attach_shader(&self, program: u32, shader: u32) {
+        self.reached(1);
+        self.inner.attach_shader(program, shader)
+    }
+
+    fn begin_query(&self, target: u32, id: u32) {
+        self.reached(2);
+        self.inner.begin_query(target, id)
+    }
+
+    fn begin_transform_feedback(&self, primitive_mode: u32) {
+        self.reached(3);
+        self.inner.begin_transform_feedback(primitive_mode)
+    }
+
+    fn bind_buffer(&self, target: u32, buffer: u32) {
+        self.reached(4);
+        self.inner.bind_buffer(target, buffer)
+    }
+
+    fn bind_buffer_base(&self, target: u32, index: u32, buffer: u32) {
+        self.reached(5);
+        self.inner.bind_buffer_base(target, index, buffer)
+    }
+
+    fn bind_buffer_range(&self, target: u32, index: u32, buffer: u32, offset: i64, size: i64) {
+        self.reached(6);
+        self.inner.bind_buffer_range(target, index, buffer, offset, size)
+    }
+
+    fn bind_framebuffer(&self, target: u32, framebuffer: u32) {
+        self.reached(7);
+        self.inner.bind_framebuffer(target, framebuffer)
+    }
+
+    fn bind_renderbuffer(&self, target: u32, renderbuffer: u32) {
+        self.reached(8);
+        self.inner.bind_renderbuffer(target, renderbuffer)
+    }
+
+    fn bind_sampler(&self, unit: u32, sampler: u32) {
+        self.reached(9);
+        self.inner.bind_sampler(unit, sampler)
+    }
+
+    fn bind_texture(&self, target: u32, texture: u32) {
+        self.reached(10);
+        self.inner.bind_texture(target, texture)
+    }
+
+    fn bind_vertex_array(&self, array: u32) {
+        self.reached(11);
+        self.inner.bind_vertex_array(array)
+    }
+
+    fn blend_color(&self, red: f32, green: f32, blue: f32, alpha: f32) {
+        self.reached(12);
+        self.inner.blend_color(red, green, blue, alpha)
+    }
+
+    fn blend_equation_separate(&self, mode_rgb: u32, mode_alpha: u32) {
+        self.reached(13);
+        self.inner.blend_equation_separate(mode_rgb, mode_alpha)
+    }
+
+    fn blend_func_separate(&self, sfactor_rgb: u32, dfactor_rgb: u32, sfactor_alpha: u32, dfactor_alpha: u32) {
+        self.reached(14);
+        self.inner.blend_func_separate(sfactor_rgb, dfactor_rgb, sfactor_alpha, dfactor_alpha)
+    }
+
+    fn blit_framebuffer(&self, src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32, dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32, mask: u32, filter: u32) {
+        self.reached(15);
+        self.inner.blit_framebuffer(src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter)
+    }
+
+    fn buffer_data(&self, target: u32, size: i64, data: Option<&[u8]>, usage: u32) {
+        self.reached(16);
+        self.inner.buffer_data(target, size, data, usage)
+    }
+
+    fn buffer_sub_data(&self, target: u32, offset: i64, data: &[u8]) {
+        self.reached(17);
+        self.inner.buffer_sub_data(target, offset, data)
+    }
+
+    fn check_framebuffer_status(&self, target: u32) -> u32 {
+        self.reached(18);
+        self.inner.check_framebuffer_status(target)
+    }
+
+    fn clear_bufferfi(&self, buffer: u32, drawbuffer: i32, depth: f32, stencil: i32) {
+        self.reached(19);
+        self.inner.clear_bufferfi(buffer, drawbuffer, depth, stencil)
+    }
+
+    fn clear_bufferfv(&self, buffer: u32, drawbuffer: i32, value: &[f32]) {
+        self.reached(20);
+        self.inner.clear_bufferfv(buffer, drawbuffer, value)
+    }
+
+    fn clear_bufferiv(&self, buffer: u32, drawbuffer: i32, value: &[i32]) {
+        self.reached(21);
+        self.inner.clear_bufferiv(buffer, drawbuffer, value)
+    }
+
+    fn clear_bufferuiv(&self, buffer: u32, drawbuffer: i32, value: &[u32]) {
+        self.reached(22);
+        self.inner.clear_bufferuiv(buffer, drawbuffer, value)
+    }
+
+    fn client_wait_sync(&self, sync: &Self::Fence, flags: u32, timeout: u64) -> u32 {
+        self.reached(23);
+        self.inner.client_wait_sync(sync, flags, timeout)
+    }
+
+    fn color_mask(&self, red: bool, green: bool, blue: bool, alpha: bool) {
+        self.reached(24);
+        self.inner.color_mask(red, green, blue, alpha)
+    }
+
+    fn compile_shader(&self, shader: u32) {
+        self.reached(25);
+        self.inner.compile_shader(shader)
+    }
+
+    fn compressed_tex_sub_image_2d(&self, target: u32, level: i32, xoffset: i32, yoffset: i32, width: i32, height: i32, format: u32, data: CompressedPixelUnpack<'_>) {
+        self.reached(26);
+        self.inner.compressed_tex_sub_image_2d(target, level, xoffset, yoffset, width, height, format, data)
+    }
+
+    fn compressed_tex_sub_image_3d(&self, target: u32, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: u32, data: CompressedPixelUnpack<'_>) {
+        self.reached(27);
+        self.inner.compressed_tex_sub_image_3d(target, level, xoffset, yoffset, zoffset, width, height, depth, format, data)
+    }
+
+    fn copy_buffer_sub_data(&self, read_target: u32, write_target: u32, read_offset: i64, write_offset: i64, size: i64) {
+        self.reached(28);
+        self.inner.copy_buffer_sub_data(read_target, write_target, read_offset, write_offset, size)
+    }
+
+    fn copy_tex_sub_image_2d(&self, target: u32, level: i32, xoffset: i32, yoffset: i32, x: i32, y: i32, width: i32, height: i32) {
+        self.reached(29);
+        self.inner.copy_tex_sub_image_2d(target, level, xoffset, yoffset, x, y, width, height)
+    }
+
+    fn copy_tex_sub_image_3d(&self, target: u32, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, x: i32, y: i32, width: i32, height: i32) {
+        self.reached(30);
+        self.inner.copy_tex_sub_image_3d(target, level, xoffset, yoffset, zoffset, x, y, width, height)
+    }
+
+    fn create_program(&self) -> u32 {
+        self.reached(31);
+        self.inner.create_program()
+    }
+
+    fn create_shader(&self, type_: u32) -> u32 {
+        self.reached(32);
+        self.inner.create_shader(type_)
+    }
+
+    fn cull_face(&self, mode: u32) {
+        self.reached(33);
+        self.inner.cull_face(mode)
+    }
+
+    fn delete_buffers(&self, buffers: &[u32]) {
+        self.reached(34);
+        self.inner.delete_buffers(buffers)
+    }
+
+    fn delete_framebuffers(&self, framebuffers: &[u32]) {
+        self.reached(35);
+        self.inner.delete_framebuffers(framebuffers)
+    }
+
+    fn delete_program(&self, program: u32) {
+        self.reached(36);
+        self.inner.delete_program(program)
+    }
+
+    fn delete_queries(&self, ids: &[u32]) {
+        self.reached(37);
+        self.inner.delete_queries(ids)
+    }
+
+    fn delete_renderbuffers(&self, renderbuffers: &[u32]) {
+        self.reached(38);
+        self.inner.delete_renderbuffers(renderbuffers)
+    }
+
+    fn delete_samplers(&self, samplers: &[u32]) {
+        self.reached(39);
+        self.inner.delete_samplers(samplers)
+    }
+
+    fn delete_shader(&self, shader: u32) {
+        self.reached(40);
+        self.inner.delete_shader(shader)
+    }
+
+    fn delete_sync(&self, sync: &Self::Fence) {
+        self.reached(41);
+        self.inner.delete_sync(sync)
+    }
+
+    fn delete_textures(&self, textures: &[u32]) {
+        self.reached(42);
+        self.inner.delete_textures(textures)
+    }
+
+    fn delete_vertex_arrays(&self, arrays: &[u32]) {
+        self.reached(43);
+        self.inner.delete_vertex_arrays(arrays)
+    }
+
+    fn depth_func(&self, func: u32) {
+        self.reached(44);
+        self.inner.depth_func(func)
+    }
+
+    fn depth_mask(&self, flag: bool) {
+        self.reached(45);
+        self.inner.depth_mask(flag)
+    }
+
+    fn depth_rangef(&self, n: f32, f: f32) {
+        self.reached(46);
+        self.inner.depth_rangef(n, f)
+    }
+
+    fn detach_shader(&self, program: u32, shader: u32) {
+        self.reached(47);
+        self.inner.detach_shader(program, shader)
+    }
+
+    fn disable(&self, cap: u32) {
+        self.reached(48);
+        self.inner.disable(cap)
+    }
+
+    fn disable_vertex_attrib_array(&self, index: u32) {
+        self.reached(49);
+        self.inner.disable_vertex_attrib_array(index)
+    }
+
+    fn draw_arrays(&self, mode: u32, first: i32, count: i32) {
+        self.reached(50);
+        self.inner.draw_arrays(mode, first, count)
+    }
+
+    fn draw_arrays_instanced(&self, mode: u32, first: i32, count: i32, instancecount: i32) {
+        self.reached(51);
+        self.inner.draw_arrays_instanced(mode, first, count, instancecount)
+    }
+
+    fn draw_buffers(&self, bufs: &[u32]) {
+        self.reached(52);
+        self.inner.draw_buffers(bufs)
+    }
+
+    fn draw_elements_instanced(&self, mode: u32, count: i32, type_: u32, indices: u64, instancecount: i32) {
+        self.reached(53);
+        self.inner.draw_elements_instanced(mode, count, type_, indices, instancecount)
+    }
+
+    fn enable(&self, cap: u32) {
+        self.reached(54);
+        self.inner.enable(cap)
+    }
+
+    fn enable_vertex_attrib_array(&self, index: u32) {
+        self.reached(55);
+        self.inner.enable_vertex_attrib_array(index)
+    }
+
+    fn end_query(&self, target: u32) {
+        self.reached(56);
+        self.inner.end_query(target)
+    }
+
+    fn end_transform_feedback(&self) {
+        self.reached(57);
+        self.inner.end_transform_feedback()
+    }
+
+    fn fence_sync(&self, condition: u32, flags: u32) -> Option<Self::Fence> {
+        self.reached(58);
+        self.inner.fence_sync(condition, flags)
+    }
+
+    fn finish(&self) {
+        self.reached(59);
+        self.inner.finish()
+    }
+
+    fn flush(&self) {
+        self.reached(60);
+        self.inner.flush()
+    }
+
+    fn framebuffer_renderbuffer(&self, target: u32, attachment: u32, renderbuffertarget: u32, renderbuffer: u32) {
+        self.reached(61);
+        self.inner.framebuffer_renderbuffer(target, attachment, renderbuffertarget, renderbuffer)
+    }
+
+    fn framebuffer_texture_2d(&self, target: u32, attachment: u32, textarget: u32, texture: u32, level: i32) {
+        self.reached(62);
+        self.inner.framebuffer_texture_2d(target, attachment, textarget, texture, level)
+    }
+
+    fn framebuffer_texture_layer(&self, target: u32, attachment: u32, texture: u32, level: i32, layer: i32) {
+        self.reached(63);
+        self.inner.framebuffer_texture_layer(target, attachment, texture, level, layer)
+    }
+
+    fn front_face(&self, mode: u32) {
+        self.reached(64);
+        self.inner.front_face(mode)
+    }
+
+    fn gen_buffers(&self, buffers: &mut [u32]) {
+        self.reached(65);
+        self.inner.gen_buffers(buffers)
+    }
+
+    fn gen_framebuffers(&self, framebuffers: &mut [u32]) {
+        self.reached(66);
+        self.inner.gen_framebuffers(framebuffers)
+    }
+
+    fn gen_queries(&self, ids: &mut [u32]) {
+        self.reached(67);
+        self.inner.gen_queries(ids)
+    }
+
+    fn gen_renderbuffers(&self, renderbuffers: &mut [u32]) {
+        self.reached(68);
+        self.inner.gen_renderbuffers(renderbuffers)
+    }
+
+    fn gen_samplers(&self, samplers: &mut [u32]) {
+        self.reached(69);
+        self.inner.gen_samplers(samplers)
+    }
+
+    fn gen_textures(&self, textures: &mut [u32]) {
+        self.reached(70);
+        self.inner.gen_textures(textures)
+    }
+
+    fn gen_vertex_arrays(&self, arrays: &mut [u32]) {
+        self.reached(71);
+        self.inner.gen_vertex_arrays(arrays)
+    }
+
+    fn generate_mipmap(&self, target: u32) {
+        self.reached(72);
+        self.inner.generate_mipmap(target)
+    }
+
+    fn get_booleanv(&self, pname: u32, data: &mut [bool]) {
+        self.reached(73);
+        self.inner.get_booleanv(pname, data)
+    }
+
+    fn get_error(&self) -> u32 {
+        self.reached(74);
+        self.inner.get_error()
+    }
+
+    fn get_floatv(&self, pname: u32, data: &mut [f32]) {
+        self.reached(75);
+        self.inner.get_floatv(pname, data)
+    }
+
+    fn get_integer64v(&self, pname: u32, data: &mut [i64]) {
+        self.reached(76);
+        self.inner.get_integer64v(pname, data)
+    }
+
+    fn get_integerv(&self, pname: u32, data: &mut [i32]) {
+        self.reached(77);
+        self.inner.get_integerv(pname, data)
+    }
+
+    fn get_internalformativ(&self, target: u32, internalformat: u32, pname: u32, params: &mut [i32]) {
+        self.reached(78);
+        self.inner.get_internalformativ(target, internalformat, pname, params)
+    }
+
+    fn get_program_info_log(&self, program: u32, info_log: &mut [u8]) -> i32 {
+        self.reached(79);
+        self.inner.get_program_info_log(program, info_log)
+    }
+
+    fn get_programiv(&self, program: u32, pname: u32, params: &mut [i32]) {
+        self.reached(80);
+        self.inner.get_programiv(program, pname, params)
+    }
+
+    fn get_query_objectuiv(&self, id: u32, pname: u32, params: &mut [u32]) {
+        self.reached(81);
+        self.inner.get_query_objectuiv(id, pname, params)
+    }
+
+    fn get_shader_info_log(&self, shader: u32, info_log: &mut [u8]) -> i32 {
+        self.reached(82);
+        self.inner.get_shader_info_log(shader, info_log)
+    }
+
+    fn get_shaderiv(&self, shader: u32, pname: u32, params: &mut [i32]) {
+        self.reached(83);
+        self.inner.get_shaderiv(shader, pname, params)
+    }
+
+    fn get_string(&self, name: u32) -> Option<Vec<u8>> {
+        self.reached(84);
+        self.inner.get_string(name)
+    }
+
+    fn get_stringi(&self, name: u32, index: u32) -> Option<Vec<u8>> {
+        self.reached(85);
+        self.inner.get_stringi(name, index)
+    }
+
+    fn get_synciv(&self, sync: &Self::Fence, pname: u32, values: &mut [i32]) -> i32 {
+        self.reached(86);
+        self.inner.get_synciv(sync, pname, values)
+    }
+
+    fn get_uniform_block_index(&self, program: u32, uniform_block_name: &core::ffi::CStr) -> u32 {
+        self.reached(87);
+        self.inner.get_uniform_block_index(program, uniform_block_name)
+    }
+
+    fn get_uniform_location(&self, program: u32, name: &core::ffi::CStr) -> i32 {
+        self.reached(88);
+        self.inner.get_uniform_location(program, name)
+    }
+
+    fn get_vertex_attribiv(&self, index: u32, pname: u32, params: &mut [i32]) {
+        self.reached(89);
+        self.inner.get_vertex_attribiv(index, pname, params)
+    }
+
+    fn invalidate_framebuffer(&self, target: u32, attachments: &[u32]) {
+        self.reached(90);
+        self.inner.invalidate_framebuffer(target, attachments)
+    }
+
+    fn link_program(&self, program: u32) {
+        self.reached(91);
+        self.inner.link_program(program)
+    }
+
+    fn pixel_storei(&self, pname: u32, param: i32) {
+        self.reached(92);
+        self.inner.pixel_storei(pname, param)
+    }
+
+    fn polygon_offset(&self, factor: f32, units: f32) {
+        self.reached(93);
+        self.inner.polygon_offset(factor, units)
+    }
+
+    fn read_pixels(&self, x: i32, y: i32, width: i32, height: i32, format: u32, type_: u32, pixels: PixelPack<'_>) {
+        self.reached(94);
+        self.inner.read_pixels(x, y, width, height, format, type_, pixels)
+    }
+
+    fn renderbuffer_storage(&self, target: u32, internalformat: u32, width: i32, height: i32) {
+        self.reached(95);
+        self.inner.renderbuffer_storage(target, internalformat, width, height)
+    }
+
+    fn renderbuffer_storage_multisample(&self, target: u32, samples: i32, internalformat: u32, width: i32, height: i32) {
+        self.reached(96);
+        self.inner.renderbuffer_storage_multisample(target, samples, internalformat, width, height)
+    }
+
+    fn sampler_parameterf(&self, sampler: u32, pname: u32, param: f32) {
+        self.reached(97);
+        self.inner.sampler_parameterf(sampler, pname, param)
+    }
+
+    fn sampler_parameteri(&self, sampler: u32, pname: u32, param: i32) {
+        self.reached(98);
+        self.inner.sampler_parameteri(sampler, pname, param)
+    }
+
+    fn scissor(&self, x: i32, y: i32, width: i32, height: i32) {
+        self.reached(99);
+        self.inner.scissor(x, y, width, height)
+    }
+
+    fn shader_source(&self, shader: u32, string: &[&[u8]]) {
+        self.reached(100);
+        self.inner.shader_source(shader, string)
+    }
+
+    fn stencil_func(&self, func: u32, ref_: i32, mask: u32) {
+        self.reached(101);
+        self.inner.stencil_func(func, ref_, mask)
+    }
+
+    fn stencil_func_separate(&self, face: u32, func: u32, ref_: i32, mask: u32) {
+        self.reached(102);
+        self.inner.stencil_func_separate(face, func, ref_, mask)
+    }
+
+    fn stencil_mask(&self, mask: u32) {
+        self.reached(103);
+        self.inner.stencil_mask(mask)
+    }
+
+    fn stencil_op(&self, fail: u32, zfail: u32, zpass: u32) {
+        self.reached(104);
+        self.inner.stencil_op(fail, zfail, zpass)
+    }
+
+    fn stencil_op_separate(&self, face: u32, sfail: u32, dpfail: u32, dppass: u32) {
+        self.reached(105);
+        self.inner.stencil_op_separate(face, sfail, dpfail, dppass)
+    }
+
+    fn tex_parameteri(&self, target: u32, pname: u32, param: i32) {
+        self.reached(106);
+        self.inner.tex_parameteri(target, pname, param)
+    }
+
+    fn tex_storage_2d(&self, target: u32, levels: i32, internalformat: u32, width: i32, height: i32) {
+        self.reached(107);
+        self.inner.tex_storage_2d(target, levels, internalformat, width, height)
+    }
+
+    fn tex_storage_3d(&self, target: u32, levels: i32, internalformat: u32, width: i32, height: i32, depth: i32) {
+        self.reached(108);
+        self.inner.tex_storage_3d(target, levels, internalformat, width, height, depth)
+    }
+
+    fn tex_sub_image_2d(&self, target: u32, level: i32, xoffset: i32, yoffset: i32, width: i32, height: i32, format: u32, type_: u32, pixels: PixelUnpack<'_>) {
+        self.reached(109);
+        self.inner.tex_sub_image_2d(target, level, xoffset, yoffset, width, height, format, type_, pixels)
+    }
+
+    fn tex_sub_image_3d(&self, target: u32, level: i32, xoffset: i32, yoffset: i32, zoffset: i32, width: i32, height: i32, depth: i32, format: u32, type_: u32, pixels: PixelUnpack<'_>) {
+        self.reached(110);
+        self.inner.tex_sub_image_3d(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type_, pixels)
+    }
+
+    fn transform_feedback_varyings(&self, program: u32, varyings: &[&core::ffi::CStr], buffer_mode: u32) {
+        self.reached(111);
+        self.inner.transform_feedback_varyings(program, varyings, buffer_mode)
+    }
+
+    fn uniform1f(&self, location: i32, v0: f32) {
+        self.reached(112);
+        self.inner.uniform1f(location, v0)
+    }
+
+    fn uniform1fv(&self, location: i32, value: &[f32]) {
+        self.reached(113);
+        self.inner.uniform1fv(location, value)
+    }
+
+    fn uniform1i(&self, location: i32, v0: i32) {
+        self.reached(114);
+        self.inner.uniform1i(location, v0)
+    }
+
+    fn uniform1iv(&self, location: i32, value: &[i32]) {
+        self.reached(115);
+        self.inner.uniform1iv(location, value)
+    }
+
+    fn uniform1ui(&self, location: i32, v0: u32) {
+        self.reached(116);
+        self.inner.uniform1ui(location, v0)
+    }
+
+    fn uniform1uiv(&self, location: i32, value: &[u32]) {
+        self.reached(117);
+        self.inner.uniform1uiv(location, value)
+    }
+
+    fn uniform2f(&self, location: i32, v0: f32, v1: f32) {
+        self.reached(118);
+        self.inner.uniform2f(location, v0, v1)
+    }
+
+    fn uniform2fv(&self, location: i32, value: &[f32]) {
+        self.reached(119);
+        self.inner.uniform2fv(location, value)
+    }
+
+    fn uniform2iv(&self, location: i32, value: &[i32]) {
+        self.reached(120);
+        self.inner.uniform2iv(location, value)
+    }
+
+    fn uniform2uiv(&self, location: i32, value: &[u32]) {
+        self.reached(121);
+        self.inner.uniform2uiv(location, value)
+    }
+
+    fn uniform3fv(&self, location: i32, value: &[f32]) {
+        self.reached(122);
+        self.inner.uniform3fv(location, value)
+    }
+
+    fn uniform3i(&self, location: i32, v0: i32, v1: i32, v2: i32) {
+        self.reached(123);
+        self.inner.uniform3i(location, v0, v1, v2)
+    }
+
+    fn uniform3iv(&self, location: i32, value: &[i32]) {
+        self.reached(124);
+        self.inner.uniform3iv(location, value)
+    }
+
+    fn uniform3uiv(&self, location: i32, value: &[u32]) {
+        self.reached(125);
+        self.inner.uniform3uiv(location, value)
+    }
+
+    fn uniform4fv(&self, location: i32, value: &[f32]) {
+        self.reached(126);
+        self.inner.uniform4fv(location, value)
+    }
+
+    fn uniform4iv(&self, location: i32, value: &[i32]) {
+        self.reached(127);
+        self.inner.uniform4iv(location, value)
+    }
+
+    fn uniform4uiv(&self, location: i32, value: &[u32]) {
+        self.reached(128);
+        self.inner.uniform4uiv(location, value)
+    }
+
+    fn uniform_block_binding(&self, program: u32, uniform_block_index: u32, uniform_block_binding: u32) {
+        self.reached(129);
+        self.inner.uniform_block_binding(program, uniform_block_index, uniform_block_binding)
+    }
+
+    fn uniform_matrix2fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(130);
+        self.inner.uniform_matrix2fv(location, transpose, value)
+    }
+
+    fn uniform_matrix2x3fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(131);
+        self.inner.uniform_matrix2x3fv(location, transpose, value)
+    }
+
+    fn uniform_matrix2x4fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(132);
+        self.inner.uniform_matrix2x4fv(location, transpose, value)
+    }
+
+    fn uniform_matrix3fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(133);
+        self.inner.uniform_matrix3fv(location, transpose, value)
+    }
+
+    fn uniform_matrix3x2fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(134);
+        self.inner.uniform_matrix3x2fv(location, transpose, value)
+    }
+
+    fn uniform_matrix3x4fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(135);
+        self.inner.uniform_matrix3x4fv(location, transpose, value)
+    }
+
+    fn uniform_matrix4fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(136);
+        self.inner.uniform_matrix4fv(location, transpose, value)
+    }
+
+    fn uniform_matrix4x2fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(137);
+        self.inner.uniform_matrix4x2fv(location, transpose, value)
+    }
+
+    fn uniform_matrix4x3fv(&self, location: i32, transpose: bool, value: &[f32]) {
+        self.reached(138);
+        self.inner.uniform_matrix4x3fv(location, transpose, value)
+    }
+
+    fn use_program(&self, program: u32) {
+        self.reached(139);
+        self.inner.use_program(program)
+    }
+
+    fn vertex_attrib_divisor(&self, index: u32, divisor: u32) {
+        self.reached(140);
+        self.inner.vertex_attrib_divisor(index, divisor)
+    }
+
+    fn vertex_attrib_i_pointer(&self, index: u32, size: i32, type_: u32, stride: i32, pointer: u64) {
+        self.reached(141);
+        self.inner.vertex_attrib_i_pointer(index, size, type_, stride, pointer)
+    }
+
+    fn vertex_attrib_pointer(&self, index: u32, size: i32, type_: u32, normalized: bool, stride: i32, pointer: u64) {
+        self.reached(142);
+        self.inner.vertex_attrib_pointer(index, size, type_, normalized, stride, pointer)
+    }
+
+    fn viewport(&self, x: i32, y: i32, width: i32, height: i32) {
+        self.reached(143);
+        self.inner.viewport(x, y, width, height)
+    }
+
+    fn blend_equation_separatei_oes(&self, buf: u32, mode_rgb: u32, mode_alpha: u32) -> Option<()> {
+        self.reached(144);
+        self.inner.blend_equation_separatei_oes(buf, mode_rgb, mode_alpha)
+    }
+
+    fn blend_func_separatei_oes(&self, buf: u32, src_rgb: u32, dst_rgb: u32, src_alpha: u32, dst_alpha: u32) -> Option<()> {
+        self.reached(145);
+        self.inner.blend_func_separatei_oes(buf, src_rgb, dst_rgb, src_alpha, dst_alpha)
+    }
+
+    fn clip_control_ext(&self, origin: u32, depth: u32) -> Option<()> {
+        self.reached(146);
+        self.inner.clip_control_ext(origin, depth)
+    }
+
+    fn color_maski_oes(&self, index: u32, r: bool, g: bool, b: bool, a: bool) -> Option<()> {
+        self.reached(147);
+        self.inner.color_maski_oes(index, r, g, b, a)
+    }
+
+    fn disablei_oes(&self, target: u32, index: u32) -> Option<()> {
+        self.reached(148);
+        self.inner.disablei_oes(target, index)
+    }
+
+    fn enablei_oes(&self, target: u32, index: u32) -> Option<()> {
+        self.reached(149);
+        self.inner.enablei_oes(target, index)
+    }
+
+    fn get_query_objectui64v_ext(&self, id: u32, pname: u32, params: &mut [u64]) -> Option<()> {
+        self.reached(150);
+        self.inner.get_query_objectui64v_ext(id, pname, params)
+    }
+
+    fn get_queryiv_ext(&self, target: u32, pname: u32, params: &mut [i32]) -> Option<()> {
+        self.reached(151);
+        self.inner.get_queryiv_ext(target, pname, params)
+    }
+
+    fn polygon_mode_angle(&self, face: u32, mode: u32) -> Option<()> {
+        self.reached(152);
+        self.inner.polygon_mode_angle(face, mode)
+    }
+
+    fn polygon_offset_clamp_ext(&self, factor: f32, units: f32, clamp: f32) -> Option<()> {
+        self.reached(153);
+        self.inner.polygon_offset_clamp_ext(factor, units, clamp)
+    }
+
+    fn provoking_vertex_angle(&self, provoke_mode: u32) -> Option<()> {
+        self.reached(154);
+        self.inner.provoking_vertex_angle(provoke_mode)
+    }
+
+    fn query_counter_ext(&self, id: u32, target: u32) -> Option<()> {
+        self.reached(155);
+        self.inner.query_counter_ext(id, target)
+    }
+
+    fn map_buffer_range_read(&self, target: u32, offset: i64, data: &mut [u8]) -> bool {
+        self.inner.map_buffer_range_read(target, offset, data)
+    }
+}
+
+/// An implementation of `Egl` whose every call that reaches one of the wrapped implementation's methods is counted,
+/// by the method's place in the trait.
+pub struct CountedEgl<'a, E> {
+    inner: &'a E,
+    calls: Vec<std::cell::Cell<u64>>,
+}
+
+impl<'a, E> CountedEgl<'a, E> {
+    /// `inner` with no call counted.
+    pub fn new(inner: &'a E) -> Self {
+        CountedEgl { inner, calls: (0..15).map(|_| std::cell::Cell::new(0)).collect() }
+    }
+
+    fn reached(&self, at: usize) {
+        if let Some(count) = self.calls.get(at) {
+            count.set(count.get() + 1);
+        }
+    }
+
+    /// The calls that reached each method, by its place in the trait.
+    pub fn calls(&self) -> Vec<u64> {
+        self.calls.iter().map(std::cell::Cell::get).collect()
+    }
+}
+
+impl<E: Egl> Egl for CountedEgl<'_, E> {
+    type Config = E::Config;
+    type Context = E::Context;
+    type Display = E::Display;
+    type Surface = E::Surface;
+
+    /// A wrapper is made only of a library already loaded.
+    fn load(_folder: Option<&std::path::Path>) -> Option<Self> {
+        None
+    }
+
+    fn bind_api(&self, api: u32) -> bool {
+        self.reached(0);
+        self.inner.bind_api(api)
+    }
+
+    fn choose_config(&self, dpy: &Self::Display, attrib_list: &[i32], configs: &mut [Option<Self::Config>]) -> Option<i32> {
+        self.reached(1);
+        self.inner.choose_config(dpy, attrib_list, configs)
+    }
+
+    fn create_context(&self, dpy: &Self::Display, config: &Self::Config, share_context: Option<&Self::Context>, attrib_list: &[i32]) -> Option<Self::Context> {
+        self.reached(2);
+        self.inner.create_context(dpy, config, share_context, attrib_list)
+    }
+
+    fn create_pbuffer_surface(&self, dpy: &Self::Display, config: &Self::Config, attrib_list: &[i32]) -> Option<Self::Surface> {
+        self.reached(3);
+        self.inner.create_pbuffer_surface(dpy, config, attrib_list)
+    }
+
+    fn destroy_context(&self, dpy: &Self::Display, ctx: &Self::Context) -> bool {
+        self.reached(4);
+        self.inner.destroy_context(dpy, ctx)
+    }
+
+    fn destroy_surface(&self, dpy: &Self::Display, surface: &Self::Surface) -> bool {
+        self.reached(5);
+        self.inner.destroy_surface(dpy, surface)
+    }
+
+    fn get_config_attrib(&self, dpy: &Self::Display, config: &Self::Config, attribute: i32) -> Option<i32> {
+        self.reached(6);
+        self.inner.get_config_attrib(dpy, config, attribute)
+    }
+
+    fn get_display(&self) -> Option<Self::Display> {
+        self.reached(7);
+        self.inner.get_display()
+    }
+
+    fn get_error(&self) -> i32 {
+        self.reached(8);
+        self.inner.get_error()
+    }
+
+    fn initialize(&self, dpy: &Self::Display) -> Option<(i32, i32)> {
+        self.reached(9);
+        self.inner.initialize(dpy)
+    }
+
+    fn make_current(&self, dpy: &Self::Display, draw: Option<&Self::Surface>, read: Option<&Self::Surface>, ctx: Option<&Self::Context>) -> bool {
+        self.reached(10);
+        self.inner.make_current(dpy, draw, read, ctx)
+    }
+
+    fn query_string(&self, dpy: Option<&Self::Display>, name: i32) -> Option<Vec<u8>> {
+        self.reached(11);
+        self.inner.query_string(dpy, name)
+    }
+
+    fn query_surface(&self, dpy: &Self::Display, surface: &Self::Surface, attribute: i32) -> Option<i32> {
+        self.reached(12);
+        self.inner.query_surface(dpy, surface, attribute)
+    }
+
+    fn swap_buffers(&self, dpy: &Self::Display, surface: &Self::Surface) -> bool {
+        self.reached(13);
+        self.inner.swap_buffers(dpy, surface)
+    }
+
+    fn swap_interval(&self, dpy: &Self::Display, interval: i32) -> bool {
+        self.reached(14);
+        self.inner.swap_interval(dpy, interval)
+    }
+}
+
+/// The EGL methods of the trait (the counting wrapper's places).
+pub const EGL_TRAIT_METHODS: usize = 15;
+
+/// The places of the methods `call_one` never calls (glClientWaitSync and glFinish).
+pub const NOT_FUZZED: [usize; 2] = [23, 59];
 
 /// Calls each extension's command; one answering while the context names none of its extensions fails.
 fn extension_calls<G: OpenGlEs>(gl: &G, named: &dyn Fn(&[&str]) -> bool) {

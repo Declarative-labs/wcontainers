@@ -22,7 +22,7 @@ if has generate; then
     printf '%s\n' "${inputs[@]}"
     step "the generator: build with every warning, and its tests"
     (cd "$generator" && CARGO_TARGET_DIR=$work/generator cargo build -j "$jobs" --release 2>&1 | grep -E '^(warning|error)|-->' ; echo "build status ${PIPESTATUS[0]}")
-    (cd "$generator" && CARGO_TARGET_DIR=$work/generator cargo test -j "$jobs" --release 2>&1 | grep -E '^test |test result|panicked'; echo "test status ${PIPESTATUS[0]}")
+    (cd "$generator" && CARGO_TARGET_DIR=$work/generator cargo test -j "$jobs" --release --bins 2>&1 | grep -E '^test |test result|panicked'; echo "test status ${PIPESTATUS[0]}")
     binary=$work/generator/release/api-crate-generator
     step "generate twice"
     rm -rf "$work/first" "$work/second"

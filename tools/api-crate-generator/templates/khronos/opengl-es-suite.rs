@@ -1281,38 +1281,45 @@ pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64, c
     let _ = second.initialize(&second_display);
     let mut second_configs = vec![None; 2];
     let _ = second.choose_config(&second_display, &[egl::NONE], &mut second_configs);
-    let mut handles = Handles::<E> {
+    // Every call reaches the implementations through counting wrappers, so what is counted is calls that reached each
+    // method, not numbers picked.
+    let (made_gl, other_gl, made_egl) = (CountedGl::new(&made.gl), CountedGl::new(&other.gl), CountedEgl::new(&made.egl));
+    let mut handles = Handles::<CountedEgl<'_, E>> {
         displays: vec![made.display.clone(), made.display.clone(), made.display.clone(), second_display],
         configs: second_configs.into_iter().flatten().collect(),
         contexts: Vec::new(),
         surfaces: Vec::new(),
     };
+    // The pools start with handles every EGL method can take: configs that make pbuffers (a surfaceless display has
+    // no window configs, which an empty list asks for), a context and a pbuffer made from one (the calls that take a
+    // surface or a context are then reached from the first call on; the fuzzing makes and destroys more).
     let mut own = vec![None; 4];
-    let _ = made.egl.choose_config(&made.display, &[egl::NONE], &mut own);
+    let _ = made.egl.choose_config(&made.display, &[egl::SURFACE_TYPE, egl::PBUFFER_BIT, egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT, egl::NONE], &mut own);
     handles.configs.extend(own.into_iter().flatten());
+    if let Some(config) = handles.configs.last().cloned() {
+        handles.contexts.extend(made.egl.create_context(&made.display, &config, None, &CONTEXT_ES3));
+        handles.surfaces.extend(made.egl.create_pbuffer_surface(&made.display, &config, &[egl::WIDTH, 4, egl::HEIGHT, 4, egl::NONE]));
+    }
+    assert!(!handles.contexts.is_empty() && !handles.surfaces.is_empty(), "the fuzzing starts with a context and a pbuffer of its own");
     let methods = u64::try_from(METHODS).unwrap_or(0);
-    let mut gl_methods = vec![0_u64; METHODS];
-    let mut egl_methods = vec![0_u64; usize::try_from(EGL_METHODS).unwrap_or(0)];
+    let mut picked_calls = 0;
     for _ in 0..calls {
         let picked = next(&mut state);
+        picked_calls += 1;
         if picked % 1024 < EGL_SHARE {
             let which = (picked >> 10) % EGL_METHODS;
-            if let Some(count) = usize::try_from(which).ok().and_then(|at| egl_methods.get_mut(at)) {
-                *count += 1;
-            }
-            egl_call(&made.egl, &mut handles, which, &mut state);
+            egl_call(&made_egl, &mut handles, which, &mut state);
             continue;
         }
-        let gl = if (picked >> 10).is_multiple_of(4) { &other.gl } else { &made.gl };
+        let gl = if (picked >> 10).is_multiple_of(4) { &other_gl } else { &made_gl };
         let Some(fence) = chosen(&fences, &mut state) else { continue };
         let which = usize::try_from((picked >> 12) % methods).unwrap_or(0);
-        if let Some(count) = gl_methods.get_mut(which) {
-            *count += 1;
-        }
         call_one(gl, &fence, which, usize::try_from(next(&mut state) >> 1).unwrap_or(0));
     }
+    let gl_methods = made_gl.calls().iter().zip(other_gl.calls()).map(|(made, other)| made + other).collect();
+    let egl_methods = made_egl.calls();
     let _ = made.egl.make_current(&made.display, None, None, None);
-    Fuzzed { calls, refused: (counts.gl)(&made.gl) + (counts.gl)(&other.gl), egl_refused: (counts.egl)(&made.egl), gl_methods, egl_methods }
+    Fuzzed { calls: picked_calls, refused: (counts.gl)(&made.gl) + (counts.gl)(&other.gl), egl_refused: (counts.egl)(&made.egl), gl_methods, egl_methods }
 }
 
 /// What `fuzz` did.
@@ -1323,9 +1330,10 @@ pub struct Fuzzed {
     pub refused: u64,
     /// EGL calls the implementation refused itself.
     pub egl_refused: u64,
-    /// The calls of each OpenGL ES method, by its place in `call_one`.
+    /// The calls that reached each OpenGL ES method of the implementation, by its place in the trait.
     pub gl_methods: Vec<u64>,
-    /// The calls of each EGL method, by its place in `egl_call`.
+    /// The calls that reached each EGL method of the implementation, by its place in the trait (`load` never: the
+    /// library is loaded before).
     pub egl_methods: Vec<u64>,
 }
 
@@ -1345,18 +1353,24 @@ const MEASURE_DRAWS: u64 = 1_000;
 pub fn fuzz_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
     let (seed, calls) = (given("WCONTAINERS_FUZZ_SEED", FUZZ_SEED), given("WCONTAINERS_FUZZ_CALLS", FUZZ_CALLS));
     let fuzzed = fuzz::<E, G>(folder, seed, calls, counts);
-    let (gl_never, egl_never) = (never_called(&fuzzed.gl_methods), never_called(&fuzzed.egl_methods));
+    let gl_never: Vec<usize> = never_called(&fuzzed.gl_methods).into_iter().filter(|at| !NOT_FUZZED.contains(at)).collect();
+    let egl_never = never_called(&fuzzed.egl_methods);
     println!(
-        "FUZZ seed {seed} calls {}, refused by the implementation itself: OpenGL ES {}, EGL {}; methods called: OpenGL ES {} of {METHODS}, EGL {} of {EGL_METHODS}",
+        "FUZZ seed {seed} calls {}, refused by the implementation itself: OpenGL ES {}, EGL {}; methods reached: OpenGL ES {} of {} fuzzed, EGL {} of {EGL_TRAIT_METHODS}; calls reached: OpenGL ES {}, EGL {}",
         fuzzed.calls,
         fuzzed.refused,
         fuzzed.egl_refused,
-        METHODS - gl_never.len(),
-        fuzzed.egl_methods.len() - egl_never.len()
+        METHODS - NOT_FUZZED.len() - gl_never.len(),
+        METHODS - NOT_FUZZED.len(),
+        fuzzed.egl_methods.len() - egl_never.len(),
+        fuzzed.gl_methods.iter().sum::<u64>(),
+        fuzzed.egl_methods.iter().sum::<u64>()
     );
     // What the run is for: every method called with hostile arguments, the process still standing, and some calls
     // refused by the implementation itself (its checks were reached).
     assert_eq!(fuzzed.calls, calls, "every call picked");
+    assert_eq!(fuzzed.gl_methods.len(), METHODS, "a count for each OpenGL ES method");
+    assert_eq!(fuzzed.egl_methods.len(), EGL_TRAIT_METHODS, "a count for each EGL method");
     assert!(gl_never.is_empty() && egl_never.is_empty(), "methods never called in seed {seed}: OpenGL ES {gl_never:?}, EGL {egl_never:?}");
     assert!(fuzzed.refused > 0 && fuzzed.egl_refused > 0, "the implementation refused no call in seed {seed}: {} {}", fuzzed.refused, fuzzed.egl_refused);
 }

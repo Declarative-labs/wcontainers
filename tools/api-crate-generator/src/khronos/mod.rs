@@ -44,8 +44,10 @@ pub fn generate(gl: &str, egl: &str, angle: &str, out: &std::path::Path) -> Resu
     if !failures.is_empty() {
         return Err(format!("CLASSIFY FAILED:\n{}", failures.join("\n")));
     }
+    // The OpenGL ES suite counts the EGL calls that reach the implementation too: it takes EGL's set.
+    let egl = written.iter().find(|(set, _, _)| set.api == "egl").map(|(set, _, classified)| (*set, classified));
     for (set, registry, classified) in &written {
-        report.push_str(&write::write(registry, &[set], std::slice::from_ref(classified), out, &TEMPLATES)?);
+        report.push_str(&write::write(registry, &[set], std::slice::from_ref(classified), egl, out, &TEMPLATES)?);
     }
     Ok(report)
 }
