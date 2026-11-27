@@ -4404,7 +4404,9 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<B: Gpu>(m
 
 /// As [`copy_within_one_subresource`] for a format whose depth reads back as a value, not its
 /// bytes, and whose one copy moves its stencil too where it has one: depth written and read in
-/// eighths (24-bit depth within one step of 2^-24), stencil any.
+/// eighths, stencil any. 24-bit depth reads back as the word written where the back end stores it as
+/// 24-bit unorm ([`Features::DEPTH24_UNORM`]), otherwise within one step of 2^-24 (it is stored as a
+/// float).
 fn copy_within_one_depth_subresource<B: Gpu>(b: &mut B, format: Format) {
     let has_stencil = format != Format::Depth24Plus;
     let t = texture(
@@ -4454,13 +4456,15 @@ fn copy_within_one_depth_subresource<B: Gpu>(b: &mut B, format: Format) {
     // Texel i holds what texel `from(i)` held: the right half of each row takes its left half.
     let from = |i: usize| if i % 4 >= 2 { i - 2 } else { i };
     let got = read_texture(b, aspect(false), extent(4, 2, 1), 4);
+    let unorm24 = b.caps().features.contains(Features::DEPTH24_UNORM);
     let step = match format {
-        Format::Depth24Plus | Format::Depth24PlusStencil8 => 1.0 / 16_777_215.0,
+        Format::Depth24Plus | Format::Depth24PlusStencil8 if !unorm24 => 1.0 / 16_777_215.0,
         _ => 0.0,
     };
     for i in 0..8 {
         let g = decode_depth(format, &got[i * 4..i * 4 + 4]);
-        let e = eighth(from(i));
+        // The value written, as its format holds it.
+        let e = decode_depth(format, &depth[from(i) * 4..from(i) * 4 + 4]);
         assert!(
             (g - e).abs() <= step,
             "{format:?} depth of texel {i}: {g}, not {e}"
@@ -7060,7 +7064,8 @@ const DEPTH24_WORDS: [u32; 18] = [
 
 /// Copies 24-bit depth words from a buffer into a region of a two-layer texture and back out into another buffer,
 /// each at an offset and a row pitch past the region's rows, with rows between the layers: for `Depth24Plus` and for
-/// the depth of `Depth24PlusStencil8`, every word comes back within one step of 2^-24, the bytes between rows and
+/// the depth of `Depth24PlusStencil8`, every word comes back bit for bit where the back end stores 24-bit depth as
+/// 24-bit unorm ([`Features::DEPTH24_UNORM`]) and otherwise within one step of 2^-24, the bytes between rows and
 /// layers are kept, the texels around the region keep their depth, and the stencil keeps its bytes. Where the format
 /// copies out.
 pub fn depth_copies_through_buffers_keep_their_pitches_and_values<B: Gpu>(mut b: B) {
@@ -7166,7 +7171,9 @@ fn depth_copies_through_buffers<B: Gpu>(b: &mut B, format: Format) {
         extent(rw, rh, layers),
     );
     let got = read_buffer(b, &dst, 0, u64::from(out_size));
-    let near = |got: u32, expected: u32| (got & 0xff_ffff).abs_diff(expected) <= 1;
+    // Stored as 24-bit unorm, a word moves unchanged; stored as a float, it may come back one step off.
+    let tolerance = u32::from(!b.caps().features.contains(Features::DEPTH24_UNORM));
+    let near = |got: u32, expected: u32| (got & 0xff_ffff).abs_diff(expected) <= tolerance;
     let mut expected = before;
     for layer in 0..layers {
         for y in 0..rh {
