@@ -28,6 +28,10 @@ const ROOM: usize = 64;
 /// The vertex attributes checked before a draw, at most (OpenGL ES 3.2 asks for 16; no implementation gives 64).
 const MOST_ATTRIBUTES: u32 = 64;
 
+/// The most extensions the glue reads a context's names of: past any real library's (Mesa and ANGLE name a few
+/// hundred), so that a library answering a count it cannot have does not keep the glue asking for ever.
+const MOST_EXTENSIONS: u32 = 4096;
+
 /// Each context's number, which its fences carry.
 static NEXT_CONTEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -318,7 +322,7 @@ impl OpenGlEsContext {
     /// Whether the context names any of the extensions (read once, by glGetStringi).
     fn has_extension(&self, names: &[&CStr]) -> bool {
         let extensions = self.extensions.get_or_init(|| {
-            let count = u32::try_from(self.integer(constants::NUM_EXTENSIONS)).unwrap_or(0);
+            let count = u32::try_from(self.integer(constants::NUM_EXTENSIONS)).unwrap_or(0).min(MOST_EXTENSIONS);
             let Some(get) = self.entries.get_stringi else { return Vec::new() };
             (0..count)
                 .filter_map(|index| {
