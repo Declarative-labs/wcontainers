@@ -1254,6 +1254,161 @@ makes (E), what llvmpipe stores for it and what the read program gives back:
   GI6's removal on question 1.
 - Not done: the hostile-guest suite (none exists; the thread-test design review is still owed to the owner).
 
+## The twelfth and thirteenth runs (2026-11-27): both webgl failures fixed, nir on the Mesa compiler's typed chain, the OpenGL ES items, the page harness
+
+Logs in the scratch folder graphics-implementations/r12/ (the twelfth run: dev*.log, at-92cfc5a76-x86.log) and r13/
+(dev13a-x86.log and -arm.log, at-93ad9bfa6-x86.log and -arm.log, the outputs at-93ad9bfa6-x86/out); the job is
+r13/tools/r13-job.sh (at-ade36e509 and at-07e3baae7 logs are the last two commits); the 24-bit depth model r13/tools/d24model.py; the linter tables r13/tools/lint_table.py. The
+twelfth run pushed four commits and ended before writing them here; this section records both runs.
+
+### His main
+
+- `git fetch /Users/thomaseaton/Documents/GitHub/wcontainers main` gives ac696ea19; `git merge-base --is-ancestor
+  FETCH_HEAD HEAD` exit 0: nothing to merge (MEASURED). The day's instruction-interface changes are in it; no
+  graphics crate names those interfaces (READ).
+
+### Commits
+
+- Twelfth run: d6ddfef3a (the egl, opengl-es and mesa-compiler crates from origin/graphics-api-crates 2624f6088: the
+  separate stencil calls of ac4e18eb7, the WebGL implementation of 44f2a1e9c, the owning contexts and the kept library
+  of d932fd4e0, the bridge and its build in the direct crate of ca2efaa55 and a125704bb); 2778d32da (nir drops its
+  copy of the bridge and its build: crates/nir/bridge/ removed, 5,909 lines out; nir's build compiles no C and hashes
+  the direct crate's bridge folder into the converter's version, so cache keys still follow the bridge; a program
+  links the bridge once, from the direct crate); c34db49e6 (the webgl fixes below; webgpu's 24-bit depth write and
+  read the same way; webgl's eight extension values from gl.xml dropped for the OpenGL ES crate's constants; the suite
+  gains `each_face_takes_its_own_stencil_operations`, so it holds 75 programs); 92cfc5a76 (the pages on the OpenGL ES crate's WebGL
+  implementation, the browser page running the shared suite, the Chrome launcher on the Linux machines).
+- Thirteenth run: 143d1953c (crates/mesa-compiler from origin/graphics-api-crates d6e535461, byte for byte: the trait
+  typing each shader by its place in the callers' chains; egl and opengl-es were already equal to that tip, MEASURED
+  by `git diff --stat HEAD origin/graphics-api-crates -- crates/egl crates/opengl-es`, empty); c057d4334 (nir on that
+  chain); 93ad9bfa6 (webgpu's 24-bit depth copies, its unit test, the page's formatting). Cargo.lock unchanged (hash
+  a13195fd6d21d7bc before and after every job, both machines).
+
+### 1. The two webgl failures and webgpu's fill
+
+- Edge rule (c34db49e6): the back end draws the suite's two triangles once at creation; where the upper-left clip
+  origin gives the bottom-left rule (llvmpipe through st/mesa, eleventh run), it draws with the lower-left origin and y
+  negated, keeping zero-to-one depth.
+- 24-bit depth (c34db49e6): written as the nearest float by integers only (`bits(v 2^-24) + 1`, zero kept), which no
+  compiler regroups; read by inverting the device's own conversion, which a probe at creation finds (the nearest float,
+  as Direct3D gives, or k times the rounded reciprocal, as llvmpipe and lavapipe give). webgpu's fill and read do the
+  same.
+- New this run (93ad9bfa6): webgpu copied 24-bit depth into 24-bit depth by writing the float it sampled, which
+  lavapipe stores as the next value in the upper part of each binade (MEASURED: `group_textures_copy_into_part_of_depth_exactly`,
+  texels stored k + 1, e.g. 13,123,517 read back 13,123,518; reproduced exactly by d24model.py). The copy now finds the
+  stored value as a read does and writes its nearest float. And `depth_and_stencil_parts_copy_and_read_back_exactly`
+  expected `round(d (2^24 - 1))` of the sampled float, the nearest-float model: on lavapipe the read gave exactly the
+  words written (texel 6: 7,158,282 = 6 x 0x123457) and the test's expectation was one high in 12 of 32 texels; the
+  test now expects the words written. On a GPU host the copy quantises a float-stored `depth24plus` to 24-bit steps,
+  as Direct3D's D24 does (INFERRED; no GPU host in this run).
+- MEASURED at the pushed 93ad9bfa6 (Mesa's EGL and lavapipe from the pinned Mesa, llvmpipe LLVM 21.1.8):
+
+| | x86-64 | ARM64 |
+|---|---|---|
+| gpu-webgl on Mesa's EGL, whole package | 92 passed, 0 failed (lib 17, shared suite 75 of 75) | the same (shared suite 75 of 75) |
+| opengl-es-direct | 17 passed | 17 passed |
+| gpu-webgpu on lavapipe | 157 passed, 3 failed, 4 ignored (was 155, 5, 4 at 92cfc5a76) | 157 passed, 3 failed, 4 ignored (the same three) |
+| shaders | 158 passed, 5 ignored | 158 passed, 5 ignored |
+| recording, gpu, trace | 349 passed | 349 passed |
+
+  At the tip 07e3baae7 (after 93ad9bfa6 only fill.rs's comments and literals changed): x86-64 webgpu on lavapipe
+  157 passed, 3 failed, 4 ignored, shaders 158 passed, checks as above, clippy and fmt exit 0; ARM64 the same (webgpu 157, 3, 4; shaders 158; checks, clippy and fmt exit 0).
+  The three webgpu failures, none ours, as recorded before: lavapipe's BC7 decoder (1.19e-3 off ours), its 16-bit
+  floats held at 32-bit precision in registers (`programs_compute_in_16_bit_floats`, ninth run), and the window read
+  only Windows and macOS have. The shared suite on webgpu over lavapipe: 74 of 75 (the 16-bit one).
+
+### 2. nir on the typed chain; its remaining 56 lines
+
+- The API track's d6e535461 replaced the per-step methods on one shader type by six types, one a place in the
+  callers' chains: `SpirvShader` (read), `SpirvCommon` (its common form: Zink's writer or flattened), `Received` (a
+  GLSL stage from st/mesa), `Prepared` (the driver's steps at creation, done inside the bridge), `Made` (pass-through
+  and point-square programs), `Variant` (a draw's steps, done inside the bridge, then flattened).
+- nir follows it (c057d4334): `SpirvProgram<M>`, `CommonProgram<M>`, `GlslStage<M>` with `Received<M>`, `Prepared<M>`
+  (the creation facts as fields: key, streamed outputs and strides, sample reads and mask, target fetch, formatless
+  images, integer-sampled units, named layer, pass-through programs, generic end, geometry vertices, control points,
+  points made), `Made<M>`, `Variant<M>` (its key and reflection) and `Squares<M>`; `DrawSettings` is the variant's
+  draw state. `direct::route` and `direct::module` take the flat form, so route B no longer names the compiler and
+  `route_patches` is gone (`Variant::flatten(points_in)`). Every number the chain gives is checked: the variant
+  result (`enum wc_variant_result`) and square kind (`enum wc_squares_kind`) join the binding result and kinds, each
+  refused by name.
+- What changed for the tests: GLSL programs now go through the driver's creation steps before their variant (as the
+  driver does); an integer cube map array that is also gathered is refused by name (the bridge refuses the variant);
+  a new test keeps the cube-to-2D-array load covered without the gather; the hostile compiler gains three refusals
+  (variant result, square kind, squares made with no program). The corpus's candidate A no longer takes GLSL
+  programs: the chain gives a draw's variant no Zink writer, so they report "not run" with that reason
+  (NEEDED-FROM-API-CRATES.md, thirteenth run, item 4).
+- MEASURED at 93ad9bfa6:
+
+| | x86-64 | ARM64 |
+|---|---|---|
+| check, Mesa on, `forbid`: mesa-compiler, -direct, -conformance; nir `--lib` | exit 0 | exit 0 |
+| check `--all-targets`, Mesa on, `forbid`: nir | exit 101, 43 unsafe errors, all in the corpus tests' llvmpipe.rs and lavapipe.rs | the same |
+| check without Mesa: nir, opengl, mesa-compiler-direct | exit 0 | exit 0 |
+| nir `--lib --test route --test hostile_compiler`, `forbid` | 39 passed (was 35) | 39 passed |
+| nir whole package, old table in the scratch copy | 52 passed, 2 ignored (was 48) | 52 passed, 2 ignored |
+| mesa-compiler-direct's own tests | 5 passed | 5 passed |
+| clippy `-D warnings` (nir, mesa-compiler, -direct; lib, route, hostile_compiler; and gpu-webgl, -webgpu, -conformance, -trace all targets) | exit 0 | exit 0 |
+| `cargo fmt --check` (nir, gpu-webgl, -webgpu, -conformance, -trace) | exit 0 | exit 0 |
+
+- opengl with Mesa on still does not compile (it was never under `forbid`): besides its own 1,497 unsafe errors, it
+  names the removed `Nir`, `from_raw`, `compiler_options` and `route_patches` (x86-64 1,506 errors, ARM64 1,505; 1,504 and 1,503 before). Its
+  creation and draw steps are now the chain's `received_prepare` and `prepared_variant`/`made_variant`; it moves with
+  the Gallium trait (AC8).
+- nir's 56 lines, READ: tests/corpus/llvmpipe.rs 39 (the GLSL references on llvmpipe: EGL with a desktop OpenGL 4.5
+  context and glow, because the references compile desktop GLSL 430 and 450 that an OpenGL ES context refuses) and
+  tests/corpus/lavapipe.rs 17 (the SPIR-V references on lavapipe through ash). They go behind a desktop OpenGL with
+  EGL API crate (A6) and a Vulkan API crate (A7); the OpenGL ES crate cannot take llvmpipe.rs. Neither crate exists on
+  any origin branch (MEASURED: `git ls-tree` of every remote branch; `crates/opengl` there is our Gallium driver). They
+  wait on the API track writing those two crates.
+
+### 3. The OpenGL ES items
+
+- Taken in d6ddfef3a and used in c34db49e6 (READ): the separate stencil calls (webgl sets front and back faces
+  apart; the suite's new `each_face_takes_its_own_stencil_operations` checks it, passing on webgl over Mesa and on the recorder), the WebGL
+  implementation (the pages run on `Gl<WebGl>`), the owning contexts and the kept library (native `Gl<O>` takes an
+  owning context; EGL stays loaded once loaded from a folder). webgl's platform constants for extension values are
+  gone (platform.rs keeps only WebGL extension names).
+
+### 4. The page harness
+
+- The form under the workspace rules: no wasm test macros; an example (`crates/gpu/implementation/webgl/examples/
+  browser.rs`, `cfg(target_arch = "wasm32")`) exporting the suite's programs through `#[wasm_bindgen]`, built for
+  wasm32 with the workspace lints (`forbid`), bound by wasm-bindgen-cli 0.2.130 and driven in headless Chromium
+  (nixpkgs) by `browser/suite.mjs` through playwright-core 1.55.0. Tools are installed on the machine only, under the
+  job's tools folder; nothing is installed on the Mac.
+- MEASURED at 93ad9bfa6, x86-64: wasm32 check of the libraries and the three pages exit 0, clippy of the page exit 0;
+  Chrome 155.0.8059.39: 74 passed, 0 not run, 1 failed of the 75. ARM64: the same: Chrome 155.0.8059.39, 74 passed, 0 not run, 1 failed (the same test).
+- The failure: `occlusion_queries_answer_whether_samples_passed` reads [false, false, false]. WebGL gives query
+  results only after control returns to the browser; the suite runs in one task, and `wait_read` has no way to give
+  the task loop a turn, so the back end loses the device rather than spin. It waits on the API track: a wait between
+  the browser's tasks in the OpenGL ES crate's WebGL implementation or a host-imports crate (NEEDED-FROM-API-CRATES.md,
+  A1 item 3(a)). The OpenGL ES crate's own conformance suite cannot run on the page: it is written over EGL
+  (`<E: Egl, G: OnEgl<E>>`); an EGL-free form is asked of the API track (thirteenth run, item 2).
+
+### Linter
+
+- Linter da55b9d7, no model key, x86-64, at 92cfc5a76 and 93ad9bfa6 (tables r13/lint-92cfc5a76 and
+  at-93ad9bfa6-x86/out; lint_table.py): 84,897 to 84,977. By crate: nir 940 to 922 (name_unanswered 38 to 25,
+  summary_not_one_sentence 48 to 40, magic_literal 102 to 98; summary_unanswered 17 to 28 and
+  function_summary_not_third_person 241 to 248 for the new items, which wait on the model's answers); gpu 16,400 to
+  16,411, all in webgpu's fill.rs from 93ad9bfa6 (four summaries, a long comment, six literals), fixed in
+  ade36e509 and 07e3baae7: at 07e3baae7 the total is 84,968 and gpu 16,402 (name_unanswered and summary_unanswered
+  one more each, which wait on the model's answers); mesa-compiler 689 to 782 (the API track's
+  crate, byte for byte; public_outside_interface 9 to 29, function_summary_not_third_person 27 to 52, magic_literal
+  177 to 208); compiler_view_missing 5 to 0 (direct3d-11, direct3d-12, nir, shader-converters), a compile gap of the
+  before copy.
+
+### Milestones
+
+- Reached, by the bar the order set: (1) the shared suite passes 75 of 75 (the 74 and the twelfth run's two-sided stencil program) on
+  webgl over Mesa on x86-64 and ARM64, and webgpu's fill and copies write and read 24-bit depth exactly on lavapipe;
+  (2) nir follows the typed chain with its library under `forbid`, its own copy of the bridge gone, the 56 corpus
+  lines named with what they wait on; (3) the OpenGL ES items taken and the platform constants gone; (4) the page
+  harness runs the suite in headless Chrome, 74 of 75.
+- Next: the browser's wait between tasks, A6, A7 and the EGL-free suite on the API track; opengl and the GLES lists
+  (GI8 part B's bar) on AC8; GI4 and the window question on the owner; GI6's removal on question 1.
+- Not done: the hostile-guest suite (none exists; the thread-test design review is still owed to the owner).
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -1309,4 +1464,12 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   both machines). New dependencies: the workspace crates wcontainers-mesa-compiler and -direct only (no outside
   crate; Cargo.lock hash 7c2859246daceed2 before and after every job). The SAMPLES_PASSED finding stays as part A
   recorded it (counted, refusals unwind); its hostile test through st/mesa waits with opengl on AC8. No
+  hostile-guest suite exists, none was run.
+- Twelfth and thirteenth runs (d6ddfef3a to 93ad9bfa6): the track's crates hold the same 517 lines (MEASURED with
+  count-unsafe.sh at 6a001c3ed and 93ad9bfa6: webgpu 19, shaders 71, shader-converters 5, nir 56 (corpus
+  llvmpipe.rs 39, lavapipe.rs 17), opengl 354, test-window 12, the rest 0). No marked exception written here.
+  Brought in, not written here: crates/mesa-compiler/implementation/direct 48 to 36 lines, each under its own
+  `#[expect(unsafe_code, reason)]` (36 marks), in a crate whose own table denies unsafe code; crates/mesa-compiler 0.
+  New dependencies: none (Cargo.lock hash a13195fd6d21d7bc before and after every job on both machines; the page
+  harness's wasm-bindgen-cli, playwright-core and Chromium are tools on the machines, not in the lock). No
   hostile-guest suite exists, none was run.
