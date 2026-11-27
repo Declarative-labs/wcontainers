@@ -888,6 +888,41 @@ crate written from these rows; the bridge's build moved into the direct crate (o
 Not reached in this run: AC8's Gallium trait (after AC11, by NEEDED's order) and the 57 Direct3D 11 methods not glued
 (item 2 of the orchestrator's order); neither waits on another track.
 
+## AC11, the trait layer and the direct glue (2026-11-27)
+
+`api-crate-generator mesa-compiler <flat.h> <bridge.h> <out>` (src/mesacompiler.rs, templates/mesa-compiler/) writes
+`crates/mesa-compiler` (trait `MesaCompiler`, `type Shader`, owned plain data for every structure, constants.rs with
+the defines and every enumeration's values) and `crates/mesa-compiler/implementation/direct` (`Bridge`, `Shader`, the
+glue). Input: bridge.h and flat.h copied from graphics-implementations d19c23829 into
+tools/api-crate-generator/inputs/mesa-compiler/ (our own C; the copy pins a rerun). The trait follows NEEDED B1 and B2:
+38 methods (47 functions: wc_init called once by `new`, wc_nir_free the shader's drop, the five frees inside the copies,
+wc_finish never, wc_compiler_options to AC8's Gallium trait); every enumeration the bridge writes is a `u32` the caller
+converts by a checked `TryFrom` (the returned wc_bind_result too: `to_common_form` gives `Err(code)` for any code but
+0, which closes the open SECURITY finding of a `repr(C)` enum filled by C); C's `bool` is read as a byte `!= 0`; a
+declared value passed in is refused past its enumeration (`spirv_to_nir`'s stage, 3 values); every structure the
+bridge fills is zeroed by the glue, copied out whole (arrays, texts, the flat form, the GLSL program's names and log),
+its shaders taken (set to null) and given back once by its free (READ bridge.c 1565 to 1583, flat.c 1454, glsl.cpp 609:
+each takes a zeroed structure as nothing). `clone` is `cloned` (Clone's own method name). `Shader` is not `Send` (no
+bridge fact is relied on for that; NEEDED B1 leaves it to this crate).
+
+MEASURED at 051b56c5f (x86-64 job gac-h, log graphics-api-crates/ac11/claim-051b56c5f.log): generator build with
+every warning shown: none; its 17 tests pass; written twice IDENTICAL; SAME AS WRITTEN; `cargo check --all-targets` and
+`cargo clippy --all-targets -- -D warnings` of both packages status 0; lines naming `unsafe`: interface 0, constants 0,
+direct 96 (48 marks: 43 calls and frees, `wc_init`, the drop, the two copies, the `extern` block); linter on
+crates/mesa-compiler 506 findings (number_constant_without_link 209 for constants.rs's values, summary_unanswered 79 and
+name_unanswered 47 the model rule sets with no key, magic_literal 67, public_outside_interface 8, the rest below 20).
+
+**Where the bridge's C build lives: PROPOSED to graphics-implementations** (their answer goes in their status file).
+The bridge (crates/nir/bridge: bridge.c, bridge.h, bridge_private.h, flat.c, flat.h, glsl.cpp, spirv.c) and the part of
+crates/nir/build.rs that compiles it and links Mesa's compiler move into `crates/mesa-compiler/implementation/direct/`
+(its own build.rs), the outside API's C beside the only crate that calls it; crates/nir then depends on
+`wcontainers-mesa-compiler` for the trait and on `wcontainers-mesa-compiler-direct` for the Mesa route, and keeps no C
+and no `unsafe` for the bridge (its 97 lines naming `unsafe` on this branch, 115 on graphics-layout, go: the 5 of
+direct.rs and mesa.rs's bridge calls). Until then the direct crate declares the functions and links nothing itself: a
+program linking crates/nir's built bridge resolves them, so GI8 part B can start on the trait now. The suite on Mesa
+(AC11's runtime bar: the conformance calls, the hostile caller, the fuzzing under AddressSanitizer) runs once the
+build is in the direct crate; it is not written yet.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
