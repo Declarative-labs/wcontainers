@@ -89,8 +89,11 @@ pub use load_store::{LoadStoreChoices, LoadStoreInstruction};
 pub use structure::{StructureChoices, StructureInstruction};
 pub use wcontainers_privilege_level_arm64_user::User;
 
-pub const INSTRUCTION_SIZE: u64 = size_of::<u32>() as u64;
 vstd::prelude::verus! {
+
+/// The bytes of every A64 instruction.
+// VERUS: `size_of` has no specification here, so the size is the word's bits over a byte's.
+pub const INSTRUCTION_SIZE: u64 = (u32::BITS / u8::BITS) as u64;
 
 /// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
 pub const VIRTUAL_ADDRESS_BITS: u32 = 48;

@@ -996,15 +996,6 @@ pub(crate) fn read_source<LevelSpecific>(
 
 } // verus!
 
-// VERUS: no specification of slicing an array by a range, so this accessor, which only unproven code calls, stays
-// outside `verus!`.
-impl ReadOperands {
-    /// The value of every operand but the written register, in the order of the syntax.
-    pub fn sources(&self) -> &[u64] {
-        &self.sources[..self.count]
-    }
-}
-
 verus! {
 
 /// The [shift types](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register--#:~:text=shift) in the order of their encodings.
