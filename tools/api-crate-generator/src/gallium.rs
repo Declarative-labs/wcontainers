@@ -332,7 +332,7 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
     ("clear_render_target", "dst", "a surface: plain data naming a resource, read during the call (u_threaded_context.c:5422)"),
     ("clear_depth_stencil", "dst", "a surface: plain data naming a resource, read during the call (u_threaded_context.c:5469)"),
     ("context_create", "priv", "the frontend's own value: carried as a number, never read (st_manager.c:1023 passes its own pointer)"),
-    ("flush_frontbuffer", "winsys_drawable_handle", "the frontend's own value: carried as a number, never read (drisw.c:173)"),
+    ("flush_frontbuffer", "winsys_drawable_handle", "the frontend's own value, carried as a number: the DRI frontend passes its drawable (drisw.c:173); our WGL target reads it as the device context it finds the window by (crates/opengl present.rs:272, 286)"),
 ];
 
 /// One row of the Gallium mapping rule for a parameter (or the return) of a planned pointer.

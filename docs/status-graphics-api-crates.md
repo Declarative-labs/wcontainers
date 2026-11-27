@@ -1305,6 +1305,42 @@ Still open for the serving glue (not trait changes): G4 (the helpers the driver 
 the context during the call), G5 (capabilities and the uploaders the glue fills), G7 (the drawable handle carried as a
 number: the plan's exception text to be corrected), G1 (TGSI: the trait carries NIR only; to be measured with the port).
 
+## AC8, the serving glue: its first layer, the plain data (2026-11-27, 6403ecc74; logs r15/gallium/)
+
+How the glue reads Mesa's structures without unsafe Rust over Mesa's layouts: Mesa's structures have bit-fields and
+unions (pipe_rasterizer_state is almost all bit-fields; pipe_draw_info.index, pipe_sampler_view.u are unions), which
+bindgen can lay out only with unsafe accessors no mark could sit on. So the direct crate's C reads them: the generator
+(src/gallium_glue.rs, called by `api-crate-generator gallium`) writes `flat.h` (each structure a planned pointer takes,
+flat: every bit-field a whole field, every union's members each a field, every object the address Mesa knows it by, a
+key), `flat.c` (one `wc_flat_<structure>_from` per named structure, compiled against the pinned Mesa's headers by
+build.rs, and `wc_flat_size`), and `flat.rs` (the Rust mirrors, `keys()` listing the objects and client memory each
+names, and `owned()` making the trait's owned structure from a flat copy once the objects are held: widths checked,
+C bools 0 or 1, an unknown key refusing the call). `held.rs` (template) holds what one call borrows: the objects
+cloned out of the registry under its lock (let go before either side's code runs) and the client memory copied.
+
+MEASURED at 6403ecc74's tree (x86-64 job gac-gal/20261127-091400-169050): `GALLIUM GLUE: 43 flat structures (33 with a
+flattening function)`; written twice IDENTICAL; check (without and with Mesa) and clippy `-D warnings` of
+wcontainers-gallium and wcontainers-gallium-direct status 0; `LAYOUTS Ok(43)`: every flat structure has the same size in
+C as its Rust mirror; lines naming `unsafe`: direct 4 (one extern declaration, one call, each marked), gallium 0.
+Linter (job gac-gal/20261127-091540-187980, log r15/gallium/lint-6403ecc74.log): crates/gallium/interface.rs 233
+(summary_unanswered 157 and name_unanswered 28, the model rule sets without a key; magic_literal 21, the array lengths);
+the direct crate 852 (public_outside_interface 445: the mirrors are `pub` for now; magic_literal 149, the array lengths
+and widths; summary_unanswered 91 and name_unanswered 48; the rest below 60); crates/mesa-compiler 932 (977 at
+3d6d06865).
+
+Next, the calls (designed, not built): every object Mesa holds is a key in a registry of the screen (`Mutex<HashMap>`
+of `Arc` per kind), states and queries keyed by a counter, resources, views, targets, transfers and contexts by the C
+structure the glue's C allocates and fills for Mesa to read; a call clones what it needs under the lock and calls the
+implementation with the lock let go; a value given back (`delete_*_state`, `begin_query`'s turn) is taken out of the
+registry and unwrapped, refused if another call holds it. The C side (generated) is one trampoline per pointer:
+flattens its arguments, calls the Rust function of a table, and does what only C can (allocating and freeing the
+structures Mesa reads, writing out-parameters, installing Mesa's own functions for the four `MesaFills` pointers and the
+transfer helper). Rust never follows a pointer to an object: a key it does not hold refuses the call, and C frees an
+object only when Rust says it was live. Shaders wait on one addition to the Mesa compiler's bridge (taking Mesa's
+`nir_shader` as a `Received` of its stage: `pipe_shader_state.ir.nir` is given to the driver). Then the hostile C
+caller of the 100 pointers, each alone in a process, the fuzzing (12 seeds x 100,000 calls under AddressSanitizer, every
+method reached) and the conformance suite.
+
 ## The Mesa compiler's direct glue generic over the stage (2026-11-27, a181c4b98; logs wcontainers-scratch/graphics-api-crates/r15/mc/)
 
 The orchestrator asked for one glue function generic over the stage, the stage a zero-sized type parameter, so the
