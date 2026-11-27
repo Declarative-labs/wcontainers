@@ -1319,10 +1319,6 @@ pub enum Bug {
     RestoreAcceptsUnenabledComponents,
     /// XRSTOR loads MXCSR only when SSE is requested.
     RestoreMxcsrOnlyWithSse,
-    /// UMWAIT and TPAUSE keep OF, SF, ZF, AF and PF.
-    WaitKeepsFlags,
-    /// UMWAIT and TPAUSE take a source with bits above bit 0.
-    WaitIgnoresReservedBits,
     /// The family's page fault beyond the area's first page is reported at the lowest byte that faults.
     AreaFaultsAtLowestByte,
     /// VZEROUPPER tracks SSE as initial too.
@@ -1973,8 +1969,6 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::AreaAlignedToSixteen, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
     row(Bug::RestoreAcceptsUnenabledComponents, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
     row(Bug::RestoreMxcsrOnlyWithSse, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
-    row(Bug::WaitKeepsFlags, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::StateAndXsave),
-    row(Bug::WaitIgnoresReservedBits, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::StateAndXsave),
     row(Bug::AreaFaultsAtLowestByte, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
     row(Bug::ZeroUpperTracksSseInitial, "VZEROUPPER", Family::Forms(&[Instruction::Vzeroupper]), Origin::StateAndXsave),
     row(Bug::RestoreReadsHeaderFromStart, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),

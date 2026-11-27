@@ -107,12 +107,10 @@ fn wait(control: WaitControl, processor: &mut Processor, decoded: &Decoded) -> R
         return Err(Exception::GeneralProtection { error_code: 0 });
     }
     let source = read_register(processor, decoded.op0_register()) as u32;
-    if source & !1 != 0 && !is_active(Bug::WaitIgnoresReservedBits) {
+    if source & !1 != 0 {
         return Err(Exception::GeneralProtection { error_code: 0 });
     }
-    if !is_active(Bug::WaitKeepsFlags) {
-        processor.flags.remove(WAIT_FLAGS);
-    }
+    processor.flags.remove(WAIT_FLAGS);
     Ok(())
 }
 
