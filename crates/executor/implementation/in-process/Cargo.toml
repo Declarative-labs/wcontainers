@@ -28,10 +28,16 @@ thiserror = { version = "2.0.21", default-features = false }
 # A slot's reserved addresses, and a file shown at fixed addresses inside them.
 wcontainers-linux-process = { path = "../../../linux-process" }
 wcontainers-linux-process-direct = { path = "../../../linux-process/implementation/direct" }
+# The guest state a run starts from and what its call into the floor comes to.
+wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
 # The open files the pool test holds, one a memory, past the usual soft limit.
 rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
+# The translated code the runs test, and the calls it makes into the floor.
+wcontainers-arm64 = { path = "../../../arm64" }
+wcontainers-translator = { path = "../../../translator", features = ["native"] }
+wcontainers-guest-cpu = { path = "../../../guest-cpu" }
 
 [lints]
 workspace = true
