@@ -8,6 +8,7 @@ pub trait Kvm {
     type GuestMemory: VolatileBytes;
     type SetUserMemoryRegionError;
     type SetUserMemoryRegionAgainError;
+    type RequestGuestTilePermissionError;
 
     /// Returns zeroed memory that the machine sees from the guest-physical address on, as its [memory slot](https://docs.kernel.org/virt/kvm/api.html#kvm-set-user-memory-region).
     fn set_user_memory_region(
@@ -26,4 +27,11 @@ pub trait Kvm {
         guest_physical_address: u64,
         memory: &Self::GuestMemory,
     ) -> Result<(), Self::SetUserMemoryRegionAgainError>;
+
+    /// Lets the virtual CPUs this process makes from now on hold AMX's tile state, as Linux's
+    /// [`ARCH_REQ_XCOMP_GUEST_PERM`](https://docs.kernel.org/arch/x86/xstate.html) grants it: KVM then offers the
+    /// tile components in the CPUID it supports and accepts them in a guest's XCR0.
+    ///
+    /// It fails where the host has no tile state to give.
+    fn request_guest_tile_permission() -> Result<(), Self::RequestGuestTilePermissionError>;
 }

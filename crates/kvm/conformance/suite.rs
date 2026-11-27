@@ -57,6 +57,29 @@ pub fn gives_memory_again_to_another_machine<T: Kvm>(_: T) {
     assert!(read == written, "memory given again holds what it held");
 }
 
+/// The entries asked of KVM's supported CPUID, KVM's own most.
+const SUPPORTED_ENTRIES: usize = 80;
+/// XCR0's bits of AMX's TILECFG and TILEDATA.
+const TILE_COMPONENTS: u32 = 1 << 17 | 1 << 18;
+
+/// KVM offers the tile components in the CPUID it supports once the guest tile permission is granted, and not where it
+/// is refused.
+pub fn offers_tile_components_once_permitted<T: Kvm>(_: T) {
+    let granted = T::request_guest_tile_permission().is_ok();
+    let Ok(system) = KvmSystem::new() else {
+        panic!("this host has no KVM");
+    };
+    let Ok(cpuid) = system.get_supported_cpuid(SUPPORTED_ENTRIES) else {
+        panic!("KVM gives no supported CPUID");
+    };
+    let components = cpuid
+        .as_slice()
+        .iter()
+        .find(|entry| entry.function == 0xD && entry.index == 0)
+        .map_or(0, |entry| entry.eax);
+    assert_eq!(components & TILE_COMPONENTS == TILE_COMPONENTS, granted);
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -74,6 +97,11 @@ macro_rules! tests {
         #[test]
         fn gives_memory_again_to_another_machine() {
             $crate::gives_memory_again_to_another_machine($value);
+        }
+
+        #[test]
+        fn offers_tile_components_once_permitted() {
+            $crate::offers_tile_components_once_permitted($value);
         }
     };
 }
