@@ -141,9 +141,11 @@ pub enum Resolved {
     /// As [`Resolved::Again`], before a read of the float status while its flags are not kept: a slow path.
     FloatStatusNotKept(Interrupted, RegisterPage),
     /// A counter read: the guest's level goes on from this once the clock's reading is in general register
-    /// `into` (none: nowhere), through [`set_register`].
+    /// `into` (none: nowhere), through [`set_register`]; or, where the system answers the read, the guest stops `at`
+    /// it.
     Clock {
         into: Option<u8>,
+        at: Box<GuestState>,
         then: Interrupted,
         page: RegisterPage,
     },
@@ -583,6 +585,7 @@ fn resolve_in(
                 Stopping::Counter(into) => {
                     return Some(Resolved::Clock {
                         into,
+                        at: Box::new(state),
                         then: after_call(h),
                         page: page.clone(),
                     });

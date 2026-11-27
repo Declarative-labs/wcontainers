@@ -1490,6 +1490,7 @@ impl NativeCpu {
                                 into,
                                 then,
                                 page: then_page,
+                                ..
                             }) => {
                                 hardware = then;
                                 page = then_page;

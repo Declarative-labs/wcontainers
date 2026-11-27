@@ -945,6 +945,7 @@ fn resolve(
             into,
             mut then,
             mut page,
+            ..
         }) => {
             let now = started().elapsed().as_nanos() as u64;
             if let Some(n) = into {
