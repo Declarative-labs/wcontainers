@@ -650,7 +650,8 @@ already merged; every owner `interface.rs` is byte-identical to it.
   -> unicorn map and unmap (phys_page_set_level 55%, phys_page_compact 16%); shm_test01 memcpy 41% and memcmp 15% in
   `run_loaded`'s copy of shared pages out and in; hackbench01 28% in the kernel's `ppoll`, 24% in the stand-in's
   `copy_from` per fork with shared-range lookups. All three passed at `a9f8631e`, before `ccd4db9da` gave unicorn the
-  bytes (no `mem_map_ptr`, no unsafe). Their times alone with a 3,600 s limit: see the report.
+  bytes (no `mem_map_ptr`, no unsafe). Alone with a 3,600 s limit at `d567c1a91` (load 31 to 58): mtest05 passes in
+  1,604 s, hackbench01 in 2,042 s, shm_test01 still times out at 3,600 s (they took 486, 466 and 103 s at `a9f8631e`).
 
 ### Linter (installed `59ad72ce`, built on the machine; no key there, so `*_unanswered` cannot be answered)
 
