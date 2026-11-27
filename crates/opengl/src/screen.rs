@@ -544,11 +544,6 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
         name: gpu,
         windows: Mutex::new(HashMap::new()),
         transfers: Box::new(u_transfer_vtbl {
-            resource_create: Some(crate::resource::resource_create::<B>),
-            resource_destroy: Some(crate::resource::resource_destroy::<B>),
-            transfer_map: Some(crate::resource::texture_map::<B>),
-            transfer_flush_region: Some(crate::resource::transfer_flush_region::<B>),
-            transfer_unmap: Some(crate::resource::texture_unmap::<B>),
             ..Default::default()
         }),
     });
@@ -565,8 +560,6 @@ pub fn screen<B: HostWindows>(backend: B, gpu: CString) -> *mut pipe_screen {
     base.get_device_vendor = Some(device_name::<B>);
     base.is_format_supported = Some(is_format_supported::<B>);
     base.context_create = Some(crate::context::context_create::<B>);
-    base.resource_create = Some(crate::resource::resource_create::<B>);
-    base.resource_destroy = Some(crate::resource::resource_destroy::<B>);
     base.fence_reference = Some(crate::context::fence_reference::<B>);
     base.fence_finish = Some(crate::context::fence_finish::<B>);
     base.flush_frontbuffer = Some(crate::present::flush_frontbuffer::<B>);

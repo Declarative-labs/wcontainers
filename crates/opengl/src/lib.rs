@@ -38,6 +38,8 @@ mod query;
 #[cfg(mesa)]
 mod resource;
 #[cfg(mesa)]
+mod resources;
+#[cfg(mesa)]
 mod screen;
 #[cfg(mesa)]
 mod state;

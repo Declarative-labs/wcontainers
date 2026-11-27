@@ -22,6 +22,7 @@ use wcontainers_mesa_compiler_direct::Bridge;
 use crate::device::HostWindows;
 use crate::guest::{self, guest_call, refuse};
 use crate::pipe::*;
+use crate::resources::{self, Mapping, Resource};
 use crate::screen::{DRIVER_NAME, whole};
 use crate::state::Stage;
 use crate::states::{self, Blend, DepthStencil, Elements, Raster, Retired, Sampler};
@@ -146,6 +147,52 @@ impl<B: HostWindows> DriverContext<B> {
     fn call<T>(&self, dropped: T, call: impl FnOnce() -> T) -> T {
         guest_call(self.key, dropped, call)
     }
+
+    /// Closes the open pass, as every read back, copy and texture write needs (a target's clears
+    /// wait in the pass tracker for its next pass, which must come first).
+    fn close_pass(&self, backend: &mut B) {
+        if let Err(error) = self.set.borrow_mut().tracker.close(backend) {
+            refuse(format_args!("closing a pass: {error:?}"));
+        }
+    }
+
+    /// Maps a box of one level of `resource`, reading it back first where the map reads.
+    fn map(
+        &self,
+        resource: &Arc<Resource<B>>,
+        level: u32,
+        usage: u32,
+        area: &PipeBox,
+    ) -> Option<Mapped<Mapping<B>>> {
+        let mut backend = self.shared.backend();
+        if usage & PIPE_MAP_READ as u32 != 0 {
+            self.close_pass(&mut backend);
+        }
+        let mapped = resources::map(&mut *backend, resource, level, usage, area);
+        if mapped.is_none() {
+            crate::context::end_if_lost(&mut *backend);
+        }
+        mapped
+    }
+
+    /// Writes what `mapping` mapped for writing from `written`, unless the caller flushed its parts
+    /// itself.
+    fn unmap(&self, mapping: &Mapping<B>, written: &[u8]) {
+        if !mapping.unmap_writes() {
+            return;
+        }
+        let mut backend = self.shared.backend();
+        if mapping.resource().texture().is_some() {
+            self.close_pass(&mut backend);
+        }
+        resources::write_mapped(
+            &mut *backend,
+            &self.shared.retired,
+            mapping,
+            written,
+            &mapping.whole(),
+        );
+    }
 }
 
 /// The driver's stage of a Gallium stage, for the stages it takes.
@@ -164,7 +211,7 @@ pub fn stage(stage: u32) -> Option<Stage> {
 impl<B: HostWindows> Gallium for Driver<B> {
     type Compiler = Bridge;
     type Context = DriverContext<B>;
-    type Resource = Unmoved;
+    type Resource = Resource<B>;
     type Fence = Unmoved;
     type Blend = Arc<Blend>;
     type DepthStencilAlpha = Arc<DepthStencil<B>>;
@@ -182,7 +229,7 @@ impl<B: HostWindows> Gallium for Driver<B> {
     type Query = Unmoved;
     type ActiveQuery = Unmoved;
     type EndOnlyQuery = Unmoved;
-    type Mapping = Unmoved;
+    type Mapping = Mapping<B>;
 
     fn context_create(&self, _: u64, _: u32) -> Option<Self::Context> {
         Some(DriverContext {
@@ -212,13 +259,13 @@ impl<B: HostWindows> Gallium for Driver<B> {
     fn flush_frontbuffer(
         &self,
         _: Option<&Self::Context>,
-        resource: &Arc<Self::Resource>,
+        _: &Arc<Resource<B>>,
         _: u32,
         _: u32,
         _: u64,
         _: Option<&PipeBox>,
     ) {
-        match **resource {}
+        guest_call(guest::SCREEN, (), || not_moved("flush_frontbuffer"));
     }
 
     fn get_device_vendor(&self) -> Vec<u8> {
@@ -253,10 +300,17 @@ impl<B: HostWindows> Gallium for Driver<B> {
         })
     }
 
-    fn resource_create(&self, _: &ResourceTemplate) -> Option<Self::Resource> {
-        guest_call(guest::SCREEN, None, || not_moved("resource_create"))
+    fn resource_create(&self, template: &ResourceTemplate) -> Option<Resource<B>> {
+        guest_call(guest::SCREEN, None, || {
+            let mut backend = self.shared.backend();
+            resources::create(
+                &mut *backend,
+                &self.shared.caps,
+                &self.shared.retired,
+                template,
+            )
+        })
     }
-
 }
 
 /// The compiler whose received programs the shader states are made from.
@@ -346,29 +400,51 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         }
     }
 
-    fn blit(&self, info: &BlitInfo<'_, Unmoved>) {
-        if let Some(resource) = info.dst.resource.or(info.src.resource) {
-            match **resource {}
-        }
+    fn blit(&self, _: &BlitInfo<'_, Resource<B>>) {
         self.call((), || not_moved("blit"));
     }
 
     fn buffer_map(
         &self,
-        resource: &Arc<Unmoved>,
-        _: u32,
-        _: u32,
-        _: &PipeBox,
-    ) -> Option<Mapped<Unmoved>> {
-        match **resource {}
+        resource: &Arc<Resource<B>>,
+        level: u32,
+        usage: u32,
+        area: &PipeBox,
+    ) -> Option<Mapped<Mapping<B>>> {
+        self.call(None, || self.map(resource, level, usage, area))
     }
 
-    fn buffer_subdata(&self, resource: &Arc<Unmoved>, _: u32, _: u32, _: u32, _: &[u8]) {
-        match **resource {}
+    /// Written from the caller's bytes, with no copy before.
+    fn buffer_subdata(
+        &self,
+        resource: &Arc<Resource<B>>,
+        usage: u32,
+        offset: u32,
+        size: u32,
+        data: &[u8],
+    ) {
+        self.call((), || {
+            let Some(buffer) = resource.buffer() else {
+                return;
+            };
+            let Some(data) = data.get(..size as usize) else {
+                refuse(format_args!(
+                    "buffer_subdata of {size} bytes from {} given",
+                    data.len()
+                ));
+            };
+            self.shared.backend().write_buffer(
+                buffer,
+                u64::from(offset),
+                data,
+                resources::write_mode(usage),
+            );
+        });
     }
 
-    fn buffer_unmap(&self, transfer: Unmoved, _: &[u8]) {
-        match transfer {}
+    /// Writes what was mapped for writing, unless the caller flushed its parts itself.
+    fn buffer_unmap(&self, transfer: Mapping<B>, written: &[u8]) {
+        self.call((), || self.unmap(&transfer, written));
     }
 
     fn clear(&self, _: u32, _: u32, _: u8, _: Option<&ScissorState>, _: &[u32; 4], _: f64, _: u32) {
@@ -377,7 +453,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn clear_depth_stencil(
         &self,
-        dst: &Surface<'_, Unmoved>,
+        _: &Surface<'_, Resource<B>>,
         _: u32,
         _: f64,
         _: u32,
@@ -387,15 +463,12 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: u32,
         _: bool,
     ) {
-        if let Some(texture) = dst.texture {
-            match **texture {}
-        }
         self.call((), || not_moved("clear_depth_stencil"));
     }
 
     fn clear_render_target(
         &self,
-        dst: &Surface<'_, Unmoved>,
+        _: &Surface<'_, Resource<B>>,
         _: &[u32; 4],
         _: u32,
         _: u32,
@@ -403,9 +476,6 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: u32,
         _: bool,
     ) {
-        if let Some(texture) = dst.texture {
-            match **texture {}
-        }
         self.call((), || not_moved("clear_render_target"));
     }
 
@@ -482,12 +552,16 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         })
     }
 
-    fn create_sampler_view(&self, texture: &Arc<Unmoved>, _: &SamplerViewTemplate) -> Option<Unmoved> {
-        match **texture {}
+    fn create_sampler_view(
+        &self,
+        _: &Arc<Resource<B>>,
+        _: &SamplerViewTemplate,
+    ) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_sampler_view"))
     }
 
-    fn create_stream_output_target(&self, resource: &Arc<Unmoved>, _: u32, _: u32) -> Option<Unmoved> {
-        match **resource {}
+    fn create_stream_output_target(&self, _: &Arc<Resource<B>>, _: u32, _: u32) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_stream_output_target"))
     }
 
     fn create_tcs_state(
@@ -590,9 +664,9 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn draw_vbo(
         &self,
-        _: &DrawInfo<'_, Unmoved>,
+        _: &DrawInfo<'_, Resource<B>>,
         _: u32,
-        _: Option<&DrawIndirectInfo<'_, Unmoved, Unmoved>>,
+        _: Option<&DrawIndirectInfo<'_, Resource<B>, Unmoved>>,
         _: &[DrawStartCountBias],
     ) {
         self.call((), || not_moved("draw_vbo"));
@@ -607,12 +681,18 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
     }
 
     /// A resource about to be shown or shared needs nothing more: every write is already ordered.
-    fn flush_resource(&self, resource: &Arc<Unmoved>) {
-        match **resource {}
-    }
+    fn flush_resource(&self, _: &Arc<Resource<B>>) {}
 
-    fn generate_mipmap(&self, resource: &Arc<Unmoved>, _: u32, _: u32, _: u32, _: u32, _: u32) -> bool {
-        match **resource {}
+    fn generate_mipmap(
+        &self,
+        _: &Arc<Resource<B>>,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+    ) -> bool {
+        self.call(false, || not_moved("generate_mipmap"))
     }
 
     fn get_device_reset_status(&self) -> u32 {
@@ -631,7 +711,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call(0, || not_moved("get_timestamp"))
     }
 
-    fn launch_grid(&self, _: &GridInfo<'_, Unmoved>) {
+    fn launch_grid(&self, _: &GridInfo<'_, Resource<B>>) {
         self.call((), || not_moved("launch_grid"));
     }
 
@@ -651,16 +731,16 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn resource_copy_region(
         &self,
-        dst: &Arc<Unmoved>,
+        _: &Arc<Resource<B>>,
         _: u32,
         _: u32,
         _: u32,
         _: u32,
-        _: &Arc<Unmoved>,
+        _: &Arc<Resource<B>>,
         _: u32,
         _: &PipeBox,
     ) {
-        match **dst {}
+        self.call((), || not_moved("resource_copy_region"));
     }
 
     fn set_active_query_state(&self, _: bool) {
@@ -674,14 +754,11 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
     /// User clip planes are lowered into the programs by st/mesa (the screen reports none).
     fn set_clip_state(&self, _: &ClipState) {}
 
-    fn set_constant_buffer(&self, _: u32, _: u32, buf: Option<&ConstantBuffer<'_, Unmoved>>) {
-        if let Some(resource) = buf.and_then(|b| b.buffer) {
-            match **resource {}
-        }
+    fn set_constant_buffer(&self, _: u32, _: u32, _: Option<&ConstantBuffer<'_, Resource<B>>>) {
         self.call((), || not_moved("set_constant_buffer"));
     }
 
-    fn set_framebuffer_state(&self, _: &FramebufferState<'_, Unmoved>) {
+    fn set_framebuffer_state(&self, _: &FramebufferState<'_, Resource<B>>) {
         self.call((), || not_moved("set_framebuffer_state"));
     }
 
@@ -725,12 +802,9 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: u32,
         _: u32,
         _: u32,
-        buffers: Option<&[ShaderBuffer<'_, Unmoved>]>,
+        _: Option<&[ShaderBuffer<'_, Resource<B>>]>,
         _: u32,
     ) {
-        if let Some(resource) = buffers.into_iter().flatten().find_map(|b| b.buffer) {
-            match **resource {}
-        }
         self.call((), || not_moved("set_shader_buffers"));
     }
 
@@ -740,11 +814,8 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: u32,
         _: u32,
         _: u32,
-        images: Option<&[ImageView<'_, Unmoved>]>,
+        _: Option<&[ImageView<'_, Resource<B>>]>,
     ) {
-        if let Some(resource) = images.into_iter().flatten().find_map(|i| i.resource) {
-            match **resource {}
-        }
         self.call((), || not_moved("set_shader_images"));
     }
 
@@ -759,10 +830,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.call((), || not_moved("set_stream_output_targets"));
     }
 
-    fn set_vertex_buffers(&self, buffers: &[VertexBuffer<'_, Unmoved>]) {
-        if let Some(resource) = buffers.iter().find_map(|b| b.buffer.resource) {
-            match **resource {}
-        }
+    fn set_vertex_buffers(&self, _: &[VertexBuffer<'_, Resource<B>>]) {
         self.call((), || not_moved("set_vertex_buffers"));
     }
 
@@ -780,41 +848,63 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
     fn texture_barrier(&self, _: u32) {
         self.call((), || {
             let mut backend = self.shared.backend();
-            if let Err(error) = self.set.borrow_mut().tracker.close(&mut *backend) {
-                refuse(format_args!("closing a pass: {error:?}"));
-            }
+            self.close_pass(&mut backend);
         });
     }
 
+    /// Written from the caller's bytes.
     fn texture_subdata(
         &self,
-        resource: &Arc<Unmoved>,
-        _: u32,
-        _: u32,
-        _: &PipeBox,
-        _: &[u8],
-        _: u32,
-        _: u64,
+        resource: &Arc<Resource<B>>,
+        level: u32,
+        usage: u32,
+        area: &PipeBox,
+        data: &[u8],
+        stride: u32,
+        layer_stride: u64,
     ) {
-        match **resource {}
+        self.call((), || {
+            let mut backend = self.shared.backend();
+            self.close_pass(&mut backend);
+            resources::subdata(
+                &mut *backend,
+                &self.shared.retired,
+                resource,
+                level,
+                usage,
+                area,
+                data,
+                stride,
+                layer_stride,
+            );
+        });
     }
 
-
+    /// The transfer helper's map of a single-sampled texture (it maps a multisampled one through
+    /// one) or a buffer.
     fn helper_transfer_map(
         &self,
-        prsc: &Arc<Unmoved>,
-        _: u32,
-        _: u32,
-        _: &PipeBox,
-    ) -> Option<Mapped<Unmoved>> {
-        match **prsc {}
+        prsc: &Arc<Resource<B>>,
+        level: u32,
+        usage: u32,
+        box_: &PipeBox,
+    ) -> Option<Mapped<Mapping<B>>> {
+        self.call(None, || self.map(prsc, level, usage, box_))
     }
 
-    fn helper_transfer_unmap(&self, ptrans: Unmoved, _: &[u8]) {
-        match ptrans {}
+    /// Writes what was mapped for writing, unless the caller flushed its parts itself.
+    fn helper_transfer_unmap(&self, ptrans: Mapping<B>, written: &[u8]) {
+        self.call((), || self.unmap(&ptrans, written));
     }
 
-    fn helper_transfer_flush_region(&self, ptrans: &Unmoved, _: &[u8], _: &PipeBox) {
-        match *ptrans {}
+    /// Writes the part `box_` (relative to the map) of what was mapped.
+    fn helper_transfer_flush_region(&self, ptrans: &Mapping<B>, written: &[u8], box_: &PipeBox) {
+        self.call((), || {
+            let mut backend = self.shared.backend();
+            if ptrans.resource().texture().is_some() {
+                self.close_pass(&mut backend);
+            }
+            resources::write_mapped(&mut *backend, &self.shared.retired, ptrans, written, box_);
+        });
     }
 }
