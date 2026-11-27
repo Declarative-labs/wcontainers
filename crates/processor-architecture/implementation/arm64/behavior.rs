@@ -8,7 +8,9 @@ use crate::load_store::scalable_access::{
 };
 use crate::load_store::{LoadStoreChoices, LoadStoreInstruction};
 use crate::sve::{ScalableOperation, to_scalable_instruction};
-use crate::system_register::{NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS};
+use crate::system_register::{
+    NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS, PRESENTED_SYSTEM_REGISTERS,
+};
 use crate::{
     AccessDirection, DocumentedInstruction, DocumentedOperation, Instruction, PreciseInstruction,
     SmeTrapCode, to_documented_operation,
@@ -18,6 +20,11 @@ use crate::{
 ///
 /// A chip raises the [alignment fault](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) Linux turns on for every level; QEMU leaves the check out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum MisalignedStackPointer {
     Faults,
     Accesses,
@@ -25,6 +32,11 @@ pub enum MisalignedStackPointer {
 
 /// What a store writes when part of it faults.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum StoreAcrossFault {
     WritesNothing,
     WritesBytesBelowFault,
@@ -32,6 +44,11 @@ pub enum StoreAcrossFault {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate--#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a post-indexed load whose target is its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum LoadIntoBaseWithWriteback {
     WritebackSuppressed,
     WritebackOverwritesLoad,
@@ -41,6 +58,11 @@ pub enum LoadIntoBaseWithWriteback {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a store with writeback whose register is its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum StoreOfBaseWithWriteback {
     StoresOriginalValue,
     Undefined,
@@ -49,6 +71,11 @@ pub enum StoreOfBaseWithWriteback {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDP--Load-pair-of-registers-#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a load pair that names one register twice.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum LoadPairIntoOneRegister {
     KeepsFirstValue,
     KeepsSecondValue,
@@ -59,6 +86,11 @@ pub enum LoadPairIntoOneRegister {
 /// Whether a store exclusive that fails, as every one does whose address the exclusive monitor does not hold,
 /// [checks the access](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STXR--Store-exclusive-register-#:~:text=IMPLEMENTATION%20DEFINED) as a store would.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum FailedStoreExclusive {
     ChecksAccess,
     LeavesAccessUnchecked,
@@ -66,6 +98,11 @@ pub enum FailedStoreExclusive {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STXR--Store-exclusive-register-#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a store exclusive whose status register is one it stores or its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum StoreExclusiveOverlap {
     Runs,
     Undefined,
@@ -76,7 +113,26 @@ pub enum StoreExclusiveOverlap {
 /// exclusive access must be aligned to its size before [FEAT_LSE2](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_LSE2), and a Neoverse V2 lets it lie anywhere inside 16
 /// aligned bytes, as its ordered and atomic accesses may.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum MisalignedExclusive {
+    AlignmentFault,
+    WithinSixteenBytes,
+}
+
+/// Where an ordered or atomic access that is not at a multiple of its size may lie without an alignment fault: a chip
+/// without [FEAT_LSE2](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_LSE2) faults on it, as [AArch64.UnalignedAccessFaults](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#AArch64.UnalignedAccessFaults.3)
+/// has it, and a chip with it, SCTLR_EL1.nAA clear as Linux leaves it, lets it lie anywhere inside 16 aligned bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
+pub enum MisalignedOrderedOrAtomic {
     AlignmentFault,
     WithinSixteenBytes,
 }
@@ -84,6 +140,11 @@ pub enum MisalignedExclusive {
 /// What a data abort's fault address keeps of the top byte of a tagged address: Linux documents that bits 63 to
 /// 60 of a fault address are [not preserved](https://docs.kernel.org/arch/arm64/tagged-pointers.html#:~:text=bits%2063%3A60) on every chip.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum FaultAddressTag {
     KeepsTopByte,
     ClearsTopNibble,
@@ -92,12 +153,22 @@ pub enum FaultAddressTag {
 /// What WFI does at EL0: EL1 traps it where [SCTLR_EL1.nTWI](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-#:~:text=nTWI%2C%20bit%20%5B16%5D) is clear, and it waits for an interrupt or
 /// completes where it is set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum WaitForInterruptBehavior {
     Traps,
     Completes,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum VectorLengthReading {
     Undefined,
     /// Raises the [SME exception](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=SMTC%2C%20bits%20%5B2%3A0%5D), as a chip with SME and no SVE does outside streaming mode.
@@ -107,6 +178,11 @@ pub enum VectorLengthReading {
 
 /// An SVE vector length, as [ZCR_EL1.LEN](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ZCR-EL1--SVE-Control-Register-EL1-#:~:text=LEN%2C%20bits%20%5B3%3A0%5D) permits it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum VectorLength {
     Bits128,
     Bits256,
@@ -186,13 +262,18 @@ impl PreciseInstruction<Infallible> {
             },
             Self::SystemInstruction(behavior) => PreciseInstruction::SystemInstruction(behavior),
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
+            Self::WithoutOptionalEncodings(documented) => {
+                PreciseInstruction::WithoutOptionalEncodings(documented)
+            }
             Self::LevelSpecific(never) => match never {},
         }
     }
 
     pub const fn to_instruction(self) -> Instruction<Infallible> {
         match self {
-            Self::Documented(documented) => documented.instruction(),
+            Self::Documented(documented) | Self::WithoutOptionalEncodings(documented) => {
+                documented.instruction()
+            }
             Self::LoadStore { instruction, .. } => instruction.instruction(),
             Self::Brk => Instruction::Brk,
             Self::Rdvl(_) => Instruction::Rdvl,
@@ -245,7 +326,19 @@ fn list_every_level_behaviors(
     if instruction.is_optional() && !is_modeled_as_unimplemented(instruction) {
         behaviors.push(PreciseInstruction::Unimplemented(instruction));
     }
+    if has_optional_encodings(instruction)
+        && let Some(documented) = DocumentedInstruction::new(instruction)
+    {
+        behaviors.push(PreciseInstruction::WithoutOptionalEncodings(documented));
+    }
     behaviors
+}
+
+/// Whether some encodings of the instruction need a feature its list row does not name, so that a chip without it makes
+/// them undefined: the half-precision fixed-point conversions of [FEAT_FP16](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_FP16) and PMULL of 64-bit elements, of
+/// [FEAT_PMULL](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-0-architecture-extension#:~:text=FEAT_PMULL).
+const fn has_optional_encodings(instruction: Instruction<Infallible>) -> bool {
+    crate::advanced_simd::to_optional_encoding(instruction).is_some()
 }
 
 /// Whether the instruction takes input from outside memory and the processor, so that no state decides what it does:
@@ -347,9 +440,13 @@ fn list_modeled_behaviors(
             } else {
                 AccessDirection::Write
             };
-            [NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS]
-                .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
-                .to_vec()
+            [
+                NEOVERSE_V2_SYSTEM_REGISTERS,
+                OTHER_SYSTEM_REGISTERS,
+                PRESENTED_SYSTEM_REGISTERS,
+            ]
+            .map(|choices| PreciseInstruction::SystemRegisterMove { direction, choices })
+            .to_vec()
         }
         Instruction::Hint | Instruction::MsrImmediate | Instruction::Sys | Instruction::Sysl => {
             crate::system_instruction::list_system_instruction_behaviors(instruction)
@@ -497,6 +594,7 @@ fn list_load_store_behaviors(
         failed_store_exclusive: None,
         store_exclusive_overlap: None,
         misaligned_exclusive: None,
+        misaligned_ordered_or_atomic: None,
         fault_address_tag: None,
         reservation_granule_bytes: None,
     };
@@ -577,6 +675,15 @@ fn list_load_store_behaviors(
             MisalignedExclusive::WithinSixteenBytes,
         ],
         |choices, choice| choices.misaligned_exclusive = Some(choice),
+    );
+    let combinations = widen(
+        combinations,
+        open.misaligned_ordered_or_atomic,
+        &[
+            MisalignedOrderedOrAtomic::AlignmentFault,
+            MisalignedOrderedOrAtomic::WithinSixteenBytes,
+        ],
+        |choices, choice| choices.misaligned_ordered_or_atomic = Some(choice),
     );
     // No state single-stepping reaches holds the monitor, so the one granule a chip was measured to have is listed.
     let combinations = widen(

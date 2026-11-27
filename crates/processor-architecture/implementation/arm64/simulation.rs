@@ -45,11 +45,15 @@ where
         let undecided = self.apply(&mut after, memory.mutations, mutation_hook);
         let completed = after.exception.is_none();
         let mut expectation = ProcessorExpectation::new(after);
-        if let Self::ElementAccess { instruction, .. } = *self
+        if let Self::ElementAccess {
+            instruction,
+            choices,
+        } = *self
             && completed
             && let Ok(word) = fetch(memory.mutations, processor.program_counter)
         {
-            expectation.suppressible_load = to_suppressible_load(instruction, processor, word);
+            expectation.suppressible_load =
+                to_suppressible_load(instruction, choices, processor, memory.mutations, word);
         }
         if let Some((register, condition_flags)) = undecided {
             if let Some(uncompared) = expectation
@@ -83,6 +87,17 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
             Ok(word) if self.is_reserved(word) => Err(Exception::UndefinedInstruction),
             Ok(word) => match *self {
                 Self::Documented(documented) => documented
+                    .simulate(processor, word)
+                    .map(|target| branch_target = target),
+                Self::WithoutOptionalEncodings(documented)
+                    if crate::advanced_simd::is_optional_encoding(
+                        documented.instruction(),
+                        word,
+                    ) =>
+                {
+                    Err(Exception::UndefinedInstruction)
+                }
+                Self::WithoutOptionalEncodings(documented) => documented
                     .simulate(processor, word)
                     .map(|target| branch_target = target),
                 Self::LoadStore {
@@ -211,7 +226,9 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
     /// Whether the word holds an operand value the list marks unallocated for this instruction.
     fn is_reserved(&self, word: u32) -> bool {
         let instruction = match *self {
-            Self::Documented(documented) => documented.instruction(),
+            Self::Documented(documented) | Self::WithoutOptionalEncodings(documented) => {
+                documented.instruction()
+            }
             Self::LoadStore { instruction, .. } => instruction.instruction(),
             Self::Brk => Instruction::Brk,
             Self::Rdvl(_) => Instruction::Rdvl,

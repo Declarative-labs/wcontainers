@@ -12,8 +12,8 @@ use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchi
 
 use crate::behavior::{
     FailedStoreExclusive, FaultAddressTag, LoadIntoBaseWithWriteback, LoadPairIntoOneRegister,
-    MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
-    StoreOfBaseWithWriteback,
+    MisalignedExclusive, MisalignedOrderedOrAtomic, MisalignedStackPointer, StoreAcrossFault,
+    StoreExclusiveOverlap, StoreOfBaseWithWriteback,
 };
 use crate::branch::{is_outside_lower_addresses, to_untagged_address};
 use crate::integer::{low_ones, read_source};
@@ -582,6 +582,11 @@ pub struct LoadStoreInstruction(Instruction<Infallible>);
 
 /// What a load or store does in each case the manual leaves open; none where the instruction has no such case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub struct LoadStoreChoices {
     pub misaligned_stack_pointer: Option<MisalignedStackPointer>,
     pub across_fault: Option<StoreAcrossFault>,
@@ -591,6 +596,7 @@ pub struct LoadStoreChoices {
     pub failed_store_exclusive: Option<FailedStoreExclusive>,
     pub store_exclusive_overlap: Option<StoreExclusiveOverlap>,
     pub misaligned_exclusive: Option<MisalignedExclusive>,
+    pub misaligned_ordered_or_atomic: Option<MisalignedOrderedOrAtomic>,
     pub fault_address_tag: Option<FaultAddressTag>,
     /// The bytes of the reservation granule the exclusive monitor marks, which CTR_EL0.ERG gives.
     pub reservation_granule_bytes: Option<u64>,
@@ -619,6 +625,9 @@ impl LoadStoreChoices {
             misaligned_exclusive: self
                 .misaligned_exclusive
                 .filter(|_| open.misaligned_exclusive),
+            misaligned_ordered_or_atomic: self
+                .misaligned_ordered_or_atomic
+                .filter(|_| open.misaligned_ordered_or_atomic),
             fault_address_tag: self.fault_address_tag.filter(|_| open.fault_address_tag),
             reservation_granule_bytes: self
                 .reservation_granule_bytes
@@ -638,6 +647,7 @@ pub struct OpenCases {
     pub failed_store_exclusive: bool,
     pub store_exclusive_overlap: bool,
     pub misaligned_exclusive: bool,
+    pub misaligned_ordered_or_atomic: bool,
     pub fault_address_tag: bool,
     pub reservation_granule: bool,
 }
@@ -724,6 +734,17 @@ impl LoadStoreInstruction {
             misaligned_exclusive: operation.alignment == Alignment::Exclusive
                 && (BYTE as u64 + 1..SINGLE_COPY_ATOMIC_BYTES).contains(&u64::from(
                     operation.bytes * (registers - u32::from(stores_exclusive)),
+                )),
+            // An ordered or atomic access is misaligned exactly where it leaves its 16 aligned bytes when it fills them,
+            // and a byte is aligned anywhere.
+            misaligned_ordered_or_atomic: operation.alignment == Alignment::WithinSixteenBytes
+                && (BYTE as u64 + 1..SINGLE_COPY_ATOMIC_BYTES).contains(&u64::from(
+                    operation.bytes
+                        * if operation.transfer == Transfer::CompareAndSwapPair {
+                            2
+                        } else {
+                            1
+                        },
                 )),
             // A prefetch never faults; a literal's address is the instruction's own, which is never tagged.
             fault_address_tag: base.is_some() && operation.transfer != Transfer::Prefetch,
@@ -1090,6 +1111,8 @@ where
         SINGLE_COPY_ATOMIC_BYTES
     };
     let within_sixteen_bytes = address % granule + total as u64 <= granule;
+    let ordered_or_atomic_faults =
+        choices.misaligned_ordered_or_atomic == Some(MisalignedOrderedOrAtomic::AlignmentFault);
     let aligned = crate::planted::is(276)
         || match (operation.alignment, choices.misaligned_exclusive) {
             _ if crate::planted::is(436) => true,
@@ -1110,6 +1133,9 @@ where
                 address.is_multiple_of(total as u64)
             }
             (Alignment::Exclusive, _) if crate::planted::is(166) => {
+                address.is_multiple_of(total as u64)
+            }
+            (Alignment::WithinSixteenBytes, _) if ordered_or_atomic_faults => {
                 address.is_multiple_of(total as u64)
             }
             (Alignment::WithinSixteenBytes, _)

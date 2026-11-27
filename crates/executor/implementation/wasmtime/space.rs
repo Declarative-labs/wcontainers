@@ -178,7 +178,7 @@ impl Pages {
         *record = change(*record);
     }
 
-    /// What the table says a page allows: what it was given, without writing while it holds code.
+    /// Returns what the table says a page allows: what it was given, without writing while it holds code.
     fn effective(&self, page: u64) -> Permissions {
         let record = self.record(page);
         let allowed = Permissions::from_bits_truncate(record & PERMISSION_BITS);
@@ -258,17 +258,17 @@ impl Space {
             .is_some_and(|bytes| bytes.read(into) == into.len())
     }
 
-    /// What the page was given; nothing for a page outside the space.
+    /// Returns what the page was given, or nothing for a page outside the space.
     pub(crate) fn permissions(&self, page: u64) -> Permissions {
         Permissions::from_bits_truncate(lock(&self.pages).record(page) & PERMISSION_BITS)
     }
 
-    /// Whether the page was given permissions, so that a fault on it is one of permission rather than translation.
+    /// Returns whether the page was given permissions, so that a fault on it is one of permission, not translation.
     pub(crate) fn is_mapped(&self, page: u64) -> bool {
         lock(&self.pages).record(page) & MAPPED != 0
     }
 
-    /// Whether the table holds writing back from the page because code was translated from it.
+    /// Returns whether the table holds writing back from the page because code was translated from it.
     pub(crate) fn holds_code(&self, page: u64) -> bool {
         lock(&self.pages).record(page) & CODE != 0
     }
@@ -529,8 +529,9 @@ impl Space {
         (load, narrowed)
     }
 
-    /// Drops every load read from the addresses, so the lookup finds none of its pieces, and gives writing back to the
-    /// pages; whether there was any. Called only inside a change.
+    /// Drops every load read from the addresses and gives writing back to their pages, returning whether there was any.
+    ///
+    /// The lookup then finds none of its pieces; it is called only inside a change.
     pub(crate) fn drop_code_locked(&self, addresses: Range<u64>) -> bool {
         let Ok(pages) = pages_of(&addresses) else {
             return false;
@@ -582,7 +583,7 @@ impl Space {
         true
     }
 
-    /// Drops every load, so that the lookup finds none of their pieces. Called only while no thread runs.
+    /// Drops every load, so that the lookup finds none of their pieces, while no thread runs.
     pub(crate) fn drop_every_load(&self) {
         let loads: Vec<Arc<Load>> = lock(&self.code).loads.clone();
         for load in loads
@@ -628,7 +629,7 @@ impl Space {
             })
     }
 
-    /// Maps each run of the pages from its backing, and records it. Called only inside a change.
+    /// Maps each run of the pages from its backing and records it, inside a change.
     fn show_locked(&self, mapped: Vec<(u64, Backing)>) -> Result<(), rustix::io::Errno> {
         let mut index = 0;
         while index < mapped.len() {
@@ -661,7 +662,7 @@ impl Space {
         Ok(())
     }
 
-    /// Shows the pages from this space's own file again, zeroed. Called only inside a change.
+    /// Shows the pages from this space's own file again, zeroed, inside a change.
     fn own_zeroed_locked(&self, pages: Range<u64>) -> Result<(), rustix::io::Errno> {
         if pages.is_empty() {
             return Ok(());
@@ -690,8 +691,9 @@ impl Space {
         self.show_locked(own)
     }
 
-    /// Copies the data of the other space's own file at the pages into this space's own file at the same offset less the
-    /// shift, skipping what the other file holds no data at. Called only inside a change.
+    /// Copies the data of the other space's own file at the pages into this space's own file, inside a change.
+    ///
+    /// Each byte lands at its own offset less the shift, and what the other file holds no data at is skipped.
     fn copy_own_locked(
         &self,
         other: &Space,
@@ -735,7 +737,7 @@ impl Space {
         Ok(())
     }
 
-    /// Whether any page of the addresses holds code.
+    /// Returns whether any page of the addresses holds code.
     fn any_code(&self, addresses: &Range<u64>) -> bool {
         let Ok(pages) = pages_of(addresses) else {
             return false;

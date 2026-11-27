@@ -22,7 +22,8 @@ use wcontainers_executor::{
     InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
 use wcontainers_guest_cpu::{Guest, HookBody, Personality, TrapKind};
-use wcontainers_processor_architecture_arm64::encoding::{IMM16, RT};
+use wcontainers_processor_architecture_arm64::encoding::{Field, IMM16, RT};
+use wcontainers_processor_architecture_arm64::system_instruction::to_cache_maintenance_syndrome;
 use wcontainers_processor_architecture_arm64::system_register::{
     SYSTEM_REGISTER, SystemRegisterEncoding,
 };
@@ -47,6 +48,8 @@ const CPU_HOOK_ARGUMENTS: usize = 8;
 type CpuHookIndex = usize;
 /// The bit of an MRS or MSR word that is set in an MRS, [L](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-).
 const SYSTEM_MOVE_READ_BIT: u32 = 21;
+/// The op0 field of a system instruction's word: 2 or 3 in an MRS or MSR (register), 0 in an MSR (immediate).
+const SYSTEM_OP0: Field = Field::new(19, 2);
 
 /// How a thread runs.
 #[derive(Clone, Copy)]
@@ -384,8 +387,9 @@ fn resume(caller: &mut Caller<'_, ThreadData>) -> bool {
     true
 }
 
-/// [`resume`] from a hook that returns no unwind payload: the thread raises its own stop flag to leave at its next stop
-/// check, and stays counted in guest code until then.
+/// Resumes from a hook that returns no unwind payload, as [`resume`] does.
+///
+/// The thread raises its own stop flag to leave at its next stop check, and stays counted in guest code until then.
 fn resume_in_place(caller: &mut Caller<'_, ThreadData>) {
     let seen = caller.data().narrowed_seen;
     enter_guest(caller);
@@ -538,7 +542,7 @@ fn ask<Returned>(
         .expect("the trap handler of the run in progress")
 }
 
-/// The system call hook: the handler's answer goes to x0, or the run ends at the call.
+/// Answers the system call hook: the handler's answer goes to x0, or the run ends at the call.
 fn system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) -> i64 {
     leave_guest(caller.data_mut());
     let first = request.arguments[0].cast_signed();
@@ -575,7 +579,7 @@ fn system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) 
     }
 }
 
-/// The stop hook: a change, an interrupt, the end of a slice, or the end of a step or of a run stopped the thread.
+/// Answers the stop hook: a change, an interrupt, the end of a slice, or the end of a step or run stopped the thread.
 fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
     leave_guest(caller.data_mut());
     let data = caller.data();
@@ -635,8 +639,7 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
     }
 }
 
-/// The memory fault hook: a write to a page holding code drops the code and runs the thread again; any other fault
-/// goes to the handler, which retries the instruction or ends the run at it.
+/// Answers the memory fault hook: a write to code drops the code and runs again; the handler takes any other fault.
 fn memory_fault(caller: &mut Caller<'_, ThreadData>, computed: u64, write: bool) -> i32 {
     leave_guest(caller.data_mut());
     // The hook is given the address as the program computed it, tag and all; the pages and the handler see the address
@@ -677,15 +680,36 @@ fn memory_fault(caller: &mut Caller<'_, ThreadData>, computed: u64, write: bool)
     } else {
         AccessDirection::Read
     };
-    caller.data_mut().ending = Some(Ending::Raised(Exception::DataAbort {
-        status: fault_status(&space, address),
-        access: direction,
-        address: computed,
-    }));
+    let status = fault_status(&space, address);
+    let exception = if is_cache_maintenance(caller.data()) {
+        Exception::Undecoded {
+            syndrome: to_cache_maintenance_syndrome(status),
+            fault_address: computed,
+        }
+    } else {
+        Exception::DataAbort {
+            status,
+            access: direction,
+            address: computed,
+        }
+    };
+    caller.data_mut().ending = Some(Ending::Raised(exception));
     contract::UNWIND_LEAVE
 }
 
-/// The load code hook: puts a piece for the address in place, or ends the run at a fetch fault or the end of a step.
+/// Returns whether the thread's instruction is DC CVAC or DC CIVAC, whose fault is a data abort of cache maintenance.
+fn is_cache_maintenance(data: &ThreadData) -> bool {
+    let pc = program_counter(data);
+    let mut word = [0; INSTRUCTION_BYTES];
+    pc.is_multiple_of(INSTRUCTION_BYTES as u64)
+        && space_of(data).read(pc, &mut word)
+        && matches!(
+            wcontainers_arm64::decode(u32::from_le_bytes(word)),
+            wcontainers_arm64::Instruction::CleanCache { .. }
+        )
+}
+
+/// Answers the load code hook: puts a piece for the address in place, or ends the run at a fetch fault or step end.
 fn load_code(caller: &mut Caller<'_, ThreadData>, address: u64, exact: bool) -> i32 {
     leave_guest(caller.data_mut());
     let space = space_of(caller.data());
@@ -803,7 +827,7 @@ fn place_load(
     true
 }
 
-/// The trap hook: the instruction raises its exception, which ends the run.
+/// Answers the trap hook: the instruction raises its exception, which ends the run.
 fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
     leave_guest(caller.data_mut());
     let pc = program_counter(caller.data());
@@ -858,12 +882,12 @@ fn alignment_fault(data: &ThreadData, pc: u64, address: u64) -> Exception {
     }
 }
 
-/// Returns the fields EL1 is given of a trapped MRS or MSR, the instruction word given.
+/// Returns the fields EL1 is given of a trapped MRS, MSR (register) or MSR (immediate), the instruction word given.
 fn to_system_access(word: u32) -> SystemAccess {
     let encoding = SystemRegisterEncoding::from_field(SYSTEM_REGISTER.read(word));
     let field = |value: u32| u8::try_from(value).expect("a field of a system register's encoding");
     SystemAccess {
-        op0: field(encoding.op0),
+        op0: field(SYSTEM_OP0.read(word)),
         op1: field(encoding.op1),
         crn: field(encoding.crn),
         crm: field(encoding.crm),
@@ -877,7 +901,7 @@ fn to_system_access(word: u32) -> SystemAccess {
     }
 }
 
-/// The guest's own code changed hook (ARM64 `ic ivau`): drops the code of the line holding the address.
+/// Answers the guest's own code changed hook (ARM64 `ic ivau`): drops the code of the line holding the address.
 fn code_changed(caller: &mut Caller<'_, ThreadData>, address: u64, line: u64) {
     leave_guest(caller.data_mut());
     let data = caller.data();
@@ -890,7 +914,7 @@ fn code_changed(caller: &mut Caller<'_, ThreadData>, address: u64, line: u64) {
     resume_in_place(caller);
 }
 
-/// The guest's own hook at the index: `Guest::run_hook` on the bytes of the thread's state it names.
+/// Answers the guest's own hook at the index with `Guest::run_hook` on the bytes of the thread's state it names.
 fn cpu_hook(
     caller: &Caller<'_, ThreadData>,
     index: CpuHookIndex,
@@ -923,7 +947,7 @@ fn cpu_hook(
     }
 }
 
-/// The WebAssembly type of a hook's parameter or result.
+/// Converts a hook's parameter or result type to wasmtime's.
 fn val_type(ty: wasm_encoder::ValType) -> ValType {
     match ty {
         wasm_encoder::ValType::I32 => ValType::I32,
@@ -932,7 +956,7 @@ fn val_type(ty: wasm_encoder::ValType) -> ValType {
     }
 }
 
-/// The hooks of one store, by import name.
+/// Makes the hooks of one store, by import name.
 fn make_hooks(store: &mut Store<ThreadData>) -> Vec<(&'static str, Func)> {
     let mut hooks = vec![
         (

@@ -24,6 +24,11 @@ const PREDICATE_BYTES: u32 = VECTOR_BYTES / u8::BITS;
 
 /// How a count changes the register it steps.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum Step {
     /// Wrapping at the register's width.
     Plain,
@@ -33,6 +38,11 @@ pub enum Step {
 
 /// The register a count steps, and at what width its value is read and saturated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum Stepped {
     /// A 64-bit register.
     Doubleword,
@@ -44,6 +54,11 @@ pub enum Stepped {
 
 /// What a count of elements comes from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum Counted {
     /// The elements a pattern counts, times imm4 plus one.
     Pattern,
@@ -52,6 +67,11 @@ pub enum Counted {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum CountOperation {
     /// INDEX: each element its index times a step, plus a base; each from an immediate or a register.
     Index {

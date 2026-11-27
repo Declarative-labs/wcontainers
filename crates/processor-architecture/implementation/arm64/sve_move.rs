@@ -23,6 +23,11 @@ const DUPLICATE_SIZE_BITS: u32 = 5;
 
 /// What one element of a reduction combines, as a value of the element's bits or of 64 bits for a sum.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum Reduction {
     /// SADDV and UADDV, into 64 bits.
     Sum(Signedness),
@@ -35,6 +40,11 @@ pub enum Reduction {
 
 /// Where LASTA, LASTB, CLASTA and CLASTB put the element they take.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum ElementTarget {
     General,
     /// The low element of a SIMD and floating-point register, the rest cleared.
@@ -44,6 +54,11 @@ pub enum ElementTarget {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum MoveOperation {
     Zip(Part),
     Unzip(Part),

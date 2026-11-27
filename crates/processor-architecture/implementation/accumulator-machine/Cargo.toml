@@ -1,0 +1,33 @@
+[package]
+name = "wcontainers-processor-architecture-accumulator-machine"
+description = "A machine of one 8-bit accumulator and a carry flag, for testing what is written about an architecture."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[features]
+# Lets every instruction, behavior and core identity write itself as a Rust expression that names each variant by its full path.
+bake = ["dep:databake"]
+
+[dependencies]
+wcontainers-processor-architecture = { path = "../.." }
+databake = { workspace = true, optional = true }
+
+[dev-dependencies]
+wcontainers-processor-architecture-conformance = { path = "../../conformance" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-accumulator-machine = { path = "../../../instruction-input-domain/implementation/accumulator-machine" }
+
+[lints]
+workspace = true

@@ -1,5 +1,6 @@
-//! The executor bounds its own run: after each slice of progress events its configuration sets, the run asks the
-//! handler as at an interrupt from outside. And a read of the counter traps, for the kernel to answer.
+//! The executor's own bound on a run, and the counter read that traps for the kernel to answer.
+//!
+//! After each slice of progress events its configuration sets, the run asks the handler as at an outside interrupt.
 
 use std::num::NonZeroU64;
 

@@ -159,6 +159,11 @@ fn list_feature_sets(mask: SystemFeatures) -> Vec<SystemFeatures> {
 /// What one of these instructions does with the choices a chip makes, each with the features of its instruction the
 /// chip has.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::system_instruction)
+)]
 pub enum SystemInstructionBehavior {
     /// HINT, with what WFI does, its hint number 3.
     Hint(WaitForInterruptBehavior, SystemFeatures),
@@ -235,6 +240,11 @@ pub(crate) fn list_system_instruction_behaviors(
 
 /// What CPP RCTX does at EL0 with SCTLR_EL1.EnRCTX clear.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::system_instruction)
+)]
 pub enum PredictionRestriction {
     /// Completes, as a Neoverse V2 does (MEASURED: no exception and no exit to KVM).
     Completes,
@@ -468,6 +478,18 @@ struct SystemChoices {
     features: SystemFeatures,
 }
 
+/// The syndrome of the data abort a cache maintenance instruction takes at EL0 with the fault status given.
+pub const fn to_cache_maintenance_syndrome(status: FaultStatus) -> u64 {
+    CACHE_MAINTENANCE_ABORT
+        | match status {
+            FaultStatus::TranslationFaultLevel0 => TRANSLATION_FAULT_LEVEL_0,
+            FaultStatus::TranslationFaultLevel3 => TRANSLATION_FAULT_LEVEL_3,
+            FaultStatus::PermissionFaultLevel3 | FaultStatus::AlignmentFault => {
+                PERMISSION_FAULT_LEVEL_3
+            }
+        }
+}
+
 /// SYS by what its encoding does at EL0.
 fn simulate_system<LevelSpecific, Architecture>(
     processor: &mut Processor<LevelSpecific>,
@@ -540,14 +562,7 @@ where
         A::CleanOrInvalidate => match find_fault(memory, location, 1, AccessDirection::Read) {
             None => Ok(()),
             Some((_, status)) => Err(Exception::Undecoded {
-                syndrome: CACHE_MAINTENANCE_ABORT
-                    | match status {
-                        FaultStatus::TranslationFaultLevel0 => TRANSLATION_FAULT_LEVEL_0,
-                        FaultStatus::TranslationFaultLevel3 => TRANSLATION_FAULT_LEVEL_3,
-                        FaultStatus::PermissionFaultLevel3 | FaultStatus::AlignmentFault => {
-                            PERMISSION_FAULT_LEVEL_3
-                        }
-                    },
+                syndrome: to_cache_maintenance_syndrome(status),
                 fault_address: to_fault_address(address, location, tag),
             }),
         },

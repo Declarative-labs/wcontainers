@@ -15,8 +15,9 @@ use wcontainers_processor_architecture::{
 use wcontainers_processor_architecture_arm64::{
     Arm64, FailedStoreExclusive, FaultAddressTag, Instruction, LoadIntoBaseWithWriteback,
     LoadPairIntoOneRegister, LoadStoreChoices, LoadStoreInstruction, MisalignedExclusive,
-    MisalignedStackPointer, PreciseInstruction, Processor, SmeTrapCode, StoreAcrossFault,
-    StoreExclusiveOverlap, StoreOfBaseWithWriteback, User, VectorLength, VectorLengthReading,
+    MisalignedOrderedOrAtomic, MisalignedStackPointer, PreciseInstruction, Processor, SmeTrapCode,
+    StoreAcrossFault, StoreExclusiveOverlap, StoreOfBaseWithWriteback, User, VectorLength,
+    VectorLengthReading,
 };
 
 /// The folder of a chip's committed recordings.
@@ -88,6 +89,7 @@ fn expect_chip(
         failed_store_exclusive: Some(FailedStoreExclusive::ChecksAccess),
         store_exclusive_overlap: Some(StoreExclusiveOverlap::Runs),
         misaligned_exclusive: Some(MisalignedExclusive::WithinSixteenBytes),
+        misaligned_ordered_or_atomic: Some(MisalignedOrderedOrAtomic::WithinSixteenBytes),
         fault_address_tag: Some(FaultAddressTag::KeepsTopByte),
         reservation_granule_bytes: Some(64),
     };

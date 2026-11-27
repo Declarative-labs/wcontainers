@@ -284,6 +284,11 @@ pub fn to_system_register_access(field: u32) -> SystemRegisterAccess {
 
 /// What a chip or its executor fixes about the system registers EL0 reaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::system_register)
+)]
 pub struct SystemRegisterChoices {
     pub cache_type: u64,
     pub zero_block_size: u64,
@@ -296,6 +301,12 @@ pub struct SystemRegisterChoices {
     /// Whether MRS and MSR reach PSTATE.TCO; where not, as on a chip whose hypervisor gives its guest no FEAT_MTE, they
     /// read zero and write nothing while PSTATE.TCO keeps its value.
     pub tag_check_override: bool,
+    /// Whether the chip has FEAT_SSBS, without which an MRS or MSR of PSTATE's SSBS is undefined.
+    pub speculative_store_bypass_safe: bool,
+    /// Whether the chip has FEAT_DIT, without which an MRS or MSR of PSTATE's DIT is undefined.
+    pub data_independent_timing: bool,
+    /// Whether the chip has FEAT_MTE, without which an MRS or MSR of PSTATE's TCO is undefined.
+    pub memory_tagging: bool,
 }
 
 /// What a Neoverse V2 under KVM shows, MEASURED by the measured set's `system_registers` survey on a Graviton4: its
@@ -311,6 +322,9 @@ pub const NEOVERSE_V2_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterCh
     floating_point_status_bits: 0xF800_009F,
     random_number_registers: true,
     tag_check_override: false,
+    speculative_store_bypass_safe: true,
+    data_independent_timing: true,
+    memory_tagging: true,
 };
 
 /// Another chip's choices, every value different, so that each is told apart.
@@ -322,6 +336,27 @@ pub const OTHER_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices 
     floating_point_status_bits: u64::MAX,
     random_number_registers: false,
     tag_check_override: true,
+    speculative_store_bypass_safe: false,
+    data_independent_timing: false,
+    memory_tagging: true,
+};
+
+/// What a chip without FEAT_SSBS, FEAT_DIT, FEAT_MTE, FEAT_RNG, FEAT_FP16 and AArch32 shows, as the translator presents it.
+///
+/// Its [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register)
+/// is unicorn's, its zero block 64 bytes, its TPIDRRO_EL0 zero as Linux leaves it for a 64-bit program; FPCR holds AHP,
+/// DN, FZ and RMode, and FPSR QC and the cumulative flags.
+pub const PRESENTED_SYSTEM_REGISTERS: SystemRegisterChoices = SystemRegisterChoices {
+    cache_type: 0x8444_C004,
+    zero_block_size: 0x4,
+    read_only_thread_id: 0,
+    floating_point_control_bits: 0x07C0_0000,
+    floating_point_status_bits: 0x0800_009F,
+    random_number_registers: false,
+    tag_check_override: false,
+    speculative_store_bypass_safe: false,
+    data_independent_timing: false,
+    memory_tagging: false,
 };
 
 /// [MRS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-)
@@ -348,6 +383,11 @@ pub fn simulate_system_register_move<LevelSpecific>(
         })
     };
     let access = to_system_register_access(field);
+    if let A::Held(register) = access
+        && !has_process_state_control(register, choices)
+    {
+        return Err(Exception::UndefinedInstruction);
+    }
     let read = match (access, direction) {
         (A::RandomNumber, AccessDirection::Write) if crate::planted::is(510) => return Ok(()),
         (A::Undefined, _)
@@ -422,6 +462,19 @@ pub fn simulate_system_register_move<LevelSpecific>(
     };
     write_register(processor, number, read, RegisterThirtyOne::ZeroRegister);
     Ok(())
+}
+
+/// Returns whether the chip has the register, false only for a PSTATE control whose feature it lacks.
+fn has_process_state_control(register: HeldRegister, choices: SystemRegisterChoices) -> bool {
+    match register {
+        HeldRegister::SpeculativeStoreBypassSafe => choices.speculative_store_bypass_safe,
+        HeldRegister::DataIndependentTiming => choices.data_independent_timing,
+        HeldRegister::TagCheckOverride => choices.memory_tagging,
+        HeldRegister::ConditionFlags
+        | HeldRegister::FloatingPointControl
+        | HeldRegister::FloatingPointStatus
+        | HeldRegister::SoftwareThreadId => true,
+    }
 }
 
 /// What MRS reads of a PSTATE control: its bit of the processor state, at the same bit, or zero for TCO where the chip

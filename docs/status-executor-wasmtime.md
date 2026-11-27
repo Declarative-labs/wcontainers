@@ -8,7 +8,101 @@ byte-identical to his main (MEASURED: `git diff --stat owner/main HEAD` over tho
 
 Marks: MEASURED (run on a rented machine, the command given), READ (read in a file), INFERRED (not run).
 
-## X2 continued, 2026-11-26 afternoon (newest first; the sections after this one are the morning's)
+## X2, 2026-11-26 evening: the orchestrator's three rulings (newest first; the sections after this one are older)
+
+His main `ac696ea19` is still in the branch (MEASURED: `git fetch <his checkout> main`, FETCH_HEAD `ac696ea19`,
+`git merge-base --is-ancestor FETCH_HEAD HEAD`). Merged: `origin/arm64-instructions` 39ec6ca78 (`46d0dc453`), and the
+branch `arm64-instructions-for-wasmtime` made for ruling 2, at 70a17afc3 (`bb11b9c05`) and bd9d83dd8 (`53cbce1e9`).
+Every owner interface file is byte-identical to his main (MEASURED: `git diff FETCH_HEAD HEAD` over the 30 folders with an
+`interface.rs` on his main, leaving out `implementation/` and `conformance/`, is empty).
+
+### READY FOR A CONTAINER: `53cbce1e9`
+
+MEASURED, Graviton4, throwaway tree = `53cbce1e9` merged with `origin/kernel-port` 353987bad (no conflict, no patch: the
+kernel track's harness already runs the kernel on this executor, and d77525c9d answers the trapped registers);
+`cargo test --release -p wcontainers-executor-unicorn --features runtime --test hello --test busybox --test counterclock`;
+logs `fetched/run9-arm/hb9.log`, `hb9b.log`:
+
+| Test | Result |
+|---|---|
+| `hello_matches_reference` | passes |
+| busybox | 3 passed, 1 failed, 1 ignored: `system` differs in 2 of 35 commands, the same two host-specific ones as before (`/proc/config.gz`, `/proc/sys` values) |
+| counterclock | 2 of 2 (`counter_never_goes_backwards` failed at `9802b9416` until the kernel answered the trap) |
+
+### What changed (commits on this branch)
+
+| Commit | What |
+|---|---|
+| `cd2b7fc8e` | ruling 1, translator side: the ARM64 offer `KeptRegisters::Trapped` (was `CounterAccess::Trapped`) raises `TrapKind::SystemAccess` for every access EL1 keeps from EL0 as Linux sets it: DAIF, DAIFSet and DAIFClr (SCTLR_EL1.UMA clear), SCXTNUM_EL0 (TSCXT set), the timers, reads of the activity monitors, the counter, and the whole identity register space (FEAT_IDST), including the ones Linux gives no value; DC CVAU is never checked (the list: it never faults at EL0) |
+| `52406c3bc` | ruling 1, executor side: translates under `KeptRegisters::Trapped`; a trapped MSR (immediate) reports its op0; a fault of DC CVAC or CIVAC is the list's `Undecoded` cache maintenance syndrome, not a `DataAbort` |
+| `bb11b9c05` | ruling 2: merges 70a17afc3, the list's behaviors of a chip without FEAT_LSE2 (a misaligned ordered or atomic access is an alignment fault), without FEAT_FP16 (the half-precision fixed-point conversions) and without FEAT_PMULL (PMULL of 64-bit elements) |
+| `53cbce1e9` | ruling 2: merges bd9d83dd8, the list's MRS and MSR (register) of a chip without FEAT_SSBS, FEAT_DIT, FEAT_MTE, FEAT_RNG, FEAT_FP16 and AArch32 |
+
+What the list lacked and why, rows and the manual's words: `wcontainers-scratch/executor-wasmtime/NEEDED-FROM-ARM64-LIST.md`
+(sections 1 to 4). Branch `arm64-instructions-for-wasmtime` (two commits on 39ec6ca78, pushed), for the orchestrator to merge
+into `arm64-instructions`. MEASURED for bd9d83dd8 on Graviton4: clippy `-D warnings` on the arm64, measured and collected
+crates clean; tests of `processor-architecture-arm64` (49 + 3 + 1), `collected` (3 + 3), `measured` (4 + 3) and
+`behavior-source-recording` (10 + 4) pass; `this_chip_measures_as_its_baked_sample` passes (the Neoverse V2 still
+measures as its sample: the new behavior is listed third).
+
+### For the kernel track: what a program on this executor must be told
+
+It runs on a chip without FEAT_LSE2, FEAT_FP16, FEAT_PMULL, FEAT_SSBS, FEAT_DIT, FEAT_MTE and FEAT_RNG. The identity
+registers it now traps (the kernel answers them) and AT_HWCAP/AT_HWCAP2 must say so: ID_AA64MMFR2_EL1.AT 0 (no
+HWCAP_USCAT); ID_AA64PFR0_EL1.FP and AdvSIMD 0 (no HWCAP_FPHP, HWCAP_ASIMDHP) and DIT 0 (no HWCAP_DIT);
+ID_AA64ISAR0_EL1.AES below 2 (no HWCAP_PMULL) and RNDR 0 (no HWCAP2_RNG); ID_AA64PFR1_EL1.SSBS 0 and MTE 0 (no HWCAP_SSBS,
+HWCAP2_MTE). INFERRED from the list; not checked against `d77525c9d`'s answers.
+
+### The bar now (MEASURED at `53cbce1e9` unless marked)
+
+| Run | ARM64 (Graviton4) | x86-64 |
+|---|---|---|
+| executor suite without the full-list tests | 23 of 23 | 23 of 23 |
+| `tests/slice.rs`, the ten slice instructions | passes (10 of 10) | passes |
+| `tests/time_slice.rs` | 4 of 4 | 4 of 4 |
+| volatile-bytes 5, `wcontainers-wasmtime-direct` 5 | pass | pass |
+| trap cost (`cargo test --release --test trap_cost -- --ignored`, fastest of 5 runs of 1,000,000 system calls) | 81.0 ns (82.8 at `6d3e773dc`, 80.2 before X2's trap changes) | 72.9 ns (78.9 at `6d3e773dc`, 74.6 before) |
+
+Logs: `fetched/run9-arm/`, `fetched/run9-x86/` (`cost9.log`, `rest9.log`, `full9.log`).
+
+Full list (`cargo test --release --test conformance -- --test-threads 6 agrees behavior_source`, `CriticalValueCut`):
+
+| Commit | ARM64 | x86-64 |
+|---|---|---|
+| `9802b9416` | 143 instructions disagree | 143 |
+| `52406c3bc` (rulings 1 and the first list commit) | 2 disagree: MsrRegister 4,833 of 118,437 states, Mrs 1,120 of 130,737; behavior source 3 of 4 (65 min; log `fetched/run8-arm/full8.log`) | the same 2 and the same counts (60 min; `fetched/run8-x86/full8.log`) |
+| `53cbce1e9` | **0 disagree**: `agrees_with_precise_instruction_set` passes, and the behavior-source suite 4 of 4 (`measured_behavior_agrees_with_the_source` passes too); 5 of 5 in 94 min (`fetched/run9-arm/full9.log`) | the same: 5 of 5 in 104 min (`fetched/run9-x86/full9.log`) |
+
+The 2 at `52406c3bc`, by encoding (MEASURED: a throwaway test over every generated state of the two, not committed):
+under the Neoverse V2 choices, MRS and MSR of DIT, SSBS and TCO are undefined here and complete in the list; MRS of RNDR
+and RNDRRS are undefined; MRS CTR_EL0 reads 0x8444_C004 (the list had 0xB444_C004 in the generic MRS, though its own
+`MrsCtrEl0` already had the presented value); TPIDRRO_EL0 reads 0; MSR FPCR keeps no FZ16 and MSR FPSR no N, Z, C or V.
+Every one is a chip without those features, which the list did not have: bd9d83dd8 adds it. The same test at `53cbce1e9`:
+the new behavior meets every state the executor ran of both instructions (no encoding shows a disagreeing state).
+
+`36f4725b4` (merges aba673597) changes only the comments of the new list items, for the linter; the full list was run
+at `53cbce1e9`.
+
+### The linter (`cargo reviewable check`, reviewable-rust da55b9d7 built on the machine, no model key)
+
+MEASURED at `53cbce1e9`, findings by path over the whole workspace's run (102,561 in all): `crates/executor/implementation/wasmtime`
+307, `crates/wasmtime` 102 (of these 409: 161 need the model's answer, `summary_unanswered` 111 and `name_unanswered` 50;
+then `magic_literal` 75, `summary_not_one_line` 44, `summary_too_long` 32, `public_outside_interface` 26,
+`number_constant_without_link` 18, `function_summary_not_third_person` 18, `conformance_not_run` 11, and 25 more of
+nine kinds). The list's `system_register.rs` went from 117 to 111 with aba673597; the 6 left on the lines I added are 4
+`public_outside_interface` (every field of that crate's types is `pub`) and 2 that need the model's answer. Working the
+409 down is not started: it is the linter part of X2's bar.
+
+### Next
+
+X2's agreement bar is met by measurement at `53cbce1e9` on both machines: 0 disagreeing instructions on the full list, the
+executor suite 23 of 23 plus the 2 full-list tests, the behavior-source suite 4 of 4. `e8806f744` changes only
+function summaries (fmt, clippy and the suite without the full list rerun on x86: clean, 23 of 23). Left of X2: (1) the linter's 409 findings in the two crates (mine; 161 wait on a model key or the orchestrator's answers);
+(2) "the top page of a 2^48 space accepted": a space is still 4 GiB, a change of the translator's contract (translator
+track); (3) the independent check of this section. X3 (the stand-in) is on `executor-restart`; it waits on nothing from
+this branch beyond `53cbce1e9`.
+
+## X2 continued, 2026-11-26 afternoon
 
 His main `ac696ea19` was already in the branch (MEASURED: `git merge-base --is-ancestor FETCH_HEAD HEAD` after
 `git fetch <his checkout> main`). Merged: `origin/executor-restart` 914b4e9d1 (`18a5611a2`) and `origin/arm64-instructions`

@@ -115,6 +115,11 @@ pub enum ScalableOperand {
 
 /// What an SVE instruction computes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum ScalableOperation {
     Predicate(PredicateOperation),
     Element(ElementOperation),

@@ -16,9 +16,12 @@ use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 pub mod advanced_simd;
+#[cfg(feature = "bake")]
+mod bake;
 mod behavior;
 pub mod branch;
 mod condition_flags;
+mod core_identity;
 pub mod cryptography;
 mod documented;
 pub mod encoding;
@@ -61,10 +64,12 @@ mod tests;
 
 pub use behavior::{
     FailedStoreExclusive, FaultAddressTag, LoadIntoBaseWithWriteback, LoadPairIntoOneRegister,
-    MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
-    StoreOfBaseWithWriteback, VectorLength, VectorLengthReading, WaitForInterruptBehavior,
+    MisalignedExclusive, MisalignedOrderedOrAtomic, MisalignedStackPointer, StoreAcrossFault,
+    StoreExclusiveOverlap, StoreOfBaseWithWriteback, VectorLength, VectorLengthReading,
+    WaitForInterruptBehavior,
 };
 pub use condition_flags::{CONDITIONS, Condition, ConditionFlags};
+pub use core_identity::CoreIdentity;
 pub use documented::{
     DocumentedInstruction, DocumentedOperation, to_documented_operation, to_implicit_inputs,
     writes_condition_flags,
@@ -318,5 +323,8 @@ pub enum PreciseInstruction<LevelSpecific> {
     },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),
+    /// What a chip without the feature some of a documented instruction's encodings need does: those encodings are
+    /// undefined and the others run as documented.
+    WithoutOptionalEncodings(DocumentedInstruction),
     LevelSpecific(LevelSpecific),
 }

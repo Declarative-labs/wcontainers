@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use wasmtime::{Config, Engine, Instance, Module, Store};
-use wcontainers_arm64::{Arm64, CounterAccess, Offer};
+use wcontainers_arm64::{Arm64, KeptRegisters, Offer};
 use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Optimise, ProgressCount, translate};
@@ -25,10 +25,10 @@ pub(crate) struct Shared {
     translations: Mutex<HashMap<TranslationKey, Arc<Translated>>>,
 }
 
-/// What every program on this executor is told: its reads of the counter trap, and the kernel answers them from its
-/// own clock, which replay needs.
+/// What every program on this executor is told: every access to a register EL1 keeps from EL0 traps, and the kernel
+/// answers it as Linux does, the counter from its own clock, which replay needs.
 pub(crate) const OFFER: Offer = Offer {
-    counter: CounterAccess::Trapped,
+    kept_registers: KeptRegisters::Trapped,
 };
 
 /// Tuning number: the translations kept for their code at most; all are let go when one more is made, as each compiled
@@ -56,7 +56,7 @@ pub(crate) struct Translated {
 }
 
 impl Translated {
-    /// How many pieces the translation puts in the lookup table.
+    /// Counts the pieces the translation puts in the lookup table.
     pub(crate) fn pieces(&self) -> usize {
         self.modules.iter().map(|(_, pieces)| pieces.len()).sum()
     }
