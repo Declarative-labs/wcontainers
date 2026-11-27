@@ -971,3 +971,95 @@ of RI waits on another track. The first piece, in order:
    branches to translated code at `IN_PROCESS_ENTRIES`' floor; the floor's entries come back through it.
 3. Faults and stops: the signal stack and handler, and the raw mask, each one marked method there.
 Then bar items 1 and 2 on it (in_process_way's window-edge test, two I memories and a P memory in one embedder).
+
+## The last run's work pushed, R2's bar at it, form I's first piece (run of 2026-11-27)
+
+### The last run's work, committed and pushed (MEASURED: `git status`, `git log`, `git push`)
+
+It sat uncommitted in this worktree: 10 files, 579 lines added, 92 removed. Formatting: `cargo fmt` of the four crates
+on the rented machine changed one file only (tests/interrupt.rs, a 3-line layout; md5 of every `.rs` in the six
+folders before and after), fetched back with `arm-run --fetch`. The inside's native.rs and the monitor's
+tests/runner/mod.rs are outside cargo fmt's packages; `rustfmt --check` on them reports only lines above this run's
+one-line changes (old marked `unsafe` blocks), left as they were. Commits, pushed (origin tip ef04a4a78):
+- cf7f2a7a3 a counter read's stop carries the guest's state at the read (arm64-stop; the inside and the monitor's
+  test runner ignore the new field);
+- afea587d8 the zygote's fault handler keeps the top byte of a fault's address (`SA_EXPOSE_TAGBITS`);
+- 0f5b2ce44 form p ends a guest at its time slice (`HostProcessConfig { slice }`, default one 1000 Hz tick),
+  stops at counter reads, reports a fault's tag and ends a lone branch to itself. The tag (READ, execution.rs:660,
+  863, 884): the state the execution stops at keeps the chip's address with its tag; the handler is given
+  `untagged(address)`, as Linux gives a handler installed without `SA_EXPOSE_TAGBITS`, so what the kernel turns
+  into a guest's `si_addr` does not change;
+- ef04a4a78 the executor conformance suite tests the time slice, counter reads, branches to themselves and tagged
+  fault addresses (four new cases: `branch_to_itself_runs_once_alone`, `slice_ends_a_guest_that_never_traps`,
+  `counter_read_ends_execute_at_the_read`, `fault_through_a_tagged_address_keeps_the_tag_in_the_state`).
+
+### Merges (MEASURED)
+
+His main (his checkout, fetched: ac696ea19) is already inside (`git merge-base --is-ancestor FETCH_HEAD HEAD`: 0;
+`git log HEAD..FETCH_HEAD`: 0 commits): no merge. The 91 files of his 29 interface folders: 0 differ from his main.
+
+### R2's bar at ef04a4a78 (MEASURED, Linux 7.0.0-1018-aws, rustc 1.99.0, 12 jobs)
+
+Graviton4 (job native-restart 20261127-040352, load 27 to 40), every target of host-process by name, then the lib:
+- `cargo fmt --check` of host-process, conformance, arm64-stop, the zygote and the three linux-process crates: 0;
+  `cargo clippy --all-targets -- -D warnings` on the same: 0.
+- 21 binaries and the lib: 134 passed, 0 failed, 3 ignored (stub 1, memory 1, floor 1). Conformance with
+  `--skip behavior_source --skip agrees`: 25 passed (the four new cases among them), 5 left out: the three
+  behavior-source cases and `agrees_with_precise_instruction_set`, which wait on the owner's question below and the
+  instruction track's recording. Differential 1 passed (53 s). That run's `--skip agrees` also left out two of
+  in_process_way's four; they ran at 72c6e0209 below: 4 passed.
+- linux-process suite: 10 passed.
+
+Xeon (job 20261127-040626, load 15 to 23; a first start at 96 jobs, the machine's default, was stopped after clippy
+and run again at 12): clippy exit 0; host-process, its zygote and linux-process, every target: 74 passed, 0 failed,
+2 ignored.
+
+### Form I (RI): its first piece, the memory (commits b60f54ef8, 72c6e0209)
+
+Built (form I's own process holds the pool, the orchestrator's ruling 3; this piece is what runs inside it):
+- `crates/linux-process`: two more methods, each one marked line in `direct`: `map_file_within` (a shared mapping
+  of a file at whole pages inside a fixed mapping the handle holds, `MAP_FIXED` over its own reservation only) and
+  `protect_within` (`mprotect` there). Both refuse pages not wholly inside (`EINVAL`) and any executable protection
+  (`EPERM`): bytes another party writes never run as this process's code. Two new suite cases.
+- `crates/executor/implementation/in-process` (`wcontainers-executor-in-process`, ARM64 Linux, `[lints] workspace
+  = true`, 0 `unsafe`): `InProcessPool` hands out slots 1 to `IN_PROCESS_SLOTS` (2,047), each reserved whole
+  (`1 << SLOT_BITS`, 8 GiB, by `mmap_fixed_noreplace`; a slot something else of the process maps is passed over);
+  `InProcessMemory` + `InProcessPageTable` implement his `MemorySpace` + `PageTable` over a 4 GiB sealed memory file
+  shown in the window at the slot's base (`Way::window_base`), the 4 GiB after it never mapped (the mark lies
+  there). Guest permissions give the host pages read and write only; execute gives nothing (guest code never runs
+  from its own pages). Borrowed bytes go by position in the files (pread, pwrite), no view of guest memory in Rust.
+  `map_from` moves the other memory's pages into a shared block (a memory file of their own) that both windows then
+  show, so a memory's own file is never shown by another; `unmap_from` shows the own file again (zero there);
+  `copy_from` copies data extents (holes stay holes) and shows the same blocks for mapped pages; `zero` punches
+  holes. The slot is given back only after its reservation is unmapped.
+- Tests (crate's own; checks read the window through `/proc/self/mem` and its protections from `/proc/self/maps`):
+  tests/memory.rs 9 (zeros and nothing allowed when new, the mark's bytes never mapped; borrowed bytes are the
+  window's, across pages and at the window's last page; permissions per page; two memories apart; addresses past
+  the window, reversed or unaligned refused; zero; mapping both ways, a mapping of a mapping, permissions kept;
+  unmapping; copy of bytes, holes, permissions and mappings), tests/slots.rs 1 (every slot taken once, `NoSlot`
+  after, given back unmapped and taken again).
+
+Measured at the pushed 72c6e0209 (job native-restart 20261127-041727, Graviton4, load 50 to 113): fmt and clippy
+of the eight crates exit 0; in-process 10 passed (`slots taken 2047, left out 0`, run before); linux-process 12
+passed; host-process 136 passed, 0 failed, 3 ignored (21 binaries, conformance as above, the lib); in_process_way 4,
+in_process_attacks 2. Ten runs in a row of the in-process and linux-process tests: every one passed, after a race
+of this run's own was fixed: the first version of the two new suite cases searched for pages where an older case
+does and, run in parallel, mapped the page that case had just checked was unmapped (1 failure in 3); each new case
+now searches a region of its own. Xeon (job 20261127-041733): clippy exit 0, every target 76 passed, 0 failed (the
+in-process crate is empty there until W3).
+
+Not run: `cargo reviewable check` (no linter build on the machine this run); the linter's findings on the new crate
+are unknown.
+
+RI's bar, state: items 1 and 2 (window edges on the I executor; two I memories and a P memory in one embedder)
+need the executor; the memory's part of item 2 holds for two I memories (two_memories_have_windows_apart,
+the mapping and copy tests). Item 3 holds (run of 2026-11-26). Items 4 to 6 wait on the executor, 5 and 6 also on
+X2, X3. Item 7: holds for what is built (0 in in-process; linux-process 11 marked, none UNSOUND).
+
+Next piece, waiting on no other track: the entry (a marked method in linux-process `direct` that loads a register
+block, x28 the register page, and branches to translated code at `IN_PROCESS_ENTRIES`' floor, the floor's entries
+coming back through it), then faults and stops (signal stack, handler, raw mask), then `Executor` and
+`ExecutionInterrupter` written as a loop of "run until the next trap, then ask the handler".
+
+For the owner, still open (written above, "For the owner (one question)"): may a behavior source say which addresses
+a state's memory may use (`BehaviorSource::addresses()`)?
