@@ -1,0 +1,39 @@
+[package]
+name = "wcontainers-direct3d-11-direct-c-caller"
+description = "The generated hostile C caller over every table of the serving glue, for tests only."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+wcontainers-directx-graphics-infrastructure-direct = { path = "../../../../directx-graphics-infrastructure/implementation/direct" }
+wcontainers-direct3d-11-direct = { path = "../../../../direct3d-11/implementation/direct" }
+wcontainers-direct3d-12-direct = { path = "../../../../direct3d-12/implementation/direct" }
+wcontainers-direct3d-11-hostile = { path = "../../hostile" }
+wcontainers-direct3d-12-hostile = { path = "../../../../direct3d-12/implementation/hostile" }
+
+[dev-dependencies]
+wcontainers-direct3d-11-hostile = { path = "../../hostile" }
+wcontainers-direct3d-11 = { path = "../../.." }
+wcontainers-component-object-model = { path = "../../../../component-object-model" }
+wcontainers-direct3d-common = { path = "../../../../direct3d-common" }
+wcontainers-directx-graphics-infrastructure = { path = "../../../../directx-graphics-infrastructure" }
+wcontainers-direct3d-12 = { path = "../../../../direct3d-12" }
+
+[build-dependencies]
+cc = "1"
+
+# Test scaffolding that calls C: it denies unsafe code and marks each use.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+type_complexity = "allow"
+
+# A workspace of its own, inside the direct crate's folder: the repository's members are `crates/*/implementation/*`,
+# so the repository's cargo commands never build it; its tests run from this folder.
+[workspace]

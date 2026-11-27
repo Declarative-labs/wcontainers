@@ -1,24 +1,16 @@
 [package]
 name = "wcontainers-direct3d-11"
-description = "Our Direct3D 11 front (also serving Direct3D 10), drawing through the wcontainers-gpu interface."
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-publish = false
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
 
 [dependencies]
-# The host's clock unit, which timestamps count in.
-wcontainers-abi.workspace = true
-wcontainers-gpu = { path = "../gpu" }
-wcontainers-shaders = { path = "../shaders" }
+wcontainers-component-object-model = { path = "../component-object-model" }
+wcontainers-direct3d-common = { path = "../direct3d-common" }
 wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure" }
-blake3 = { version = "1", default-features = false }
-naga = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-# Mapped bytes are cells the program writes through a pointer; the device reads them as bytes.
-zerocopy = { workspace = true }
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 
 [lints]
 workspace = true

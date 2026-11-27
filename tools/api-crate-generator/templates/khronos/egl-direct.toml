@@ -1,0 +1,24 @@
+[package]
+name = "wcontainers-egl-direct"
+description = "EGL through its C entry points (ANGLE's libEGL, Mesa's), every entry point a safe method of wcontainers-egl's trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-egl = { path = "../.." }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Loads the EGL library from the folder the caller names (ISC licence; already in the lock through khronos-egl).
+libloading = "0.8.9"
+
+# An outside API's direct crate: it denies unsafe code, so that each use is marked with the registry fact it rests on.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

@@ -1,0 +1,25 @@
+[package]
+name = "wcontainers-opengl-es-direct"
+description = "OpenGL ES through the entry points EGL gives, every command a safe method of wcontainers-opengl-es's trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-egl = { path = "../../../egl" }
+wcontainers-egl-direct = { path = "../../../egl/implementation/direct" }
+wcontainers-opengl-es = { path = "../.." }
+
+[dev-dependencies]
+wcontainers-opengl-es-conformance = { path = "../../conformance" }
+
+# An outside API's direct crate: it denies unsafe code, so that each use is marked with the registry fact it rests on.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

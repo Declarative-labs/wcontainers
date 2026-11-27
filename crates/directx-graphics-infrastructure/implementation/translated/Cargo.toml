@@ -1,0 +1,17 @@
+[package]
+name = "wcontainers-directx-graphics-infrastructure-translated"
+description = "What Direct3D 10 to 12 share: adapter and output discovery, swap chains, presenting and frame pacing, on the wcontainers graphics interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-gpu = { path = "../../../gpu" }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+naga = { workspace = true }
+blake3 = { version = "1", default-features = false }
+
+[lints]
+workspace = true

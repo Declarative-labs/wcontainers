@@ -1,0 +1,34 @@
+[package]
+name = "wcontainers-direct3d-11-direct-harness"
+description = "Test-only stand-ins for the generated glue: the spike's fake system Direct3D 11 and C programs, a well-behaved and a lying implementation."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[features]
+small-table = ["wcontainers-component-object-model-direct/small-table"]
+
+[dependencies]
+wcontainers-byte-sink = { path = "../../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../../byte-source" }
+wcontainers-component-object-model = { path = "../../../../component-object-model" }
+wcontainers-component-object-model-direct = { path = "../../../../component-object-model/implementation/direct" }
+wcontainers-direct3d-11 = { path = "../../.." }
+wcontainers-direct3d-11-direct = { path = ".." }
+wcontainers-direct3d-common = { path = "../../../../direct3d-common" }
+wcontainers-directx-graphics-infrastructure = { path = "../../../../directx-graphics-infrastructure" }
+wcontainers-volatile-bytes = { path = "../../../../volatile-bytes" }
+
+[build-dependencies]
+cc = "1"
+
+# Test scaffolding that calls C: it denies unsafe code and marks each use.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+type_complexity = "allow"

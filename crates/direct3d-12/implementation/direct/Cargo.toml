@@ -1,0 +1,26 @@
+[package]
+name = "wcontainers-direct3d-12-direct"
+description = "The library d3d12.dll, and the debug layer's interfaces its objects answer through its C ABI: both glues, and every unsafe of the API, each marked."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-direct3d-12 = { path = "../.." }
+wcontainers-component-object-model = { path = "../../../component-object-model" }
+wcontainers-component-object-model-direct = { path = "../../../component-object-model/implementation/direct" }
+wcontainers-direct3d-common = { path = "../../../direct3d-common" }
+wcontainers-direct3d-common-direct = { path = "../../../direct3d-common/implementation/direct" }
+wcontainers-directx-graphics-infrastructure = { path = "../../../directx-graphics-infrastructure" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+
+# A C boundary: it denies unsafe code, so that each use is marked with its reason.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+type_complexity = "allow"

@@ -1,0 +1,384 @@
+//! Swap chains, presenting, the adapter description and format support, checked on the recording
+//! back end.
+
+mod support {
+    pub mod record;
+}
+
+use support::record::Recorder;
+use wcontainers_directx_graphics_infrastructure_translated::*;
+use wcontainers_gpu::{Gpu, format::Format, resource::TextureUsage};
+
+fn desc(format: u32, buffers: u32, model: Model) -> SwapChainDesc {
+    SwapChainDesc {
+        width: 64,
+        height: 32,
+        format,
+        buffers,
+        model,
+        usage: TextureUsage::empty(),
+    }
+}
+
+#[test]
+fn flip_model_rotates_and_copies_each_frame() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 7, &desc(28, 3, Model::FlipDiscard)).unwrap();
+    assert!(chain.buffer(2).is_some() && chain.buffer(3).is_none());
+    assert_eq!(chain.surface_format(), Format::Rgba8Unorm);
+    let mut indices = Vec::new();
+    for _ in 0..4 {
+        indices.push(chain.current_index());
+        chain.present(&mut b, 1).unwrap();
+    }
+    assert_eq!(indices, [0, 1, 2, 0]);
+    assert_eq!(chain.present_count(), 4);
+    assert_eq!(b.named("present ").len(), 4);
+    assert_eq!(b.named("draw ").len(), 4);
+    assert_eq!(b.named("begin_pass ").len(), 4);
+    assert!(b.named("create").iter().any(|c| c.contains("\"copy\"")));
+    // Each frame's copy is submitted before the surface is shown.
+    let order: Vec<_> = b
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("submit") || c.starts_with("present"))
+        .map(|c| c.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(order, ["submit", "present"].repeat(4));
+}
+
+#[test]
+fn blit_model_has_one_buffer_and_srgb_is_encoded() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(29, 2, Model::Discard)).unwrap();
+    assert!(chain.buffer(0).is_some() && chain.buffer(1).is_none());
+    chain.present(&mut b, 0).unwrap();
+    chain.present(&mut b, 0).unwrap();
+    assert_eq!(chain.current_index(), 0);
+    assert!(b.named("create").iter().any(|c| c.contains("\"encode\"")));
+    // Sync interval 0 configures the surface without waiting for the display, once.
+    assert_eq!(
+        b.named("configure_surface")
+            .iter()
+            .filter(|c| c.ends_with("false"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn sequential_blit_buffers_move_down_at_each_present() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(28, 3, Model::Sequential)).unwrap();
+    assert!(chain.buffer(2).is_some() && chain.buffer(3).is_none());
+    let id = |i: u32| format!("{:?}", chain.buffer(i).unwrap());
+    let buffers = [id(0), id(1), id(2)];
+    let start = b.calls.len();
+    chain.present(&mut b, 0).unwrap();
+    assert_eq!(chain.current_index(), 0);
+    let calls = &b.calls[start..];
+    let copies: Vec<(String, String)> = calls
+        .iter()
+        .filter(|c| c.starts_with("copy_texture "))
+        .map(|c| {
+            let ids: Vec<String> = c
+                .match_indices("texture: ")
+                .map(|(at, _)| {
+                    let rest = &c[at + "texture: ".len()..];
+                    rest[..rest.find(',').unwrap()].to_string()
+                })
+                .collect();
+            (ids[0].clone(), ids[1].clone())
+        })
+        .collect();
+    // Buffer 0 to a spare texture, 1 to 0, 2 to 1, the spare to 2; all after the present copy and
+    // before the submit.
+    let spare = copies[0].1.clone();
+    assert!(!buffers.contains(&spare));
+    assert_eq!(
+        copies,
+        [
+            (buffers[0].clone(), spare.clone()),
+            (buffers[1].clone(), buffers[0].clone()),
+            (buffers[2].clone(), buffers[1].clone()),
+            (spare, buffers[2].clone()),
+        ]
+    );
+    let at = |k: &str| calls.iter().position(|c| c.starts_with(k)).unwrap();
+    assert!(at("end_pass") < at("copy_texture") && at("copy_texture") < at("submit"));
+    assert_eq!(
+        b.slow_paths().counts[wcontainers_gpu::slow::SlowPath::SequentialBuffersCopied as usize],
+        1
+    );
+    // One buffer moves nowhere.
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(28, 1, Model::Sequential)).unwrap();
+    chain.present(&mut b, 0).unwrap();
+    assert!(b.named("copy_texture").is_empty());
+}
+
+#[test]
+fn descriptions_dxgi_refuses_are_refused() {
+    let mut b = Recorder::new();
+    for bad in [
+        desc(29, 2, Model::FlipDiscard),
+        desc(28, 1, Model::FlipSequential),
+        desc(28, 17, Model::Discard),
+        desc(2, 2, Model::FlipDiscard),
+        desc(89, 2, Model::FlipDiscard),
+        desc(89, 2, Model::FlipSequential),
+    ] {
+        assert!(matches!(
+            SwapChain::new(&mut b, 1, &bad),
+            Err(SwapChainError::InvalidCall(_))
+        ));
+    }
+}
+
+#[test]
+fn extended_range_buffers_are_held_in_10_bit_codes_and_decoded_at_present() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(89, 1, Model::Sequential)).unwrap();
+    assert_eq!(chain.buffer_desc().format, Format::Rgb10a2Unorm);
+    assert_eq!(chain.surface_format(), Format::Rgba8Unorm);
+    chain.present(&mut b, 1).unwrap();
+    assert!(b.named("create").iter().any(|c| c.contains("\"extended\"")));
+    // Resized to a format of its group, the buffers are copied as they are.
+    chain.resize(&mut b, 0, 0, 0, 24).unwrap();
+    assert_eq!(chain.buffer_desc().format, Format::Rgb10a2Unorm);
+    assert_eq!(
+        b.named("create")
+            .iter()
+            .filter(|c| c.contains("\"copy\""))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn present_blocks_past_the_frame_latency() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(87, 2, Model::FlipSequential)).unwrap();
+    assert_eq!(chain.surface_format(), Format::Bgra8Unorm);
+    assert!(chain.set_max_latency(0).is_err());
+    chain.set_max_latency(2).unwrap();
+    // The recorder's GPU finishes nothing until the test says so or a wait reaches it.
+    chain.present(&mut b, 1).unwrap();
+    chain.present(&mut b, 1).unwrap();
+    assert_eq!(chain.frames_queued(&mut b), 2);
+    assert!(chain.would_wait(&mut b));
+    assert!(b.named("wait_fence").is_empty());
+    // A third frame is one more than the latency: present waits for the first frame's work.
+    chain.present(&mut b, 1).unwrap();
+    assert_eq!(b.named("wait_fence"), ["wait_fence 1"]);
+    assert_eq!(chain.frames_queued(&mut b), 2);
+    b.finish();
+    assert_eq!(chain.frames_queued(&mut b), 0);
+    assert!(!chain.would_wait(&mut b));
+    chain.present(&mut b, 1).unwrap();
+    assert_eq!(b.named("wait_fence").len(), 1);
+}
+
+#[test]
+fn resize_remakes_buffers_and_surface() {
+    let mut b = Recorder::new();
+    let mut chain = SwapChain::new(&mut b, 1, &desc(28, 2, Model::FlipDiscard)).unwrap();
+    chain.present(&mut b, 1).unwrap();
+    chain.resize(&mut b, 0, 128, 0, 10).unwrap();
+    assert_eq!(chain.desc().width, 128);
+    assert_eq!(chain.desc().height, 32);
+    assert_eq!(chain.current_index(), 0);
+    assert_eq!(chain.surface_format(), Format::Rgba8Unorm);
+    assert!(b.named("create").iter().any(|c| c.contains("\"encode\"")));
+    assert!(
+        b.named("configure_surface")
+            .last()
+            .unwrap()
+            .contains("Rgba8Unorm 128 32")
+    );
+}
+
+#[test]
+fn the_adapter_answers_from_caps() {
+    let b = Recorder::new();
+    let [adapter] = adapters(b.caps());
+    assert_eq!(adapter.description, "recording back end");
+    assert_eq!((adapter.vendor_id, adapter.device_id), (0x10de, 0x2206));
+    assert!(!adapter.software);
+    assert_eq!(adapter.description_utf16()[18], 0);
+    assert_eq!(
+        present_format(b.caps(), Format::Rgb10a2Unorm),
+        Format::Rgba8Unorm
+    );
+    assert_eq!(
+        present_format(b.caps(), Format::Rgba16Float),
+        Format::Rgba8Unorm
+    );
+}
+
+#[test]
+fn outputs_offer_their_current_mode() {
+    let output = OutputDesc {
+        name: r"\\.\DISPLAY1".into(),
+        desktop: [0, 0, 2560, 1440],
+        refresh_numerator: 144000,
+        refresh_denominator: 1000,
+    };
+    assert_eq!(output.modes(28).len(), 1);
+    assert_eq!(output.modes(2).len(), 0);
+    assert_eq!(output.modes(89).len(), 1);
+    let mode = output.closest_mode(&DisplayMode {
+        width: 800,
+        height: 600,
+        refresh_numerator: 60,
+        refresh_denominator: 1,
+        format: 0,
+    });
+    assert_eq!((mode.width, mode.height, mode.format), (2560, 1440, 28));
+}
+
+#[test]
+fn format_support_follows_the_back_ends_format_uses() {
+    use support1::*;
+    use wcontainers_directx_graphics_infrastructure_translated::dxgi;
+    let caps = Recorder::new().caps().clone();
+    // R8G8B8A8_UNORM: a vertex format; sampled, rendered, blended, multisampled, resolved and
+    // shown; no storage.
+    let rgba = format_support(&caps, dxgi::R8G8B8A8_UNORM);
+    assert_eq!(
+        rgba.support1,
+        IA_VERTEX_BUFFER
+            | TEXTURE1D
+            | TEXTURE2D
+            | TEXTURE3D
+            | TEXTURECUBE
+            | MIP
+            | CAST_WITHIN_BIT_LAYOUT
+            | SHADER_LOAD
+            | SHADER_SAMPLE
+            | SHADER_GATHER
+            | RENDER_TARGET
+            | BLENDABLE
+            | MULTISAMPLE_RENDERTARGET
+            | MULTISAMPLE_RESOLVE
+            | DISPLAY
+            | BACK_BUFFER_CAST
+    );
+    assert_eq!(rgba.support2, 0);
+    // The typeless group: shapes and casts (through twins without FORMAT_REINTERPRET).
+    assert_eq!(
+        format_support(&caps, dxgi::R8G8B8A8_TYPELESS).support1,
+        TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP | CAST_WITHIN_BIT_LAYOUT
+    );
+    // A format of no typeless group does not cast.
+    assert_eq!(
+        format_support(&caps, dxgi::R11G11B10_FLOAT).support1 & CAST_WITHIN_BIT_LAYOUT,
+        0
+    );
+    // R32_UINT: an index and vertex format, a target without blending, stored into but not loaded.
+    let r32 = format_support(&caps, dxgi::R32_UINT);
+    assert_eq!(
+        r32.support1 & (IA_INDEX_BUFFER | IA_VERTEX_BUFFER | BLENDABLE | SHADER_SAMPLE),
+        IA_INDEX_BUFFER | IA_VERTEX_BUFFER
+    );
+    assert_ne!(r32.support1 & TYPED_UNORDERED_ACCESS_VIEW, 0);
+    assert_eq!(r32.support2, support2::UAV_TYPED_STORE);
+    // Direct3D resolves no integer format and loads samples only of targets, whatever a back end
+    // declares of the format.
+    let mut generous = caps.clone();
+    for f in [
+        wcontainers_gpu::format::Format::R32Uint,
+        wcontainers_gpu::format::Format::Bc1RgbaUnorm,
+    ] {
+        generous.formats.uses[f as usize] |=
+            wcontainers_gpu::caps::FormatUse::RESOLVE | wcontainers_gpu::caps::FormatUse::SAMPLE;
+        generous.formats.samples[f as usize] =
+            generous.formats.samples[wcontainers_gpu::format::Format::Rgba8Unorm as usize];
+    }
+    assert_eq!(
+        format_support(&generous, dxgi::R32_UINT).support1 & MULTISAMPLE_RESOLVE,
+        0
+    );
+    assert_eq!(
+        format_support(&generous, dxgi::BC1_UNORM).support1 & MULTISAMPLE_LOAD,
+        0
+    );
+    // Block-compressed formats are 2D, cube and 3D textures, never 1D; the two-pixel formats,
+    // whose blocks are one texel high, every shape (Direct3D's 11_0 tables require them all).
+    let shapes = TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP;
+    let mut sampled = caps.clone();
+    for f in [
+        wcontainers_gpu::format::Format::Bc1RgbaUnorm,
+        wcontainers_gpu::format::Format::Rgbg8Unorm,
+        wcontainers_gpu::format::Format::Grgb8Unorm,
+    ] {
+        sampled.formats.uses[f as usize] = wcontainers_gpu::caps::FormatUse::SAMPLE;
+    }
+    assert_eq!(
+        format_support(&sampled, dxgi::BC1_UNORM).support1 & shapes,
+        TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP
+    );
+    for packed in [dxgi::R8G8_B8G8_UNORM, dxgi::G8R8_G8B8_UNORM] {
+        assert_eq!(format_support(&sampled, packed).support1 & shapes, shapes);
+    }
+    // R32_FLOAT views depth stored as D32_FLOAT, so it compares.
+    assert_ne!(
+        format_support(&caps, dxgi::R32_FLOAT).support1 & SHADER_SAMPLE_COMPARISON,
+        0
+    );
+    // D32_FLOAT is a depth target with no 3D shape; its R24 view of D24S8 loads, samples (filtered
+    // in the program where the back end cannot filter depth), gathers and compares.
+    assert_eq!(
+        format_support(&caps, dxgi::D32_FLOAT).support1,
+        TEXTURE1D
+            | TEXTURE2D
+            | TEXTURECUBE
+            | MIP
+            | CAST_WITHIN_BIT_LAYOUT
+            | DEPTH_STENCIL
+            | MULTISAMPLE_RENDERTARGET
+    );
+    assert_eq!(
+        format_support(&caps, dxgi::R24_UNORM_X8_TYPELESS).support1,
+        TEXTURE1D
+            | TEXTURE2D
+            | TEXTURECUBE
+            | MIP
+            | CAST_WITHIN_BIT_LAYOUT
+            | SHADER_LOAD
+            | SHADER_SAMPLE
+            | SHADER_GATHER
+            | SHADER_SAMPLE_COMPARISON
+            | SHADER_GATHER_COMPARISON
+    );
+    // Formats the back end lacks or the interface does not hold are refused.
+    assert!(format_support(&caps, dxgi::A8_UNORM).is_empty());
+    assert!(format_support(&caps, dxgi::R1_UNORM).is_empty());
+    assert_eq!(format_support(&caps, dxgi::UNKNOWN).support1, BUFFER);
+    // Sample counts: the recorder's are 1 and 4; depth views take one only.
+    assert!(takes_samples(&caps, 28, 1) && takes_samples(&caps, 28, 4));
+    assert!(!takes_samples(&caps, 28, 2) && !takes_samples(&caps, 65, 1));
+    assert!(takes_samples(&caps, 27, 4) && takes_samples(&caps, 45, 4));
+    assert!(!takes_samples(&caps, 46, 4) && takes_samples(&caps, 46, 1));
+    assert_eq!(
+        [0, 28, 20, 45, 47, 103, 66, 116].map(plane_count),
+        [
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(2),
+            None,
+            None
+        ]
+    );
+}
+
+#[test]
+fn outputs_present_sdr_only() {
+    // R8G8B8A8_UNORM and R16G16B16A16_FLOAT back buffers; G2084 P2020 is HDR10.
+    assert!(presents_in(28, COLOR_SPACE_SRGB) && !presents_in(10, COLOR_SPACE_SRGB));
+    assert!(presents_in(10, COLOR_SPACE_LINEAR) && !presents_in(28, COLOR_SPACE_LINEAR));
+    assert!(!presents_in(24, 12) && !presents_in(10, 12));
+}

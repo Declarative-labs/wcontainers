@@ -64,7 +64,10 @@ fn part_of_function(name: &str) -> Option<&'static str> {
         | "parking_lot_core" => "wgpu",
         "naga" => "naga",
         "wcontainers_shaders" | "dxbc_spirv" | "spirv" | "rspirv" => "shaders",
-        "wcontainers_direct3d_11"
+        "wcontainers_direct3d_11_translated"
+        | "wcontainers_direct3d_12_translated"
+        | "wcontainers_directx_graphics_infrastructure_translated"
+        | "wcontainers_direct3d_11"
         | "wcontainers_direct3d_12"
         | "wcontainers_directx"
         | "wcontainers_directx_graphics_infrastructure"

@@ -4187,6 +4187,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-component-object-model"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-component-object-model-direct"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-pointer",
+]
+
+[[package]]
 name = "wcontainers-configurable"
 version = "0.1.0"
 dependencies = [
@@ -4206,11 +4222,92 @@ dependencies = [
 name = "wcontainers-direct3d-11"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-direct3d-common",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-11-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-common",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-11-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-11-hostile"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-conformance",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-direct3d-common-hostile",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-directx-graphics-infrastructure-hostile",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-11-recorder"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-conformance",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-direct3d-common-recorder",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-directx-graphics-infrastructure-recorder",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-11-translated"
+version = "0.1.0"
+dependencies = [
  "blake3",
  "naga",
  "serde",
  "wcontainers-abi",
- "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-translated",
  "wcontainers-gpu",
  "wcontainers-shaders",
  "zerocopy",
@@ -4218,6 +4315,83 @@ dependencies = [
 
 [[package]]
 name = "wcontainers-direct3d-12"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-direct3d-common",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-common",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-hostile"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-conformance",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-direct3d-common-hostile",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-recorder"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-conformance",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-direct3d-common-recorder",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-translated"
 version = "0.1.0"
 dependencies = [
  "bcdec_rs",
@@ -4228,7 +4402,7 @@ dependencies = [
  "png",
  "pollster",
  "slab",
- "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-translated",
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wcontainers-shaders",
@@ -4236,6 +4410,75 @@ dependencies = [
  "windows",
  "windows-core",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-direct3d-common"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-common-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-direct3d-common",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-common-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-common-hostile"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-conformance",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-common-recorder"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-conformance",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4248,8 +4491,8 @@ dependencies = [
  "pollster",
  "rand 0.9.5",
  "rand_chacha",
- "wcontainers-direct3d-11",
- "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-direct3d-11-translated",
+ "wcontainers-directx-graphics-infrastructure-translated",
  "wcontainers-gpu",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",
@@ -4261,6 +4504,75 @@ dependencies = [
 
 [[package]]
 name = "wcontainers-directx-graphics-infrastructure"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure-hostile"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-conformance",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure-recorder"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-conformance",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure-translated"
 version = "0.1.0"
 dependencies = [
  "blake3",
