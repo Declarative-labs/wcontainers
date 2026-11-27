@@ -3641,6 +3641,46 @@ fn simulate_load_store<LevelSpecific, Architecture>(
     simulate_access(processor, memory, &addressed, operation, choices, (writeback, pair_order_reversed), mutation_hook)
 }
 
+/// Whether a load or store's base, register `number` holding `value`, is the stack pointer at an address that is not
+/// a multiple of 16, which CheckSPAlignment refuses.
+fn is_misaligned_stack_pointer(number: u32, value: u64) -> (misaligned: bool)
+    ensures
+        misaligned == (number >= 31 && value % 16 != 0),
+{
+    let alignment = if crate::planted::is(165) {
+        8
+    } else {
+        STACK_POINTER_ALIGNMENT
+    };
+    !is_general_purpose(number) && !value.is_multiple_of(alignment)
+}
+
+/// The address a pre- or post-indexed load or store writes back to its base once its access completed.
+fn to_written_back(base: u64, offset: u64, address: u64, indexing: Indexing) -> (written_back: u64)
+    requires
+        address as int == crate::pseudocode::accessed_address(base, offset, indexing),
+    ensures
+        written_back as int == crate::pseudocode::written_back_address(base, offset),
+{
+    let written_back = to_written_back_address(base, offset, address, indexing);
+    let written_back = if crate::planted::is(34) {
+        to_untagged_address(written_back)
+    } else {
+        written_back
+    };
+    // VERUS: `planted::any` has no specification, so it is two `is`.
+    let written_back = if crate::planted::is(435) || crate::planted::is(453) {
+        written_back & low_ones(56)
+    } else {
+        written_back
+    };
+    if crate::planted::is(263) {
+        to_untagged_address(written_back)
+    } else {
+        written_back
+    }
+}
+
 /// A load or store's access from its decoded operands, as the behavior's choices constrain it.
 fn simulate_access<LevelSpecific, Architecture>(
     processor: &mut Processor<LevelSpecific>,
@@ -3694,12 +3734,7 @@ fn simulate_access<LevelSpecific, Architecture>(
             } else {
                 base
             };
-            // VERUS: no specification of `is_multiple_of`, so the remainder is compared with zero.
-            let misaligned = !is_general_purpose(number) && checked % if crate::planted::is(165) {
-                8
-            } else {
-                STACK_POINTER_ALIGNMENT
-            } != 0;
+            let misaligned = is_misaligned_stack_pointer(number, checked);
             if (misaligned && matches!(choices.misaligned_stack_pointer, Some(MisalignedStackPointer::Faults))
                 && !crate::planted::is(282)) || (misaligned && crate::planted::is(288)) {
                 return Err(Exception::StackPointerAlignmentFault);
@@ -3757,23 +3792,7 @@ fn simulate_access<LevelSpecific, Architecture>(
         transferred.is_ok() && writeback && !crate::planted::is(154),
         addressed.base,
     ) {
-        let written_back = to_written_back_address(base, addressed.offset, address, indexing);
-        let written_back = if crate::planted::is(34) {
-            to_untagged_address(written_back)
-        } else {
-            written_back
-        };
-        // VERUS: `planted::any` has no specification, so it is two `is`.
-        let written_back = if crate::planted::is(435) || crate::planted::is(453) {
-            written_back & low_ones(56)
-        } else {
-            written_back
-        };
-        let written_back = if crate::planted::is(263) {
-            to_untagged_address(written_back)
-        } else {
-            written_back
-        };
+        let written_back = to_written_back(base, addressed.offset, address, indexing);
         write_register(processor, number, written_back, RegisterThirtyOne::StackPointer);
     }
     // The access's own `Ok`, which the writeback leaves.

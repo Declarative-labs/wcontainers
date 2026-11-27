@@ -744,10 +744,7 @@ pub fn simulate_integer<LevelSpecific>(
         Some(width) => width,
         None => RegisterWidth::Bits64,
     };
-    let kept = match read.destination {
-        Some((number, thirty_one)) => read_register(processor, number, thirty_one),
-        None => 0,
-    };
+    let kept = read_kept(processor, read.destination);
     let outcome = apply(operation, width, kept, &read.sources, read.count, processor.condition_flags)?;
     if let (Some(result), Some((number, thirty_one))) = (outcome.result, read.destination) {
         // VERUS: `planted::any` has no specification, so it is two `is`.
@@ -758,29 +755,104 @@ pub fn simulate_integer<LevelSpecific>(
         } else {
             thirty_one
         };
-        let mask = if crate::planted::is(104) {
-            u64::MAX
-        } else {
-            width.to_mask()
-        };
-        let mut value = result & mask;
-        proof {
-            crate::lemmas::lemma_mask(result, width.bits());
-        }
-        // VERUS: no `==` on `RegisterWidth` in executable code, so the width is matched.
-        if (crate::planted::is(209) || crate::planted::is(223)) && matches!(width, RegisterWidth::Bits32) {
-            value |= read_register(processor, number, thirty_one) & !width.to_mask();
-        }
-        if crate::planted::is(217) && matches!(operation, IntegerOperation::AddWithCarry(_)) && read.count == 2 {
-            let carry = processor.condition_flags.carry;
-            value = read.sources[0] + read.sources[1] + carry as u64;
-        }
+        let value = to_written_value(processor, result, width, (number, thirty_one), operation, &read.sources, read.count);
         write_register(processor, number, value, thirty_one);
     }
     if let Some(flags) = outcome.flags {
         processor.condition_flags = flags;
     }
     Ok(())
+}
+
+/// The value of the register an instruction writes, as it names it, before the instruction; zero where it names none.
+fn read_kept<LevelSpecific>(
+    processor: &Processor<LevelSpecific>,
+    destination: Option<(u32, RegisterThirtyOne)>,
+) -> (kept: u64)
+    ensures
+        kept == match destination {
+            Some((number, thirty_one)) =>
+                register_read(processor.general_purpose_registers@, processor.stack_pointer, number as nat, thirty_one),
+            None => 0,
+        },
+{
+    match destination {
+        Some((number, thirty_one)) => read_register(processor, number, thirty_one),
+        None => 0,
+    }
+}
+
+/// The low `width` bits of an operation's result, which its register receives.
+fn to_written_value<LevelSpecific>(
+    processor: &Processor<LevelSpecific>,
+    result: u64,
+    width: RegisterWidth,
+    destination: (u32, RegisterThirtyOne),
+    operation: IntegerOperation,
+    sources: &[u64; MAXIMUM_SOURCES],
+    count: usize,
+) -> (value: u64)
+    ensures
+        value as int == uint(result as int, width.bits()),
+{
+    let (number, thirty_one) = destination;
+    let mask = if crate::planted::is(104) {
+        u64::MAX
+    } else {
+        width.to_mask()
+    };
+    let mut value = result & mask;
+    proof {
+        crate::lemmas::lemma_mask(result, width.bits());
+    }
+    // VERUS: no `==` on `RegisterWidth` in executable code, so the width is matched.
+    if (crate::planted::is(209) || crate::planted::is(223)) && matches!(width, RegisterWidth::Bits32) {
+        value |= read_register(processor, number, thirty_one) & !width.to_mask();
+    }
+    if crate::planted::is(217) && matches!(operation, IntegerOperation::AddWithCarry(_)) && count == 2 {
+        let carry = processor.condition_flags.carry;
+        value = sources[0] + sources[1] + carry as u64;
+    }
+    value
+}
+
+/// The low `width` bits of register `number`, with 31 the zero register or the stack pointer as the operand names it.
+fn read_low_bits<LevelSpecific>(
+    processor: &Processor<LevelSpecific>,
+    number: u32,
+    width: RegisterWidth,
+    thirty_one: RegisterThirtyOne,
+) -> (value: u64)
+    ensures
+        value as int == uint(
+            register_read(processor.general_purpose_registers@, processor.stack_pointer, number as nat, thirty_one) as int,
+            width.bits(),
+        ),
+{
+    let thirty_one = if crate::planted::is(405) || crate::planted::is(247) {
+        RegisterThirtyOne::ZeroRegister
+    } else if crate::planted::is(422) || crate::planted::is(231) {
+        RegisterThirtyOne::StackPointer
+    } else {
+        match thirty_one {
+            RegisterThirtyOne::StackPointer if crate::planted::is(103) => {
+                RegisterThirtyOne::ZeroRegister
+            },
+            RegisterThirtyOne::ZeroRegister if crate::planted::is(139) => {
+                RegisterThirtyOne::StackPointer
+            },
+            other => other,
+        }
+    };
+    let value = read_register(processor, number, thirty_one);
+    if crate::planted::is(423) || crate::planted::is(144) {
+        value
+    } else {
+        proof {
+            crate::lemmas::lemma_mask(value, width.bits());
+        }
+        value & width.to_mask()
+    }
 }
 
 /// The value an operand gives its operation, or the exception of an unallocated encoding.
@@ -809,32 +881,7 @@ pub(crate) fn read_source<LevelSpecific>(
             width,
             thirty_one,
             ..
-        } => {
-            let thirty_one = if crate::planted::is(405) || crate::planted::is(247) {
-                RegisterThirtyOne::ZeroRegister
-            } else if crate::planted::is(422) || crate::planted::is(231) {
-                RegisterThirtyOne::StackPointer
-            } else {
-                match thirty_one {
-                    RegisterThirtyOne::StackPointer if crate::planted::is(103) => {
-                        RegisterThirtyOne::ZeroRegister
-                    },
-                    RegisterThirtyOne::ZeroRegister if crate::planted::is(139) => {
-                        RegisterThirtyOne::StackPointer
-                    },
-                    other => other,
-                }
-            };
-            let value = read_register(processor, number.read(word), thirty_one);
-            if crate::planted::is(423) || crate::planted::is(144) {
-                value
-            } else {
-                proof {
-                    crate::lemmas::lemma_mask(value, width.bits());
-                }
-                value & width.to_mask()
-            }
-        },
+        } => read_low_bits(processor, number.read(word), width, thirty_one),
         Operand::ShiftedRegister {
             number,
             shift_type,
@@ -2922,7 +2969,7 @@ fn apply(
             }
         },
         O::Extract => {
-            if count != 3 || first > mask || second > mask || third >= width.to_bits() as u64 {
+            if is_extract_refused(width, mask, count, first, second, third) {
                 return Err(Exception::UndefinedInstruction);
             }
             Outcome {
@@ -2960,22 +3007,7 @@ fn apply(
             {
                 return Err(Exception::UndefinedInstruction);
             }
-            let container_bits = if crate::planted::is(239) {
-                u32::BITS
-            } else {
-                container_bits
-            };
-            let container_bits = if crate::planted::is(8) {
-                u16::BITS
-            } else {
-                container_bits
-            };
-            let container_bits = if crate::planted::is(409) {
-                u64::BITS
-            } else {
-                container_bits
-            };
-            low_bits_outcome(reverse_bytes(first, container_bits, width), width)
+            low_bits_outcome(compute_reverse_bytes(first, container_bits, width), width)
         },
         O::CountLeadingZeros => {
             if count != 1 || first > mask {
@@ -3032,11 +3064,7 @@ fn apply(
             if count != 2 || !(bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8) {
                 return Err(Exception::UndefinedInstruction);
             }
-            if crate::planted::is(412) {
-                low_bits_outcome(accumulate_crc(first, second >> 8, bytes, polynomial), width)
-            } else {
-                low_bits_outcome(accumulate_crc(first, second, bytes, polynomial), width)
-            }
+            low_bits_outcome(compute_crc(first, second, bytes, polynomial), width)
         },
         O::RotateMaskInsertFlags => {
             if count != 3 || !matches!(width, RegisterWidth::Bits64) || second >= 64 || third >= 16 {
@@ -3078,11 +3106,7 @@ fn apply(
             }
             Outcome {
                 result: None,
-                flags: Some(if crate::planted::is(413) {
-                    Nzcv { carry: !flags.carry, overflow: !flags.overflow, ..flags }
-                } else {
-                    Nzcv { carry: !flags.carry, ..flags }
-                }),
+                flags: Some(compute_invert_carry(flags)),
             }
         },
         O::ConvertFlagsToExternalFormat => {
@@ -3091,12 +3115,7 @@ fn apply(
             }
             Outcome {
                 result: None,
-                flags: Some(Nzcv {
-                    negative: false,
-                    zero: flags.zero || (flags.overflow && !crate::planted::is(138)),
-                    carry: flags.carry && !flags.overflow,
-                    overflow: false,
-                }),
+                flags: Some(compute_flags_to_external_format(flags)),
             }
         },
         O::ConvertFlagsFromExternalFormat => {
@@ -3105,15 +3124,99 @@ fn apply(
             }
             Outcome {
                 result: None,
-                flags: Some(Nzcv {
-                    negative: !flags.carry && (flags.zero == crate::planted::is(244)),
-                    zero: flags.zero && flags.carry,
-                    carry: flags.carry || flags.zero,
-                    overflow: !flags.carry && flags.zero,
-                }),
+                flags: Some(compute_flags_from_external_format(flags)),
             }
         },
     })
+}
+
+/// The bytes of each `container_bits`-bit container of the low `width` bits reversed (REV16, REV32 and REV).
+fn compute_reverse_bytes(source: u64, container_bits: u32, width: RegisterWidth) -> (reversed: u64)
+    requires
+        container_bits == 16 || container_bits == 32 || container_bits == 64,
+        container_bits <= width.bits(),
+    ensures
+        reversed == reverse_bytes_value(source, width.bits(), container_bits as nat),
+{
+    let container_bits = if crate::planted::is(239) {
+        u32::BITS
+    } else {
+        container_bits
+    };
+    let container_bits = if crate::planted::is(8) {
+        u16::BITS
+    } else {
+        container_bits
+    };
+    let container_bits = if crate::planted::is(409) {
+        u64::BITS
+    } else {
+        container_bits
+    };
+    reverse_bytes(source, container_bits, width)
+}
+
+/// The CRC32 or CRC32C checksum after the low `bytes` bytes of the value.
+fn compute_crc(checksum: u64, value: u64, bytes: u32, polynomial: CrcPolynomial) -> (accumulated: u64)
+    requires
+        bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8,
+    ensures
+        accumulated == crc32(checksum, value, (bytes * 8) as nat, polynomial),
+{
+    if crate::planted::is(412) {
+        accumulate_crc(checksum, value >> 8, bytes, polynomial)
+    } else {
+        accumulate_crc(checksum, value, bytes, polynomial)
+    }
+}
+
+/// The flags CFINV sets.
+fn compute_invert_carry(flags: Nzcv) -> (set: Nzcv)
+    ensures
+        set == invert_carry(flags),
+{
+    if crate::planted::is(413) {
+        Nzcv { carry: !flags.carry, overflow: !flags.overflow, ..flags }
+    } else {
+        Nzcv { carry: !flags.carry, ..flags }
+    }
+}
+
+/// The flags AXFLAG sets.
+fn compute_flags_to_external_format(flags: Nzcv) -> (set: Nzcv)
+    ensures
+        set == flags_to_external_format(flags),
+{
+    Nzcv {
+        negative: false,
+        zero: flags.zero || (flags.overflow && !crate::planted::is(138)),
+        carry: flags.carry && !flags.overflow,
+        overflow: false,
+    }
+}
+
+/// The flags XAFLAG sets.
+fn compute_flags_from_external_format(flags: Nzcv) -> (set: Nzcv)
+    ensures
+        set == flags_from_external_format(flags),
+{
+    Nzcv {
+        negative: !flags.carry && (flags.zero == crate::planted::is(244)),
+        zero: flags.zero && flags.carry,
+        carry: flags.carry || flags.zero,
+        overflow: !flags.carry && flags.zero,
+    }
+}
+
+/// Whether EXTR's operands are refused: other than three, a register value wider than the width, or a lowest bit at or
+/// above it (`if sf == '0' && imms<5> == '1' then UNDEFINED`).
+fn is_extract_refused(width: RegisterWidth, mask: u64, count: usize, first: u64, second: u64, third: u64) -> (refused: bool)
+    requires
+        mask as int == pow2(width.bits()) - 1,
+    ensures
+        refused == !(count == 3 && first < pow2(width.bits()) && second < pow2(width.bits()) && third < width.bits()),
+{
+    count != 3 || first > mask || second > mask || third >= width.to_bits() as u64
 }
 
 /// The outcome of an operation that writes the low bits of its result and sets no flags.
