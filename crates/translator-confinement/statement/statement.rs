@@ -153,4 +153,6 @@ pub open spec fn is_confined(step: spec_fn(Machine, u32) -> Stepped, instruction
 } // verus!
 
 #[cfg(verus_keep_ghost)]
+mod copy;
+#[cfg(verus_keep_ghost)]
 mod plants;
