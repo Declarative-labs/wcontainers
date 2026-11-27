@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-precise-instruction-set-neoverse-v2"
+description = "The behaviors of the Arm Neoverse V2, one for every ARM64 instruction."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance.rs"
+
+[dependencies]
+wcontainers-precise-instruction-set = { path = "../.." }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[dev-dependencies]
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
+wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
+
+[lints]
+workspace = true

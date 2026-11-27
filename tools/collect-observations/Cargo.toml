@@ -1,0 +1,36 @@
+[package]
+name = "wcontainers-collect-observations"
+description = "Measures every instruction on every kind of core of this machine and writes each kind's sample as a baked Rust file."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "collect-observations"
+path = "main.rs"
+
+[dependencies]
+wcontainers-behavior-source = { path = "../../crates/behavior-source" }
+wcontainers-distinguishing-state-generator = { path = "../../crates/distinguishing-state-generator" }
+wcontainers-machine-labels = { path = "../machine-labels" }
+wcontainers-observation-collector = { path = "../../crates/observation-collector" }
+wcontainers-observation-collector-pinned-behavior-sources = { path = "../../crates/observation-collector/implementation/pinned-behavior-sources" }
+wcontainers-precise-instruction-set-collected = { path = "../../crates/precise-instruction-set/implementation/collected", features = ["bake"] }
+wcontainers-processor-architecture = { path = "../../crates/processor-architecture" }
+wcontainers-processor-cores = { path = "../../crates/processor-cores" }
+wcontainers-processor-cores-linux = { path = "../../crates/processor-cores/implementation/linux" }
+databake.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+wcontainers-behavior-source-kvm-single-step = { path = "../../crates/behavior-source/implementation/kvm-single-step" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../crates/distinguishing-state-generator/implementation/arm64" }
+wcontainers-processor-architecture-arm64 = { path = "../../crates/processor-architecture/implementation/arm64", features = ["bake"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+wcontainers-behavior-source-kvm-single-step-x86-64 = { path = "../../crates/behavior-source/implementation/kvm-single-step-x86-64" }
+wcontainers-distinguishing-state-generator-x86-64 = { path = "../../crates/distinguishing-state-generator/implementation/x86-64" }
+wcontainers-instruction-input-domain-x86-64 = { path = "../../crates/instruction-input-domain/implementation/x86-64" }
+wcontainers-processor-architecture-x86-64 = { path = "../../crates/processor-architecture/implementation/x86-64", features = ["bake"] }
+
+[lints]
+workspace = true

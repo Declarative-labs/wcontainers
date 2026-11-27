@@ -18,10 +18,13 @@ use aarch64_cpu::registers::{
 use aarch64_paging::descriptor::El1Attributes;
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
+use wcontainers_processor_architecture::{
+    MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
+};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, InstructionFetch, PagePermission, Processor, User,
+    Arm64, ConditionFlags, DataAccess, ExclusiveMonitor, InstructionFetch, PagePermission,
+    Processor, User,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
@@ -94,7 +97,7 @@ const WINDOW_BYTES: u64 = 16 * PAGE_SIZE;
 const _: () = assert!(HANDLER.is_multiple_of(VECTOR_TABLE_BYTES));
 const _: () = assert!(HANDLER_ENTRY_OFFSET == VECTORS * VECTOR_BYTES);
 
-/// The most changes held and next memory may have together to be paired by `MemoryDelta::diff_snapshots`.
+/// The most changes held and next memory may have together to be paired by `MemorySnapshot::diff`.
 ///
 /// Pairing takes time that grows with the product of the two lengths; longer ones are written whole into emptied
 /// resident pages.
@@ -192,9 +195,11 @@ struct Resolved {
 
 /// Why this source did not run a state, found before the processor or the hook is written.
 ///
-/// The first two are found before the guest is written; after any other, the next state runs on a new machine.
+/// The first three are found before the guest is written; after any other, the next state runs on a new machine.
 #[derive(Debug)]
 pub enum Refusal {
+    /// The exclusive monitor holds an address, which no state single-stepping reaches can give: stepping opens it.
+    ExclusiveMonitorHeld(ExclusiveMonitor),
     /// A permission starts or ends inside a page a program can use, which no chip can give.
     PermissionWithinAPage(Range<u64>),
     /// The pages the state maps, with the tables that lead to them and its slot, are more than the guest has.
@@ -493,7 +498,10 @@ impl KvmSingleStepMachine {
         // Unknown from here on: an error or a panic before the caller stores the next record makes the next load reset.
         let mut held = match mem::replace(&mut self.resident.memory, Held::Unknown) {
             Held::Known(held) if has_room && held.len() + memory.len() <= MOST_CHANGES_PAIRED => {
-                MemoryDelta::diff_snapshots(&held, memory, &mut ResidentWriter(self));
+                MemorySnapshot { mutations: &held }.diff(
+                    &MemorySnapshot { mutations: memory },
+                    &mut ResidentWriter(self),
+                );
                 held
             }
             Held::Known(_) | Held::Unknown => {
@@ -969,9 +977,13 @@ impl BehaviorSource for KvmSingleStepMachine {
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
-        memory: &[MemoryDelta<'_, Arm64<User>>],
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), Refusal> {
+        if processor.exclusive_monitor != ExclusiveMonitor::Open {
+            return Err(Refusal::ExclusiveMonitorHeld(processor.exclusive_monitor));
+        }
+        let memory = memory.mutations;
         if self.renew_machine {
             self.renew()?;
         }
@@ -1398,6 +1410,8 @@ fn to_processor(registers: &Registers) -> Processor<()> {
         floating_point_control: registers.floating_point_control,
         floating_point_status: registers.floating_point_status,
         software_thread_id: registers.software_thread_id,
+        // The step's exception opens it (MEASURED: `hidden-state-loading/arm64/RESULT.md`, question 4).
+        exclusive_monitor: ExclusiveMonitor::Open,
         exception: syndrome::to_exception(registers.syndrome, registers.fault_address),
         level_specific: (),
     }

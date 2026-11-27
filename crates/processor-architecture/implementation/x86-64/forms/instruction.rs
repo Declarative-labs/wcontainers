@@ -5,6 +5,11 @@ pub const XED_VERSION: &str = "v2026.08.23";
 
 /// An x86 [instruction form](https://intelxed.github.io/ref-manual/group__IFORM.html) that executes in 64-bit mode.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum Instruction {
     /// `AADD_MEM32_GPR32`.
     AaddMem32Gpr32,

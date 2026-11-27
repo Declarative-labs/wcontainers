@@ -27,6 +27,7 @@ pub mod avx;
 pub mod avx512_integer;
 mod behavior;
 pub mod branch;
+mod core_identity;
 mod cpuid;
 mod cpuid_recording;
 pub mod descriptor;
@@ -70,6 +71,7 @@ pub use behavior::{
     ScanOfZero, SixteenBitSwap, StoreAcrossFault, UndefinedAuxiliaryCarry, UndefinedFlags, UndefinedResultFlags,
     UndefinedStatusFlags,
 };
+pub use core_identity::CoreIdentity;
 pub use cpuid::{CpuidLeaf, CpuidTable, XEON_PLATINUM_8488C_UNDER_KVM};
 pub use exception::{Access, Exception};
 pub use flags::Flags;
@@ -475,6 +477,11 @@ pub enum InstructionFetch {
 
 /// An instruction form with one behavior for every case the manuals leave open or a chip does its own way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum PreciseInstruction {
     PushGprv50 { across_fault: StoreAcrossFault },
     Ud2,

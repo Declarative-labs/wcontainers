@@ -1,12 +1,13 @@
 //! The tests every implementation of wcontainers-processor-architecture runs, written against its traits alone.
 //!
-//! Each function of an architecture takes the cases to simulate: a simulator and a state before. The function of a
-//! memory sink takes the sink.
+//! Each function of an architecture takes the cases to simulate: a simulator and a state before. `Eq` on the
+//! architecture is what the derives of `ExecutionState` require of it. The function of a memory sink takes the sink.
 
 use std::borrow::Cow;
 
 use wcontainers_processor_architecture::{
-    ExecutionState, ExecutionStateExpectation, MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+    ExecutionState, ExecutionStateExpectation, MemoryDelta, MemorySink, ProcessorArchitecture,
+    Simulator,
 };
 
 /// Lists each instruction once, and each behavior known for an instruction once.
@@ -28,12 +29,11 @@ pub fn lists_each_instruction_and_known_behavior_once<Architecture: ProcessorArc
     }
 }
 
-/// The provided `simulate_state` gives what `simulate` does: its processor expectation, and its memory mutations
-/// appended.
+/// The provided `simulate_state` gives what `simulate` does: its expectation, and its memory mutations appended.
 pub fn simulate_state_agrees_with_simulate<Architecture, S>(
     cases: impl IntoIterator<Item = (S, ExecutionState<'static, Architecture>)>,
 ) where
-    Architecture: ProcessorArchitecture,
+    Architecture: ProcessorArchitecture + Eq,
     S: Simulator<Architecture>,
 {
     for (simulator, before) in cases {
@@ -64,7 +64,7 @@ pub fn simulate_state_agrees_with_simulate<Architecture, S>(
 pub fn simulation_is_deterministic<Architecture, S>(
     cases: impl IntoIterator<Item = (S, ExecutionState<'static, Architecture>)>,
 ) where
-    Architecture: ProcessorArchitecture,
+    Architecture: ProcessorArchitecture + Eq,
     S: Simulator<Architecture>,
     S::Error: PartialEq,
 {

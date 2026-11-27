@@ -30,10 +30,13 @@ path = "forms/generate.rs"
 [features]
 # Lets the planted-bug harness turn on one planted bug of `planted::PLANTED_BUGS` at a time.
 planted-bugs = []
+# Lets every instruction and behavior write itself as a Rust expression that names each variant by its full path.
+bake = ["dep:databake"]
 
 [dependencies]
 wcontainers-processor-architecture = { path = "../.." }
 bitflags.workspace = true
+databake = { workspace = true, optional = true }
 # Decoding the instruction at the instruction pointer into its operands (MIT).
 iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder", "instr_info", "op_code_info"] }
 

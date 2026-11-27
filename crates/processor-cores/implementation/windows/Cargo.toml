@@ -1,0 +1,34 @@
+[package]
+name = "wcontainers-processor-cores-windows"
+description = "The logical processors of a Windows machine, each held by a hard thread affinity of that processor alone."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-processor-cores = { path = "../.." }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# The logical processors, and the calling thread's hard affinity set and read safely and by processor group (MIT OR Apache-2.0); without rtkit, which is Linux's D-Bus client.
+gdt-cpus = { version = "0.2606.1", default-features = false }
+# The processors' registers and microcode revisions as the registry holds them, read safely (MIT OR Apache-2.0).
+windows-registry = "0.100.0"
+
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
+wcontainers-processor-architecture-x86-64 = { path = "../../../processor-architecture/implementation/x86-64" }
+
+[dev-dependencies]
+wcontainers-processor-cores-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true
