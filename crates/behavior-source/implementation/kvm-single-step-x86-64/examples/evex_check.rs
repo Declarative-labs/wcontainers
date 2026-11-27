@@ -96,6 +96,7 @@ mod on_chip {
             xcr0: expected.xcr0,
             xinuse: expected.xinuse,
             xsave_tracking: expected.xsave_tracking,
+            pasid: expected.pasid,
         }
     }
 

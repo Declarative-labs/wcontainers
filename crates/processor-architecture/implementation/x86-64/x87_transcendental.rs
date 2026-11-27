@@ -9,6 +9,9 @@
 //! written. The value the model writes is its own, within the bound: worked out in fixed point to about 120 bits and
 //! rounded once to 64 bits by FCW's rounding control. FCW's precision control does not apply to these forms.
 //!
+//! The multiples of π that FPATAN's table gives for zeros and infinities (±π, ±π/2, ±π/4 and ±3π/4) are not
+//! approximations: they are π's multiples rounded by FCW's rounding control, so the behaviors compare them and C1.
+//!
 //! The trigonometric forms reduce their argument by multiples of π/2 with the 66-bit π the manual names, so their
 //! results are those of the reduced argument; an argument of magnitude 2 to the 63 or more is out of range: C2 set
 //! and nothing else changed.
@@ -455,6 +458,16 @@ fn approximate(outcome: Outcome) -> Result {
     Result { value: outcome.value.expect("a rounded value"), approximate: true, up: outcome.up }
 }
 
+/// A multiple of π from FPATAN's table, rounded by FCW's rounding control and compared as an exact result is.
+fn deliver_multiple_of_pi(flags: u16, value: Real, control: u16) -> Computed {
+    const ROUND_TOWARD_ZERO: u16 = 0b11 << 10;
+    let control = if is_active(Bug::ArcTangentConstantTruncated) { control | ROUND_TOWARD_ZERO } else { control };
+    let rounded = value.round(control);
+    let rounded_flags = rounded.flags;
+    let first = Result { approximate: false, ..approximate(rounded) };
+    Computed::Done { flags: flags | rounded_flags, first, second: None, undecided: 0 }
+}
+
 /// The result of a form on its operands: ST(0), and ST(1) for the binary forms, neither empty.
 pub fn compute(function: Function, top: u128, next: u128, control: u16) -> Computed {
     let masked = |flag: u16| control & flag != 0;
@@ -598,7 +611,8 @@ fn compute_binary(function: Function, y: u128, x: u128, control: u16) -> Compute
                 let to_pi = x_negative && !(is_zero(x_class) && is_active(Bug::ArcTangentZeroOverNegativeZero));
                 Some(if to_pi { Ok(pi_fraction(1, 1)) } else { Err(zero(y_negative)) })
             } else if infinite(y_class) && infinite(x_class) {
-                Some(Ok(pi_fraction(if x_negative { 3 } else { 1 }, 4)))
+                let three_quarters = x_negative && !is_active(Bug::ArcTangentInfinitiesGiveQuarter);
+                Some(Ok(pi_fraction(if three_quarters { 3 } else { 1 }, 4)))
             } else if infinite(y_class) || is_zero(x_class) {
                 Some(Ok(pi_fraction(1, 2)))
             } else if infinite(x_class) {
@@ -616,7 +630,7 @@ fn compute_binary(function: Function, y: u128, x: u128, control: u16) -> Compute
             }
             let result = match special {
                 Some(Err(value)) => return done(flags, value),
-                Some(Ok(real)) => real,
+                Some(Ok(real)) => return deliver_multiple_of_pi(flags, real, control),
                 None => arc_tangent_of(Real::from_extended(y), Real::from_extended(x)),
             };
             deliver(flags, result)
@@ -906,6 +920,20 @@ mod tests {
         let ln_2 = 2 * multiply_fixed(third, arc_ratio(multiply_fixed(third, third), false, false));
         assert!(ln_2.abs_diff(LN_2) < 1 << 8, "{ln_2:#x} against {LN_2:#x}");
         assert_eq!(REDUCTION_PI, PI >> 60);
+    }
+
+    #[test]
+    fn multiples_of_pi_are_rounded_by_the_rounding_control_and_compared() {
+        const NEGATIVE_ZERO: u128 = SIGN;
+        // π's significand is 0xC90FDAA22168C234 followed by bits that round it up to nearest.
+        let cases = [(0x037F, 0x4000_C90F_DAA2_2168_C235, true), (0x0F7F, 0x4000_C90F_DAA2_2168_C234, false)];
+        for (control, pi, up) in cases {
+            let Computed::Done { flags, first, .. } = compute(Function::ArcTangent, NEGATIVE_ZERO, 0, control) else {
+                panic!("FPATAN of +0 over -0 is π");
+            };
+            assert_eq!(first, Result { value: pi, approximate: false, up }, "{control:#x}");
+            assert_eq!(flags, PRECISION);
+        }
     }
 
     fn to_f64(value: u128) -> f64 {

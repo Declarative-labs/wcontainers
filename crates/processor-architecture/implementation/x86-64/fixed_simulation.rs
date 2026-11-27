@@ -69,6 +69,10 @@ pub(super) fn execute_fixed(
         }
         FixedOutcome::SystemEnter if is_active(Bug::SystemEnterAdvances) => Err(Exception::SystemCall),
         FixedOutcome::SystemEnter => Err(Exception::SystemEnter),
+        FixedOutcome::EnqueueCommand if processor.pasid.is_some() || is_active(Bug::EnqueueForbiddenUnbound) => {
+            Err(Exception::InvalidOpcode)
+        }
+        FixedOutcome::EnqueueCommand => Err(Exception::GeneralProtection { error_code: 0 }),
         FixedOutcome::ReadsOperand => {
             let width = decoded.memory_size().size() as u64;
             check_access(processor.flags, memory, locate(processor, decoded), width, Access::Read)

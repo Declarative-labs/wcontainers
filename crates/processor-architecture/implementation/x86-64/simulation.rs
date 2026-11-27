@@ -34,6 +34,7 @@ mod avx512_integer;
 mod evex_compress;
 mod evex_gather;
 mod opmask;
+mod monitor;
 
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
 /// The byte 64-bit mode leaves undefined that XED names UDB.
@@ -369,6 +370,7 @@ fn apply(
         PreciseInstruction::State { instruction, behavior } => {
             xsave_simulation::execute_state(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
+        PreciseInstruction::MonitorFaultsAsRead(_) => monitor::check_monitored_address(processor, memory, decoded),
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
                 .iter()

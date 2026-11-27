@@ -1135,6 +1135,9 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if !xsave::is_consistent(processor) {
         return Err(Refusal::NotModeled("XINUSE with a bit outside XCR0, or clear for a component out of its initial configuration"));
     }
+    if processor.pasid.is_some() {
+        return Err(Refusal::NotModeled("an IA32_PASID with a PASID, which this process never binds"));
+    }
     if processor.code_segment != CODE_SEGMENT && u64::from(processor.code_segment) != USER_32_BIT_CODE {
         return Err(Refusal::NotModeled("CS other than Linux's 64-bit or 32-bit code segment"));
     }
@@ -1321,6 +1324,8 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         // The handler's own XRSTOR64 at ring 0 leaves no tracking a program's XSAVEOPT can use; the reading step gives
         // any other.
         xsave_tracking: None,
+        // This process binds no device, so the guest runs under the host thread's IA32_PASID, which holds none.
+        pasid: None,
     })
 }
 

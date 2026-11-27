@@ -73,6 +73,7 @@ fn simulate(
         xcr0: expected.xcr0,
         xinuse: expected.xinuse,
         xsave_tracking: expected.xsave_tracking,
+        pasid: expected.pasid,
     };
     (processor, after.memory_mutations[start..].to_vec())
 }
@@ -267,4 +268,40 @@ fn a_form_the_chip_lacks_raises_invalid_opcode_where_it_lies() {
     assert_eq!(after.exception, Some(Exception::InvalidOpcode));
     assert_eq!(after.instruction_pointer, CODE);
     assert!(written.is_empty());
+}
+
+#[test]
+fn enqcmd_raises_general_protection_unbound_and_is_forbidden_with_a_pasid() {
+    // enqcmd rax, [rcx]
+    let code = [0xF2, 0x0F, 0x38, 0xF8, 0x01];
+    let behavior = first_behavior(Instruction::EnqcmdGpraMemu32);
+    let (unbound, _) = simulate(behavior, to_state(&code, ZERO_PROCESSOR, PagePermission::Unmapped));
+    assert_eq!(unbound.exception, Some(Exception::GeneralProtection { error_code: 0 }));
+    let bound = Processor { pasid: Some(0x1234), ..ZERO_PROCESSOR };
+    let (after, written) = simulate(behavior, to_state(&code, bound, PagePermission::Unmapped));
+    assert_eq!(after.exception, Some(Exception::InvalidOpcode));
+    assert_eq!((after.instruction_pointer, after.pasid), (CODE, Some(0x1234)));
+    assert!(written.is_empty());
+}
+
+#[test]
+fn umonitor_faults_as_the_manual_says_in_one_behavior_and_never_in_the_chips() {
+    // umonitor rax
+    let code = [0xF3, 0x0F, 0xAE, 0xF0];
+    let behaviors: Vec<PreciseInstruction> = X86_64::list_known_behaviors(Instruction::UmonitorGpra).collect();
+    let [manual, chip, undefined] = behaviors[..] else { panic!("three behaviors: {behaviors:?}") };
+    assert_eq!(undefined, PreciseInstruction::Undefined(Instruction::UmonitorGpra));
+    let at = |address: u64| {
+        let mut processor = ZERO_PROCESSOR;
+        processor.general_purpose_registers[0] = address;
+        to_state(&code, processor, PagePermission::Unmapped)
+    };
+    let non_canonical = 0x8000_0000_0000_0000;
+    assert_eq!(simulate(manual, at(non_canonical)).0.exception, Some(Exception::GeneralProtection { error_code: 0 }));
+    let unmapped = Exception::PageFault { access: Access::Read, page_present: false, address: DATA };
+    assert_eq!(simulate(manual, at(DATA)).0.exception, Some(unmapped));
+    for address in [non_canonical, DATA] {
+        let (after, _) = simulate(chip, at(address));
+        assert_eq!((after.exception, after.instruction_pointer), (None, CODE + code.len() as u64));
+    }
 }
