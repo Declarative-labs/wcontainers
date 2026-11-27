@@ -1126,6 +1126,96 @@ the 98 pointers and the fuzzing. Open in the plan: pipe_draw_info's user index p
 error_message (a string the driver allocates for Mesa) need their own rows; the driver must not report user index
 buffers for the first to stay out.
 
+## The orchestrator's rulings (1) to (5) of 2026-11-27, done (logs in wcontainers-scratch/graphics-api-crates/r14/)
+
+His main ac696ea19 is inside the branch (`git fetch` of his checkout, `git rev-list --count HEAD..FETCH_HEAD` 0,
+MEASURED): nothing to merge; no interface file of his is touched by any commit of this run.
+
+1. **`spirv_common_to_spirv` is out of the trait** (ce6ec529a): wc_spirv_common_to_spirv and wc_nir_to_spirv out of the
+   bridge (bridge.h, steps.h, spirv.c), Zink's writer and its include folders out of the build (build.rs no longer links
+   libzink), `struct wc_words` and wc_words_free out (no caller left). The corpus's candidate A goes with it (the
+   implementations track's run.rs:672 and its route tests in crates/nir/tests/route.rs call the old `into_spirv`).
+2. **The guard `resource_indices_found` is removed** with the writer it guarded (spirv.c: 154 lines out), and
+   `locations_fit` and `native_vulkan_form` with it.
+3. **The stage is part of the type.** The trait now has `ReceivedVertex` ... `ReceivedTessEvaluation` and
+   `PreparedVertex` ... `PreparedTessEvaluation` (one type each per `enum wc_stage` value); `glsl_to_nir` returns a
+   `GlslProgram` with one field per stage, each of its stage's type; `received_<stage>_prepare` and
+   `prepared_<stage>_variant` exist for every stage; the squares only where a stage draws them:
+   `prepared_vertex_points_as_squares` and `prepared_tess_evaluation_points_as_squares` (bridge.c:2355 takes only those
+   two) and `prepared_geometry_points_as_squares` (bridge.c:2493 takes only a geometry program). Written by the
+   generator (src/mesacompiler.rs: `BY_STAGE`, `STAGES_TAKEN`; the glue's mark names the fact it rests on: wc_glsl_to_nir
+   fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes). Ten
+   doctests now show the wrong orders do not compile, four of them the stages (a geometry stage through the vertex
+   creation steps, a fragment program's squares, a vertex program rewritten as geometry squares, a tessellation
+   control variant through the vertex method). The trait: 24 methods (was 14), 16 associated types.
+4. **No test that tests nothing reports ok.** `fuzz_from_the_environment` and `probe_from_the_environment` (and
+   OpenGL ES's fuzz and measure) take a default when the environment names none (the Mesa compiler: seed 1, 10,000
+   calls, the probe "0,0"; OpenGL ES: seed 1, 20,000 calls, 1,000 draws), so the default suite runs each and fails it
+   where it fails. The first tries, separate programs (0e473154c) and `#[ignore]`, are refused by the linter's
+   `conformance_not_run` rule (a test in `tests!` must be a plain `#[test]`; an implementation names its conformance
+   crate only from conformance_run.rs), so defaults it is. `every_method_is_called` and every fuzzing seed now assert
+   that each of the trait's 24 methods made what it makes (`METHODS`); the hostile rounds went from 4 to 16 for it, and
+   the evaluation program writes a point size so its squares are made.
+
+MEASURED at 3d6d06865 (pushed; x86-64 job gac-s/20261127-075636-2737835, log r14/mc-claim-3d6d06865.log, Mesa fec8830e9
+with its assertions on):
+
+| Bar | Result |
+|---|---|
+| Generator: build, tests; written twice; equal to the tree | status 0, 17 pass; IDENTICAL; SAME AS WRITTEN (all five files); UNMAPPED 0 |
+| check (also without Mesa), clippy `-D warnings` | 0, 0, 0 |
+| The suite by default; under AddressSanitizer (26 `__asan_report` calls in the bridge's archive) | 5 of 5 (fuzz and probe with their defaults: `FUZZ seed 1 calls 10002`, `PROBE 0,0 ended`); 5 of 5 |
+| Doctests | 11 of 11 (10 compile_fail, each for its code) |
+| Every hostile case alone in a process | PROBES 640, cases 10, calls 7,460, ENDED 0 |
+| **Fuzzing, 12 seeds x 100,000 calls under AddressSanitizer** | **12 of 12 status 0, no report, no assertion; every seed asserts every method made something (no `made 0` in any seed)**; e.g. seed 11: made_named_layer_location 134 of 6,448, prepared_tess_evaluation_points_as_squares 183 of 337, prepared_geometry_points_as_squares 135 of 333, prepared_compute_variant 787 of 1,614; 63 to 64 s each |
+| Lines naming `unsafe` | mesa-compiler 0, conformance 0, direct 132 (72 before: the stage methods are one glue each, so 6 prepares, 6 variants and 3 squares where there were 1, 1 and 2); marks 66 |
+| Linter on crates/mesa-compiler | 977 (797 at 2613d8108): number_constant_without_link 235, magic_literal 213, name_unanswered 97 and summary_unanswered 72 (the model rule sets, no key on the machine), summary_too_long 76, public_outside_interface 68 and function_summary_not_third_person 68 (the stage methods' copies), conformance_not_run 2, conformance_untested_method 1 (`new`), the rest below 50 |
+
+5. **The browser's turn lives in the WebGL implementation** (3d6d06865). crates/opengl-es/implementation/webgl:
+   `get_query_objectuiv` and `get_query_objectui64v_ext` asked for QUERY_RESULT wait, as OpenGL ES does, until
+   QUERY_RESULT_AVAILABLE: each turn suspends the WebAssembly stack on a promise a message posted to the page itself
+   settles (`Promise.resolve` imported through wasm-bindgen's `suspending`, that is `WebAssembly.Suspending`; a
+   MessageChannel message is a task of its own, which a nested zero timer is not). `client_wait_sync` waits the same
+   way up to its timeout (WebGL signals fences only between tasks too). No method was added to any trait; the crate
+   has no `unsafe` line; one `#[expect(deprecated)]` on the module (wasm-bindgen marks every suspending import
+   deprecated while it calls JSPI experimental). New web-sys features MessageChannel, MessageEvent, MessagePort (the
+   same crate, already a dependency). The caller must enter through `WebAssembly.promising`, as the gpu suite's page
+   does.
+   **Cost, MEASURED** (headless Chromium 155.0.8059.39 on SwiftShader, x86-64, 200 queries, r14/webgl-suite.txt): a draw
+   read back 0.253 ms; the same draw in an occlusion query whose result is read at once 1.575 ms, every result right
+   (200 of 200 passed), about 111 turns a query (each turn about 12 us; SwiftShader answers the query after about 1.3
+   ms). **A host without JSPI** cannot even instantiate the module (the import is wrapped in `WebAssembly.Suspending`);
+   standing in for it (`WebAssembly.Suspending = inner => inner`, as the page's `nojspi=1` does) the wait sees no turn
+   taken and stops at once: the result reads as WebGL answers within the task, the query unavailable, 0 (MEASURED: 200
+   queries, 0 passed, 0.015 ms each; `query_results_wait` FAILS there, as it must: that host cannot give the answer).
+   **The OpenGL ES suite without EGL**: every test that needs only OpenGL ES has a form `*_on(&G, Refusals<G>)` taking
+   a context made by any means (`Refusals` is `None` for an implementation whose checks another makes: the browser);
+   `ON_ANY_CONTEXT` names the 12 and `run_on_any_context` runs one by name; a new test `query_results_wait` (two
+   occlusion queries read at once, one passing samples and one not) runs in both forms. The EGL forms call the `_on`
+   forms, so both run the same code. The page: crates/opengl-es/implementation/webgl/examples/browser.rs (wasm32,
+   `forbid`), browser/suite.html, browser/suite.mjs (playwright-core 1.55.0 and wasm-bindgen-cli 0.2.130, tools on the
+   machine under the job's build folder, never in the lock).
+   Four WebGL differences the browser run found, fixed in the WebGL implementation: the variable-length lists
+   (COMPRESSED_TEXTURE_FORMATS and the two binary format lists) refused as the trait refuses them; a vertex attribute
+   pointer refused with no array buffer bound (WebGL takes offset 0); a clear given fewer than four channels padded
+   with zeros (WebGL refuses it); and in the suite, skipped unpack pixels given rows long enough (WebGL refuses a skip
+   past a row's end, OpenGL ES reads on) and extension names matched by WebGL's own names.
+
+MEASURED at 3d6d06865 (x86-64 job gac-k/20261127-075642-2738543, log r14/es-claim-3d6d06865.log):
+
+| Bar | Result |
+|---|---|
+| Generator; written twice; equal to the tree | 17 pass; IDENTICAL; SAME AS WRITTEN |
+| check (Linux, wasm32), clippy `-D warnings` (Linux, wasm32, the page included) | 0, 0, 0, 0, 0 |
+| The suite on direct over Mesa 26.2.4's EGL (llvmpipe); under AddressSanitizer | 17 of 17 and kept 1 of 1 (fuzz with its default 20,000 calls, measure with 1,000 draws, query_results_wait new); the same, status 0 |
+| **The suite on WebGL 2 in headless Chromium, through the WebGL implementation** | **12 passed, 0 failed of 12** (every test of `ON_ANY_CONTEXT`, query_results_wait among them) |
+| Lines naming `unsafe` | egl 0, egl direct 95, opengl-es 0, opengl-es direct 802, webgl 0, conformance 0; marks 361 (unchanged) |
+
+For the implementations track: their gpu suite's occlusion test should now pass on the page with this crate as it is
+at 3d6d06865 (not run by this track: their page and suite are on their branch). The Mesa compiler's trait changed
+shape: nir's calls move to the stage methods (`received_<stage>_prepare`, `prepared_<stage>_variant`, the three square
+methods) and `GlslProgram`'s six fields; candidate A and nir's route tests through `into_spirv` go.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
