@@ -360,6 +360,10 @@ impl Classifier<'_, '_> {
             }
             return Kind::Number;
         }
+        if self.g.upload_of(place, &param.name).is_some() {
+            // Bytes the caller lends for the call, of the length the upload's rule gives (an exception line).
+            return Kind::Lends { what: Box::new(Kind::Number), out: false };
+        }
         if let Some(Exception::InitialData { bytes, .. }) = self.g.initial_data(place, &param.name) {
             return self.of_pointer(&param.ty, &param.attributes, false, None, &param_place, &Override::InitialBytes((*bytes).to_string()), false);
         }

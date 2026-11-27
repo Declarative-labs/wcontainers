@@ -252,6 +252,14 @@ impl Writer<'_, '_> {
         });
         for ((name, part), param) in glued.parts.iter().zip(&method.params) {
             match part {
+                Part::ObjectOut { kinds, .. } if kinds.len() > 1 => {
+                    // An object of one of several kinds: the recorder makes the least derived, the hostile implementation the
+                    // most derived, whatever the caller asked for; the calling glue asks the object which it is.
+                    let made = if self.hostile.get() { kinds[0] } else { kinds[kinds.len() - 1] };
+                    let interface_key = self.out_interface(param).unwrap_or_default();
+                    let owner = self.g.interface_api.get(&interface_key).copied().unwrap_or(from);
+                    answers.push(format!("{}::{}Object::{}({}::new())", alias(self.g.apis[owner]), self.g.trait_names[&interface_key], self.g.kinds[made].name, self.recorded_type(made, from)));
+                }
                 Part::ObjectOut { kinds, made } => {
                     let new = format!("{}::new()", self.recorded_type(kinds[0], from));
                     answers.push(if *made { new } else { format!("Some({new})") });
@@ -321,6 +329,9 @@ impl Writer<'_, '_> {
             }
         }
         let value = match answers.len() {
+            // A not-yet exception line: the recorder's data is always ready, the hostile implementation's never (it has
+            // touched the bytes all the same), so that both answers cross both glues.
+            0 if glued.not_yet.is_some() => (!self.hostile.get()).to_string(),
             0 => "()".to_string(),
             1 => answers.remove(0),
             _ => format!("({})", answers.join(", ")),

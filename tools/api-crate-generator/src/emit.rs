@@ -502,6 +502,19 @@ impl<'a> Generator<'a> {
         self.exceptions().find(|e| matches!(e, Exception::CountRange { method: m, count: c, .. } if *m == method && *c == count))
     }
 
+    /// The status a method answers while what it is asked for is not ready (a not-yet exception line), if any.
+    fn not_yet_of(&self, method: &str) -> Option<i32> {
+        self.exceptions().find_map(|e| match e {
+            Exception::NotYet { method: m, not_yet } if *m == method => Some(*not_yet),
+            _ => None,
+        })
+    }
+
+    /// The upload exception line of a method whose bytes are this parameter, if any.
+    fn upload_of(&self, method: &str, param: &str) -> Option<&'static Exception> {
+        self.exceptions().find(|e| matches!(e, Exception::Upload { method: m, bytes, .. } if *m == method && *bytes == param))
+    }
+
     /// The bound-object exception line of a method, if any.
     fn bound_object(&self, method: &str) -> Option<&'static Exception> {
         self.exceptions().find(|e| matches!(e, Exception::BoundObject { method: m, .. } if *m == method))
@@ -861,6 +874,12 @@ impl<'a> Generator<'a> {
             1 => returned.remove(0),
             _ => format!("({})", returned.join(", ")),
         };
+        // A not-yet exception line: `true` for S_OK, `false` for its status of success (nothing written).
+        let value = if status && value == "()" && self.not_yet_of(place).is_some() {
+            "bool".to_string()
+        } else {
+            value
+        };
         let result = if status {
             self.count(Row::StatusResult);
             format!("Result<{value}, {}>", self.status_path(at.api))
@@ -872,6 +891,9 @@ impl<'a> Generator<'a> {
 
     /// A parameter an exception line of src/api.rs maps, if any.
     fn exception_parameter(&self, method: &str, param: &Param, at: At<'_>) -> Option<Passed> {
+        if self.upload_of(method, &param.name).is_some() {
+            return Some(Passed::In("&[u8]".to_string()));
+        }
         if let Some(Exception::InitialData { per_subresource: true, record, .. }) = self.initial_data(method, &param.name) {
             let record_key = self.read.records.keys().find(|k| k.1 == *record)?.clone();
             let path = self.data_path(self.record_owner(&record_key), Module::Structures, &self.record_name(&record_key), at.api);
@@ -1036,6 +1058,9 @@ impl<'a> Generator<'a> {
         let name = names::escaped(names::snake_case(&method.name));
         if let Some(link) = documentation(&method.attributes) {
             out.push_str(&doc_line("    ", &method.name, Some(&link)));
+        }
+        if let Some(not_yet) = self.not_yet_of(place) {
+            let _ = writeln!(out, "    ///\n    /// Answers `true` for S_OK, the data written, and `false` for {not_yet:#x} (S_FALSE), not yet ready and nothing written.");
         }
         if inputs.len() > 6 {
             let _ = writeln!(out, "    #[allow(clippy::too_many_arguments, reason = \"the method's own parameters, one to one (MAPPING.md)\")]");

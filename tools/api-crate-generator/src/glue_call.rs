@@ -1,6 +1,7 @@
 //! The calling glue: the C side's objects, each held by one counted reference, as an implementation of the traits.
 //! Checked first, one call out per block, and an answer adopted only after a success.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::{Glued, MOST_ELEMENTS, NOWHERE, Part, Writer, direct_alias, snake, upper};
@@ -490,6 +491,15 @@ impl Writer<'_, '_> {
                     let _ = writeln!(body, "            {name}_words.extend(bytes.as_chunks::<8>().0.iter().map(|word| u64::from_ne_bytes(*word)));\n        }}");
                     args.push(format!("if {name}_list.is_empty() {{ null() }} else {{ {name}_words.as_ptr().cast::<u8>() }}"));
                 }
+                Part::Upload { resource, subresource, region, row_pitch, depth_pitch } => {
+                    // The system reads the length the upload's rule gives (an exception line of src/api.rs): no fewer bytes
+                    // are passed.
+                    let (resource_name, subresource_name, region_name) = (&glued.parts[*resource].0, &glued.parts[*subresource].0, &glued.parts[*region].0);
+                    let (row_name, depth_name) = (&glued.parts[*row_pitch].0, &glued.parts[*depth_pitch].0);
+                    let _ = writeln!(body, "        let Some({name}_needed) = upload_length(&{resource_name}, {subresource_name}, {region_name}, {row_name}, {depth_name}) else {{ {fail} }};");
+                    let _ = writeln!(body, "        if {name}.len() < {name}_needed {{ {fail} }}");
+                    args.push(format!("{name}.as_ptr()"));
+                }
                 Part::TextIn { wide, optional } => {
                     // A text crosses NUL-terminated: a `&CStr` is one already; `&[u16]` is copied with a zero unit after its
                     // first zero unit or its end.
@@ -587,6 +597,17 @@ impl Writer<'_, '_> {
                     let _ = writeln!(after, "        let {name} = {record_path} {{ {data}: lent, {row}: {name}_record.{row}, {depth}: {name}_record.{depth} }};");
                     outs.push(name.clone());
                 }
+                Part::ObjectOut { kinds, .. } if kinds.len() > 1 => {
+                    // An object of one of several kinds: asked for each kind's newest interface, the most derived first.
+                    let _ = writeln!(body, "        let mut {name}: Raw = null_mut();");
+                    args.push(format!("&raw mut {name}"));
+                    let interface_key = self.out_interface(param).unwrap_or_default();
+                    let adopt = self.several_of(&interface_key);
+                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}, Out and ComOutPtr\")]", param.name);
+                    let _ = writeln!(after, "        // SAFETY: the metadata's `{}` is `Out` and `ComOutPtr`: after a success, null or one reference to an object of `{}`.", param.name, interface_key.1);
+                    let _ = writeln!(after, "        let Some({name}) = (unsafe {{ {adopt}::<{api_type}>({name}) }}) else {{ return Err(E_FAIL); }};");
+                    outs.push(name.clone());
+                }
                 Part::ObjectOut { kinds, made, .. } => {
                     let _ = writeln!(body, "        let mut {name}: Raw = null_mut();");
                     args.push(format!("&raw mut {name}"));
@@ -649,6 +670,10 @@ impl Writer<'_, '_> {
         if status {
             let _ = writeln!(body, "        succeeded(returned)?;");
         }
+        if let Some(not_yet) = glued.not_yet {
+            // A not-yet exception line: the system wrote nothing, and nothing is written to the caller's bytes.
+            let _ = writeln!(body, "        if returned == {not_yet:#x} {{ return Ok(false); }}");
+        }
         body.push_str(&after);
         body.push_str(&writes_back);
         let mut values: Vec<String> = Vec::new();
@@ -663,6 +688,7 @@ impl Writer<'_, '_> {
             1 => values.remove(0),
             _ => format!("({})", values.join(", ")),
         };
+        let value = if glued.not_yet.is_some() { "true".to_string() } else { value };
         if status {
             let _ = writeln!(body, "        Ok({value})");
         } else if value != "()" {
@@ -696,6 +722,14 @@ impl Writer<'_, '_> {
             .map(|(k, _)| k.clone())
             .min()
             .unwrap_or_default()
+    }
+
+    /// The calling glue's function adopting an object of the interface `interface_key`, which several kinds are: of the
+    /// API that owns the interface, named from the current one.
+    fn several_of(&self, interface_key: &Key) -> String {
+        let owner = self.g.interface_api.get(interface_key).copied().unwrap_or(self.current.get());
+        let name = format!("{}_object_of", snake(&self.g.trait_names[interface_key]));
+        if owner == self.current.get() { name } else { format!("{}::{name}", direct_alias(self.g.apis[owner].folder)) }
     }
 
     pub(super) fn out_interface(&self, param: &crate::metadata::Param) -> Option<Key> {
@@ -798,6 +832,45 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "        #[expect(unsafe_code, reason = \"the promise of the caller: a live COM object, which is an IUnknown\")]\n        // SAFETY: the caller's promise; a reference of our own is taken.");
             let _ = writeln!(text, "        let foreign = unsafe {{ ForeignUnknown::from_borrowed(unknown.raw()) }}?;");
             let _ = writeln!(text, "        Some({enum_path}::Unknown(wcontainers_component_object_model::structures::Foreign::new(unknown.raw().addr(), std::sync::Arc::new(foreign))))\n    }};\n    body()\n}}\n");
+        }
+        // An object made of one of several kinds: each interface of this API that several kinds are and some method of the
+        // set makes, adopted as the most derived kind whose newest interface it answers.
+        let mut several: BTreeSet<Key> = BTreeSet::new();
+        for (interface_key, interface) in &g.read.interfaces {
+            if !g.interface_api.contains_key(interface_key) {
+                continue;
+            }
+            for method in &interface.methods {
+                for param in &method.params {
+                    let Some((inner, 1, _)) = crate::emit::pointee(&param.ty) else { continue };
+                    let Some(out_key) = crate::emit::named(inner) else { continue };
+                    if g.interface_api.get(&out_key) == Some(&api) && crate::metadata::attribute_named(&param.attributes, "ComOutPtr").is_some() && g.kinds_deriving(&out_key).len() > 1 {
+                        several.insert(out_key);
+                    }
+                }
+            }
+        }
+        for out_key in &several {
+            let mut kinds = g.kinds_deriving(out_key);
+            kinds.sort_by_key(|&kind| (core::cmp::Reverse(g.kinds[kind].ancestors.len()), kind));
+            let enum_path = format!("{}::{}Object", alias(spec), g.trait_names[out_key]);
+            let name = format!("{}_object_of", snake(&g.trait_names[out_key]));
+            let _ = writeln!(text, "/// Takes over a reference to an object of `{}`, which several kinds are: as the most derived kind whose newest interface\n/// it answers (each asked by QueryInterface); none for null or an object that answers none.\n///\n/// # Safety", out_key.1);
+            let _ = writeln!(text, "/// `raw` is null or a live object of `{}` whose reference the caller gives up, and which may be called from any thread as\n/// `Interface` states.", out_key.1);
+            let _ = writeln!(text, "#[expect(unsafe_code, reason = \"the promise that a pointer is a live COM object\")]");
+            let _ = writeln!(text, "pub unsafe fn {name}<A: System>(raw: Raw) -> Option<{enum_path}<A>> {{\n    #[deny(unsafe_code)]\n    let body = move || {{");
+            let _ = writeln!(text, "        #[expect(unsafe_code, reason = \"the promise of the caller: a live COM object, which is an IUnknown\")]\n        // SAFETY: the caller's promise: any COM object is an IUnknown; the reference it gave up is released when this drops.");
+            let _ = writeln!(text, "        let unknown = unsafe {{ ForeignObject::<UnknownTable>::from_owned(raw) }}?;");
+            for &kind in &kinds {
+                let k = &g.kinds[kind];
+                let newest = k.newest.first().cloned().unwrap_or_else(|| k.root.clone());
+                let table = format!("{}Table", g.trait_names[&newest]);
+                let system = if k.api == api { format!("System{}", k.name) } else { format!("{}::System{}", direct_alias(g.apis[k.api].folder), k.name) };
+                let _ = writeln!(text, "        #[expect(unsafe_code, reason = \"QueryInterface for the newest interface of the kind\")]\n        // SAFETY: `{}` names the interface `{table}` lays out.", self.iid(&newest));
+                let _ = writeln!(text, "        if let Some(object) = unsafe {{ unknown.query::<{table}>(&{}) }} {{", self.iid(&newest));
+                let _ = writeln!(text, "            return Some({enum_path}::{}({system} {{ object, api: PhantomData }}));\n        }}", k.name);
+            }
+            let _ = writeln!(text, "        None\n    }};\n    body()\n}}\n");
         }
         // The trait every API value of the calling glue meets: its kinds are this crate's object types.
         let mut bindings: Vec<String> = own_kinds.iter().map(|&k| format!("{} = System{}<Self>", g.kinds[k].name, g.kinds[k].name)).collect();

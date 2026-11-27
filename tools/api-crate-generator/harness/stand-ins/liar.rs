@@ -390,14 +390,14 @@ impl<const K: u8> d3d11::DeviceContext for Lie<K> {
     fn end(&self, _async: AsynchronousRef<'_, Liar>) {
         maybe_panic(64);
     }
-    fn get_data(&self, _async: AsynchronousRef<'_, Liar>, data: Option<&impl VolatileBytes>, _get_data_flags: u32) -> Result<(), HResult> {
+    fn get_data(&self, _async: AsynchronousRef<'_, Liar>, data: Option<&impl VolatileBytes>, _get_data_flags: u32) -> Result<bool, HResult> {
         if let Some(data) = data
             && lie(2)
         {
             let length = if lie(4) { below(1 << 16) } else { data.len().min(1 << 16) };
             let _ = data.write(&vec![random() as u8; length as usize]);
         }
-        result(|| ())
+        result(|| lie(2))
     }
     fn om_set_render_targets_and_unordered_access_views(&self, _render_target_views: Option<&[Option<&Lie<VIEW>>]>, _depth_stencil_view: Option<&Lie<VIEW>>, _uav_start_slot: u32, _unordered_access_views: Option<&[Option<&Lie<VIEW>>]>, _uav_initial_counts: Option<&[u32]>) {
         maybe_panic(64);

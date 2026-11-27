@@ -44,7 +44,7 @@ cp "$repository/rust-toolchain.toml" "$build/"
     # workspace of its own (its manifest says so), built from its folder.
     members='"crates/*", "crates/*/conformance", "crates/*/implementation/*"'
     for extra in harness; do
-        if compgen -G "$build/crates/*/implementation/*/$extra" > /dev/null; then members="$members, \"crates/*/implementation/*/$extra\""; fi
+        if ls -d "$build"/crates/*/implementation/*/"$extra" > /dev/null 2>&1; then members="$members, \"crates/*/implementation/*/$extra\""; fi
     done
     echo "members = [$members]"
     echo

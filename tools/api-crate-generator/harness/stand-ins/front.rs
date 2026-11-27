@@ -672,16 +672,16 @@ impl d3d11::DeviceContext for FrontContext {
         *lock(&query.0.result) = result;
     }
 
-    fn get_data(&self, asynchronous: AsynchronousRef<'_, Front>, data: Option<&impl VolatileBytes>, _get_data_flags: u32) -> Result<(), HResult> {
+    fn get_data(&self, asynchronous: AsynchronousRef<'_, Front>, data: Option<&impl VolatileBytes>, _get_data_flags: u32) -> Result<bool, HResult> {
         let AsynchronousRef::Query(query) = asynchronous;
         if data.is_some_and(|data| data.len() != u64::from(d3d11::Asynchronous::get_data_size(query))) {
             return Err(E_INVALIDARG);
         }
-        let Some(result) = *lock(&query.0.result) else { return Err(HResult(1)) };
+        let Some(result) = *lock(&query.0.result) else { return Ok(false) };
         if let Some(data) = data {
             data.write(&query_bytes(query.0.desc.query.0 == QUERY_EVENT, result));
         }
-        Ok(())
+        Ok(true)
     }
 
     fn om_set_render_targets_and_unordered_access_views(&self, _render_target_views: Option<&[Option<&FrontRenderTarget>]>, _depth_stencil_view: Option<&FrontDepthStencil>, _uav_start_slot: u32, _unordered_access_views: Option<&[Option<&FrontUnorderedAccess>]>, _uav_initial_counts: Option<&[u32]>) {}

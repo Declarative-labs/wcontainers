@@ -71,6 +71,9 @@ struct Coded {
     ident: String,
     path: String,
     decode_only: bool,
+    /// The record's own text fields (`PSTR`), each by its name, its offset as the mirror gives it and as a number: carried
+    /// only in an array in, the calling glue passing each text's address and the serving glue copying each text once.
+    texts: Vec<(String, String, u64)>,
 }
 
 /// One parameter of a method, as the glue passes it.
@@ -120,6 +123,9 @@ enum Part {
     /// A text in (`PSTR` or `PWSTR` by value, `In`): units ending at the first zero unit, copied once by the serving glue;
     /// the trait's `&CStr` or `&[u16]`.
     TextIn { wide: bool, optional: bool },
+    /// Bytes uploaded into a subresource (an exception line): the indices of the resource, the subresource, the box and
+    /// the two pitches their length follows from; the trait's `&[u8]`.
+    Upload { resource: usize, subresource: usize, region: usize, row_pitch: usize, depth_pitch: usize },
 }
 
 /// What an entry that refuses its method writes through one of its parameters.
@@ -200,6 +206,8 @@ struct Glued {
     status: bool,
     /// A value the method returns, not a status.
     returned: Option<Part>,
+    /// The status of success that means not yet ready, nothing written (a not-yet exception line).
+    not_yet: Option<i32>,
 }
 
 pub(super) struct Writer<'g, 'a> {
@@ -306,22 +314,38 @@ impl<'g, 'a> Writer<'g, 'a> {
         let mut encode = String::new();
         let union = record.kind == RecordKind::Union;
         let mut decode_only = false;
+        let mut texts: Vec<(String, String, u64)> = Vec::new();
+        let mut decode_with = String::new();
         let mut used = BTreeSet::new();
         // A lent record crosses with its memory's address: `Record<usize>`.
         let lent_field = match self.g.lent_record(&record.name) {
             Some(Exception::Lent { field, .. }) => Some(*field),
             _ => None,
         };
-        for field in &record.fields {
+        for (field_index, field) in record.fields.iter().enumerate() {
             let mut name = names::value_name(&field.name);
             while !used.insert(name.clone()) {
                 name.push('_');
             }
             mirror_names.push(name.clone());
             let at = format!("offset_of!({mirror}, {name})");
+            // A text field (`PSTR`) of a structure: its address crosses; the text itself is the array-in path's.
+            if !union
+                && let Some(text_key) = named(&field.ty)
+                && self.g.read.records.get(&text_key).is_some_and(|r| r.kind == RecordKind::Typedef)
+                && matches!(self.g.typedef_form(&text_key), Typedef::String)
+            {
+                let _ = writeln!(mirror_fields, "    {name}: usize,");
+                let _ = writeln!(decode, "        {name}: std::ffi::CString::default(),");
+                let _ = writeln!(decode_with, "        {name}: texts.next().unwrap_or_default(),");
+                let _ = writeln!(encode, "    put_usize(bytes, {at}, value.{name}.as_ptr().expose_provenance());");
+                texts.push((name.clone(), at.clone(), places.get(field_index).map_or(0, |place| place.0)));
+                continue;
+            }
             if lent_field == Some(field.name.as_str()) {
                 let _ = writeln!(mirror_fields, "    {name}: usize,");
                 let _ = writeln!(decode, "        {name}: get_usize(bytes, {at}),");
+                let _ = writeln!(decode_with, "        {name}: get_usize(bytes, {at}),");
                 let _ = writeln!(encode, "    put_usize(bytes, {at}, value.{name});");
                 continue;
             }
@@ -330,6 +354,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             let (read, only) = self.read_value(&field.ty, record, rust_name, &at)?;
             decode_only |= only;
             let _ = writeln!(decode, "        {name}: {read},");
+            let _ = writeln!(decode_with, "        {name}: {read},");
             if !decode_only {
                 let statement = self.write_value(&field.ty, record, rust_name, &at, &format!("value.{name}"))?;
                 if union {
@@ -365,12 +390,18 @@ impl<'g, 'a> Writer<'g, 'a> {
         let expression = path.replace('<', "::<");
         let _ = writeln!(text, "/// Reads `{}` from the {size} bytes C lays it out in.", record.name);
         let _ = writeln!(text, "pub fn decode_{ident}(bytes: &[u8]) -> {path} {{\n    {expression} {{\n{decode}    }}\n}}\n");
+        if !texts.is_empty() {
+            let offsets: Vec<&str> = texts.iter().map(|(_, at, _)| at.as_str()).collect();
+            let _ = writeln!(text, "/// The offsets of `{}`'s texts, in the order of its fields.\npub(crate) const TEXTS_{}: [usize; {}] = [{}];\n", record.name, ident.to_ascii_uppercase(), texts.len(), offsets.join(", "));
+            let _ = writeln!(text, "/// Reads `{}` from the {size} bytes C lays it out in, its texts the ones given, in the order of its fields.", record.name);
+            let _ = writeln!(text, "pub fn decode_{ident}_with(bytes: &[u8], texts: Vec<std::ffi::CString>) -> {path} {{\n    let mut texts = texts.into_iter();\n    {expression} {{\n{decode_with}    }}\n}}\n");
+        }
         if !decode_only {
             let _ = writeln!(text, "/// Writes `{}` as the {size} bytes C lays it out in.", record.name);
             let _ = writeln!(text, "pub fn encode_{ident}(value: &{path}, bytes: &mut [u8]) {{\n{encode}}}\n");
         }
         self.codecs.borrow_mut().push_str(&text);
-        let coded = Coded { size, mirror, ident: ident.to_string(), path: path.to_string(), decode_only };
+        let coded = Coded { size, mirror, ident: ident.to_string(), path: path.to_string(), decode_only, texts };
         self.coded.borrow_mut().insert(ident.to_string(), Some(coded.clone()));
         Some(coded)
     }
@@ -436,6 +467,9 @@ impl<'g, 'a> Writer<'g, 'a> {
                 let path = self.g.data_path(owner, Module::Structures, &rust, NOWHERE);
                 let ident = format!("{}_{}", snake(&outer.namespace.replace('.', "_")), snake(&rust)).to_ascii_lowercase();
                 let coded = self.codec(nested, &path, &ident, &rust)?;
+                if !coded.texts.is_empty() {
+                    return None;
+                }
                 Some((format!("decode_{}(&bytes[{at}..{}])", coded.ident, end_of(at, &coded.mirror)), coded.decode_only))
             }
             Type::Name(_) => {
@@ -464,6 +498,9 @@ impl<'g, 'a> Writer<'g, 'a> {
                     },
                     RecordKind::Struct | RecordKind::Union => {
                         let coded = self.codec_of(&named_key)?;
+                        if !coded.texts.is_empty() {
+                            return None;
+                        }
                         Some((format!("decode_{}(&bytes[{at}..{}])", coded.ident, end_of(at, &coded.mirror)), coded.decode_only))
                     }
                     RecordKind::Delegate => None,
@@ -754,12 +791,28 @@ impl<'g, 'a> Writer<'g, 'a> {
                 ranges.push((count, *most, start.and_then(index), *keep, keeps.iter().filter_map(|k| index(k)).collect()));
             }
         }
-        Ok(Glued { parts, ranges, status, returned })
+        let not_yet = self.g.not_yet_of(place);
+        if not_yet.is_some() {
+            let outs = parts.iter().any(|(_, part)| matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } | Part::FixedOut { .. } | Part::ValuesOut { .. } | Part::ObjectsOut { .. }));
+            if !status || returned.is_some() || outs {
+                return Err("a not-yet exception line on a method with no status, or with an out-parameter but bytes".to_string());
+            }
+        }
+        Ok(Glued { parts, ranges, status, returned, not_yet })
     }
 
     /// A parameter an exception line of src/api.rs maps, if any.
     fn exception_part(&self, place: &str, method: &Method, param: &Param) -> Result<Option<Part>, String> {
         let position = |name: &str| method.params.iter().position(|p| p.name == name).ok_or_else(|| format!("no parameter {name}"));
+        if let Some(Exception::Upload { resource, subresource, region, row_pitch, depth_pitch, .. }) = self.g.upload_of(place, &param.name) {
+            return Ok(Some(Part::Upload {
+                resource: position(resource)?,
+                subresource: position(subresource)?,
+                region: position(region)?,
+                row_pitch: position(row_pitch)?,
+                depth_pitch: position(depth_pitch)?,
+            }));
+        }
         if let Some(Exception::InitialData { desc, shape, per_subresource, record, bytes, pitch, slice_pitch, .. }) = self.g.initial_data(place, &param.name) {
             let record_key = self.g.read.records.keys().find(|k| k.1 == *record).cloned().ok_or("the record of an exception line")?;
             let read = &self.g.read.records[&record_key];
@@ -799,6 +852,17 @@ impl<'g, 'a> Writer<'g, 'a> {
             }
         }
         Ok(None)
+    }
+
+    /// The names of the text fields of the structure `ty`, if it holds any.
+    fn texts_of(&self, ty: &Type) -> Option<String> {
+        let named_key = named(ty)?;
+        let record = self.g.read.records.get(&named_key)?;
+        if !matches!(record.kind, RecordKind::Struct | RecordKind::Union) || Generator::is_large_integer(&named_key) {
+            return None;
+        }
+        let coded = self.codec_of(&named_key)?;
+        (!coded.texts.is_empty()).then(|| coded.texts.iter().map(|(name, _, _)| name.as_str()).collect::<Vec<_>>().join(", "))
     }
 
     /// An element of an array: a value, or a structure the glue copies as bytes both ways.
@@ -854,6 +918,11 @@ impl<'g, 'a> Writer<'g, 'a> {
             return Err(format!("a pointer of depth {depth}"));
         }
         if let Some(array) = array {
+            // A structure holding texts crosses only in an array in (each text copied once by the serving glue).
+            let in_array = !(is_out || !is_const && param.is_out) && super::integer_argument(array, "CountConst").is_none();
+            if !in_array && let Some(texts) = self.texts_of(inner) {
+                return Err(format!("a structure holding texts ({texts}) other than in an array in"));
+            }
             if let Some(length) = super::integer_argument(array, "CountConst") {
                 let length = u64::try_from(length).map_err(|_| "a negative length")?;
                 if named(inner).is_some_and(|k| self.is_object(&k)) {
@@ -903,6 +972,9 @@ impl<'g, 'a> Writer<'g, 'a> {
             let (element, size) = self.element_part(inner)?;
             return Ok(Part::ValuesIn { count, element: Box::new(element), size, optional: param.is_optional, as_option: false });
         }
+        if let Some(texts) = self.texts_of(inner) {
+            return Err(format!("a structure holding texts ({texts}) other than in an array in"));
+        }
         if let Some(bytes) = bytes {
             if !(is_out || param.is_out && !is_const) {
                 // Bytes in (the trait's `&[u8]`): copied once from C, as an array of bytes of that count.
@@ -921,10 +993,16 @@ impl<'g, 'a> Writer<'g, 'a> {
                 return Err("an IUnknown out".to_string());
             }
             let made = attribute_named(&param.attributes, "ComOutPtr").is_some();
-            let kinds = self.g.kinds_deriving(&interface_key);
+            let mut kinds = self.g.kinds_deriving(&interface_key);
             let single = kinds.len() == 1 && self.g.kind_of.get(&interface_key) == kinds.first();
             if !single {
-                return Err("an object out of several kinds".to_string());
+                // An object made of one of several kinds (CreateQuery's query or predicate): the calling glue asks it for
+                // each kind's newest interface, the most derived kind first; the serving glue serves the kind the
+                // implementation made. An object handed out again is answered from a record of one kind only.
+                if !made || kinds.len() < 2 {
+                    return Err("an object out of several kinds".to_string());
+                }
+                kinds.sort_by_key(|&kind| (core::cmp::Reverse(self.g.kinds[kind].ancestors.len()), kind));
             }
             return Ok(Part::ObjectOut { kinds, made });
         }
@@ -947,7 +1025,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             return Ok(Part::StructIn { optional: param.is_optional, coded });
         }
         if named_key.as_ref().is_some_and(|k| *k == key(GUID.0, GUID.1)) {
-            let coded = Coded { size: 16, mirror: "GuidLayout".to_string(), ident: "guid".to_string(), path: self.g.guid_path(NOWHERE), decode_only: false };
+            let coded = Coded { size: 16, mirror: "GuidLayout".to_string(), ident: "guid".to_string(), path: self.g.guid_path(NOWHERE), decode_only: false, texts: Vec::new() };
             if is_out {
                 return Ok(Part::StructOut { coded });
             }

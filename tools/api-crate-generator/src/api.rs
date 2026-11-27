@@ -266,6 +266,17 @@ pub enum Exception {
     /// multithread protection: the calling glue asks a new `kind` for `interface` and calls `method` with TRUE before
     /// handing it out, and refuses the object if it cannot.
     ProtectThreads { kind: &'static str, interface: &'static str, method: &'static str },
+    /// `method` answers a status of success other than S_OK, `not_yet` (S_FALSE), while what it is asked for is not
+    /// ready, and then writes nothing: the trait answers `true` for S_OK (ready, written) and `false` for `not_yet`. The
+    /// serving glue answers `not_yet` for `false`; the calling glue answers `false` for it and writes nothing to the
+    /// caller's bytes. Only on a method with a status and no out-parameter but bytes.
+    NotYet { method: &'static str, not_yet: i32 },
+    /// `method`'s `bytes` (`const void*`, read for the call) are uploaded into subresource `subresource` of `resource`,
+    /// within the box `region` (the whole subresource when null), rows `row_pitch` and slices `depth_pitch` apart: their
+    /// length is the resource's shape's rule (lengths.rs `upload_length_*`) from its description, the box and the
+    /// pitches. The trait takes `&[u8]`; the calling glue refuses fewer bytes than that, the serving glue copies that
+    /// many once, and only for a resource whose description it recorded when the resource crossed.
+    Upload { method: &'static str, resource: &'static str, subresource: &'static str, region: &'static str, bytes: &'static str, row_pitch: &'static str, depth_pitch: &'static str },
 }
 
 pub const COMPONENT_OBJECT_MODEL: Api = Api {
@@ -463,6 +474,14 @@ const DIRECT3D_11_EXCEPTIONS: &[Exception] = &[
     // https://learn.microsoft.com/windows/win32/api/d3d11_4/nn-d3d11_4-id3d11multithread: the immediate context is
     // free threaded only under its multithread protection, which the context answers by QueryInterface.
     Exception::ProtectThreads { kind: "ID3D11DeviceContext", interface: "ID3D11Multithread", method: "SetMultithreadProtected" },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-getdata: S_OK when the data
+    // is ready and written, S_FALSE while it is not yet available; programs poll on it.
+    Exception::NotYet { method: "ID3D11DeviceContext::GetData", not_yet: 1 },
+    // https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-updatesubresource: pSrcData holds
+    // the box's texels (the whole subresource for a null box), rows SrcRowPitch and slices SrcDepthPitch apart; a
+    // buffer's box is in bytes. UpdateSubresource1 takes the same and its copy flags.
+    Exception::Upload { method: "ID3D11DeviceContext::UpdateSubresource", resource: "pDstResource", subresource: "DstSubresource", region: "pDstBox", bytes: "pSrcData", row_pitch: "SrcRowPitch", depth_pitch: "SrcDepthPitch" },
+    Exception::Upload { method: "ID3D11DeviceContext1::UpdateSubresource1", resource: "pDstResource", subresource: "DstSubresource", region: "pDstBox", bytes: "pSrcData", row_pitch: "SrcRowPitch", depth_pitch: "SrcDepthPitch" },
 ];
 
 use Reliance::{FreeThreaded, LentUntilEnd, LiveObject, ReturnsNormally};

@@ -162,9 +162,15 @@ impl Writer<'_, '_> {
                     let _ = writeln!(text, "        uint8_t *{a} = maybe_bytes(s, {});", coded.size);
                     frees.push(a.clone());
                 }
-                Part::ValuesIn { count, size, .. } => {
+                Part::ValuesIn { count, size, element, .. } => {
                     let n = counts.get(count).cloned().unwrap_or_else(|| "0".to_string());
                     let _ = writeln!(text, "        uint8_t *{a} = elements(s, {n}, {size});");
+                    // A structure's texts: each a text of ours or null, never the random bytes' address.
+                    if let Part::StructIn { coded, .. } = element.as_ref() {
+                        for (_, _, offset) in &coded.texts {
+                            let _ = writeln!(text, "        if ({a}) for (uint64_t i = 0; i < ({n} > MOST ? 1 : {n}); i++) put_text(s, {a} + i * {size} + {offset});");
+                        }
+                    }
                     frees.push(a.clone());
                 }
                 Part::ObjectsIn { count, .. } => {
@@ -203,7 +209,8 @@ impl Writer<'_, '_> {
                     let _ = writeln!(after, "        if ({a} && {n} <= MOST) for (uint64_t i = 0; i < {n}; i++) adopt(s, ok ? {a}[i] : NULL, {interface});");
                     frees.push(a.clone());
                 }
-                Part::InitialData { .. } => {
+                Part::InitialData { .. } | Part::Upload { .. } => {
+                    // The bytes' length follows from a description C does not hold: none passed, which the glue refuses.
                     let _ = writeln!(text, "        const uint8_t *{a} = NULL;");
                 }
                 Part::TextIn { wide, .. } => {
@@ -795,6 +802,20 @@ static uint8_t *pick_text(State *s, uint64_t unit) {
     for (uint64_t at = 0; at < units * unit; at++) bytes[at] = (uint8_t)(1 + below(s, 255));
     memset(bytes + units * unit, 0, unit);
     return bytes;
+}
+
+/* A text past the glue's limit of 65,536 units (a range designator, which GCC and Clang take). */
+static const char LONG_TEXT[70001] = { [0 ... 69999] = 'A' };
+
+/* Writes at `at` the address of a text of ours inside a structure: short, empty, past the glue's limit, or null now and
+   then; never the address random bytes would make. */
+static void put_text(State *s, uint8_t *at) {
+    static const char *const TEXTS[] = { "POSITION", "TEXCOORD", "SV_Position", "", "COLOR" };
+    const char *text;
+    if (below(s, 16) == 0) { s->counted[NULL_POINTERS]++; text = NULL; }
+    else if (below(s, 16) == 0) text = LONG_TEXT;
+    else text = TEXTS[below(s, sizeof TEXTS / sizeof TEXTS[0])];
+    memcpy(at, &text, sizeof text);
 }
 
 static uint8_t *pick_riid(State *s, int *interface) {

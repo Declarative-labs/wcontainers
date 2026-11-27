@@ -44,6 +44,8 @@ static CREATED: AtomicU32 = AtomicU32::new(0);
 static INITIAL: Mutex<Vec<Vec<usize>>> = Mutex::new(Vec::new());
 /// An event query's data, a BOOL: the size the glue derives from the query's kind (lengths.rs `data_size_of_query`).
 const QUERY_DATA: [u8; 4] = [1, 2, 3, 4];
+/// The flags the toy answers not yet ready for (D3D11_ASYNC_GETDATA_DONOTFLUSH, which it reads as "not flushed yet").
+const NOT_YET_FLAGS: u32 = 1;
 /// DXGI_FORMAT_R8G8B8A8_UNORM: four bytes a texel.
 const RGBA: Format = Format(28);
 
@@ -347,11 +349,14 @@ impl d3d11::DeviceContext for Toy {
         BEGUN.fetch_add(1, Ordering::SeqCst);
     }
     fn end(&self, async_: AsynchronousRef<'_, ToyApi>) {}
-    fn get_data(&self, async_: AsynchronousRef<'_, ToyApi>, data: Option<&impl VolatileBytes>, get_data_flags: u32) -> Result<(), HResult> {
+    fn get_data(&self, async_: AsynchronousRef<'_, ToyApi>, data: Option<&impl VolatileBytes>, get_data_flags: u32) -> Result<bool, HResult> {
+        if get_data_flags == NOT_YET_FLAGS {
+            return Ok(false);
+        }
         if let Some(data) = data {
             data.write(&QUERY_DATA);
         }
-        Ok(())
+        Ok(true)
     }
     fn om_set_render_targets_and_unordered_access_views(&self, render_target_views: Option<&[Option<&Toy>]>, depth_stencil_view: Option<&Toy>, uav_start_slot: u32, unordered_access_views: Option<&[Option<&Toy>]>, uav_initial_counts: Option<&[u32]>) {}
 }
@@ -418,7 +423,11 @@ fn the_toy_through_both_glues() {
     context.end(AsynchronousRef::Query(&query));
     assert_eq!(BEGUN.load(Ordering::SeqCst), 1);
     let bytes = Bytes(Mutex::new(vec![0; QUERY_DATA.len()]));
-    context.get_data(AsynchronousRef::Query(&query), Some(&bytes), 0).expect("query data");
+    let untouched = vec![0x5a; QUERY_DATA.len()];
+    let waiting = Bytes(Mutex::new(untouched.clone()));
+    assert_eq!(context.get_data(AsynchronousRef::Query(&query), Some(&waiting), NOT_YET_FLAGS), Ok(false), "S_FALSE crosses both glues as not ready");
+    assert_eq!(*waiting.0.lock().unwrap_or_else(PoisonError::into_inner), untouched, "nothing written to the caller's bytes while not ready");
+    assert_eq!(context.get_data(AsynchronousRef::Query(&query), Some(&bytes), 0), Ok(true), "S_OK crosses both glues as ready");
     assert_eq!(*bytes.0.lock().unwrap_or_else(PoisonError::into_inner), QUERY_DATA.to_vec(), "bytes written through the caller's buffer");
 
     // Initial data at the length the description gives, and memory lent by Map, both ways.
