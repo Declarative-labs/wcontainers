@@ -101,7 +101,7 @@ def main():
                 # The tests that failed, as cargo names them with and without -q (`test x ... FAILED`, `---- x stdout ----`);
                 # where none is named (a process ended by AddressSanitizer), the status and the first line saying why.
                 failed = sorted(set(re.findall(r"^test (\S+) \.\.\. FAILED", text, re.M)) | set(re.findall(r"^---- (\S+) stdout ----", text, re.M)))
-                why = next((l.strip() for l in text.splitlines() if "ERROR: AddressSanitizer" in l or "panicked" in l or "SUMMARY" in l), "no line says")
+                why = next((l.strip() for l in text.splitlines() if "ERROR: AddressSanitizer" in l or "panicked" in l or "SUMMARY" in l or "exit successfully" in l), "no line says")
                 verdict = "CAUGHT by " + (" ".join(failed) if failed else f"status {status}: {why[:200]}")
             with lock:
                 results[number] = verdict
