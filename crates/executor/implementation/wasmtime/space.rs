@@ -993,6 +993,9 @@ impl Space {
 }
 
 /// Copies the data of the file at the offsets to the other file from the offset, skipping the file's holes.
+///
+/// Both are memory files of a space, which cannot shrink: a read inside one gives bytes, and a write takes them all
+/// or fails.
 fn copy_file_data(
     file: &OwnedFd,
     offsets: Range<u64>,
@@ -1001,34 +1004,28 @@ fn copy_file_data(
 ) -> Result<(), rustix::io::Errno> {
     let mut buffer = vec![u8::MIN; COPY_BYTES];
     let mut next = offsets.start;
-    while next < offsets.end {
+    // Data found at or past the end, or none at all, ends the copy.
+    loop {
         let data = match rustix::fs::seek(file, SeekFrom::Data(next)) {
-            Ok(data) => data,
-            Err(rustix::io::Errno::NXIO) => break,
+            Ok(data) if data < offsets.end => data,
+            Ok(_) | Err(rustix::io::Errno::NXIO) => return Ok(()),
             Err(error) => return Err(error),
         };
-        if data >= offsets.end {
-            break;
-        }
         let hole = rustix::fs::seek(file, SeekFrom::Hole(data))?.min(offsets.end);
         let mut from = data;
         while from < hole {
             let length =
                 usize::try_from((hole - from).min(COPY_BYTES as u64)).expect("a buffer's length");
             let read = rustix::io::pread(file, &mut buffer[..length], from)?;
-            if read == 0 {
-                break;
-            }
-            let written = from - offsets.start + at;
-            let mut done = usize::MIN;
-            while done < read {
-                done += rustix::io::pwrite(into, &buffer[done..read], written + done as u64)?;
+            assert_ne!(read, usize::MIN, "a memory file reads inside its size");
+            let written = rustix::io::pwrite(into, &buffer[..read], from - offsets.start + at)?;
+            if written != read {
+                return Err(rustix::io::Errno::NOSPC);
             }
             from += read as u64;
         }
         next = hole;
     }
-    Ok(())
 }
 
 /// Returns those of the pages code may be read from: the ones the array of slots covers, all in window 0.

@@ -187,7 +187,7 @@ impl WasmtimeExecutor {
         let start = processor.program_counter;
         let mode = Mode::Step {
             start,
-            stops: u32::MIN,
+            stopped: false,
             loaded: false,
         };
         let shared = self.shared.clone();

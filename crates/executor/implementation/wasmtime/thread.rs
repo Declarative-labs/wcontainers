@@ -67,10 +67,11 @@ pub(crate) enum Mode {
     Execute(LookAhead),
     /// Exactly the one instruction at `start`, whose piece is loaded once.
     ///
-    /// The thread stops at the second stop check or wherever control goes after the instruction.
+    /// The thread stops at the second stop check, the first having set `stopped`, or wherever control goes after the
+    /// instruction.
     Step {
         start: u64,
-        stops: u32,
+        stopped: bool,
         loaded: bool,
     },
 }
@@ -622,13 +623,13 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
     match caller.data().mode {
         Mode::Step {
             start,
-            stops,
+            stopped,
             loaded,
         } => {
-            if stops == 0 {
+            if !stopped {
                 caller.data_mut().mode = Mode::Step {
                     start,
-                    stops: stops + 1,
+                    stopped: true,
                     loaded,
                 };
                 let data = caller.data();
@@ -738,7 +739,7 @@ fn load_code(caller: &mut Caller<'_, ThreadData>, address: u64, exact: bool) -> 
     let look_ahead = match caller.data().mode {
         Mode::Step {
             start,
-            stops,
+            stopped,
             loaded,
         } => {
             // A step ends wherever control goes after its one instruction.
@@ -748,7 +749,7 @@ fn load_code(caller: &mut Caller<'_, ThreadData>, address: u64, exact: bool) -> 
             }
             caller.data_mut().mode = Mode::Step {
                 start,
-                stops,
+                stopped,
                 loaded: true,
             };
             LookAhead::None
