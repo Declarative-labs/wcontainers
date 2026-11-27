@@ -1305,6 +1305,32 @@ Still open for the serving glue (not trait changes): G4 (the helpers the driver 
 the context during the call), G5 (capabilities and the uploaders the glue fills), G7 (the drawable handle carried as a
 number: the plan's exception text to be corrected), G1 (TGSI: the trait carries NIR only; to be measured with the port).
 
+## The Mesa compiler's direct glue generic over the stage (2026-11-27, a181c4b98; logs wcontainers-scratch/graphics-api-crates/r15/mc/)
+
+The orchestrator asked for one glue function generic over the stage, the stage a zero-sized type parameter, so the
+unsafe count goes back near 72. Done in the generator (src/mesacompiler.rs): a shader by stage is one type `Received<S>`
+and one `Prepared<S>` (`S` one of the zero-sized types of `stage`: Vertex ... TessEvaluation), each with one drop and
+one mark; `ReceivedVertex` and the others are aliases (`pub type ReceivedVertex = Received<stage::Vertex>`), so the
+trait (unchanged: SAME AS WRITTEN) still has a type per stage and a program of one stage still cannot go where another
+is taken. Each function of a shader by stage is one generic glue function (`received_prepare<S>`, `prepared_variant<S>`)
+holding the marks; each stage's method calls it. The functions that take only some stages are bound by a trait of
+`stage` the stages they take implement (`prepared_points_as_squares<S: stage::TakesPreparedPointsAsSquares>`, implemented
+for Vertex and TessEvaluation; `prepared_geometry_points_as_squares<S: stage::TakesPreparedGeometryPointsAsSquares>`, for
+Geometry), and their mark names the bound.
+
+MEASURED at a181c4b98 (pushed; x86-64 job gac-gm/20261127-090422-4155940, log r15/mc/mc-claim-a181c4b98.log, Mesa
+fec8830e9 with its assertions on):
+
+| Bar | Result |
+|---|---|
+| Generator: build, tests; written twice; equal to the tree | status 0, 17 pass; IDENTICAL; SAME AS WRITTEN (all five files) |
+| check (also without Mesa), clippy `-D warnings` | 0, 0, 0 |
+| The suite; under AddressSanitizer | 5 of 5; 5 of 5 |
+| Doctests | 11 of 11 (10 compile_fail) |
+| Every hostile case alone in a process | PROBES 640, cases 10, calls 7,460, ENDED 0 |
+| **Fuzzing, 12 seeds x 100,000 calls under AddressSanitizer** | **12 of 12 status 0, no report**; no method `made 0` in any seed (e.g. seed 11: prepared_geometry_points_as_squares 135 of 333, prepared_tess_evaluation_points_as_squares 183 of 337, prepared_compute_variant 787 of 1,614) |
+| Lines naming `unsafe` | mesa-compiler 0, conformance 0, **direct 68** (132 before, 72 before the stage types); marks 34 (66 before) |
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
