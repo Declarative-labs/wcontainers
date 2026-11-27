@@ -32,3 +32,11 @@ fn fields_agree() {
     println!("FIELDS AGREE {}", fields.len());
     assert_eq!(fields.len(), wcontainers_gallium_direct::flat::FIELDS.len());
 }
+
+#[cfg(mesa)]
+#[test]
+fn values_agree() {
+    let checked = wcontainers_gallium_direct::values_agree();
+    println!("VALUES {checked:?}");
+    assert!(checked.is_ok(), "a declared value differs between the trait and C: {checked:?}");
+}
