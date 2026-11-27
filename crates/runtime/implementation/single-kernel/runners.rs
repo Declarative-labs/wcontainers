@@ -253,7 +253,7 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use wcontainers_abi::Warning;
     use wcontainers_clock::Clock;
@@ -312,6 +312,24 @@ mod tests {
                     .wait(state)
                     .unwrap_or_else(PoisonError::into_inner);
             }
+        }
+
+        /// Waits until `gate` holds of the board, at most `bound`, and returns whether it held.
+        fn wait_until_within(&self, gate: Gate, bound: Duration) -> bool {
+            let deadline = Instant::now() + bound;
+            let mut state = self.lock();
+            while !gate.holds(&state) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                state = self
+                    .changed
+                    .wait_timeout(state, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
+            true
         }
 
         /// Changes the board, and wakes every runner.
@@ -554,18 +572,22 @@ mod tests {
         run_bounded(container).map(|(stopped, _)| stopped)
     }
 
-    /// Interrupts the run once `gate` holds of `board`, from a host thread of its own.
+    /// Interrupts the run once `gate` holds of `board`, from a host thread of its own; the thread returns whether the
+    /// gate held within [`RUN_BOUND`], and interrupts only then.
     fn interrupt_when(
         interrupter: RunInterrupter,
         board: Arc<Board>,
         gate: Gate,
-    ) -> thread::JoinHandle<()> {
+    ) -> thread::JoinHandle<bool> {
         thread::spawn(move || {
-            board.wait_until(gate);
+            if !board.wait_until_within(gate, RUN_BOUND) {
+                return false;
+            }
             if let Gate::IdledThenSettled(_) = gate {
                 thread::sleep(SETTLE);
             }
             interrupter.interrupt();
+            true
         })
     }
 
@@ -622,7 +644,7 @@ mod tests {
         );
         let interrupting = interrupt_when(setup.interrupter, setup.board, Gate::Running(2));
         assert_eq!(stopped(setup.container), Some(StopReason::Interrupted));
-        interrupting.join().expect("the interrupting thread");
+        assert!(interrupting.join().expect("the interrupting thread"));
     }
 
     #[test]
@@ -635,7 +657,7 @@ mod tests {
         let interrupting =
             interrupt_when(setup.interrupter, setup.board, Gate::IdledThenSettled(2));
         assert_eq!(stopped(setup.container), Some(StopReason::Interrupted));
-        interrupting.join().expect("the interrupting thread");
+        assert!(interrupting.join().expect("the interrupting thread"));
     }
 
     #[test]
@@ -646,7 +668,7 @@ mod tests {
         );
         let interrupting = interrupt_when(setup.interrupter, setup.board, Gate::Running(1));
         let (first, container) = run_bounded(setup.container).expect("the first run ends");
-        interrupting.join().expect("the interrupting thread");
+        assert!(interrupting.join().expect("the interrupting thread"));
         assert_eq!(first, StopReason::Interrupted);
         assert_eq!(stopped(container), Some(FINISHED));
     }
@@ -779,7 +801,7 @@ mod tests {
             Gate::Running(1),
         );
         let (first, container) = run_bounded(setup.container).expect("the first run ends");
-        interrupting.join().expect("the interrupting thread");
+        assert!(interrupting.join().expect("the interrupting thread"));
         assert_eq!(first, StopReason::Interrupted);
         assert_eq!(setup.system.warnings(), vec![]);
         assert_eq!(stopped(container), Some(FINISHED));
