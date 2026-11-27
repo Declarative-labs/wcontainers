@@ -2687,19 +2687,33 @@ pub(super) fn dup3<S: crate::System, C: Executor + 'static>(
         return Err(Errno::EBADF);
     }
     let pid = kernel.threads[&tid].process;
-    let mut files = kernel.files_mut(tid);
-    let file = files.file(old)?;
-    let replaced = files.set(
-        new,
-        Descriptor {
-            file,
-            close_on_exec: flags & O_CLOEXEC != 0,
-        },
-        pid,
-    );
-    drop(files);
-    if replaced {
-        kernel.files_released(cx);
+    // `do_dup2` puts the file in the slot, then `filp_close` flushes the file it replaced if that
+    // is on the backend, and the call waits for that answer (its error is not reported). The
+    // file taken from the slot is kept for the call's later runs, which only wait.
+    let file = kernel.call_file(tid, old)?;
+    let replaced = kernel.call_file(tid, new).ok();
+    if kernel.threads[&tid].call.progress == 0 {
+        kernel.thread_mut(tid).call.progress = 1;
+        let closed = kernel.files_mut(tid).set(
+            new,
+            Descriptor {
+                file,
+                close_on_exec: flags & O_CLOEXEC != 0,
+            },
+            pid,
+            true,
+        );
+        if closed {
+            kernel.files_released(cx);
+        }
+    }
+    let handle = replaced.and_then(|file| file.borrow().backend.clone());
+    let flushed = match handle {
+        Some(handle) => crate::fs::backend::flush(&handle, kernel.files(tid).lock_owner()),
+        None => Ok(()),
+    };
+    if flushed == Err(Errno::PARKED) {
+        return Err(Errno::PARKED);
     }
     Ok(new as u64)
 }
