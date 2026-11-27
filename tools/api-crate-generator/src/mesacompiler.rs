@@ -518,10 +518,15 @@ fn write_structures(header: &Header, comments: &BTreeMap<String, String>, interf
             }
         };
         if read_out.contains(&name) {
-            // A shader by stage held whole (not one a stage) is a parameter: its stage is the caller's.
-            let staged: Vec<String> = handles(&name, header).iter().filter(|handle| by_stage(handle)).map(|handle| format!("{}: Owning", type_name(handle))).collect();
-            let staged = if staged.is_empty() { String::new() } else { format!("<{}>", staged.join(", ")) };
-            let _ = writeln!(mirrors, "impl {owned}Mirror {{\n    /// The values read out (the bridge's arrays and texts copied, its shaders taken).\n    pub(crate) fn owned{staged}(&mut self) -> {owned_ty} {{\n        {body}\n    }}\n}}\n");
+            // A shader by stage held whole (not one a stage) is a type parameter, made by a function the caller gives:
+            // its stage is the caller's.
+            let staged: Vec<String> = handles(&name, header).into_iter().filter(|handle| by_stage(handle)).collect();
+            if !staged.is_empty() && fields.iter().any(|(_, kind)| matches!(kind, FieldKind::Structure(inner) if handles(inner, header).iter().any(|handle| by_stage(handle)))) {
+                return Err(format!("{name}: a structure holding shaders by stage inside another"));
+            }
+            let generics = if staged.is_empty() { String::new() } else { format!("<{}>", staged.iter().map(|handle| type_name(handle)).collect::<Vec<_>>().join(", ")) };
+            let makers: String = staged.iter().map(|handle| format!(", {}: fn(*mut c_void) -> Option<{}>", owning_parameter(handle), type_name(handle))).collect();
+            let _ = writeln!(mirrors, "impl {owned}Mirror {{\n    /// The values read out (the bridge's arrays and texts copied, its shaders taken).\n    pub(crate) fn owned{generics}(&mut self{makers}) -> {owned_ty} {{\n        {body}\n    }}\n}}\n");
         }
         if fields.iter().all(|(_, kind)| plain(kind, header)) && container(&name).is_none() {
             let parts: Vec<String> = fields.iter().map(|(field, kind)| format!("{0}: {1}", crate::names::escaped(field.clone()), back(kind, &format!("value.{}", crate::names::escaped(field.clone()))))).collect();
@@ -575,6 +580,7 @@ fn convert(kind: &FieldKind, place: &str) -> String {
         FieldKind::Bool => format!("{place} != 0"),
         FieldKind::Structure(_) => format!("{place}.owned()"),
         FieldKind::Text => format!("text({place})"),
+        FieldKind::Handle(handle) if by_stage(handle) => format!("{}(core::mem::replace(&mut {place}, core::ptr::null_mut()))", owning_parameter(handle)),
         FieldKind::Handle(handle) => format!("{}::owning(core::mem::replace(&mut {place}, core::ptr::null_mut()))", type_name(handle)),
         FieldKind::Fixed { element, .. } => format!("{place}.each_mut().map(|element| {})", convert_element(element)),
         // Read out one field a stage by `write_structures`.
@@ -587,6 +593,11 @@ fn convert(kind: &FieldKind, place: &str) -> String {
             }
         }
     }
+}
+
+/// The parameter of a mirror's `owned` that makes a shader by stage of the caller's stage (`owning_prepared`).
+fn owning_parameter(handle: &str) -> String {
+    format!("owning_{}", handle.trim_start_matches("wc_"))
 }
 
 /// The owned value of `element`, a `&mut` to one mirror element.
@@ -649,6 +660,8 @@ struct Param {
 struct Out {
     ty: String,
     after: Vec<String>,
+    /// The structure copied out.
+    structure: String,
 }
 
 /// Whether a name is an array length anywhere in the header.
@@ -826,7 +839,7 @@ fn parameters(function: &CFunction, header: &Header) -> Result<(Vec<Param>, Opti
                     Some(element) => format!("Vec<{element}>"),
                     None => owned_structure(structure, header, "Self::"),
                 };
-                out = Some(Out { ty: owned, after: vec![String::new(), free] });
+                out = Some(Out { ty: owned, after: vec![String::new(), free], structure: structure.to_string() });
                 Param {
                     signature: None,
                     before: vec![format!("let mut {name} = {}Mirror::default();", type_name(structure))],
@@ -917,9 +930,9 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
             !function.name.ends_with("_free") && function.params.iter().any(|param| param.name == "taken" && header.handle(&param.base) == Some(handle.as_str()))
         });
         let into_raw = if taken {
-            "\n    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.\n    fn into_raw(self) -> *mut c_void {\n        let kept = core::mem::ManuallyDrop::new(self);\n        kept.nir.as_ptr()\n    }\n"
+            "\n\n    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.\n    fn into_raw(self) -> *mut c_void {\n        let kept = core::mem::ManuallyDrop::new(self);\n        kept.nir.as_ptr()\n    }\n"
         } else {
-            ""
+            "\n"
         };
         let said = comments.get(&format!("struct {handle}")).cloned().unwrap_or_else(|| format!("The bridge's `struct {handle}`, owned"));
         // A shader by stage is one type a stage; any other one type.
@@ -935,13 +948,12 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
             vec![(type_name(handle), said.trim().to_string(), String::new())]
         };
         for (ty, said, of_stage) in kinds {
-            let inherent = if into_raw.is_empty() { String::new() } else { format!("impl {ty} {{{into_raw}}}\n\n") };
             let _ = write!(interface, "{}", doc(&BTreeMap::new(), "", &said, "    "));
             let _ = writeln!(interface, "    type {ty};\n");
             let _ = writeln!(type_bindings, "    type {ty} = {ty};");
             let _ = writeln!(
                 glue_types,
-                "/// A `struct {handle}`{of_stage} the bridge made, given back by `{handle}_free` when dropped. Not `Send`: no fact of the\n/// bridge's is relied on for a shader moved between threads.\n#[derive(Debug)]\npub struct {ty} {{\n    nir: NonNull<c_void>,\n    _thread: PhantomData<*const ()>,\n}}\n\nimpl Owning for {ty} {{\n    fn owning(nir: *mut c_void) -> Option<{ty}> {{\n        NonNull::new(nir).map(|nir| {ty} {{ nir, _thread: PhantomData }})\n    }}\n}}\n\n{inherent}impl Drop for {ty} {{\n    fn drop(&mut self) {{\n        #[expect(unsafe_code, reason = \"bridge.h: {handle}_free gives back a {handle} the bridge made\")]\n        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.\n        unsafe {{ {handle}_free(self.nir.as_ptr()) }};\n    }}\n}}\n"
+                "/// A `struct {handle}`{of_stage} the bridge made, given back by `{handle}_free` when dropped. Not `Send`: no fact of the\n/// bridge's is relied on for a shader moved between threads.\n#[derive(Debug)]\npub struct {ty} {{\n    nir: NonNull<c_void>,\n    _thread: PhantomData<*const ()>,\n}}\n\nimpl {ty} {{\n    /// Takes a shader the bridge made; None for null.\n    fn owning(nir: *mut c_void) -> Option<{ty}> {{\n        NonNull::new(nir).map(|nir| {ty} {{ nir, _thread: PhantomData }})\n    }}{into_raw}}}\n\nimpl Drop for {ty} {{\n    fn drop(&mut self) {{\n        #[expect(unsafe_code, reason = \"bridge.h: {handle}_free gives back a {handle} the bridge made\")]\n        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.\n        unsafe {{ {handle}_free(self.nir.as_ptr()) }};\n    }}\n}}\n"
             );
             marks += 1;
         }
@@ -1029,7 +1041,8 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
                 // Copied out whole, then given back once.
                 let free = &out.after[1];
                 let mirror_name = params.iter().find(|p| p.argument.starts_with("&raw mut ")).map(|p| p.argument.trim_start_matches("&raw mut ").to_string()).unwrap_or_default();
-                let _ = writeln!(glue_text, "        let copied = {mirror_name}.owned();");
+                let makers: Vec<String> = handles(out.structure.as_str(), &header).iter().filter(|handle| by_stage(handle)).map(|handle| format!("{}::owning", handle_type(handle))).collect();
+                let _ = writeln!(glue_text, "        let copied = {mirror_name}.owned({});", makers.join(", "));
                 let _ = writeln!(glue_text, "        #[expect(unsafe_code, reason = \"bridge.h: {free} gives back what the bridge allocated into {mirror_name} (null pointers are given back as none: free(NULL))\")]");
                 let _ = writeln!(glue_text, "        // SAFETY: {mirror_name} is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.");
                 let _ = writeln!(glue_text, "        unsafe {{ {free}(&raw mut {mirror_name}) }};");

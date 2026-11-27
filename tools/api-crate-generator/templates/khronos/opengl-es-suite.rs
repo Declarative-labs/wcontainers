@@ -1254,18 +1254,6 @@ macro_rules! tests {
         }
 
         #[test]
-        #[ignore = "the fuzzing: run by name with WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS"]
-        fn fuzz_from_the_environment() {
-            $crate::fuzz_from_the_environment::<$egl, $gl>($folder.as_deref(), &counts());
-        }
-
-        #[test]
-        #[ignore = "the measurement: run by name with WCONTAINERS_MEASURE_DRAWS"]
-        fn measure_from_the_environment() {
-            $crate::measure_from_the_environment::<$egl, $gl>($folder.as_deref());
-        }
-
-        #[test]
         fn every_method_is_called() {
             $crate::every_method_is_called::<$egl, $gl>($folder.as_deref(), 8);
         }

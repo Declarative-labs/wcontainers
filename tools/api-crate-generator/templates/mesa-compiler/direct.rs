@@ -36,12 +36,6 @@ impl Bridge {
     }
 }
 
-/// A shader type of the glue: made from a shader the bridge made.
-trait Owning: Sized {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<Self>;
-}
-
 /// Copies the `count` elements the bridge holds at `data`; none when it is null or the count does not fit.
 fn array<T: Copy, C: TryInto<usize>>(data: *mut T, count: C) -> Vec<T> {
     let Ok(count) = count.try_into() else { return Vec::new() };
