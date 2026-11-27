@@ -46,8 +46,8 @@
 //! fault (or the code faults before it runs), so that the writemask decides no fault and the merging it does is
 //! the plain access's.
 //!
-//! A form not yet modeled has one state, its sample encoding: a chip that lacks the form raises #UD whatever the
-//! state holds.
+//! A form not yet modeled has one state, its sample encoding: a chip that lacks the form, or whose program's mode
+//! leaves it undefined (ring 3, VMX off, CET off), raises #UD whatever the state holds.
 
 #![no_std]
 
