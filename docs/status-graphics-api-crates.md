@@ -1475,6 +1475,60 @@ alone PROBES 640 calls 7,460 ENDED 0, **fuzzing 12 seeds x 100,000 calls under A
 OpenGL ES and EGL written equal (SAME AS WRITTEN), check, clippy (also wasm32) 0, the suite 17 of 17 by default and
 under AddressSanitizer, **Chrome 14 passed 0 failed**, `measure: ok ... queries 200, each passed 200; ... turns 23289`.
 
+## AC8 step 2, the serving glue's first slice (2026-11-27, ea07a4e32 and af232b287; logs r16/claim-slice-af232b287.log)
+
+Built as the design above says, through the generator (src/gallium_serve.rs, src/gallium_recording.rs; templates
+registry.rs, caller.c, served.rs), for 18 of the 100 planned pointers: the screen's `context_create` and `destroy`, the
+context's `destroy`, and the five states made, bound and given back (`create/bind/delete_{blend, depth_stencil_alpha,
+rasterizer, vertex_elements}_state`, `create/delete_sampler_state`, `bind_sampler_states`).
+- **serve.c**: one trampoline per pointer. It flattens what Mesa passes (flat.c's functions, now declared in flat.h) and
+  calls one Rust function through the screen's table, **by value**: keys and flat copies; a bounded list (the samplers
+  at slots, PIPE_MAX_SAMPLERS; the vertex elements, PIPE_MAX_ATTRIBS) goes as a fixed array with its count, refused in
+  C past its bound or with no list. A state's handle is its key. C allocates the screen and each context and frees one
+  only when Rust answers it was live.
+- **serve.rs**: `Table` (the same entries as serve.c's `struct wc_table`; the test `table_agrees` compares their sizes,
+  144 = 144) of `extern "C" fn`s generic over the implementation (no `no_mangle`); each finds the screen by key
+  (`Served<G>`, kept as `Arc<dyn Any>` in the registry and downcast), the objects by key, refuses a key it does not
+  hold, makes the trait's owned values and calls the implementation with no lock held. `serve(screen) -> Option<usize>`
+  makes the C screen (one marked call). `Servable` names what serving needs: the implementation and its kinds `Send +
+  Sync`.
+- **registry.rs**: one `Map` per kind (`Mutex<HashMap<usize, Arc<K>>>`), locked only to look up, insert or take out;
+  `take` (a state given back) refuses an object another call holds at that moment; keys from one counter, never zero.
+- **crates/gallium/implementation/recording** (new, `wcontainers-gallium-recording`, workspace lints, 0 `unsafe`): an
+  implementation of both traits, all 97 methods, that records every call with its arguments as received (Debug text)
+  and makes a plain `Object` for every object asked for. Its compiler is the Mesa compiler's `Bridge`.
+- **The hostile C caller** (caller.c, the direct crate's `hostile` feature, driven by tests/served.rs): 6 cases, each
+  on a new screen of the recording implementation and alone in a process of its own; each checks C's status and the
+  methods that reached the implementation, in order: every state made, bound, unbound, given back (and the arguments
+  received: `min_lod: 1.5`, `max_lod: 9.25`, `rgb_src_factor: Blendfactor(1)`, `depth_func: CompareFunc(1)`,
+  `cull_face: 2`, `src_offset: 16`, `shader MesaShaderStage(4)`); a key never handed out bound and given back; a state
+  given back twice and bound after; a rasterizer's key used as a blend state's; no template; lists past their bound.
+
+MEASURED at af232b287 (pushed; x86-64 job gac-s/20261127-124906-2502015): generator build, 21 tests, clippy 0;
+`GALLIUM SERVED: 18 pointers of the slice (of 100 planned)`, `GALLIUM RECORDING: 97 methods`; written twice IDENTICAL,
+SAME AS WRITTEN (18 files); check and clippy `-D warnings` (all targets, `hostile` feature) of the three crates 0
+without and with Mesa; tests: layouts Ok(47), 683 fields, values Ok(1098), table 144 = 144; **every case alone: 6 of 6
+held**; the same **under AddressSanitizer with leak detection: 6 of 6, status 0**. Lines naming `unsafe`: gallium 0,
+direct 20 (marks 10: the slice adds `wc_screen_create`'s declaration and call, `wc_table_size`'s, and the test's
+calls into caller.c), recording 0.
+
+Linter (job gac-l/20261127-124939-2512046, the linter at reviewable-rust da55b9d7, log r16/lint-af232b287.log):
+gallium direct 2,598 (magic_literal 1,330, public_outside_interface 894, the rest below 130), recording 67, interface
+253, values 2,296 (summary_starts_with_name 1,098 and number_constant_without_link 1,098: each value's doc is its C
+name), mesa-compiler 1,190, opengl-es 2,241. New with this linter: `rule_exclusion` on the one reasoned
+`explicit_shared_error` allow of crates/egl/interface.rs:7 and crates/opengl-es/interface.rs:28 (the rule no longer
+reports there): the generator should write the allow only where the rule reports.
+
+Left of AC8 step 2 (next): the other 82 pointers (resources, views, targets, transfers and mappings with the C
+structures Mesa reads; queries; draws, clears and blits with the client memory copied; the screen's fields of G5
+written at creation with Mesa's defaults, and the NIR options from the Mesa compiler crate); the entry taking Mesa's
+`nir_shader` as a Received of its stage (the shader pointers); the hostile C caller over every pointer, each alone in
+its process, generated (today's caller.c is the slice's template); a plant per check of the glue; fuzzing 12 seeds x
+100,000 calls under AddressSanitizer with every method reached in every seed; the conformance suite; G4 (Mesa's
+helpers calling back into the context during a call: the registry already lets go of every lock before calling, so a
+nested call on the same context finds its objects); G9 measured again on the pinned Mesa with our driver's
+capabilities once the glue serves a real context. Waits on nothing.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
