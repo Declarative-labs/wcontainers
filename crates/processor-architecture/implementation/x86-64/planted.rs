@@ -1039,8 +1039,6 @@ pub enum Bug {
     CompareIgnoresWritemask,
     /// RDRAND and RDSEED leave the status flags as they were.
     RandomLeavesStatusFlags,
-    /// RDRAND and RDSEED clear CF, as if the random source had no value ready.
-    RandomClearsCarry,
     /// A string form moves RSI and RDI up whatever DF holds.
     StringDirectionIgnored,
     /// A repeated string form leaves the instruction pointer past it after one iteration, as if it were done.
@@ -1825,7 +1823,6 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::BlendKeepsDestination, "VPBLENDM", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Blend), Avx512Integer),
     row(Bug::CompareIgnoresWritemask, "compares and tests into masks", Family::EvexInteger(EvexIntegerForm::writes_mask), Avx512Integer),
     row(Bug::RandomLeavesStatusFlags, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
-    row(Bug::RandomClearsCarry, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
     row(Bug::StringDirectionIgnored, "string forms", Family::String(|form| form.reads_source() || form.reaches_destination()), Origin::Mandatory),
     row(Bug::RepeatEndsAfterOneIteration, "repeated string forms", Family::String(|form| form.is_repeated()), Origin::Mandatory),
     row(Bug::RepeatWhileEqualReversed, "REPE SCAS, REPE CMPS", Family::String(|form| form.repetition == crate::string::Repetition::WhileEqual), Origin::Mandatory),

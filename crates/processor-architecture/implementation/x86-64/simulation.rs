@@ -116,6 +116,12 @@ impl Simulator<X86_64> for PreciseInstruction {
         }
         let undecided = matches!(self, PreciseInstruction::Fixed(instruction)
             if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| matches!(form.outcome, crate::fixed::FixedOutcome::WritesUndecided | crate::fixed::FixedOutcome::WritesRandom)));
+        let random = matches!(self, PreciseInstruction::Fixed(instruction)
+            if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| form.outcome == crate::fixed::FixedOutcome::WritesRandom));
+        // The random source may have no value ready, which clears CF and the register, whatever the state before.
+        if random && processor.exception.is_none() {
+            expectation.nondeterministic_flags = expectation.nondeterministic_flags.union(Flags::CARRY);
+        }
         if undecided && processor.exception.is_none() {
             let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
             for number in crate::fixed::list_undecided_registers(&decoded) {
