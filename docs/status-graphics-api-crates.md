@@ -1259,6 +1259,114 @@ in `gallium/implementation/direct` (Mesa's handles onto the kinds, bindgen's lay
 pointers, the fuzzing under AddressSanitizer, the suite; moving crates/opengl's logic onto the trait (the implementations
 track's, GI8 part B).
 
+## AC8, the trait made to fit the driver: G2, G3, G6, G9 (2026-11-27, b06f8f476; logs wcontainers-scratch/graphics-api-crates/r15/gallium/)
+
+For the implementations track, porting crates/opengl onto the trait: what changed at b06f8f476, each by the
+orchestrator's ruling of this run.
+
+- **G3, counted handles.** The four kinds Mesa counts (Resource, Fence, SamplerView, StreamOutputTarget; `COUNTED` in
+  src/gallium.rs) reach the implementation as `&Arc<K>`: in every method that reads or binds them and in every plain
+  structure (`FramebufferState`, `ConstantBuffer`, `VertexBuffer`, `ShaderBuffer`, `ImageView`, `DrawInfo`,
+  `DrawIndirectInfo`, ...: fields `Option<&'a Arc<Resource>>`). A driver keeps one past the call by `Arc::clone`; the
+  object ends where its last handle is dropped, inside the driver or not (its end is the kind's `Drop`). The glue holds
+  one handle for all of Mesa's own references. So `resource_destroy`, `sampler_view_destroy` and
+  `stream_output_target_destroy` are no methods any more (they are the counts' last release, the glue's), and `Fence`
+  lost its `Clone` bound. Methods that make an object still return the kind itself (`Option<K>`); the glue wraps it.
+- **G6.** `begin_query(q: Query) -> Result<ActiveQuery, Query>`: a failed begin gives the query back, which st/mesa
+  then destroys (queryobj.c:239 to 247, READ).
+- **G2.** `texture_map`, `texture_unmap`, `transfer_flush_region` and `get_sample_position` are no methods: the plan
+  marks them `MesaFills` (u_transfer_helper_transfer_map, _unmap, _flush_region, u_default_get_sample_position) and the
+  direct crate fills them. `u_transfer_vtbl.resource_create` and `resource_destroy` are planned (`SameAs` the screen's;
+  the helper calls them at u_transfer_helper.c:217 and 227, READ) and served by the screen's glue, no method of their
+  own. The driver's own transfer methods stay `helper_transfer_map`, `helper_transfer_unmap`,
+  `helper_transfer_flush_region`.
+- **G9, measured.** Client memory reaches a Gallium driver as follows (MEASURED, x86-64 job gac-gal/20261127-085137-3768348,
+  log r15/gallium/g9-trace.log: st/mesa over llvmpipe, Mesa 26.2.4, surfaceless EGL, under GALLIUM_TRACE, a program
+  drawing with client indices, a client vertex array, a uniform, a masked scissored clear and pixel buffer transfers,
+  both OpenGL ES 3 and desktop 4.6 compatibility; every GL step error 0):
+  | What | ES | desktop | Can the driver turn it off? (READ, Mesa 26.3.1) |
+  |---|---|---|---|
+  | draw_vbo with has_user_indices | 2 of 6 draws | 2 of 5 | **No**: main/draw.c:1662 and 2043 set it whenever no element buffer is bound; no capability is read |
+  | set_vertex_buffers with is_user_buffer | 1 of 4 | 0 of 2 | **Yes**: llvmpipe reports user_vertex_buffers (lp_screen.c:276); ours does not (u_init_pipe_screen_caps leaves it false, fill_caps does not set it), and then cso/u_vbuf uploads them (u_vbuf.c:1067) |
+  | set_constant_buffer with user_buffer | 0 of 3 | 0 of 3 | **For st/mesa, yes**: llvmpipe reports prefer_real_buffer_in_constbuf0 (lp_screen.c:216) and every st/mesa site then uploads (pipe_upload_constant_buffer0, u_inlines.h:749; st_atom_constbuf.c:124); ours does not report it today. **But Mesa's blitter**, a helper our driver calls, passes its clear color as user_buffer whatever is reported (u_blitter.c:1607, 2501, 2939) |
+  So: indices in client memory are carried (`DrawInfoIndex.user: Option<&[u8]>`, from index 0 to the end of the
+  furthest draw, copied by the glue), and constants in client memory too (`ConstantBuffer.user_buffer: Option<&[u8]>`,
+  `buffer_size` bytes from `buffer_offset`, copied), each with its reason in `CLIENT_MEMORY`. User vertex buffers stay
+  refused (the driver must keep user_vertex_buffers unreported). The driver should report
+  prefer_real_buffer_in_constbuf0 so st/mesa's constants come in buffers; only the blitter's then use the bytes row.
+
+MEASURED at b06f8f476 (pushed; x86-64 job gac-gal, log r15/gallium/trait-b06f8f476.log): generator build, its 17 tests;
+plan status 0: `GALLIUM PLAN: 100 pointers planned (95 of pipe_screen and pipe_context, 5 of u_transfer_vtbl)`,
+`UNMAPPED 0`; `GALLIUM INTERFACE: 93 methods, 43 structures, 21 kinds; left out 20 fields`; written twice IDENTICAL; SAME AS
+WRITTEN (interface.rs, Cargo.toml); `cargo check` and `cargo clippy -- -D warnings` of wcontainers-gallium status 0;
+lines naming `unsafe` 0.
+
+Still open for the serving glue (not trait changes): G4 (the helpers the driver calls, the blitter calling back into
+the context during the call), G5 (capabilities and the uploaders the glue fills), G7 (the drawable handle carried as a
+number: the plan's exception text to be corrected), G1 (TGSI: the trait carries NIR only; to be measured with the port).
+
+## AC8, the serving glue: its first layer, the plain data (2026-11-27, 6403ecc74; logs r15/gallium/)
+
+How the glue reads Mesa's structures without unsafe Rust over Mesa's layouts: Mesa's structures have bit-fields and
+unions (pipe_rasterizer_state is almost all bit-fields; pipe_draw_info.index, pipe_sampler_view.u are unions), which
+bindgen can lay out only with unsafe accessors no mark could sit on. So the direct crate's C reads them: the generator
+(src/gallium_glue.rs, called by `api-crate-generator gallium`) writes `flat.h` (each structure a planned pointer takes,
+flat: every bit-field a whole field, every union's members each a field, every object the address Mesa knows it by, a
+key), `flat.c` (one `wc_flat_<structure>_from` per named structure, compiled against the pinned Mesa's headers by
+build.rs, and `wc_flat_size`), and `flat.rs` (the Rust mirrors, `keys()` listing the objects and client memory each
+names, and `owned()` making the trait's owned structure from a flat copy once the objects are held: widths checked,
+C bools 0 or 1, an unknown key refusing the call). `held.rs` (template) holds what one call borrows: the objects
+cloned out of the registry under its lock (let go before either side's code runs) and the client memory copied.
+
+MEASURED at 6403ecc74's tree (x86-64 job gac-gal/20261127-091400-169050): `GALLIUM GLUE: 43 flat structures (33 with a
+flattening function)`; written twice IDENTICAL; check (without and with Mesa) and clippy `-D warnings` of
+wcontainers-gallium and wcontainers-gallium-direct status 0; `LAYOUTS Ok(43)`: every flat structure has the same size in
+C as its Rust mirror; lines naming `unsafe`: direct 4 (one extern declaration, one call, each marked), gallium 0.
+Linter (job gac-gal/20261127-091540-187980, log r15/gallium/lint-6403ecc74.log): crates/gallium/interface.rs 233
+(summary_unanswered 157 and name_unanswered 28, the model rule sets without a key; magic_literal 21, the array lengths);
+the direct crate 852 (public_outside_interface 445: the mirrors are `pub` for now; magic_literal 149, the array lengths
+and widths; summary_unanswered 91 and name_unanswered 48; the rest below 60); crates/mesa-compiler 932 (977 at
+3d6d06865).
+
+Next, the calls (designed, not built): every object Mesa holds is a key in a registry of the screen (`Mutex<HashMap>`
+of `Arc` per kind), states and queries keyed by a counter, resources, views, targets, transfers and contexts by the C
+structure the glue's C allocates and fills for Mesa to read; a call clones what it needs under the lock and calls the
+implementation with the lock let go; a value given back (`delete_*_state`, `begin_query`'s turn) is taken out of the
+registry and unwrapped, refused if another call holds it. The C side (generated) is one trampoline per pointer:
+flattens its arguments, calls the Rust function of a table, and does what only C can (allocating and freeing the
+structures Mesa reads, writing out-parameters, installing Mesa's own functions for the four `MesaFills` pointers and the
+transfer helper). Rust never follows a pointer to an object: a key it does not hold refuses the call, and C frees an
+object only when Rust says it was live. Shaders wait on one addition to the Mesa compiler's bridge (taking Mesa's
+`nir_shader` as a `Received` of its stage: `pipe_shader_state.ir.nir` is given to the driver). Then the hostile C
+caller of the 100 pointers, each alone in a process, the fuzzing (12 seeds x 100,000 calls under AddressSanitizer, every
+method reached) and the conformance suite.
+
+## The Mesa compiler's direct glue generic over the stage (2026-11-27, a181c4b98; logs wcontainers-scratch/graphics-api-crates/r15/mc/)
+
+The orchestrator asked for one glue function generic over the stage, the stage a zero-sized type parameter, so the
+unsafe count goes back near 72. Done in the generator (src/mesacompiler.rs): a shader by stage is one type `Received<S>`
+and one `Prepared<S>` (`S` one of the zero-sized types of `stage`: Vertex ... TessEvaluation), each with one drop and
+one mark; `ReceivedVertex` and the others are aliases (`pub type ReceivedVertex = Received<stage::Vertex>`), so the
+trait (unchanged: SAME AS WRITTEN) still has a type per stage and a program of one stage still cannot go where another
+is taken. Each function of a shader by stage is one generic glue function (`received_prepare<S>`, `prepared_variant<S>`)
+holding the marks; each stage's method calls it. The functions that take only some stages are bound by a trait of
+`stage` the stages they take implement (`prepared_points_as_squares<S: stage::TakesPreparedPointsAsSquares>`, implemented
+for Vertex and TessEvaluation; `prepared_geometry_points_as_squares<S: stage::TakesPreparedGeometryPointsAsSquares>`, for
+Geometry), and their mark names the bound.
+
+MEASURED at a181c4b98 (pushed; x86-64 job gac-gm/20261127-090422-4155940, log r15/mc/mc-claim-a181c4b98.log, Mesa
+fec8830e9 with its assertions on):
+
+| Bar | Result |
+|---|---|
+| Generator: build, tests; written twice; equal to the tree | status 0, 17 pass; IDENTICAL; SAME AS WRITTEN (all five files) |
+| check (also without Mesa), clippy `-D warnings` | 0, 0, 0 |
+| The suite; under AddressSanitizer | 5 of 5; 5 of 5 |
+| Doctests | 11 of 11 (10 compile_fail) |
+| Every hostile case alone in a process | PROBES 640, cases 10, calls 7,460, ENDED 0 |
+| **Fuzzing, 12 seeds x 100,000 calls under AddressSanitizer** | **12 of 12 status 0, no report**; no method `made 0` in any seed (e.g. seed 11: prepared_geometry_points_as_squares 135 of 333, prepared_tess_evaluation_points_as_squares 183 of 337, prepared_compute_variant 787 of 1,614) |
+| Lines naming `unsafe` | mesa-compiler 0, conformance 0, **direct 68** (132 before, 72 before the stage types); marks 34 (66 before) |
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
