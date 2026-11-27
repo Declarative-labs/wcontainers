@@ -923,6 +923,92 @@ program linking crates/nir's built bridge resolves them, so GI8 part B can start
 (AC11's runtime bar: the conformance calls, the hostile caller, the fuzzing under AddressSanitizer) runs once the
 build is in the direct crate; it is not written yet.
 
+## NEEDED "After GI7": the OpenGL ES list done in its order (2026-11-27)
+
+His main (ac696ea19) is already inside the branch: `git fetch` of his checkout, then `git merge-base --is-ancestor
+ac696ea19 HEAD` true, nothing to merge (MEASURED). Logs: wcontainers-scratch/graphics-api-crates/ac10/.
+
+| Item | Taken from commit | Default-deny kind | Plant (removed or changed) | Test |
+|---|---|---|---|---|
+| 1. glStencilFuncSeparate, glStencilOpSeparate | ac4e18eb7 | every parameter a number (registry row) | face passed as FRONT_AND_BACK (each method), mask changed, two operations exchanged: 4 CAUGHT | stencil_faces_are_separate (both faces set apart and read back on a frame buffer with 8 stencil bits; neither refused by the glue) |
+| 2. the eight extension values | ac4e18eb7 | values: the four extensions added to the set's list (gl.xml's numbers) | each value written as 0xfff0: 8 CAUGHT | extension_values_are_taken (each value taken without error where Mesa names the extension; all four named, MEASURED) |
+| 2. UNMASKED_RENDERER_WEBGL 0x9246 | ac4e18eb7 | a value carried by name (new `values` lines of sets.rs, each with its reason; an undeclared name fails the generator) | LISTED: no native context answers it | none native (the browser's) |
+| 3. the implementation on WebGL 2 (web-sys) | 44f2a1e9c | crate `wcontainers-opengl-es-webgl`, `WebGl::new(context, off)`, safe, no `unsafe` line | none: the browser checks every call; no test runs it (below) | wasm32 check and clippy only |
+| 5. a context that owns its EGL objects | d932fd4e0 | `OpenGlEsContext::owning(egl, display, context, draw, read)`, destroyed at drop | destroy of the context removed, of the surface removed: 2 CAUGHT | owned::owning_destroys_at_drop |
+| 7. EGL kept loaded for the process | d932fd4e0 | the first library of each folder kept (`KEPT`); later loads are libraries of their own | `keep` removed: CAUGHT | kept.rs (its own test program: libEGL still mapped after the last handle) |
+
+Not done, each with its reason: 4, eglCreateWindowSurface (the window's shape is the question in their status, and the
+window crate test-window is on graphics-layout, not on his main; Windows only, no desktop this run). 6, a cache of the
+glue's per-draw and per-transfer reads: their measurement shows no visible cost on llvmpipe, and the check is a safety
+check whose truth a cache would make depend on the glue tracking every change of state (a vertex array switched, a
+bound buffer deleted); 124 ns a draw MEASURED before. (3a) the wait for query results between the browser's tasks needs
+an import from the page (an `extern` block, `unsafe` under the workspace lints), not placed: it needs a home in an API
+crate for the host's device imports. (3b) the extension objects are called by name through `js_sys::Reflect`, and
+`get_stringi(EXTENSIONS, i)` answers WebGL's names, as asked. A browser run of the webgl crate needs a test harness
+in a page (wasm-bindgen's test macros write `#[no_mangle]`, which the workspace forbids) and a headless browser.
+
+MEASURED at d932fd4e0 (x86-64 job gac-k, log ac10/claim-d932fd4e0.log): generator build, its 17 tests; written twice
+IDENTICAL; SAME AS WRITTEN; `cargo check --all-targets` 0 and the wasm32 check of the five libraries (webgl's included)
+0; clippy `-D warnings` 0, and webgl's on wasm32 0; the suite 16 of 16 and kept 1 of 1, by default and under
+AddressSanitizer; plants **171 CAUGHT, 15 MISSED, 0 BROKEN, 206 LISTED** (the 15 the ones of the table above,
+unchanged); fuzzing 3 seeds x 10M over Mesa and 3 x 10M over the lying library, each status 0, no report; lines naming
+`unsafe`: egl direct 95, opengl-es direct 802 (792 before: the two stencil methods' marks and the owning drop's
+comments), webgl 0, every other 0; marks 361. Linter on the two crates: 2,228 findings (magic_literal 1,274,
+summary_unanswered 227 and name_unanswered 226 the model rule sets with no key on the machine, public_outside_interface
+216 the `refusals`, `owning` and egl direct's `Binding`: the layout question).
+
+## AC11's runtime bar: the bridge moved into the direct crate; fuzzing not yet clean (2026-11-27)
+
+The implementations track had not answered the proposal by the end of the list (newest graphics-implementations
+7e53ee79e, READ): done as proposed. `crates/mesa-compiler/implementation/direct/bridge/` holds the bridge (bridge.c,
+bridge.h, bridge_private.h, flat.c, flat.h, glsl.cpp, spirv.c, copied from graphics-implementations 7e53ee79e) and
+`build.rs` builds it (from crates/nir/build.rs there, less what only nir hands its own code: the converter's version,
+the reference renderers' files) when `WCONTAINERS_MESA` names Mesa's build, with the `standalone` feature linking Mesa's
+compiler libraries. crates/nir is left as it is (the implementations track moves it onto the trait and drops its copy);
+a program must not link both copies. The generator now reads the headers from there (inputs/mesa-compiler removed).
+New: `crates/mesa-compiler/conformance` (the round trip, the refusals, a hostile caller of every method on every shader
+of 11 it can make, a seeded fuzzer that also changes SPIR-V words, a probe of one call sequence alone) with three SPIR-V
+programs written by glslang 16.4.0 from its GLSL.
+
+New dependency (C, in the bridge, statically linked): **SPIRV-Tools 1.4.357.0** (Khronos, Apache-2.0, nixpkgs
+`spirv-tools`), its validator run on every module before Mesa's reader, `WCONTAINERS_SPIRV_TOOLS` naming it. To vet.
+
+Defects the hostile caller found, each fixed in the bridge (our C) and shown by a run before and after:
+- to_spirv stopped the process on the OpenGL driver's form (Zink's assertion "unsupported intrinsic"): refused now
+  (lowered IO, lowered loads), and written from a copy (its preparation turned the caller's shader into Zink's form,
+  after which other steps stopped the process); a copy whose image or sampler location would be written past Zink's
+  stack arrays is refused; Zink's `bindless_set_idx` was 0, every program's set (a third sampler written past an array
+  of two): now none.
+- textures_1d_as_2d validated before fixing the deref types (a SPIR-V program stopped the process).
+- spirv_to_nir broke into the debugger on every refused module (`os_break`, SIGTRAP): `skip_os_break_in_debug_build`.
+- spirv_to_nir read past its arrays on changed words (Mesa assumes valid SPIR-V): SPIRV-Tools' validator first, and
+  the header checked by the bridge (Mesa's header refusals log through options it has not set: a null read).
+- uniform_blocks_as_words unlinked block variables still reached by deref (a SPIR-V program, or a second call):
+  refused for any shader reaching blocks by deref or by Vulkan's descriptors.
+- nearest_integer_textures asked a texture type whether it is a shadow sampler (an assertion).
+- point_size_also_at, point_square, geometry_squares, storage_pass_through: a generic slot past VAR31 (or near 2^32,
+  which wrapped the old check) is refused; point_square takes only a vertex or evaluation program.
+- fragcolor_to_buffers wrote locations past every table for a count past 8 draw buffers: refused.
+
+MEASURED at a125704bb (x86-64 job gac-m, log ac11r/claim-a125704bb.log; Mesa fec8830e9 built by crates/nir/mesa/build
+in 103 s): generator build, written twice IDENTICAL, the five generated files SAME AS WRITTEN; `cargo check
+--all-targets` 0, also without Mesa 0; clippy `-D warnings` 0; the suite 5 of 5 by default and under AddressSanitizer
+(the bridge's C instrumented: 29 `__asan_report` calls in its archive); every single call alone 0 of 2,376 ended the
+process, every method then to_spirv (and twice then to_spirv) 0 of 3,168. **Fuzzing (10,000 calls a seed, under
+AddressSanitizer, Mesa's assertions on): 3 of 12 seeds clean.** Left: Zink's writer asserts on a block whose
+(set, binding) no variable has after the renumbering (`emit_vulkan_resource_index`, 8 seeds), reads a null storage
+class of a block cast after a chain (1 seed, ASan SEGV), and Mesa's IO lowering asserts on locations a valid module
+may declare (2 seeds). Guarding Zink's writer call by call did not converge in three rounds: brought to the
+orchestrator (below). Lines naming `unsafe`: mesa-compiler 0, direct 96 (48 marks), conformance 0.
+
+**For the orchestrator (a check that did not converge):** the trait's `to_spirv` (Zink's writer in its native Vulkan
+mode) cannot be made safe for any shader a chain of the other methods leaves: Zink assumes the shapes its own driver
+hands it. A ruling is asked between (a) the glue keeps per shader whether any changing method touched it since it
+was made from SPIR-V, and `to_spirv` refuses a changed one (a generated flag; nir's route calls it on a shader it just
+made), (b) `to_spirv` taken out of the trait until a validation of the form exists, (c) the steps nir's route takes
+before it made one method. The IO lowering's assertions on valid modules' large locations need the bridge to check
+every stage variable's location range before lowering (not done).
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
