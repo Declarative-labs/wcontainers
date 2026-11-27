@@ -1,0 +1,2218 @@
+# Gallium's serving glue, its committed plant list (AC8, the orchestrator's ruling of 2026-11-27): one plant per field
+# of every copy function a served pointer reaches (flat.c's wc_flat_*_from: the field dropped; flat.rs's owned: the
+# value replaced), one per argument of every glue function (serve.c's trampolines, serve.rs's functions) and one per
+# check of the trampolines. Every plant must make the direct crate's tests fail (the hostile caller's cases, each
+# alone, also under AddressSanitizer with leak detection). Run from the repository's root:
+#   python3 -I tools/plants/run-plants.py crates/gallium/implementation/direct/plants.txt --workers 10
+# with WCONTAINERS_MESA, WCONTAINERS_SPIRV_TOOLS and WCONTAINERS_CLANG set. Not covered yet (said, not silent): the
+# copy functions of the structures no served pointer takes (the 82 pointers not yet served), and wc_flat_pipe_rt_blend_state_from
+# and wc_flat_pipe_stencil_state_from, which no trampoline calls (their structures are copied inside their holders').
+test: cargo test -q --features hostile -p wcontainers-gallium-direct --test served && CFLAGS_x86_64_unknown_linux_gnu="-fsanitize=address -fno-omit-frame-pointer" ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 RUSTFLAGS="-Zcrate-attr=feature(register_tool) -Zcrate-attr=register_tool(reviewable) -Zsanitizer=address -C force-frame-pointers=yes" RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=$CARGO_TARGET_DIR/asan cargo test -q --features hostile -p wcontainers-gallium-direct --target x86_64-unknown-linux-gnu --test served
+
+plant: flat.c pipe_blend_state out->independent_blend_enable dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->independent_blend_enable = in->independent_blend_enable;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->logicop_enable dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->logicop_enable = in->logicop_enable;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->logicop_func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->logicop_func = in->logicop_func;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->dither dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->dither = in->dither;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->alpha_to_coverage dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->alpha_to_coverage = in->alpha_to_coverage;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->alpha_to_coverage_dither dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->alpha_to_coverage_dither = in->alpha_to_coverage_dither;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->alpha_to_one dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->alpha_to_one = in->alpha_to_one;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->max_rt dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->max_rt = in->max_rt;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->advanced_blend_func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->advanced_blend_func = in->advanced_blend_func;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->blend_coherent dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->blend_coherent = in->blend_coherent;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->is_yuv dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->is_yuv = in->is_yuv;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].blend_enable dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].blend_enable = in->rt[i0].blend_enable;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].rgb_func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].rgb_func = in->rt[i0].rgb_func;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].rgb_src_factor dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].rgb_src_factor = in->rt[i0].rgb_src_factor;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].rgb_dst_factor dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].rgb_dst_factor = in->rt[i0].rgb_dst_factor;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].alpha_func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].alpha_func = in->rt[i0].alpha_func;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].alpha_src_factor dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].alpha_src_factor = in->rt[i0].alpha_src_factor;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].alpha_dst_factor dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].alpha_dst_factor = in->rt[i0].alpha_dst_factor;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_blend_state out->rt[i0].colormask dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->rt[i0].colormask = in->rt[i0].colormask;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->stencil[i0].enabled dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->stencil[i0].enabled = in->stencil[i0].enabled;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->stencil[i0].func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->stencil[i0].func = in->stencil[i0].func;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->stencil[i0].fail_op dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->stencil[i0].fail_op = in->stencil[i0].fail_op;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->stencil[i0].zpass_op dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->stencil[i0].zpass_op = in->stencil[i0].zpass_op;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->stencil[i0].zfail_op dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->stencil[i0].zfail_op = in->stencil[i0].zfail_op;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->stencil[i0].valuemask dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->stencil[i0].valuemask = in->stencil[i0].valuemask;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->stencil[i0].writemask dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+        out->stencil[i0].writemask = in->stencil[i0].writemask;
+new:
+        /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->alpha_enabled dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->alpha_enabled = in->alpha_enabled;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->alpha_func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->alpha_enabled = in->alpha_enabled;
+    out->alpha_func = in->alpha_func;
+new:
+    out->alpha_enabled = in->alpha_enabled;
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->depth_enabled dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_enabled = in->depth_enabled;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->depth_writemask dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_writemask = in->depth_writemask;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->depth_func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_func = in->depth_func;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->depth_bounds_test dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_func = in->depth_func;
+    out->depth_bounds_test = in->depth_bounds_test;
+new:
+    out->depth_func = in->depth_func;
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->alpha_ref_value dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->alpha_ref_value = in->alpha_ref_value;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->depth_bounds_min dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_bounds_min = in->depth_bounds_min;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_depth_stencil_alpha_state out->depth_bounds_max dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_bounds_max = in->depth_bounds_max;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->flatshade dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    memset(out, 0, sizeof *out);
+    out->flatshade = in->flatshade;
+new:
+    memset(out, 0, sizeof *out);
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->light_twoside dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->light_twoside = in->light_twoside;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->clamp_vertex_color dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->clamp_vertex_color = in->clamp_vertex_color;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->clamp_fragment_color dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->clamp_fragment_color = in->clamp_fragment_color;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->front_ccw dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->front_ccw = in->front_ccw;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->cull_face dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->cull_face = in->cull_face;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->fill_front dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->fill_front = in->fill_front;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->fill_back dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->fill_back = in->fill_back;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->offset_point dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->offset_point = in->offset_point;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->offset_line dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->offset_line = in->offset_line;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->offset_tri dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->offset_tri = in->offset_tri;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->scissor dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->scissor = in->scissor;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->poly_smooth dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->poly_smooth = in->poly_smooth;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->poly_stipple_enable dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->poly_stipple_enable = in->poly_stipple_enable;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->point_smooth dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->point_smooth = in->point_smooth;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->sprite_coord_mode dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->sprite_coord_mode = in->sprite_coord_mode;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->point_quad_rasterization dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->point_quad_rasterization = in->point_quad_rasterization;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->point_line_tri_clip dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->point_line_tri_clip = in->point_line_tri_clip;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->point_size_per_vertex dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->point_size_per_vertex = in->point_size_per_vertex;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->multisample dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->multisample = in->multisample;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->no_ms_sample_mask_out dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->no_ms_sample_mask_out = in->no_ms_sample_mask_out;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->force_persample_interp dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->no_ms_sample_mask_out = in->no_ms_sample_mask_out;
+    out->force_persample_interp = in->force_persample_interp;
+new:
+    out->no_ms_sample_mask_out = in->no_ms_sample_mask_out;
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->line_smooth dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->line_smooth = in->line_smooth;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->line_stipple_enable dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->line_stipple_enable = in->line_stipple_enable;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->line_last_pixel dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->line_last_pixel = in->line_last_pixel;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->line_rectangular dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->line_rectangular = in->line_rectangular;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->conservative_raster_mode dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->conservative_raster_mode = in->conservative_raster_mode;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->flatshade_first dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->flatshade_first = in->flatshade_first;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->half_pixel_center dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->half_pixel_center = in->half_pixel_center;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->bottom_edge_rule dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->bottom_edge_rule = in->bottom_edge_rule;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->subpixel_precision_x dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->subpixel_precision_x = in->subpixel_precision_x;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->subpixel_precision_y dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->subpixel_precision_y = in->subpixel_precision_y;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->rasterizer_discard dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->rasterizer_discard = in->rasterizer_discard;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->rasterization_stream dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->rasterization_stream = in->rasterization_stream;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->tile_raster_order_fixed dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->tile_raster_order_fixed = in->tile_raster_order_fixed;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->tile_raster_order_increasing_x dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->tile_raster_order_increasing_x = in->tile_raster_order_increasing_x;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->tile_raster_order_increasing_y dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->tile_raster_order_increasing_y = in->tile_raster_order_increasing_y;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->depth_clip_near dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_clip_near = in->depth_clip_near;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->depth_clip_far dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_clip_far = in->depth_clip_far;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->depth_clamp dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_clamp = in->depth_clamp;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->clip_halfz dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->depth_clamp = in->depth_clamp;
+    out->clip_halfz = in->clip_halfz;
+new:
+    out->depth_clamp = in->depth_clamp;
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->offset_units_unscaled dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->offset_units_unscaled = in->offset_units_unscaled;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->unclamped_fragment_depth_values dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->unclamped_fragment_depth_values = in->unclamped_fragment_depth_values;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->clip_plane_enable dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->clip_plane_enable = in->clip_plane_enable;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->representative_fragment_test dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->clip_plane_enable = in->clip_plane_enable;
+    out->representative_fragment_test = in->representative_fragment_test;
+new:
+    out->clip_plane_enable = in->clip_plane_enable;
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->line_stipple_factor dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->line_stipple_factor = in->line_stipple_factor;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->line_stipple_pattern dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->line_stipple_pattern = in->line_stipple_pattern;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->sprite_coord_enable dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->sprite_coord_enable = in->sprite_coord_enable;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->line_width dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->line_width = in->line_width;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->point_size dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->point_size = in->point_size;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->offset_units dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->offset_units = in->offset_units;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->offset_scale dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->offset_scale = in->offset_scale;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->offset_clamp dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->offset_clamp = in->offset_clamp;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_rasterizer_state out->conservative_raster_dilate dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->conservative_raster_dilate = in->conservative_raster_dilate;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->wrap_s dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->wrap_s = in->wrap_s;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->wrap_t dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->wrap_t = in->wrap_t;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->wrap_r dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->wrap_r = in->wrap_r;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->min_img_filter dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->min_img_filter = in->min_img_filter;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->min_mip_filter dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->min_mip_filter = in->min_mip_filter;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->mag_img_filter dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->mag_img_filter = in->mag_img_filter;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->compare_mode dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->compare_mode = in->compare_mode;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->compare_func dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->compare_func = in->compare_func;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->unnormalized_coords dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->unnormalized_coords = in->unnormalized_coords;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->max_anisotropy dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->max_anisotropy = in->max_anisotropy;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->seamless_cube_map dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->max_anisotropy = in->max_anisotropy;
+    out->seamless_cube_map = in->seamless_cube_map;
+new:
+    out->max_anisotropy = in->max_anisotropy;
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->border_color_is_integer dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->border_color_is_integer = in->border_color_is_integer;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->reduction_mode dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->reduction_mode = in->reduction_mode;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->pad dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->pad = in->pad;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->lod_bias dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->lod_bias = in->lod_bias;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->min_lod dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->min_lod = in->min_lod;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->max_lod dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->max_lod = in->max_lod;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_sampler_state out->border_color_format dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->border_color_format = in->border_color_format;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_vertex_element out->src_offset dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->src_offset = in->src_offset;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_vertex_element out->vertex_buffer_index dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->vertex_buffer_index = in->vertex_buffer_index;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_vertex_element out->dual_slot dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->dual_slot = in->dual_slot;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_vertex_element out->src_format dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->src_format = in->src_format;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_vertex_element out->src_stride dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->src_stride = in->src_stride;
+new:
+    /* dropped */
+end
+
+plant: flat.c pipe_vertex_element out->instance_divisor dropped
+file: crates/gallium/implementation/direct/flat.c
+old:
+    out->instance_divisor = in->instance_divisor;
+new:
+    /* dropped */
+end
+
+plant: flat.rs FlatBlendState independent_blend_enable replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            independent_blend_enable: within(self.independent_blend_enable, 1)?,
+new:
+            independent_blend_enable: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState logicop_enable replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            logicop_enable: within(self.logicop_enable, 1)?,
+new:
+            logicop_enable: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState logicop_func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            logicop_func: wcontainers_gallium::values::Logicop(within(self.logicop_func, 4)?),
+new:
+            logicop_func: wcontainers_gallium::values::Logicop(within(0, 4)?),
+end
+
+plant: flat.rs FlatBlendState dither replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            dither: within(self.dither, 1)?,
+new:
+            dither: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState alpha_to_coverage replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_to_coverage: within(self.alpha_to_coverage, 1)?,
+new:
+            alpha_to_coverage: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState alpha_to_coverage_dither replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_to_coverage_dither: within(self.alpha_to_coverage_dither, 1)?,
+new:
+            alpha_to_coverage_dither: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState alpha_to_one replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_to_one: within(self.alpha_to_one, 1)?,
+new:
+            alpha_to_one: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState max_rt replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            max_rt: within(self.max_rt, 3)?,
+new:
+            max_rt: within(0, 3)?,
+end
+
+plant: flat.rs FlatBlendState advanced_blend_func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            advanced_blend_func: within(self.advanced_blend_func, 4)?,
+new:
+            advanced_blend_func: within(0, 4)?,
+end
+
+plant: flat.rs FlatBlendState blend_coherent replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            blend_coherent: within(self.blend_coherent, 1)?,
+new:
+            blend_coherent: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState is_yuv replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            is_yuv: within(self.is_yuv, 1)?,
+new:
+            is_yuv: within(0, 1)?,
+end
+
+plant: flat.rs FlatBlendState rt replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            rt: each(&self.rt, |element0| element0.owned(held))?,
+new:
+            rt: { let mut all = each(&self.rt, |element0| element0.owned(held))?; all.reverse(); all },
+end
+
+plant: flat.rs FlatRtBlendState blend_enable replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            blend_enable: within(self.blend_enable, 1)?,
+new:
+            blend_enable: within(0, 1)?,
+end
+
+plant: flat.rs FlatRtBlendState rgb_func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            rgb_func: within(self.rgb_func, 3)?,
+new:
+            rgb_func: within(0, 3)?,
+end
+
+plant: flat.rs FlatRtBlendState rgb_src_factor replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            rgb_src_factor: wcontainers_gallium::values::Blendfactor(within(self.rgb_src_factor, 5)?),
+new:
+            rgb_src_factor: wcontainers_gallium::values::Blendfactor(within(0, 5)?),
+end
+
+plant: flat.rs FlatRtBlendState rgb_dst_factor replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            rgb_dst_factor: wcontainers_gallium::values::Blendfactor(within(self.rgb_dst_factor, 5)?),
+new:
+            rgb_dst_factor: wcontainers_gallium::values::Blendfactor(within(0, 5)?),
+end
+
+plant: flat.rs FlatRtBlendState alpha_func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_func: within(self.alpha_func, 3)?,
+new:
+            alpha_func: within(0, 3)?,
+end
+
+plant: flat.rs FlatRtBlendState alpha_src_factor replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_src_factor: wcontainers_gallium::values::Blendfactor(within(self.alpha_src_factor, 5)?),
+new:
+            alpha_src_factor: wcontainers_gallium::values::Blendfactor(within(0, 5)?),
+end
+
+plant: flat.rs FlatRtBlendState alpha_dst_factor replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_dst_factor: wcontainers_gallium::values::Blendfactor(within(self.alpha_dst_factor, 5)?),
+new:
+            alpha_dst_factor: wcontainers_gallium::values::Blendfactor(within(0, 5)?),
+end
+
+plant: flat.rs FlatRtBlendState colormask replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            colormask: within(self.colormask, 4)?,
+new:
+            colormask: within(0, 4)?,
+end
+
+plant: flat.rs FlatDepthStencilAlphaState stencil replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            stencil: each(&self.stencil, |element0| element0.owned(held))?,
+new:
+            stencil: { let mut all = each(&self.stencil, |element0| element0.owned(held))?; all.reverse(); all },
+end
+
+plant: flat.rs FlatDepthStencilAlphaState alpha_enabled replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_enabled: within(self.alpha_enabled, 1)?,
+new:
+            alpha_enabled: within(0, 1)?,
+end
+
+plant: flat.rs FlatDepthStencilAlphaState alpha_func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_func: wcontainers_gallium::values::CompareFunc(within(self.alpha_func, 3)?),
+new:
+            alpha_func: wcontainers_gallium::values::CompareFunc(within(0, 3)?),
+end
+
+plant: flat.rs FlatDepthStencilAlphaState depth_enabled replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_enabled: within(self.depth_enabled, 1)?,
+new:
+            depth_enabled: within(0, 1)?,
+end
+
+plant: flat.rs FlatDepthStencilAlphaState depth_writemask replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_writemask: within(self.depth_writemask, 1)?,
+new:
+            depth_writemask: within(0, 1)?,
+end
+
+plant: flat.rs FlatDepthStencilAlphaState depth_func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_func: wcontainers_gallium::values::CompareFunc(within(self.depth_func, 3)?),
+new:
+            depth_func: wcontainers_gallium::values::CompareFunc(within(0, 3)?),
+end
+
+plant: flat.rs FlatDepthStencilAlphaState depth_bounds_test replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_bounds_test: within(self.depth_bounds_test, 1)?,
+new:
+            depth_bounds_test: within(0, 1)?,
+end
+
+plant: flat.rs FlatDepthStencilAlphaState alpha_ref_value replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            alpha_ref_value: self.alpha_ref_value,
+new:
+            alpha_ref_value: Default::default(),
+end
+
+plant: flat.rs FlatDepthStencilAlphaState depth_bounds_min replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_bounds_min: self.depth_bounds_min,
+new:
+            depth_bounds_min: Default::default(),
+end
+
+plant: flat.rs FlatDepthStencilAlphaState depth_bounds_max replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_bounds_max: self.depth_bounds_max,
+new:
+            depth_bounds_max: Default::default(),
+end
+
+plant: flat.rs FlatStencilState enabled replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            enabled: within(self.enabled, 1)?,
+new:
+            enabled: within(0, 1)?,
+end
+
+plant: flat.rs FlatStencilState func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            func: wcontainers_gallium::values::CompareFunc(within(self.func, 3)?),
+new:
+            func: wcontainers_gallium::values::CompareFunc(within(0, 3)?),
+end
+
+plant: flat.rs FlatStencilState fail_op replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            fail_op: wcontainers_gallium::values::StencilOp(within(self.fail_op, 3)?),
+new:
+            fail_op: wcontainers_gallium::values::StencilOp(within(0, 3)?),
+end
+
+plant: flat.rs FlatStencilState zpass_op replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            zpass_op: wcontainers_gallium::values::StencilOp(within(self.zpass_op, 3)?),
+new:
+            zpass_op: wcontainers_gallium::values::StencilOp(within(0, 3)?),
+end
+
+plant: flat.rs FlatStencilState zfail_op replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            zfail_op: wcontainers_gallium::values::StencilOp(within(self.zfail_op, 3)?),
+new:
+            zfail_op: wcontainers_gallium::values::StencilOp(within(0, 3)?),
+end
+
+plant: flat.rs FlatStencilState valuemask replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            valuemask: within(self.valuemask, 8)?,
+new:
+            valuemask: within(0, 8)?,
+end
+
+plant: flat.rs FlatStencilState writemask replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            writemask: within(self.writemask, 8)?,
+new:
+            writemask: within(0, 8)?,
+end
+
+plant: flat.rs FlatRasterizerState flatshade replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            flatshade: within(self.flatshade, 1)?,
+new:
+            flatshade: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState light_twoside replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            light_twoside: within(self.light_twoside, 1)?,
+new:
+            light_twoside: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState clamp_vertex_color replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            clamp_vertex_color: within(self.clamp_vertex_color, 1)?,
+new:
+            clamp_vertex_color: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState clamp_fragment_color replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            clamp_fragment_color: within(self.clamp_fragment_color, 1)?,
+new:
+            clamp_fragment_color: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState front_ccw replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            front_ccw: within(self.front_ccw, 1)?,
+new:
+            front_ccw: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState cull_face replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            cull_face: within(self.cull_face, 2)?,
+new:
+            cull_face: within(0, 2)?,
+end
+
+plant: flat.rs FlatRasterizerState fill_front replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            fill_front: within(self.fill_front, 2)?,
+new:
+            fill_front: within(0, 2)?,
+end
+
+plant: flat.rs FlatRasterizerState fill_back replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            fill_back: within(self.fill_back, 2)?,
+new:
+            fill_back: within(0, 2)?,
+end
+
+plant: flat.rs FlatRasterizerState offset_point replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            offset_point: within(self.offset_point, 1)?,
+new:
+            offset_point: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState offset_line replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            offset_line: within(self.offset_line, 1)?,
+new:
+            offset_line: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState offset_tri replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            offset_tri: within(self.offset_tri, 1)?,
+new:
+            offset_tri: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState scissor replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            scissor: within(self.scissor, 1)?,
+new:
+            scissor: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState poly_smooth replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            poly_smooth: within(self.poly_smooth, 1)?,
+new:
+            poly_smooth: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState poly_stipple_enable replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            poly_stipple_enable: within(self.poly_stipple_enable, 1)?,
+new:
+            poly_stipple_enable: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState point_smooth replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            point_smooth: within(self.point_smooth, 1)?,
+new:
+            point_smooth: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState sprite_coord_mode replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            sprite_coord_mode: wcontainers_gallium::values::SpriteCoordMode(within(self.sprite_coord_mode, 1)?),
+new:
+            sprite_coord_mode: wcontainers_gallium::values::SpriteCoordMode(within(0, 1)?),
+end
+
+plant: flat.rs FlatRasterizerState point_quad_rasterization replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            point_quad_rasterization: within(self.point_quad_rasterization, 1)?,
+new:
+            point_quad_rasterization: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState point_line_tri_clip replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            point_line_tri_clip: within(self.point_line_tri_clip, 1)?,
+new:
+            point_line_tri_clip: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState point_size_per_vertex replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            point_size_per_vertex: within(self.point_size_per_vertex, 1)?,
+new:
+            point_size_per_vertex: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState multisample replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            multisample: within(self.multisample, 1)?,
+new:
+            multisample: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState no_ms_sample_mask_out replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            no_ms_sample_mask_out: within(self.no_ms_sample_mask_out, 1)?,
+new:
+            no_ms_sample_mask_out: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState force_persample_interp replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            force_persample_interp: within(self.force_persample_interp, 1)?,
+new:
+            force_persample_interp: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState line_smooth replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            line_smooth: within(self.line_smooth, 1)?,
+new:
+            line_smooth: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState line_stipple_enable replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            line_stipple_enable: within(self.line_stipple_enable, 1)?,
+new:
+            line_stipple_enable: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState line_last_pixel replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            line_last_pixel: within(self.line_last_pixel, 1)?,
+new:
+            line_last_pixel: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState line_rectangular replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            line_rectangular: within(self.line_rectangular, 1)?,
+new:
+            line_rectangular: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState conservative_raster_mode replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            conservative_raster_mode: wcontainers_gallium::values::ConservativeRasterMode(within(self.conservative_raster_mode, 2)?),
+new:
+            conservative_raster_mode: wcontainers_gallium::values::ConservativeRasterMode(within(0, 2)?),
+end
+
+plant: flat.rs FlatRasterizerState flatshade_first replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            flatshade_first: within(self.flatshade_first, 1)?,
+new:
+            flatshade_first: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState half_pixel_center replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            half_pixel_center: within(self.half_pixel_center, 1)?,
+new:
+            half_pixel_center: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState bottom_edge_rule replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            bottom_edge_rule: within(self.bottom_edge_rule, 1)?,
+new:
+            bottom_edge_rule: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState subpixel_precision_x replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            subpixel_precision_x: within(self.subpixel_precision_x, 4)?,
+new:
+            subpixel_precision_x: within(0, 4)?,
+end
+
+plant: flat.rs FlatRasterizerState subpixel_precision_y replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            subpixel_precision_y: within(self.subpixel_precision_y, 4)?,
+new:
+            subpixel_precision_y: within(0, 4)?,
+end
+
+plant: flat.rs FlatRasterizerState rasterizer_discard replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            rasterizer_discard: within(self.rasterizer_discard, 1)?,
+new:
+            rasterizer_discard: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState rasterization_stream replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            rasterization_stream: within(self.rasterization_stream, 2)?,
+new:
+            rasterization_stream: within(0, 2)?,
+end
+
+plant: flat.rs FlatRasterizerState tile_raster_order_fixed replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            tile_raster_order_fixed: within(self.tile_raster_order_fixed, 1)?,
+new:
+            tile_raster_order_fixed: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState tile_raster_order_increasing_x replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            tile_raster_order_increasing_x: within(self.tile_raster_order_increasing_x, 1)?,
+new:
+            tile_raster_order_increasing_x: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState tile_raster_order_increasing_y replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            tile_raster_order_increasing_y: within(self.tile_raster_order_increasing_y, 1)?,
+new:
+            tile_raster_order_increasing_y: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState depth_clip_near replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_clip_near: within(self.depth_clip_near, 1)?,
+new:
+            depth_clip_near: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState depth_clip_far replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_clip_far: within(self.depth_clip_far, 1)?,
+new:
+            depth_clip_far: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState depth_clamp replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            depth_clamp: within(self.depth_clamp, 1)?,
+new:
+            depth_clamp: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState clip_halfz replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            clip_halfz: within(self.clip_halfz, 1)?,
+new:
+            clip_halfz: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState offset_units_unscaled replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            offset_units_unscaled: within(self.offset_units_unscaled, 1)?,
+new:
+            offset_units_unscaled: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState unclamped_fragment_depth_values replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            unclamped_fragment_depth_values: within(self.unclamped_fragment_depth_values, 1)?,
+new:
+            unclamped_fragment_depth_values: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState clip_plane_enable replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            clip_plane_enable: within(self.clip_plane_enable, 8)?,
+new:
+            clip_plane_enable: within(0, 8)?,
+end
+
+plant: flat.rs FlatRasterizerState representative_fragment_test replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            representative_fragment_test: within(self.representative_fragment_test, 1)?,
+new:
+            representative_fragment_test: within(0, 1)?,
+end
+
+plant: flat.rs FlatRasterizerState line_stipple_factor replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            line_stipple_factor: within(self.line_stipple_factor, 8)?,
+new:
+            line_stipple_factor: within(0, 8)?,
+end
+
+plant: flat.rs FlatRasterizerState line_stipple_pattern replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            line_stipple_pattern: within(self.line_stipple_pattern, 16)?,
+new:
+            line_stipple_pattern: within(0, 16)?,
+end
+
+plant: flat.rs FlatRasterizerState sprite_coord_enable replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            sprite_coord_enable: self.sprite_coord_enable,
+new:
+            sprite_coord_enable: Default::default(),
+end
+
+plant: flat.rs FlatRasterizerState line_width replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            line_width: self.line_width,
+new:
+            line_width: Default::default(),
+end
+
+plant: flat.rs FlatRasterizerState point_size replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            point_size: self.point_size,
+new:
+            point_size: Default::default(),
+end
+
+plant: flat.rs FlatRasterizerState offset_units replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            offset_units: self.offset_units,
+new:
+            offset_units: Default::default(),
+end
+
+plant: flat.rs FlatRasterizerState offset_scale replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            offset_scale: self.offset_scale,
+new:
+            offset_scale: Default::default(),
+end
+
+plant: flat.rs FlatRasterizerState offset_clamp replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            offset_clamp: self.offset_clamp,
+new:
+            offset_clamp: Default::default(),
+end
+
+plant: flat.rs FlatRasterizerState conservative_raster_dilate replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            conservative_raster_dilate: self.conservative_raster_dilate,
+new:
+            conservative_raster_dilate: Default::default(),
+end
+
+plant: flat.rs FlatSamplerState wrap_s replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            wrap_s: wcontainers_gallium::values::TexWrap(within(self.wrap_s, 3)?),
+new:
+            wrap_s: wcontainers_gallium::values::TexWrap(within(0, 3)?),
+end
+
+plant: flat.rs FlatSamplerState wrap_t replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            wrap_t: wcontainers_gallium::values::TexWrap(within(self.wrap_t, 3)?),
+new:
+            wrap_t: wcontainers_gallium::values::TexWrap(within(0, 3)?),
+end
+
+plant: flat.rs FlatSamplerState wrap_r replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            wrap_r: wcontainers_gallium::values::TexWrap(within(self.wrap_r, 3)?),
+new:
+            wrap_r: wcontainers_gallium::values::TexWrap(within(0, 3)?),
+end
+
+plant: flat.rs FlatSamplerState min_img_filter replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            min_img_filter: wcontainers_gallium::values::TexFilter(within(self.min_img_filter, 1)?),
+new:
+            min_img_filter: wcontainers_gallium::values::TexFilter(within(0, 1)?),
+end
+
+plant: flat.rs FlatSamplerState min_mip_filter replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            min_mip_filter: wcontainers_gallium::values::TexMipfilter(within(self.min_mip_filter, 2)?),
+new:
+            min_mip_filter: wcontainers_gallium::values::TexMipfilter(within(0, 2)?),
+end
+
+plant: flat.rs FlatSamplerState mag_img_filter replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            mag_img_filter: wcontainers_gallium::values::TexFilter(within(self.mag_img_filter, 1)?),
+new:
+            mag_img_filter: wcontainers_gallium::values::TexFilter(within(0, 1)?),
+end
+
+plant: flat.rs FlatSamplerState compare_mode replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            compare_mode: wcontainers_gallium::values::TexCompare(within(self.compare_mode, 1)?),
+new:
+            compare_mode: wcontainers_gallium::values::TexCompare(within(0, 1)?),
+end
+
+plant: flat.rs FlatSamplerState compare_func replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            compare_func: wcontainers_gallium::values::CompareFunc(within(self.compare_func, 3)?),
+new:
+            compare_func: wcontainers_gallium::values::CompareFunc(within(0, 3)?),
+end
+
+plant: flat.rs FlatSamplerState unnormalized_coords replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            unnormalized_coords: within(self.unnormalized_coords, 1)?,
+new:
+            unnormalized_coords: within(0, 1)?,
+end
+
+plant: flat.rs FlatSamplerState max_anisotropy replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            max_anisotropy: within(self.max_anisotropy, 5)?,
+new:
+            max_anisotropy: within(0, 5)?,
+end
+
+plant: flat.rs FlatSamplerState seamless_cube_map replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            seamless_cube_map: within(self.seamless_cube_map, 1)?,
+new:
+            seamless_cube_map: within(0, 1)?,
+end
+
+plant: flat.rs FlatSamplerState border_color_is_integer replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            border_color_is_integer: within(self.border_color_is_integer, 1)?,
+new:
+            border_color_is_integer: within(0, 1)?,
+end
+
+plant: flat.rs FlatSamplerState reduction_mode replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            reduction_mode: wcontainers_gallium::values::TexReductionMode(within(self.reduction_mode, 2)?),
+new:
+            reduction_mode: wcontainers_gallium::values::TexReductionMode(within(0, 2)?),
+end
+
+plant: flat.rs FlatSamplerState pad replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            pad: within(self.pad, 5)?,
+new:
+            pad: within(0, 5)?,
+end
+
+plant: flat.rs FlatSamplerState lod_bias replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            lod_bias: self.lod_bias,
+new:
+            lod_bias: Default::default(),
+end
+
+plant: flat.rs FlatSamplerState min_lod replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            min_lod: self.min_lod,
+new:
+            min_lod: Default::default(),
+end
+
+plant: flat.rs FlatSamplerState max_lod replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            max_lod: self.max_lod,
+new:
+            max_lod: Default::default(),
+end
+
+plant: flat.rs FlatSamplerState border_color replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            border_color: self.border_color,
+new:
+            border_color: Default::default(),
+end
+
+plant: flat.rs FlatSamplerState border_color_format replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            border_color_format: wcontainers_gallium::values::Format(self.border_color_format),
+new:
+            border_color_format: wcontainers_gallium::values::Format(Default::default()),
+end
+
+plant: flat.rs FlatVertexElement src_offset replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            src_offset: self.src_offset,
+new:
+            src_offset: Default::default(),
+end
+
+plant: flat.rs FlatVertexElement vertex_buffer_index replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            vertex_buffer_index: within(self.vertex_buffer_index, 7)?,
+new:
+            vertex_buffer_index: within(0, 7)?,
+end
+
+plant: flat.rs FlatVertexElement dual_slot replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            dual_slot: flag(self.dual_slot)?,
+new:
+            dual_slot: flag(0)?,
+end
+
+plant: flat.rs FlatVertexElement src_format replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            src_format: self.src_format,
+new:
+            src_format: Default::default(),
+end
+
+plant: flat.rs FlatVertexElement src_stride replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            src_stride: self.src_stride,
+new:
+            src_stride: Default::default(),
+end
+
+plant: flat.rs FlatVertexElement instance_divisor replaced
+file: crates/gallium/implementation/direct/flat.rs
+old:
+            instance_divisor: self.instance_divisor,
+new:
+            instance_divisor: Default::default(),
+end
+
+plant: serve.c context_create priv
+file: crates/gallium/implementation/direct/serve.c
+old:
+s->table->context_create(s->key, 0, (uintptr_t)priv, flags);
+new:
+s->table->context_create(s->key, 0, 0, flags);
+end
+
+plant: serve.c context_create flags
+file: crates/gallium/implementation/direct/serve.c
+old:
+s->table->context_create(s->key, 0, (uintptr_t)priv, flags);
+new:
+s->table->context_create(s->key, 0, (uintptr_t)priv, 0);
+end
+
+plant: serve.c context_create screen
+file: crates/gallium/implementation/direct/serve.c
+old:
+s->table->context_create(s->key, 0, (uintptr_t)priv, flags);
+new:
+s->table->context_create(0, 0, (uintptr_t)priv, flags);
+end
+
+plant: serve.c screen freed while live
+file: crates/gallium/implementation/direct/serve.c
+old:
+    if (s->table->screen_destroy(s->key, 0))
+        free(s);
+new:
+    s->table->screen_destroy(s->key, 0);
+end
+
+plant: serve.c context freed while live
+file: crates/gallium/implementation/direct/serve.c
+old:
+    if (c->screen->table->context_destroy(c->screen->key, c->key))
+        free(c);
+new:
+    c->screen->table->context_destroy(c->screen->key, c->key);
+end
+
+plant: serve.c context key
+file: crates/gallium/implementation/direct/serve.c
+old:
+    c->key = key;
+
+new:
+    c->key = 0;
+
+end
+
+plant: serve.c bind_sampler_states shader
+file: crates/gallium/implementation/direct/serve.c
+old:
+(int32_t)shader, start_slot, slots);
+new:
+0, start_slot, slots);
+end
+
+plant: serve.c bind_sampler_states start_slot
+file: crates/gallium/implementation/direct/serve.c
+old:
+(int32_t)shader, start_slot, slots);
+new:
+(int32_t)shader, 0, slots);
+end
+
+plant: serve.c bind_sampler_states keys
+file: crates/gallium/implementation/direct/serve.c
+old:
+        slots.keys[i] = states ? (uintptr_t)states[i] : 0;
+new:
+        slots.keys[i] = 0;
+end
+
+plant: serve.c bind_sampler_states count
+file: crates/gallium/implementation/direct/serve.c
+old:
+    slots.count = count;
+new:
+    slots.count = 0;
+end
+
+plant: serve.c bind_sampler_states bound
+file: crates/gallium/implementation/direct/serve.c
+old:
+    if (count > PIPE_MAX_SAMPLERS)
+        return;
+new:
+
+end
+
+plant: serve.c create_vertex_elements_state count
+file: crates/gallium/implementation/direct/serve.c
+old:
+    list.count = count;
+new:
+    list.count = 0;
+end
+
+plant: serve.c create_vertex_elements_state bound
+file: crates/gallium/implementation/direct/serve.c
+old:
+    if (count > PIPE_MAX_ATTRIBS || (count && !elements))
+        return NULL;
+new:
+    if (count && !elements)
+        return NULL;
+end
+
+plant: serve.c create_vertex_elements_state no list
+file: crates/gallium/implementation/direct/serve.c
+old:
+    if (count > PIPE_MAX_ATTRIBS || (count && !elements))
+        return NULL;
+new:
+    if (count > PIPE_MAX_ATTRIBS)
+        return NULL;
+end
+
+plant: serve.c bind_blend_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->bind_blend_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->bind_blend_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c delete_blend_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->delete_blend_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->delete_blend_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c bind_depth_stencil_alpha_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->bind_depth_stencil_alpha_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->bind_depth_stencil_alpha_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c delete_depth_stencil_alpha_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->delete_depth_stencil_alpha_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->delete_depth_stencil_alpha_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c bind_rasterizer_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->bind_rasterizer_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->bind_rasterizer_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c delete_rasterizer_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->delete_rasterizer_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->delete_rasterizer_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c delete_sampler_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->delete_sampler_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->delete_sampler_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c bind_vertex_elements_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->bind_vertex_elements_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->bind_vertex_elements_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c delete_vertex_elements_state state
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->delete_vertex_elements_state(c->screen->key, c->key, (uintptr_t)state);
+new:
+table->delete_vertex_elements_state(c->screen->key, c->key, 0);
+end
+
+plant: serve.c create_blend_state no template
+file: crates/gallium/implementation/direct/serve.c
+old:
+static void *wc_create_blend_state(struct pipe_context *pipe, const struct pipe_blend_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+    if (!state)
+        return NULL;
+new:
+static void *wc_create_blend_state(struct pipe_context *pipe, const struct pipe_blend_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+end
+
+plant: serve.c create_blend_state context
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->create_blend_state(c->screen->key, c->key, flat);
+new:
+table->create_blend_state(c->screen->key, 0, flat);
+end
+
+plant: serve.c create_depth_stencil_alpha_state no template
+file: crates/gallium/implementation/direct/serve.c
+old:
+static void *wc_create_depth_stencil_alpha_state(struct pipe_context *pipe, const struct pipe_depth_stencil_alpha_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+    if (!state)
+        return NULL;
+new:
+static void *wc_create_depth_stencil_alpha_state(struct pipe_context *pipe, const struct pipe_depth_stencil_alpha_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+end
+
+plant: serve.c create_depth_stencil_alpha_state context
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->create_depth_stencil_alpha_state(c->screen->key, c->key, flat);
+new:
+table->create_depth_stencil_alpha_state(c->screen->key, 0, flat);
+end
+
+plant: serve.c create_rasterizer_state no template
+file: crates/gallium/implementation/direct/serve.c
+old:
+static void *wc_create_rasterizer_state(struct pipe_context *pipe, const struct pipe_rasterizer_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+    if (!state)
+        return NULL;
+new:
+static void *wc_create_rasterizer_state(struct pipe_context *pipe, const struct pipe_rasterizer_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+end
+
+plant: serve.c create_rasterizer_state context
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->create_rasterizer_state(c->screen->key, c->key, flat);
+new:
+table->create_rasterizer_state(c->screen->key, 0, flat);
+end
+
+plant: serve.c create_sampler_state no template
+file: crates/gallium/implementation/direct/serve.c
+old:
+static void *wc_create_sampler_state(struct pipe_context *pipe, const struct pipe_sampler_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+    if (!state)
+        return NULL;
+new:
+static void *wc_create_sampler_state(struct pipe_context *pipe, const struct pipe_sampler_state *state)
+{
+    struct wc_context *c = (struct wc_context *)pipe;
+end
+
+plant: serve.c create_sampler_state context
+file: crates/gallium/implementation/direct/serve.c
+old:
+table->create_sampler_state(c->screen->key, c->key, flat);
+new:
+table->create_sampler_state(c->screen->key, 0, flat);
+end
+
+plant: serve.rs context_create private
+file: crates/gallium/implementation/direct/serve.rs
+old:
+served.screen.context_create(private, flags)
+new:
+served.screen.context_create(0, flags)
+end
+
+plant: serve.rs context_create flags
+file: crates/gallium/implementation/direct/serve.rs
+old:
+served.screen.context_create(private, flags)
+new:
+served.screen.context_create(private, 0)
+end
+
+plant: serve.rs bind_sampler_states shader
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.bind_sampler_states(values::MesaShaderStage(shader), start_slot, &lent);
+new:
+context.bind_sampler_states(values::MesaShaderStage(0), start_slot, &lent);
+end
+
+plant: serve.rs bind_sampler_states start_slot
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.bind_sampler_states(values::MesaShaderStage(shader), start_slot, &lent);
+new:
+context.bind_sampler_states(values::MesaShaderStage(shader), 0, &lent);
+end
+
+plant: serve.rs bind_sampler_states objects
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.bind_sampler_states(values::MesaShaderStage(shader), start_slot, &lent);
+new:
+context.bind_sampler_states(values::MesaShaderStage(shader), start_slot, &lent[..lent.len().min(1)]);
+end
+
+plant: serve.rs create_vertex_elements_state elements
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.create_vertex_elements_state(&owned)
+new:
+context.create_vertex_elements_state(&owned[..owned.len().min(1)])
+end
+
+plant: serve.rs bind_blend_state object
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.bind_blend_state(object.as_deref());
+new:
+context.bind_blend_state(None);
+end
+
+plant: serve.rs bind_depth_stencil_alpha_state object
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.bind_depth_stencil_alpha_state(object.as_deref());
+new:
+context.bind_depth_stencil_alpha_state(None);
+end
+
+plant: serve.rs bind_rasterizer_state object
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.bind_rasterizer_state(object.as_deref());
+new:
+context.bind_rasterizer_state(None);
+end
+
+plant: serve.rs bind_vertex_elements_state object
+file: crates/gallium/implementation/direct/serve.rs
+old:
+context.bind_vertex_elements_state(object.as_deref());
+new:
+context.bind_vertex_elements_state(None);
+end
+
