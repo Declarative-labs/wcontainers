@@ -89,6 +89,17 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                 Self::Documented(documented) => documented
                     .simulate(processor, word)
                     .map(|target| branch_target = target),
+                Self::WithoutOptionalEncodings(documented)
+                    if crate::advanced_simd::is_optional_encoding(
+                        documented.instruction(),
+                        word,
+                    ) =>
+                {
+                    Err(Exception::UndefinedInstruction)
+                }
+                Self::WithoutOptionalEncodings(documented) => documented
+                    .simulate(processor, word)
+                    .map(|target| branch_target = target),
                 Self::LoadStore {
                     instruction,
                     choices,
@@ -215,7 +226,9 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
     /// Whether the word holds an operand value the list marks unallocated for this instruction.
     fn is_reserved(&self, word: u32) -> bool {
         let instruction = match *self {
-            Self::Documented(documented) => documented.instruction(),
+            Self::Documented(documented) | Self::WithoutOptionalEncodings(documented) => {
+                documented.instruction()
+            }
             Self::LoadStore { instruction, .. } => instruction.instruction(),
             Self::Brk => Instruction::Brk,
             Self::Rdvl(_) => Instruction::Rdvl,

@@ -64,8 +64,9 @@ mod tests;
 
 pub use behavior::{
     FailedStoreExclusive, FaultAddressTag, LoadIntoBaseWithWriteback, LoadPairIntoOneRegister,
-    MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
-    StoreOfBaseWithWriteback, VectorLength, VectorLengthReading, WaitForInterruptBehavior,
+    MisalignedExclusive, MisalignedOrderedOrAtomic, MisalignedStackPointer, StoreAcrossFault,
+    StoreExclusiveOverlap, StoreOfBaseWithWriteback, VectorLength, VectorLengthReading,
+    WaitForInterruptBehavior,
 };
 pub use condition_flags::{CONDITIONS, Condition, ConditionFlags};
 pub use core_identity::CoreIdentity;
@@ -322,5 +323,8 @@ pub enum PreciseInstruction<LevelSpecific> {
     },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),
+    /// What a chip without the feature some of a documented instruction's encodings need does: those encodings are
+    /// undefined and the others run as documented.
+    WithoutOptionalEncodings(DocumentedInstruction),
     LevelSpecific(LevelSpecific),
 }

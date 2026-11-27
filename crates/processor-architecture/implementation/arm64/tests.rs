@@ -31,6 +31,7 @@ const NO_CHOICES: LoadStoreChoices = LoadStoreChoices {
     failed_store_exclusive: None,
     store_exclusive_overlap: None,
     misaligned_exclusive: None,
+    misaligned_ordered_or_atomic: None,
     fault_address_tag: None,
     reservation_granule_bytes: None,
 };
@@ -456,6 +457,82 @@ fn an_exclusive_load_inside_16_bytes_faults_as_its_behavior_says() {
                 DATA + 12
             ))
         );
+    }
+}
+
+#[test]
+fn a_load_acquire_inside_16_bytes_faults_as_its_behavior_says() {
+    let word = encode(Instruction::Ldar64, &[(RT, 0), (RN, 1)]);
+    for (choice, faults) in [
+        (MisalignedOrderedOrAtomic::AlignmentFault, true),
+        (MisalignedOrderedOrAtomic::WithinSixteenBytes, false),
+    ] {
+        let choices = LoadStoreChoices {
+            misaligned_ordered_or_atomic: Some(choice),
+            ..NO_CHOICES
+        };
+        let mut before = to_state(word, READ_ONLY, READ_ONLY);
+        before.processor.general_purpose_registers[1] = DATA + 4;
+        let (after, _) = run(to_load_store(Instruction::Ldar64, choices), before);
+        let fault = to_data_abort(FaultStatus::AlignmentFault, AccessDirection::Read, DATA + 4);
+        assert_eq!(after.exception, faults.then_some(fault));
+    }
+    // A byte and a pair of doublewords leave nothing to choose.
+    let open = |instruction| {
+        LoadStoreInstruction::new(instruction)
+            .is_some_and(|access| access.to_open_cases().misaligned_ordered_or_atomic)
+    };
+    assert!(open(Instruction::Ldar64) && open(Instruction::Casp32) && open(Instruction::Ldaddh));
+    assert!(!open(Instruction::Ldarb) && !open(Instruction::Casp64) && !open(Instruction::Ldxr64));
+}
+
+#[test]
+fn an_optional_encoding_is_undefined_without_its_feature() {
+    const SIZE: Field = Field::new(22, 2);
+    const IMMH: Field = Field::new(19, 4);
+    let without = |instruction| {
+        PreciseInstruction::WithoutOptionalEncodings(
+            DocumentedInstruction::new(instruction).expect("a documented instruction"),
+        )
+    };
+    let behaviors = |instruction| -> Vec<PreciseInstruction<Infallible>> {
+        Arm64::<User>::list_known_behaviors(instruction).collect()
+    };
+    let pmull = behaviors(Instruction::PmullAsimddiffL);
+    assert!(pmull.contains(&to_documented(Instruction::PmullAsimddiffL)));
+    assert!(pmull.contains(&without(Instruction::PmullAsimddiffL)));
+    assert!(
+        !behaviors(Instruction::AddShiftedRegister64)
+            .contains(&without(Instruction::AddShiftedRegister64))
+    );
+    for (instruction, optional, other) in [
+        (Instruction::PmullAsimddiffL, (SIZE, 0b11), (SIZE, 0b00)),
+        (
+            Instruction::ScvtfVectorImmediateImmediate,
+            (IMMH, 0b0011),
+            (IMMH, 0b0100),
+        ),
+        (
+            Instruction::FcvtzuScalarImmediate,
+            (IMMH, 0b0010),
+            (IMMH, 0b1000),
+        ),
+    ] {
+        for (field, undefined) in [(optional, true), (other, false)] {
+            let word = encode(instruction, &[field]);
+            let state = || to_state(word, READ_WRITE, READ_WRITE);
+            let (after, _) = run(without(instruction), state());
+            assert_eq!(
+                after.exception == Some(Exception::UndefinedInstruction),
+                undefined,
+                "{instruction:?} {word:#010x}"
+            );
+            let (documented, _) = run(to_documented(instruction), state());
+            assert_eq!(documented.exception, None, "{instruction:?} {word:#010x}");
+            if !undefined {
+                assert_eq!(after, documented);
+            }
+        }
     }
 }
 
