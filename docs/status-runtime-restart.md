@@ -43,6 +43,13 @@ kernel on `WasmtimeExecutor`), both without conflict; so the tip builds with no 
 top-level files of his 29 interface folders are byte-identical to his main (MEASURED, `git diff --quiet FETCH_HEAD HEAD`
 per file).
 
+2026-11-27 (afternoon): his main FETCH_HEAD ac696ea19 already merged. Merged origin/kernel-port f02018c89 (ee11386da) and
+origin/executor-wasmtime ddbcf4ab3 (b13147f46), both without conflict; the lock file then kept one dependency cargo drops
+(`wcontainers-instruction-input-domain-arm64` under behavior-source-recording), removed in 5ddc8da51 so `cargo metadata
+--locked` exits 0. After the merges no `interface.rs` or `memory_space.rs` that exists on his main differs from it
+(MEASURED, `git diff --name-only ac696ea19 HEAD`: only crates/kvm, crates/linux-socket-options and crates/wasmtime
+interface.rs differ, and none of the three is on his main).
+
 ## RT0: done (results in SCRATCH/runtime-restart/results-main, results-agents)
 
 ## RT1: built; bar NOT met: the linter (the earlier line here that called it met but for the linter was wrong)
@@ -224,9 +231,10 @@ panics on its first write) ends the container as `Panicked` for every later run.
 container's interrupter raising no executor's slot (before the kernel merge), and again at 7d6d0e11e with it ending no
 run, `an_interrupt_from_another_thread_stops_a_run` runs past the timeout at 1 and at 4 runners (exit 124). The image: alpine:3.22 for linux/arm64 from `docker export`.
 
-RT2 IS NOT CLAIMED IN FULL (2026-11-27): the suite and the interrupt test now pass on wasmtime too, from the merged
-commit, and the harness is compared with j5f (section "The WebAssembly half" below); still open: LTP's whole suite at full,
-the five targets bounded at 1800 s, and one plant no test can catch.
+RT2 IS NOT CLAIMED IN FULL (2026-11-27, evening): the five plants now each fail a test against a kernel double (section
+"The runtime's own end of a run" below), the whole LTP at full and the bounded targets alone have run; what differs from
+j5f is named with one cause and owner each (section "RT2's remainder, measured"), and closing on those waits on the
+orchestrator.
 
 ### The time slice (orchestrator ruling of 2026-11-26: an executor bounds its own run)
 
@@ -359,14 +367,123 @@ timeout (124) at 1 and 4 runners; a runner's panic read as `Interrupted` runs pa
 read as `Finished` fails 2 tests at 1 runner and 16 at 4 (101); the stand-in without its slice runs past the timeout (124)
 at 1 and 4; a runner left running when another finishes (two forms) fails nothing (exit 0 at 1 and 4), the gap above.
 
+### The runtime's own end of a run, ruled by the kernel interface (2026-11-27)
+
+The check found five plants no test caught (two forms of a runner left running when another finishes; `interrupt()` not
+calling `end_runs`; `wait` ignoring that the run ended; a panic not outranking an earlier finish), because this kernel
+returns `Finished` to every runner and `Interrupted` once per tick by itself. The orchestrator's ruling: decide by what
+the interface promises. READ, word by word, crates/kernel/interface.rs and crates/executor/interface.rs at his main
+ac696ea19 (byte-identical here):
+- `Runner::run`: "Runs what the kernel decides is next, using the given executor." No time, no word on another runner.
+- `Kernel::new`: "Makes a kernel that executes at most the given number of threads at the same time, and one runner for
+  each." `Kernel` has no method that ends a run; `suspend_tasks` "Takes the given tasks out of this kernel instance
+  atomically, ... returning each one that is still executing on it", nothing about runners.
+- `StopReason::Interrupted`, `Idle`, `Finished(ProcessEnd)` have no documentation; `Panicked`: "A host thread ended inside
+  a run, so the kernel can no longer be run."
+- `Execution::run`: "Runs until a trap terminates the execution or the executor must wait." `ExecutionInterrupter::interrupt`
+  has no documentation; `TrapHandler`: "The guest stays stopped at the trap while a method runs."; `InterruptResponse`'s
+  `Continue` and `Terminate` have none.
+
+No sentence promises that a run returns within a bounded time once one runner finished or an interrupt was asked: that is
+a property of this one kernel (executing.rs's tick). So the runtime keeps its own end of a run and is tested against a
+kernel that does only what the interface promises: runners.rs's test module (b84c44861) has a `ScriptedKernel`, a
+test-only `Kernel` whose runners have no clock: each runs until the execution it runs is ended through the runner stops
+the runtime was given (as an execution ends on its executor's interrupter), then returns what its script says
+(`Interrupted`, `Idle { until: None }`, or its host thread panics); one runner returns `Finished` once the other runs.
+The one thing it assumes beyond the interface (INFERRED, the runtime's whole means of ending a runner): a runner whose
+execution is interrupted returns from `run`. Four tests, each bounded at 30 s:
+`a_finish_ends_a_runner_that_runs_until_its_execution_is_ended`,
+`a_finish_ends_a_runner_that_answers_idle_once_its_execution_is_ended`,
+`an_interrupt_ends_runners_that_run_until_their_executions_are_ended`,
+`a_panic_after_a_finish_ends_the_container_as_panicked` (the last is the runtime's alone, as ruled).
+
+Bar at 5ddc8da51 (pushed; MEASURED, both machines, jobs runtime-restart-bar2/20261127-163200-4064781 ARM64 load 28-53 and
+20261127-163220-3088372 x86-64 load 33-40; the same at b84c44861 on x86-64, 20261127-125502-2769369):
+
+| | ARM64 | x86-64 |
+|---|---|---|
+| `cargo metadata --locked`; rustfmt `--check`, three packages | 0; 0 | 0; 0 |
+| check, clippy `-D warnings --all-targets`, three packages; clippy single-kernel `--no-default-features` | 0, 0; 0 | 0, 0; 0 |
+| single-kernel unit tests; policy tests | 18 of 18; 13 of 13 | 18 of 18; 13 of 13 |
+| the four double-kernel tests, three rounds | 4 of 4 each | 4 of 4 each |
+| runtime suite on the stand-in and on wasmtime, 1 runner and 4, three rounds each | 10 of 10 every time | 10 of 10 every time |
+
+Planted in the machine's copy, one sed line each (MEASURED, both machines, exit 101 every time, after the 30 s bound where
+a runner is left):
+
+| Plant | Fails |
+|---|---|
+| `end_runs` taken out of `stop` (a runner left running, first form) | both finish tests and the panic test |
+| `stopped` taken out of `leaving` (a runner left running, second form) | both finish tests |
+| `interrupt()` not calling `end_runs` | the interrupt test |
+| `wait` not returning once the run ended | the idle finish test and the interrupt test |
+| a panic not outranking an earlier finish | the panic test |
+
+Linter (`cargo reviewable check`, reviewable-rust da55b9d7, x86-64, no model key; MEASURED): the new test module adds only
+`summary_unanswered` findings (11, one per new summary: no key, so nothing was asked); no `magic_literal` or other rule.
+
+### RT2's remainder, measured (2026-11-27)
+
+The look-ahead switch is committed: tools/runtime-modes/la-switch.sh (852859ad5). In a throwaway copy it makes the harness's
+`runtime` feature read `LOOK_AHEAD` (full, none, bounded; bounded when unset, the WebAssembly executor's own default), as
+the feature's comment in the stand-in's Cargo.toml says; driver.rs's `make_back` is the kernel track's, so the script
+changes the copy only.
+
+LTP's whole suite on wasmtime at full (MEASURED, ARM64: the x86-64 machine cannot run it, since every test's file backend
+and the reference are linux/arm64 containers and that machine runs none: `exec /bin/uname: exec format error`; job
+runtime-restart-ltp/20261127-124227-1970472 at 852859ad5, release build, `LTP_JOBS=12 LTP_LIMIT=600`, 11,162 s, load
+27-193; results and log SCRATCH/runtime-restart/rt2b/ltpres; the translation folder and all its build 2.3 GB): 4,226 tests,
+4,164 equal to the committed reference, 62 differ. Against j5f's stand-in (whole.tsv with redo.tsv) 17 differ:
+- better (7): dio30, ADSP037, ADSP038, ADSP073, ADSP074, fsx22 pass where the stand-in timed out.
+- math (5): float_bessel, float_exp_log, float_iperb, float_power, float_trigo time out at 600 s; rerun at j5f's 900 s
+  (job 20261127-154914-3741884, `LTP_JOBS=4`, load 30-95): iperb passes in 695 s and power in 834 s, the other three time
+  out (the stand-in passes them in 46 to 212 s): floating point runs about 10 times slower on wasmtime at full (INFERRED:
+  translator and executor tracks).
+- sched_football: timeout at 600 s, broken at 900 s as the stand-in and the reference.
+- the clock (4, kernel track's time model and the executor's pauses; brief question 4): clock_gettime04 "Difference
+  between successive readings greater than 5 ms (1): 19", epoll_wait04 "waited for 17957us with a timeout equal to zero",
+  timerfd01 "got 14 tick(s) expected 3", getrusage04 "utime increased > 2000us"; each fails again at 900 s alone.
+- read_all_dev: "Worker timeout is too short; restarts take >3051045us" (process start on wasmtime; executor track).
+fcntl12, fcntl12_64 and fork09 time out as on the stand-in.
+
+The targets bounded at 1800 s, rerun one at a time (MEASURED, ARM64, job runtime-restart-alone/20261127-125559-1820800 at
+b84c44861, `--test-threads 4`, load 35-168):
+
+| Target | bounded | full | none |
+|---|---|---|---|
+| backend | 19 of 21, j5f's two (file_capabilities, special_files), 63 s | the same, 198 s | the same, 23 s |
+| cpulimit | past 1800 s | past 1800 s | past 1800 s |
+| turns | past 1800 s | past 1800 s | past 1800 s |
+| deadlines | | | past 1800 s |
+| threads | | | past 1800 s |
+
+cpulimit and turns run past the bound alone, in every mode, so load is not the cause (deadlines and threads at none run
+past it alone too: look-ahead none translates one instruction per piece; INFERRED slowness, not a verdict). INFERRED (READ driver.rs:160-171):
+with `runtime` the harness's repeatable clock moves by the instructions the executor ran, and `last_instructions` is 0 for
+the WebAssembly executor, so a guest that computes never uses CPU time: RLIMIT_CPU's signal never comes (cpulimit) and a
+thread's share never ends (turns). Kernel track (harness) with the executor track (an instruction count from wasmtime).
+
+rwmodes and saving at bounded, three times each alone (same job, load 41-56): rwmodes 1 of 1 every time (2 to 3 s), saving 1
+of 1 every time (95 to 97 s). Why they failed in the four-mode run
+and passed in the check's: neither pipe capacity of ours nor load as such. rwmodes prints how much a 70,000-byte
+`RWF_NOWAIT` write puts into a new pipe; ours is 65,536 (Linux's default of 16 pages of 4 KiB), and the reference said
+8,192 in the failing run. READ (Linux fs/pipe.c, `alloc_pipe_info`): a user without CAP_SYS_RESOURCE whose pipes already
+hold more than `fs.pipe-user-pages-soft` pages (16,384 on the ARM64 machine, MEASURED) gets 2 pages (8,192 bytes) per new
+pipe. Every Docker container on the shared machine is root without that capability, so the reference's answer depends on
+how many pipe pages all containers of all agents hold at that moment: four modes side by side (each with its file backends
+and references) reached it, the check's single run did not. A probe (a container's pipe filled by a writer that stops when
+it blocks) gave 65,536 bytes at each of 18 moments of this run (MEASURED). Saving's five programs compare whole outputs
+with the reference too (INFERRED: the same cause).
+
 ## Next
 
-- RT2, what is left: (a) LTP's whole suite on wasmtime at full (4,226 tests, about 6 hours at 12 side by side: stopped at
-  173, all equal to the reference, because the ARM64 machine's load passed 150 with the executor track's own LTP run
-  x3ltp beside it; resume with the same results file, or take x3ltp's verdicts); (b) the targets bounded at 1800 s
-  (backend, cpulimit, turns; at none also deadlines, threads) rerun alone without the four modes side by side; (c) the
-  kernel track's harness fixes in the table above (driver.rs:486 tests, the three targets that do not build with
-  `runtime`), the executor track's (sharedviews, rseqabort) and the pipe capacity.
+- RT2, what is left (2026-11-27 evening): every measurement of the bar has now run. Not equal to j5f and the stand-in,
+  each with one cause and owner: the 27 driver.rs:486 tests and the three targets that do not build with `runtime`
+  (kernel track, harness); cpulimit and turns, which never end with `runtime` because the WebAssembly executor counts no
+  instructions (kernel track's harness clock with the executor track); sharedviews and rseqabort (executor track);
+  LTP's 10 worse verdicts (math floating point about 10 times slower: translator and executor tracks; four clock tests:
+  kernel track's time model, brief question 4; read_all_dev's process start: executor track). The orchestrator decides
+  whether these named tests close RT2; then RT2's independent check.
 - RT3: waits on KP2 and X4.
 
 ## For the orchestrator (one line each)
@@ -390,8 +507,15 @@ at 1 and 4; a runner left running when another finishes (two forms) fails nothin
 8. Executor track (wasmtime): sharedviews `code_written_through_one_view_runs_through_the_other` runs the old code through
    the second view ("parent after 7", reference 8); rseqabort `preempted_sections_match_reference` differs; with
    `slice: None` a container with a busy background process does not end at 4 runners either.
-9. Kernel track: a pipe holds 65536 bytes where the reference holds 8192 (write on the stand-in; rwmodes and saving at
-   bounded); LTP timerfd01 "got 15 tick(s) expected 3" on a loaded machine (the time model, brief question 4).
+9. Kernel track: the pipe-capacity line here before was wrong: ours is Linux's default, and the reference gives 8192 only
+   when all of the machine's containers hold more than `fs.pipe-user-pages-soft` pages of pipes (Linux's per-user limit);
+   rwmodes and saving pass alone (section "RT2's remainder"). LTP timerfd01, clock_gettime04, epoll_wait04, getrusage04
+   fail on wasmtime (the time model, brief question 4).
+10. Kernel track (harness): with `runtime` the repeatable clock moves by `last_instructions`, which is 0 for wasmtime
+   (driver.rs:160-171), so cpulimit and turns never end; and `make_back` ignores `LOOK_AHEAD`, which the feature's comment
+   promises (tools/runtime-modes/la-switch.sh is the change, for a throwaway copy).
+11. Translator and executor tracks: LTP's math floating-point tests run about 10 times slower on wasmtime at full than on
+   the stand-in (float_iperb 695 s against 46 s); read_all_dev's worker restarts take over 3 s.
 
 For the owner (his files unchanged):
 1. A system has no constructor. Before (crates/system/interface.rs:26):
@@ -426,7 +550,9 @@ For the owner (his files unchanged):
 ## SECURITY
 
 - Lines with `unsafe` (`git grep -w unsafe` per folder), before (main / origin/agents) and now: single-kernel 7 / 0 -> 0,
-  runtime suite 0 / 0 -> 0, seeded-test-policy 0 / 0 -> 0. No marked exception; every crate keeps
+  runtime suite 0 / 0 -> 0, seeded-test-policy 0 / 0 -> 0.
+  2026-11-27 evening, db8b17712 -> 5ddc8da51 (MEASURED, `git grep -w unsafe <commit> -- <folder>`): single-kernel 0 -> 0,
+  runtime suite 0 -> 0, seeded-test-policy 0 -> 0, tools/runtime-modes (new, one shell script) 0. No marked exception; every crate keeps
   `[lints] workspace = true`; no lint lowered, no linter exclusion.
 - New dependencies: none from outside the workspace. Single-kernel adds workspace crates behavior-source and
   processor-architecture (for `Interruptible`) and, as dev-dependencies, the runtime suite and the unicorn stand-in
