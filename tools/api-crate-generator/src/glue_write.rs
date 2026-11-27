@@ -1478,7 +1478,7 @@ fn with_direct_imports(g: &crate::emit::Generator<'_>, own: usize, text: &str) -
     let lines: Vec<&str> = text.lines().collect();
     let at = lines.iter().position(|line| !(line.starts_with("//!") || line.starts_with("#![") || line.is_empty())).unwrap_or(lines.len());
     let mut out = lines[..at].join("\n");
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(&imports.join("\n"));
     out.push_str("\n\n");
     out.push_str(&lines[at..].join("\n"));

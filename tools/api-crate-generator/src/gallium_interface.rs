@@ -15,7 +15,7 @@ use crate::cheader::{CFunction, CParam, Header};
 use crate::gallium::{COUNTED, Entry, PLAN, Role};
 
 /// The first line of every file written.
-const HEADER: &str = "// Written by tools/api-crate-generator from Mesa 26.3.1's Gallium headers (p_defines.h, p_state.h, p_screen.h, p_context.h, u_transfer_helper.h) and the plan in src/gallium.rs. Do not edit.\n";
+const HEADER: &str = "// Written by tools/api-crate-generator from Mesa 26.3.1's Gallium headers (p_defines.h, p_state.h, p_screen.h, p_context.h, u_transfer_helper.h; blend.h, shader_enums.h, u_formats.h and the build's u_format_gen.h for the values) and the plan in src/gallium.rs. Do not edit.\n";
 
 /// The C handle of each kind's objects, as Mesa passes it inside plain data.
 pub(crate) const HANDLE_KINDS: &[(&str, &str)] = &[
@@ -40,7 +40,7 @@ const SHADERS: &[(&str, &str)] = &[
 const FIELDS_LEFT_OUT: &[(&str, &str, &str)] = &[
     ("pipe_resource", "screen", "the screen that made it: the glue's own, the implementation is the screen"),
     ("pipe_resource", "reference", "Mesa's count: the glue's, as every count (Role::Counts)"),
-    ("pipe_resource", "reference)", "Mesa's count, declared through the EXCLUSIVE_CACHELINE macro (the header reader names it so): the glue's"),
+    ("pipe_resource", "__cl_space", "the padding of the EXCLUSIVE_CACHELINE macro around the count (util/u_memory.h:103): no value"),
     ("pipe_resource", "clientptr_heap", "the frontend's heap of client pointers, which the driver never reads (the glue's, zero)"),
     ("pipe_resource", "next", "a chain of planes the driver makes itself; resource_create's template has none (st_texture.c:106)"),
     ("pipe_sampler_view", "reference", "Mesa's count: the glue's"),
@@ -85,14 +85,9 @@ fn handle(kind: &str, ty: &str) -> String {
     if COUNTED.contains(&kind) { format!("Arc<{ty}>") } else { ty.to_string() }
 }
 
-/// A field's declared type: the header reader gives a second declarator of one declaration (`float min_lod, max_lod;`)
-/// the first's name with its type (`float min_lod,`), dropped here.
+/// A field's declared type, its `const` dropped.
 pub(crate) fn declared_type(base: &str) -> String {
-    let base = base.trim_start_matches("const ").trim();
-    match base.rsplit_once(' ') {
-        Some((ty, last)) if last.ends_with(',') => ty.to_string(),
-        _ => base.to_string(),
-    }
+    base.trim_start_matches("const ").trim().to_string()
 }
 
 /// Parameters Mesa passes as NULL (READ at the callers): a single value becomes an `Option`, a list `Option<&[T]>` with
@@ -104,7 +99,27 @@ const NULLABLE: &[(&str, &str, &str)] = &[
     ("set_shader_buffers", "buffers", "NULL unbinds the slots (st_atom_storagebuf.c)"),
     ("set_shader_images", "images", "NULL unbinds the slots (st_atom_image.c)"),
     ("set_sampler_views", "views", "NULL unbinds the slots (st_atom_texture.c)"),
+    // A query of the pointer's first kind only: render_condition's method for a Query takes None, which ends the
+    // condition; its method for an EndOnlyQuery always has one.
+    ("render_condition", "query", "NULL ends the condition (main/condrender.c:99, st_cb_readpixels.c:148)"),
 ];
+
+/// Parameters declared `unsigned` that hold an enumeration's values (READ at each in Mesa 26.3.1's headers): each
+/// takes that enumeration's type in the trait.
+const PARAM_VALUES: &[(&str, &str, &str, &str)] = &[
+    ("create_query", "query_type", "pipe_query_type", "PIPE_QUERY_x (p_context.h:253, the values of enum pipe_query_type)"),
+    ("buffer_map", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (p_context.h:920)"),
+    ("buffer_subdata", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (p_context.h:979)"),
+    ("texture_subdata", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (p_context.h:987)"),
+    ("transfer_map", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (u_transfer_helper.h, as pipe_context's)"),
+    ("flush", "flags", "pipe_flush_flags", "PIPE_FLUSH_x (p_context.h:840, the values of enum pipe_flush_flags)"),
+];
+
+/// The trait's type of a parameter `PARAM_VALUES` names.
+fn param_value(header: &Header, pointer: &str, param: &str) -> Option<String> {
+    let (_, _, enumeration, _) = PARAM_VALUES.iter().find(|(p, name, _, _)| *p == pointer && *name == param)?;
+    header.value_type(enumeration).map(|(ty, _)| ty)
+}
 
 fn nullable(pointer: &str, param: &str) -> bool {
     NULLABLE.iter().any(|(p, name, _)| *p == pointer && *name == param)
@@ -223,6 +238,9 @@ impl Structures<'_> {
         if let Ok(number) = array.parse() {
             return Some(number);
         }
+        if let Some(known) = self.header.known_numbers.get(array) {
+            return usize::try_from(*known).ok();
+        }
         let mut value = self.defines.get(array)?.trim().trim_start_matches('(').trim_end_matches(')').to_string();
         for _ in 0..4 {
             if let Ok(number) = value.parse() {
@@ -239,7 +257,9 @@ impl Structures<'_> {
         let base = base.as_str();
         let mut ty = match field.pointers {
             0 => {
-                if let Some(ty) = number(base) {
+                if let Some((ty, _)) = self.header.field_value_type(structure, &field.name).or_else(|| self.header.value_type(base)) {
+                    ty
+                } else if let Some(ty) = number(base) {
                     ty.to_string()
                 } else if let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union ")) {
                     if inner == "pipe_color_union" || (self.header.unions.iter().any(|union| union == inner) && !inner.contains('.')) {
@@ -327,6 +347,13 @@ fn on_screen(entry: &Entry) -> bool {
 
 /// The kinds of objects a method reads or takes in place of a C handle: one method per kind.
 fn split_kinds(entry: &Entry) -> Vec<Option<&'static str>> {
+    // A turn that also reads another kind (end_query: an active query turned back, an end-only query only ended) is one
+    // method for the turned kind and one for the read kind.
+    let turned = entry.roles.iter().find_map(|role| if let Role::TurnsOrGivesBack(from, _, _) = role { Some(*from) } else { None });
+    let read = entry.roles.iter().find_map(|role| if let Role::Reads([kind]) = role { Some(*kind) } else { None });
+    if let (Some(turned), Some(read)) = (turned, read) {
+        return vec![Some(turned), Some(read)];
+    }
     for role in entry.roles {
         match role {
             Role::GivesBack(kinds) | Role::Makes(kinds) if kinds.len() > 1 => return kinds.iter().map(|kind| Some(*kind)).collect(),
@@ -380,10 +407,15 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
     let made_kind = || {
         entry.roles.iter().find_map(|role| match role {
             Role::Makes(kinds) => Some(kind.unwrap_or(kinds[0])),
-            Role::Turns(_, to) | Role::TurnsOrGivesBack(_, to) => Some(*to),
+            Role::TurnsOrGivesBack(_, to, _) => Some(*to),
             _ => None,
         })
     };
+    // The kind a turn takes by value, when this method is the turn's (not the read kind's of the same pointer).
+    let turns = entry.roles.iter().find_map(|role| match role {
+        Role::TurnsOrGivesBack(from, to, _) if kind.is_none_or(|k| k == *from) => Some((*from, *to)),
+        _ => None,
+    });
     let names: Vec<String> = function
         .params
         .iter()
@@ -402,6 +434,8 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             continue;
         }
         let param_text = match (base, param.pointers) {
+            (_, 0) if param_value(header, entry.pointer, &param.name).is_some() => format!("{name}: {}", param_value(header, entry.pointer, &param.name).unwrap_or_default()),
+            (b, 0) if header.value_type(b).is_some() => format!("{name}: {}", header.value_type(b).map(|(ty, _)| ty).unwrap_or_default()),
             (b, 0) if number(b).is_some() => {
                 // A count is its list's length, unless the list may be NULL (then None unbinds that many slots).
                 let list_nullable = function.params[at + 1..].iter().any(|later| later.pointers >= 1 && nullable(entry.pointer, &later.name));
@@ -456,14 +490,11 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             ("struct pipe_context", 1) => format!("{name}: Option<&{}>", kind_type("Context", screen)),
             ("struct pipe_query", 1) => {
                 let gives = entry.roles.iter().any(|role| matches!(role, Role::GivesBack(_)));
-                let turns = entry.roles.iter().find_map(|role| match role {
-                    Role::Turns(from, _) | Role::TurnsOrGivesBack(from, _) => Some(*from),
-                    _ => None,
-                });
                 match (turns, kind) {
-                    (Some(from), None) => format!("{name}: {}", kind_type(from, screen)),
-                    (Some(_), Some(k)) | (None, Some(k)) if gives => format!("{name}: {}", kind_type(k, screen)),
-                    (Some(_), Some(k)) | (None, Some(k)) => format!("{name}: &{}", kind_type(k, screen)),
+                    (Some((from, _)), _) => format!("{name}: {}", kind_type(from, screen)),
+                    (None, Some(k)) if gives => format!("{name}: {}", kind_type(k, screen)),
+                    (None, Some(k)) if nullable(entry.pointer, &param.name) && split_kinds(entry).first() == Some(&Some(k)) => format!("{name}: Option<&{}>", kind_type(k, screen)),
+                    (None, Some(k)) => format!("{name}: &{}", kind_type(k, screen)),
                     (None, None) => format!("{name}: &{}", kind_type("Query", screen)),
                 }
             }
@@ -531,15 +562,15 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             ("char", 1) => "Vec<u8>".to_string(),
             ("void", 1) if entry.pointer.ends_with("_map") => format!("Option<Mapped<{}>>", kind_type("Mapping", screen)),
             (_, 1) => format!("Option<{}>", kind_type(made_kind().ok_or_else(|| format!("{}: returns an object of no kind", entry.pointer))?, screen)),
-            ("bool", 0) if entry.roles.iter().any(|role| matches!(role, Role::Turns(..))) => {
-                let to = made_kind().unwrap_or("Query");
-                format!("Option<{}>", kind_type(to, screen))
-            }
-            ("bool", 0) => match entry.roles.iter().find_map(|role| if let Role::TurnsOrGivesBack(from, to) = role { Some((*from, *to)) } else { None }) {
+            // A turn that fails hands back what it took: Mesa keeps its handle (each turn's reason in the plan).
+            ("bool", 0) => match turns {
                 Some((from, to)) => format!("Result<{}, {}>", kind_type(to, screen), kind_type(from, screen)),
                 None => "bool".to_string(),
             },
-            (b, 0) => number(b).ok_or_else(|| format!("{}: returns {b}", entry.pointer))?.to_string(),
+            (b, 0) => match header.value_type(b) {
+                Some((ty, _)) => ty,
+                None => number(b).ok_or_else(|| format!("{}: returns {b}", entry.pointer))?.to_string(),
+            },
             (b, n) => return Err(format!("{}: returns {b} with {n} pointers", entry.pointer)),
         };
     }
@@ -548,12 +579,20 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
 
 pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Result<String, String> {
     crate::gallium::check(in_scope, &crate::cheader::read(texts))?;
-    let header = crate::cheader::read(texts);
+    let mut header = crate::cheader::read(texts);
+    let values = crate::gallium_values::collect(&header)?;
+    header.value_types = values.types();
+    header.known_numbers = values.known.clone();
+    header.field_value_types = values.field_types(&header.field_families);
+    let header = header;
     let mut structures = Structures { header: &header, written: BTreeSet::new(), text: String::new(), unmapped: Vec::new(), defines: header.defines.clone() };
     let mut screen_methods = String::new();
     let mut context_methods = String::new();
     let mut failures = Vec::new();
     let mut methods = 0;
+    // Each method as written (on the screen's trait or the context's, name, parameters, return), for the recording
+    // implementation.
+    let mut written: Vec<(bool, String, Vec<String>, String)> = Vec::new();
     for entry in PLAN {
         // A count is the kind's Clone and Drop, kept by the glue.
         // A pointer Mesa's own function fills, or the same function as another, is the direct crate's, not a method.
@@ -570,11 +609,18 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
                     let name = method_name(entry, kind, at == 0);
                     // Clippy counts every parameter, the receiver among them, and each `a: A, b: B` of one param text.
                     let arguments = 1 + params.iter().map(|param| param.matches(": ").count()).sum::<usize>();
+                    written.push((on_screen(entry), name.clone(), params.clone(), ret.clone()));
                     let receiver = std::iter::once("&self".to_string()).chain(params).collect::<Vec<_>>().join(", ");
                     let arrow = if ret.is_empty() { String::new() } else { format!(" -> {ret}") };
                     let target = if on_screen(entry) { &mut screen_methods } else { &mut context_methods };
                     let of_kind = kind.map(|kind| format!(", on a {kind}")).unwrap_or_default();
                     let _ = writeln!(target, "    /// Mesa's `{}.{}`{of_kind}, called first at {}.", entry.structure, entry.pointer, entry.caller);
+                    if let Some(why) = entry.roles.iter().find_map(|role| match role {
+                        Role::TurnsOrGivesBack(from, _, why) if kind.is_none_or(|k| k == *from) => Some(*why),
+                        _ => None,
+                    }) {
+                        let _ = writeln!(target, "    ///\n    /// A failure hands back what it took: {why}.");
+                    }
                     if arguments > MOST_ARGUMENTS {
                         let _ = writeln!(target, "    #[expect(clippy::too_many_arguments, reason = \"the pointer's parameters, as Mesa's header declares them\")]");
                     }
@@ -585,12 +631,31 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
             }
         }
     }
+    // The fields the driver fills once (G5), each a method changing Mesa's defaults in place.
+    for filled in crate::gallium::FILLED {
+        structures.write(filled.structure);
+        let name = type_name(filled.structure);
+        let stage = if filled.by_stage { "stage: values::MesaShaderStage, " } else { "" };
+        let of_stage = if filled.by_stage { ", one by shader stage (MESA_SHADER_*, up to MESA_SHADER_MESH_STAGES)" } else { "" };
+        let _ = writeln!(
+            screen_methods,
+            "    /// Mesa's `pipe_screen.{}`{of_stage}, filled once when the screen is made and read from then on (first at {}): `caps`\n    /// holds {} for the implementation to change.\n    fn {}(&self, {stage}caps: &mut {name});\n",
+            filled.field, filled.reader, filled.defaults, filled.field
+        );
+        let mut filled_params: Vec<String> = Vec::new();
+        if filled.by_stage {
+            filled_params.push("stage: values::MesaShaderStage".to_string());
+        }
+        filled_params.push(format!("caps: &mut {name}"));
+        written.push((true, filled.field.to_string(), filled_params, String::new()));
+        methods += 1;
+    }
     failures.extend(structures.unmapped.iter().cloned());
     if !failures.is_empty() {
         return Err(format!("GALLIUM INTERFACE FAILED {}:\n  {}", failures.len(), failures.join("\n  ")));
     }
     let mut interface = String::from(HEADER);
-    interface.push_str("//! Gallium, the driver interface Mesa's OpenGL calls in our driver, as safe traits: `Gallium` (the screen) and\n//! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa\n//! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only\n//! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received\n//! program of that stage. Plain data is owned, each object it names a reference of its kind. A kind Mesa counts\n//! (Resource, Fence, SamplerView, StreamOutputTarget) is passed as an `Arc` of it: an implementation keeps one past\n//! the call by cloning the handle, and the object ends where its last handle is dropped. Declared values are\n//! `u32`, checked by the glue.\n\nuse std::sync::Arc;\n\n");
+    interface.push_str("//! Gallium, the driver interface Mesa's OpenGL calls in our driver, as safe traits: `Gallium` (the screen) and\n//! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa\n//! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only\n//! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received\n//! program of that stage. Plain data is owned, each object it names a reference of its kind. A kind Mesa counts\n//! (Resource, Fence, SamplerView, StreamOutputTarget) is passed as an `Arc` of it: an implementation keeps one past\n//! the call by cloning the handle, and the object ends where its last handle is dropped. Declared values are\n//! `u32`, checked by the glue.\n\nuse std::sync::Arc;\n\npub mod values;\n\n");
     let _ = writeln!(interface, "{}", structures.text);
     interface.push_str("/// A resource's bytes mapped for the CPU: the implementation's mapping and the bytes, a copy the glue lends Mesa until the unmap.\n#[derive(Debug)]\npub struct Mapped<Mapping> {\n    /// The implementation's mapping, given back at the unmap.\n    pub mapping: Mapping,\n    /// The mapped bytes as the implementation has them.\n    pub bytes: Vec<u8>,\n    /// Bytes from one row to the next.\n    pub stride: u32,\n    /// Bytes from one layer to the next.\n    pub layer_stride: u64,\n}\n\n");
     let kinds: Vec<&str> = crate::gallium::KINDS.iter().map(|(kind, _)| *kind).filter(|kind| *kind != "Screen").collect();
@@ -605,12 +670,21 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     interface.push_str("}\n");
     let crate_folder = out.join("crates").join("gallium");
     std::fs::create_dir_all(&crate_folder).map_err(|error| error.to_string())?;
-    let glue_report = crate::gallium_glue::generate(&header, &structures.written, &crate_folder)?;
+    let glue_report = crate::gallium_glue::generate(&header, &structures.written, &values, &crate_folder)?;
+    let recording_report = crate::gallium_recording::generate(&written, &crate_folder)?;
     std::fs::write(crate_folder.join("interface.rs"), &interface).map_err(|error| error.to_string())?;
+    std::fs::write(crate_folder.join("values.rs"), crate::gallium_values::rust(&values, HEADER)).map_err(|error| error.to_string())?;
     std::fs::write(
         crate_folder.join("Cargo.toml"),
         "[package]\nname = \"wcontainers-gallium\"\ndescription = \"Gallium, the driver interface Mesa's OpenGL calls, as safe traits.\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\nlicense.workspace = true\nrepository.workspace = true\npublish = false\n\n[lib]\npath = \"interface.rs\"\n\n[dependencies]\nwcontainers-mesa-compiler = { path = \"../mesa-compiler\" }\n\n[lints]\nworkspace = true\n",
     )
     .map_err(|error| error.to_string())?;
-    Ok(format!("GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields\n{glue_report}", structures.written.len(), kinds.len() + 1, FIELDS_LEFT_OUT.len()))
+    let value_count: usize = values.enumerations.iter().map(|enumeration| enumeration.values.len()).sum::<usize>() + values.loose.len();
+    Ok(format!(
+        "GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields; values: {} enumerations, {value_count} values\n{glue_report}{recording_report}",
+        structures.written.len(),
+        kinds.len() + 1,
+        FIELDS_LEFT_OUT.len(),
+        values.enumerations.len()
+    ))
 }

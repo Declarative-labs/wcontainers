@@ -52,15 +52,13 @@ pub enum Role {
     GivesBack(&'static [&'static str]),
     /// Binds objects of the kind, or none, at slots.
     Binds(&'static str),
-    /// Takes an object of the first kind by value and returns it as the second.
-    Turns(&'static str, &'static str),
     /// Reads objects of the kinds by reference (the rest of its arguments plain data).
     Reads(&'static [&'static str]),
     /// Counts references to an object of the kind (the glue's clone and drop); the last release ends it.
     Counts(&'static str),
-    /// Like `Turns`, but a failure gives the first kind back (begin_query returning false: st/mesa then destroys the
-    /// query, which never became active, queryobj.c:239 to 247).
-    TurnsOrGivesBack(&'static str, &'static str),
+    /// Takes an object of the first kind by value and returns it as the second; a failure hands the first back, because
+    /// Mesa keeps its handle and uses it again (the third: where, READ in Mesa 26.3.1).
+    TurnsOrGivesBack(&'static str, &'static str, &'static str),
     /// Filled by the direct crate with Mesa's own function of this name, not a method of the implementation (our
     /// driver sets these pointers to Mesa's helpers: crates/opengl context.rs:225 to 227 and its sample position).
     MesaFills(&'static str),
@@ -91,7 +89,7 @@ pub const PLAN: &[Entry] = &[
     Entry { structure: "pipe_screen", pointer: "is_format_supported", roles: &[Role::Reads(&[])], caller: "mesa/state_tracker/st_cb_eglimage.c:48" },
     Entry { structure: "pipe_screen", pointer: "resource_create", roles: &[Role::Makes(&["Resource"])], caller: "mesa/state_tracker/st_texture.c:106" },
     Entry { structure: "pipe_screen", pointer: "resource_destroy", roles: &[Role::Counts("Resource")], caller: "gallium/auxiliary/util/u_inlines.h:183" },
-    Entry { structure: "pipe_context", pointer: "begin_query", roles: &[Role::TurnsOrGivesBack("Query", "ActiveQuery")], caller: "mesa/main/performance_monitor.c:198" },
+    Entry { structure: "pipe_context", pointer: "begin_query", roles: &[Role::TurnsOrGivesBack("Query", "ActiveQuery", "a failed begin leaves q->pq set and free_queries destroys it, never begun (mesa/main/queryobj.c:239 to 247)")], caller: "mesa/main/performance_monitor.c:198" },
     Entry { structure: "pipe_context", pointer: "bind_blend_state", roles: &[Role::Binds("Blend")], caller: "gallium/auxiliary/cso_cache/cso_context.c:449" },
     Entry { structure: "pipe_context", pointer: "bind_compute_state", roles: &[Role::Binds("ComputeShader")], caller: "gallium/auxiliary/cso_cache/cso_context.c:525" },
     Entry { structure: "pipe_context", pointer: "bind_depth_stencil_alpha_state", roles: &[Role::Binds("DepthStencilAlpha")], caller: "gallium/auxiliary/cso_cache/cso_context.c:510" },
@@ -138,7 +136,7 @@ pub const PLAN: &[Entry] = &[
     Entry { structure: "pipe_context", pointer: "destroy", roles: &[Role::GivesBack(&["Context"])], caller: "mesa/state_tracker/st_context.c:370" },
     Entry { structure: "pipe_context", pointer: "destroy_query", roles: &[Role::GivesBack(&["Query", "EndOnlyQuery", "ActiveQuery"])], caller: "mesa/main/performance_monitor.c:159" },
     Entry { structure: "pipe_context", pointer: "draw_vbo", roles: &[Role::Reads(&["Resource"])], caller: "gallium/auxiliary/cso_cache/cso_context.h:314" },
-    Entry { structure: "pipe_context", pointer: "end_query", roles: &[Role::Turns("ActiveQuery", "Query"), Role::Reads(&["EndOnlyQuery"])], caller: "mesa/main/performance_monitor.c:223" },
+    Entry { structure: "pipe_context", pointer: "end_query", roles: &[Role::TurnsOrGivesBack("ActiveQuery", "Query", "a failed end leaves q->pq set, and st/mesa ends, reads or destroys that same query later (mesa/main/queryobj.c:277 to 282)"), Role::Reads(&["EndOnlyQuery"])], caller: "mesa/main/performance_monitor.c:223" },
     Entry { structure: "pipe_context", pointer: "flush", roles: &[Role::Makes(&["Fence"])], caller: "mesa/state_tracker/st_interop.c:438" },
     Entry { structure: "pipe_context", pointer: "flush_resource", roles: &[Role::Reads(&["Resource"])], caller: "mesa/state_tracker/st_interop.c:373" },
     Entry { structure: "pipe_context", pointer: "generate_mipmap", roles: &[Role::Reads(&["Resource"])], caller: "mesa/state_tracker/st_gen_mipmap.c:145" },
@@ -180,6 +178,29 @@ pub const PLAN: &[Entry] = &[
     Entry { structure: "u_transfer_vtbl", pointer: "transfer_map", roles: &[Role::Makes(&["Mapping"]), Role::Reads(&["Resource"])], caller: "gallium/auxiliary/util/u_transfer_helper.c:376" },
     Entry { structure: "u_transfer_vtbl", pointer: "transfer_unmap", roles: &[Role::GivesBack(&["Mapping"])], caller: "gallium/auxiliary/util/u_transfer_helper.c:519" },
     Entry { structure: "u_transfer_vtbl", pointer: "transfer_flush_region", roles: &[Role::Reads(&["Mapping"])], caller: "gallium/auxiliary/util/u_inlines.h:589" },
+];
+
+/// A field of `struct pipe_screen` the driver fills once, when the screen is made, and Mesa reads from then on (not a
+/// pointer): each a method of the screen's trait that changes Mesa's defaults in place.
+pub struct Filled {
+    /// The field of pipe_screen.
+    pub field: &'static str,
+    /// Its structure.
+    pub structure: &'static str,
+    /// Whether it is an array by shader stage (`shader_caps[MESA_SHADER_MESH_STAGES]`): the method takes the stage.
+    pub by_stage: bool,
+    /// What it holds before the implementation changes it.
+    pub defaults: &'static str,
+    /// The first place in Mesa that reads it (file:line under src/).
+    pub reader: &'static str,
+}
+
+/// The fields the driver fills (G5 of the implementations track: screen.rs `fill_caps`, `fill_shader_caps`,
+/// `fill_compute_caps`). `nir_options` is the Mesa compiler's, filled by the glue; `transfer_helper` the glue's own.
+pub const FILLED: &[Filled] = &[
+    Filled { field: "caps", structure: "pipe_caps", by_stage: false, defaults: "Mesa's defaults, as u_init_pipe_screen_caps sets them (gallium/auxiliary/util/u_screen.c:41)", reader: "mesa/state_tracker/st_extensions.c:136" },
+    Filled { field: "shader_caps", structure: "pipe_shader_caps", by_stage: true, defaults: "zero (Mesa sets no default)", reader: "mesa/state_tracker/st_atom_atomicbuf.c:74" },
+    Filled { field: "compute_caps", structure: "pipe_compute_caps", by_stage: false, defaults: "zero (Mesa sets no default)", reader: "mesa/state_tracker/st_extensions.c:1741" },
 ];
 
 /// Checks the plan against the list of pointers in scope and the headers' census, and prints it by kind: every pointer
@@ -233,7 +254,7 @@ pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String>
             let (makes, ends, uses): (Vec<&str>, Vec<&str>, Vec<&str>) = match role {
                 Role::Makes(of) => (of.to_vec(), vec![], vec![]),
                 Role::GivesBack(of) => (vec![], of.to_vec(), vec![]),
-                Role::Turns(from, to) | Role::TurnsOrGivesBack(from, to) => (vec![to], vec![from], vec![]),
+                Role::TurnsOrGivesBack(from, to, _) => (vec![to], vec![from], vec![]),
                 Role::MesaFills(_) | Role::SameAs(_) => (vec![], vec![], vec![]),
                 Role::Binds(of) => (vec![], vec![], vec![of]),
                 // A count's last release is the object's end (fence_reference with no new fence).
@@ -309,7 +330,7 @@ fn kinds_of(entry: &Entry) -> Vec<&'static str> {
         .flat_map(|role| match role {
             Role::Makes(of) | Role::GivesBack(of) | Role::Reads(of) => of.to_vec(),
             Role::Binds(of) | Role::Counts(of) => vec![*of],
-            Role::Turns(from, to) | Role::TurnsOrGivesBack(from, to) => vec![*from, *to],
+            Role::TurnsOrGivesBack(from, to, _) => vec![*from, *to],
             Role::MesaFills(_) | Role::SameAs(_) => vec![],
         })
         .collect()

@@ -4839,6 +4839,16 @@ dependencies = [
  "serde",
  "serde_json",
  "wcontainers-gallium",
+ "wcontainers-gallium-recording",
+]
+
+[[package]]
+name = "wcontainers-gallium-recording"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-gallium",
+ "wcontainers-mesa-compiler",
+ "wcontainers-mesa-compiler-direct",
 ]
 
 [[package]]

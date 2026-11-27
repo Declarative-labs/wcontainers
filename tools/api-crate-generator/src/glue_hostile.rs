@@ -910,6 +910,7 @@ impl Writer<'_, '_> {
     }
 
     /// One fuzzed call: the receiver bound as `driven_call` binds it, every argument random.
+    #[allow(clippy::too_many_arguments, reason = "the call's own parts")]
     fn fuzzed_call(&self, bind: Option<usize>, receiver_type: &str, trait_path: &str, rust_name: &str, inputs: &[(String, String)], scope: &[usize], codecs: &Codecs) -> Option<(String, String)> {
         let mut prelude = String::new();
         let receiver = match bind {

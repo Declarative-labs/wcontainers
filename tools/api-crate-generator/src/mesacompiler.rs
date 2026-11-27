@@ -402,11 +402,8 @@ fn reached(header: &Header) -> Vec<String> {
         if let Ok(fields) = fields(name, header) {
             for (_, kind) in &fields {
                 let mut kind = kind.clone();
-                loop {
-                    match kind {
-                        FieldKind::Fixed { element, .. } | FieldKind::Array { element, .. } => kind = *element,
-                        _ => break,
-                    }
+                while let FieldKind::Fixed { element, .. } | FieldKind::Array { element, .. } = kind {
+                    kind = *element;
                 }
                 if let FieldKind::Structure(inner) = kind {
                     visit(&inner, header, out);
@@ -547,7 +544,7 @@ fn write_structures(header: &Header, comments: &BTreeMap<String, String>, interf
             let key = header.structures[&name].iter().find(|f| &f.name == field).map(|f| {
                 let stars = "*".repeat(f.pointers);
                 let array = f.array.as_ref().map(|a| format!("[{a}]")).unwrap_or_default();
-                format!("{}{}{}{}", f.base, if stars.is_empty() { " " } else { " " }, if stars.is_empty() { String::new() } else { stars.clone() }, format!("{}{array}", f.name)).replace("  ", " ")
+                format!("{} {stars}{}{array}", f.base, f.name).replace("  ", " ")
             });
             if let FieldKind::ByStage { handle, .. } = kind {
                 for stage in stages(header) {
@@ -679,7 +676,10 @@ fn c_scalar(base: &str) -> Option<&'static str> {
     number(base.trim_start_matches("const ").trim()).map(|(mirror, _)| mirror).or_else(|| (base == "bool").then_some("bool"))
 }
 
-fn parameters(function: &CFunction, header: &Header) -> Result<(Vec<Param>, Option<Out>, Vec<String>), String> {
+/// A function's parameters, its out-structure, and the names of the counts the slices give.
+type Parameters = (Vec<Param>, Option<Out>, Vec<String>);
+
+fn parameters(function: &CFunction, header: &Header) -> Result<Parameters, String> {
     let mut params = Vec::new();
     let mut out = None;
     let mut written = Vec::new();

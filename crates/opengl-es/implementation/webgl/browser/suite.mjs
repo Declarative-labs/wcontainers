@@ -62,10 +62,15 @@ try {
     console.log(line);
     lines.push(line);
   }
-  for (const [query, label] of [[`measure=${queries}`, 'measure'], [`measure=${queries}&nojspi=1`, 'measure without JSPI'],
-    ['test=query_results_wait&nojspi=1', 'query_results_wait without JSPI']]) {
+  // The query wait's cost, counted as a test (it asserts that every read waited and every query passed); and a host
+  // without JSPI, which cannot wait: query_results_wait must fail there at its first read, as implementation.rs says.
+  for (const [query, label, expected, because] of [[`measure=${queries}`, 'measure', true, ''],
+    ['test=query_results_wait&nojspi=1', 'query_results_wait without JSPI', false, 'the triangle on the pixel buffer passed samples']]) {
     const verdict = await page(query, label);
-    const line = `${label}: ${verdict.ok ? 'ok' : 'FAILED'} ${verdict.message.replace(/\s+/g, ' ')}`;
+    const message = verdict.message.replace(/\s+/g, ' ');
+    const held = verdict.ok === expected && (expected || message.includes(because));
+    const line = `${label}: ${held ? 'ok' : 'FAILED'} (${verdict.ok ? 'passed' : 'failed'}, ${expected ? 'must pass' : `must fail at "${because}"`}) ${message}`;
+    if (held) passed++; else failed++;
     console.log(line);
     lines.push(line);
   }

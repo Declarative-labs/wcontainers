@@ -13,13 +13,25 @@
 
 pub mod flat;
 pub mod held;
+pub mod registry;
+pub mod serve;
 
 #[cfg(mesa)]
-#[expect(unsafe_code, reason = "flat.c defines wc_flat_size, wc_flat_layout and wc_value as declared here, each reading nothing")]
+#[expect(unsafe_code, reason = "flat.c defines wc_flat_size, wc_flat_layout and wc_value, serve.c wc_table_size, as declared here, each reading nothing")]
 unsafe extern "C" {
     fn wc_flat_size(which: u32) -> usize;
     fn wc_flat_layout(which: u32, what: u32) -> usize;
     fn wc_value(which: u32) -> i64;
+    fn wc_table_size() -> usize;
+}
+
+/// Whether serve.c's table of Rust functions has the size of serve.rs's `Table` (the same entries, each a pointer).
+#[cfg(mesa)]
+pub fn table_agrees() -> (usize, usize) {
+    #[expect(unsafe_code, reason = "serve.c: wc_table_size returns a sizeof, reading and writing nothing")]
+    // SAFETY: a plain call of our own C function.
+    let c_size = unsafe { wc_table_size() };
+    (c_size, core::mem::size_of::<serve::Table>())
 }
 
 /// Whether every declared value of the trait (values.rs, the generator's reading of the headers) is the value C
