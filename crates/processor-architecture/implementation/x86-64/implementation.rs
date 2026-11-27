@@ -590,4 +590,6 @@ pub enum PreciseInstruction {
         instruction: Instruction,
         behavior: xsave::StateBehavior,
     },
+    /// UMONITOR as the manual gives it: #GP(0) for a non-canonical address, else the faults a read of its byte raises.
+    MonitorFaultsAsRead(Instruction),
 }

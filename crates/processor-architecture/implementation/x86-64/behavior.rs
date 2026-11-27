@@ -329,6 +329,7 @@ impl PreciseInstruction {
             Self::Reciprocal { instruction, .. } | Self::Segment { instruction, .. } => instruction,
             Self::Optional { instruction, .. } => instruction,
             Self::State { instruction, .. } => instruction,
+            Self::MonitorFaultsAsRead(instruction) => instruction,
         }
     }
 }
@@ -375,6 +376,12 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
             CpuidReading::Faults,
         ]
         .map(PreciseInstruction::Cpuid)
+        .to_vec(),
+        // The manual's faults, then this chip's UMONITOR, which faults on no address.
+        Instruction::UmonitorGpra => [
+            PreciseInstruction::MonitorFaultsAsRead(instruction),
+            PreciseInstruction::Optional { instruction, across_fault: StoreAcrossFault::WritesNothing },
+        ]
         .to_vec(),
         _ if find_vector_form(instruction).is_some() => [PreciseInstruction::Vector(instruction)].to_vec(),
         _ if crate::avx::find_avx_form(instruction).is_some() => crate::avx::list_avx_behaviors(instruction),
