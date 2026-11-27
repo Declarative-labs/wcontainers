@@ -1009,6 +1009,76 @@ made), (b) `to_spirv` taken out of the trait until a validation of the form exis
 before it made one method. The IO lowering's assertions on valid modules' large locations need the bridge to check
 every stage variable's location range before lowering (not done).
 
+## AC11 under the orchestrator's ruling (c): shaders typed by their place, the bar held (2026-11-27)
+
+The ruling: an order of calls the library does not take must be impossible to write. Done at d6e535461: the 38
+free-standing methods became 14 on six shader types, each made only by the method before it in a chain our callers
+take (READ crates/mesa-compiler/interface.rs): `SpirvShader` (spirv_read) -> `SpirvCommon` (spirv_to_common_form, the
+common form's steps as one call) -> `spirv_common_to_spirv` or `spirv_common_flatten`, each taking it by value;
+`Received` (glsl_to_nir; in the driver, what st/mesa hands create_*_state) -> `Prepared` (received_prepare, the driver's
+creation steps as one call) -> `Variant` (prepared_variant, a draw's steps on a copy) -> `variant_flatten`; `Made` (the
+programs the driver's steps make: pass-through and squares) -> made_variant. No method changes a shader in place; the
+bridge's single steps are in bridge/steps.h, which Rust does not call. Six doctests show wrong orders do not compile
+(Zink's writer on a read program, twice on one program, on a variant; creation steps on a SPIR-V program; a variant of
+an unprepared stage; squares from a made program).
+
+This run (fca6fad55): at d6e535461 two methods never made anything in 100,000 fuzzed calls (made_named_layer_location
+0 of about 7,200 a seed; prepared_geometry_points_as_squares 0 of about 4,700): the GLSL route made only vertex,
+fragment and compute stages, though the driver receives geometry and tessellation programs (READ graphics-implementations
+92cfc5a76 crates/opengl/src/screen.rs:439 to 454). `enum wc_stage` now also has GEOMETRY 3, TESS_CONTROL 4,
+TESS_EVALUATION 5 (the first three keep their numbers), glsl.cpp reports Mesa's own geometry and tessellation limits,
+and the suite has a geometry program making points that names a layer and a control and evaluation pair.
+
+MEASURED at 2613d8108 (pushed; x86-64 job gac-s/20261127-060920-3503591, log
+wcontainers-scratch/graphics-api-crates/ac11t/claim-2613d8108.log; Mesa fec8830e9 with assertions on):
+- generator build 0 warnings, 17 tests; written twice IDENTICAL; the five generated files SAME AS WRITTEN; UNMAPPED 0.
+- `cargo check --all-targets` 0 (also without Mesa 0); clippy `-D warnings` 0; the suite 5 of 5 by default and under
+  AddressSanitizer (29 `__asan_report` calls in the bridge's archive); doctests 7 of 7 (6 compile_fail, each for its code).
+- every hostile case alone in its own process: PROBES 640, cases 10, calls 8,206, ENDED 0.
+- **fuzzing, 12 seeds x 100,000 calls under AddressSanitizer: 12 of 12 status 0, no report, no assertion** (seeds 7919,
+  104729, 1299709, 11, 12, 13, 21 to 26; 54 to 55 s each). Every method made what it makes in every seed, e.g. seed 7919:
+  made_named_layer_location 139 of 5,627, prepared_geometry_points_as_squares 141 of 5,550, prepared_points_as_squares
+  1,006 of 5,553.
+- lines naming `unsafe`: mesa-compiler 0, conformance 0, direct 72; marks 36.
+- linter on crates/mesa-compiler (job gac-s/20261127-061529..., log ac11t/lint-2613d8108.log; the linter built from
+  reviewable-rust da55b9d7): 797 findings, number_constant_without_link 233 (constants.rs), magic_literal 202 (the suite's
+  edge values and programs), name_unanswered 68 and summary_unanswered 66 (the model rule sets, no key on the machine),
+  function_summary_not_third_person 52, summary_too_long 45, summary_not_one_line 29, public_outside_interface 28,
+  summary_not_one_sentence 24, constant_defined_twice 23, the rest below 10 each.
+
+Which Mesa driver takes each step in that position (READ Mesa 26.3.1 fec8830e9 on the build machine; ours are
+graphics-implementations 92cfc5a76's crates/opengl and crates/nir):
+
+| Method | Our caller | A Mesa driver taking the same step there |
+|---|---|---|
+| spirv_read (+ alphaToOne) | corpus run.rs:493 to 496 | every Vulkan driver: vk_spirv_to_nir (vulkan/runtime/vk_nir.c:246, 282), lavapipe lvp_pipeline.c:422; alphaToOne as nir_lower_alpha_to_one after reading (kosmickrisp msl_nir_lower_common.c:991) |
+| spirv_shader_key | run.rs:567 | NIR serialised as the cache's key: vk_pipeline.c:703, vk_pipeline_cache.c:523 |
+| spirv_to_common_form | run.rs:570, 671 | resources renumbered into the driver's own layout after reading: lavapipe lvp_lower_pipeline_layout (lvp_pipeline.c:588) |
+| spirv_common_to_spirv | run.rs:672 (candidate A) | **none** (below) |
+| spirv_common_flatten | run.rs:571, direct.rs:974 to 984 | out of SSA, then the back end's walk: Zink compile_module (zink_compiler.c:4087 to 4102) |
+| glsl_to_nir | the suite (st/mesa's part) | st/mesa: st_link_glsl_to_nir (st_glsl_to_nir.cpp:438, 455), st_finalize_nir (732) |
+| received_prepare | state.rs:1139 to 1180 | the driver's steps at create_*_state: d3d12_create_shader_impl (d3d12_compiler.cpp:1325), zink_shader_create (zink_compiler.c:5652) |
+| prepared_variant | draw.rs:779 to 818 | a draw's variant from a copy of the created shader: d3d12 select_shader_variant (d3d12_compiler.cpp:1064, the clone at 1084, the key's steps to 1174) |
+| prepared_points_as_squares | draw.rs:3426 to 3441 | d3d12's point sprite geometry program made for a draw of points (d3d12_compiler.cpp:666 to 679, d3d12_gs_variant.cpp:351) |
+| prepared_geometry_points_as_squares | draw.rs:3514 to 3522 | d3d12_lower_point_sprite on the application's geometry program (d3d12_compiler.cpp:1087 to 1094) |
+| made_key, made_named_layer_location, made_variant | state.rs:1186, 1195; draw.rs:3445, 3525 | d3d12's made geometry programs are shader selectors keyed and varied like the application's (d3d12_gs_variant.cpp:471, 525; select_shader_variant at d3d12_compiler.cpp:1530) |
+| variant_flatten | draw.rs:840, 978, 1034, 1081 | the variant compiled by the back end: d3d12 compile_nir (d3d12_compiler.cpp:90, called at 1204) |
+
+**For the orchestrator: spirv_common_to_spirv has no Mesa driver.** Zink's writer in its native Vulkan mode is reached
+only through `ntv_shader_prepare` and `ntv_info.is_native_vulkan`, and nothing in Mesa 26.3.1 calls the one or sets
+the other (MEASURED `grep -rn` over src: only nir_to_spirv.h:54, 77 and nir_to_spirv.c's own uses). Zink's own chain
+(zink_shader_create, zink_shader_compile, compile_module: prune_io, nir_convert_from_ssa, nir_to_spirv with its screen's
+ntv_info) needs a Zink screen, that is a Vulkan device. Our only caller is the corpus's candidate A (run.rs:672). Asked:
+keep the method with that caller (its fuzzing is clean, above), or take it out of the trait (the corpus loses candidate
+A). Until ruled it stays. spirv_to_common_form and spirv_common_flatten are our own route's steps; the table names the
+Mesa steps nearest them.
+
+**For the implementations track:** crates/nir on graphics-implementations 92cfc5a76 has dropped its copy of the bridge
+(no crates/nir/bridge; it depends on wcontainers-mesa-compiler-direct) and has 0 lines naming `unsafe` in src (56 in its
+corpus tests: lavapipe.rs 17, llvmpipe.rs 39; 115 in all on graphics-layout; MEASURED `git grep -c`). It calls the trait
+of 051b56c5f (38 methods, `MesaCompiler + Clone`, wc_nir_* names); the typed trait of d6e535461 replaces it, so its
+nir needs the move to the 14 methods (the walk of the suite, conformance/suite.rs, is the pattern).
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
