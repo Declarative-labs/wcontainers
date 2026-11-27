@@ -11,7 +11,7 @@ use wcontainers_clock::Clock;
 use wcontainers_kernel::{Kernel, Runner, StopReason};
 use wcontainers_system::FallbackObserver;
 
-/// Why an idle runner was run again before the time the kernel gave; the warning's detail is the idle poll in nanoseconds.
+/// Why an idle runner was run again before the time the kernel gave; its detail is the idle poll in nanoseconds.
 pub(crate) const IDLE_WITHOUT_WAKE: &str =
     "an idle runner is run again after a pause, since the kernel tells of no wake";
 
@@ -202,8 +202,7 @@ impl Signals {
         state.interrupted || state.stopped.is_some()
     }
 
-    /// Ends the run for every runner, those in the executor too; a panic outranks a finish, a finish an interrupt, and
-    /// the first finish stands.
+    /// Ends the run for every runner; a panic outranks a finish, a finish an interrupt, and the first finish stands.
     fn stop(&self, stopped: StopReason) {
         let mut state = self.lock();
         let outranks = match state.stopped {
@@ -496,7 +495,7 @@ mod tests {
     }
 
     impl StillSystem {
-        /// Each warning told so far: its reason, count and detail.
+        /// Returns each warning told so far: its reason, count and detail.
         fn warnings(&self) -> Vec<(String, u64, u64)> {
             self.warnings
                 .lock()
@@ -556,8 +555,7 @@ mod tests {
         }
     }
 
-    /// Runs `container` on a host thread of its own and returns what its run returned with the container, or none
-    /// past [`RUN_BOUND`].
+    /// Runs `container` on a host thread of its own; returns its stop and the container, or none past [`RUN_BOUND`].
     fn run_bounded(mut container: Double) -> Option<(StopReason, Double)> {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -567,13 +565,12 @@ mod tests {
         receiver.recv_timeout(RUN_BOUND).ok()
     }
 
-    /// What `container`'s run returned, or none past [`RUN_BOUND`].
+    /// Returns what `container`'s run returned, or none past [`RUN_BOUND`].
     fn stopped(container: Double) -> Option<StopReason> {
         run_bounded(container).map(|(stopped, _)| stopped)
     }
 
-    /// Interrupts the run once `gate` holds of `board`, from a host thread of its own; the thread returns whether the
-    /// gate held within [`RUN_BOUND`], and interrupts only then.
+    /// Interrupts the run from a host thread once `gate` holds of `board`; the thread says whether it held in time.
     fn interrupt_when(
         interrupter: RunInterrupter,
         board: Arc<Board>,
