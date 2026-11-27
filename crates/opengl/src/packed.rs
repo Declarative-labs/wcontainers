@@ -6,8 +6,8 @@ use naga::{
     Scalar, ScalarKind, Span, Statement, SwizzleComponent, Type, TypeInner, VectorSize,
 };
 
-use crate::gallium::*;
-use crate::state::refused;
+use crate::guest::refused;
+use crate::pipe::*;
 
 /// How a packed input's word is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

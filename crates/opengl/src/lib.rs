@@ -14,15 +14,21 @@ mod device;
 #[cfg(mesa)]
 mod draw;
 #[cfg(mesa)]
+pub mod driver;
+#[cfg(mesa)]
 mod format;
 #[cfg(mesa)]
 mod gallium;
+#[cfg(mesa)]
+mod guest;
 #[cfg(mesa)]
 mod indices;
 #[cfg(mesa)]
 mod outputs;
 #[cfg(mesa)]
 mod packed;
+#[cfg(mesa)]
+mod pipe;
 #[cfg(mesa)]
 mod position;
 #[cfg(mesa)]
@@ -35,6 +41,8 @@ mod resource;
 mod screen;
 #[cfg(mesa)]
 mod state;
+#[cfg(mesa)]
+mod states;
 #[cfg(mesa)]
 mod stream;
 #[cfg(mesa)]

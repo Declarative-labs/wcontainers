@@ -13,8 +13,10 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 naga = { workspace = true }
 pollster = "1.0.1"
+wcontainers-gallium = { path = "../gallium" }
 wcontainers-gpu = { path = "../gpu" }
 wcontainers-gpu-webgpu = { path = "../gpu/implementation/webgpu" }
+wcontainers-mesa-compiler = { path = "../mesa-compiler" }
 wcontainers-mesa-compiler-direct = { path = "../mesa-compiler/implementation/direct", default-features = false }
 wcontainers-nir = { path = "../nir", default-features = false }
 wcontainers-shaders = { path = "../shaders" }

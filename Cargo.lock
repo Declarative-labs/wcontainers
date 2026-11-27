@@ -4507,6 +4507,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-gallium"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-mesa-compiler",
+]
+
+[[package]]
 name = "wcontainers-gpu"
 version = "0.1.0"
 dependencies = [
@@ -4958,9 +4965,11 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "wcontainers-gallium",
  "wcontainers-gpu",
  "wcontainers-gpu-recording",
  "wcontainers-gpu-webgpu",
+ "wcontainers-mesa-compiler",
  "wcontainers-mesa-compiler-direct",
  "wcontainers-nir",
  "wcontainers-shaders",

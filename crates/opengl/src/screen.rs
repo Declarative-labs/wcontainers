@@ -104,7 +104,7 @@ pub fn whole<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Warns once of each slow path the first time it is taken, on the process's error output.
-fn warn_slow_paths<B: Gpu>(backend: &mut B) {
+pub(crate) fn warn_slow_paths<B: Gpu>(backend: &mut B) {
     for path in backend.take_slow_path_warnings() {
         eprintln!(
             "{}: slow path: {}",
@@ -115,7 +115,7 @@ fn warn_slow_paths<B: Gpu>(backend: &mut B) {
 }
 
 /// Every slow path the screen's device took, with how many times, for the end of its life.
-fn slow_path_counts<B: Gpu>(backend: &mut B) -> Vec<(&'static str, u64)> {
+pub(crate) fn slow_path_counts<B: Gpu>(backend: &mut B) -> Vec<(&'static str, u64)> {
     let paths = backend.slow_paths();
     SLOW_PATHS
         .iter()

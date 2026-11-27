@@ -19,6 +19,15 @@ const FIELDS: &str = "bridge/fields.c";
 const FIELDS_HEADER: &str = "bridge/fields.h";
 const FIELDS_LIBRARY: &str = "wcontainers_opengl_fields";
 const BINDINGS: &str = "gallium.rs";
+/// The bindings' constants and the plain number types they are declared with, alone: Gallium's
+/// values, which the driver on the Gallium trait names (`src/pipe.rs` includes them). They hold no
+/// function, structure or union.
+const VALUES: &str = "pipe_values.rs";
+/// The lines of the bindings `VALUES` keeps: constants, and type names of C's integer types.
+const VALUE_LINE: &str = "pub const ";
+const NUMBER_TYPE_LINE: &str = "pub type ";
+const C_NUMBER_TYPE: &str = " = ::std::os::raw::c_";
+const STATEMENT_END: char = ';';
 /// What the bindings hold: Gallium's types and constants, and the functions of Mesa's that the
 /// driver calls.
 const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context|u_transfer_vtbl";
@@ -91,5 +100,27 @@ fn main() {
     bindings
         .write_to_file(&file)
         .expect("the bindings are written");
+    let text = bindings.to_string();
+    let mut values = String::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let kept = line.starts_with(VALUE_LINE)
+            || (line.starts_with(NUMBER_TYPE_LINE) && line.contains(C_NUMBER_TYPE));
+        if !kept {
+            continue;
+        }
+        // A long constant goes on over several lines, to its semicolon.
+        values.push_str(line);
+        let mut last = line;
+        while !last.trim_end().ends_with(STATEMENT_END) {
+            let Some(more) = lines.next() else { break };
+            values.push(' ');
+            values.push_str(more.trim());
+            last = more;
+        }
+        values.push('\n');
+    }
+    std::fs::write(build_rs::input::out_dir().join(VALUES), values)
+        .expect("the values are written");
     println!("{CFG}");
 }

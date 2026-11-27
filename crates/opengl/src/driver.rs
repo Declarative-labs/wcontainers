@@ -1,0 +1,858 @@
+//! The driver on the Gallium trait (`wcontainers-gallium`): the screen, [`Driver`], and its
+//! contexts, [`DriverContext`], in safe Rust over a `Gpu` back end. The move from the bindings is
+//! made state by state: the kinds and calls not yet moved are [`Unmoved`], a kind no value has, and
+//! a call that would make one is refused by name, as a call the driver does not take.
+
+use std::cell::RefCell;
+use std::ffi::CString;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use wcontainers_gallium::{
+    BlendColor, BlendState, BlitInfo, ClipState, ComputeState, ConstantBuffer,
+    DepthStencilAlphaState, DrawIndirectInfo, DrawInfo, DrawStartCountBias, FramebufferState,
+    Gallium, GalliumContext, GridInfo, ImageView, Mapped, PipeBox, PolyStipple, RasterizerState,
+    ResourceTemplate, SamplerState, SamplerViewTemplate, ScissorState, ShaderBuffer, ShaderState,
+    StencilRef, Surface, VertexBuffer, VertexElement, ViewportState,
+};
+use wcontainers_gpu::{Gpu, caps::Caps, error::DeviceStatus, passes::PassTracker};
+use wcontainers_mesa_compiler::MesaCompiler;
+use wcontainers_mesa_compiler_direct::Bridge;
+
+use crate::device::HostWindows;
+use crate::guest::{self, guest_call, refuse};
+use crate::pipe::*;
+use crate::screen::{DRIVER_NAME, whole};
+use crate::state::Stage;
+use crate::states::{self, Blend, DepthStencil, Elements, Raster, Retired, Sampler};
+
+/// A kind of the Gallium trait whose calls are not yet moved onto it: no value of it is ever made,
+/// so every call taking one cannot be made, and every call making one is refused.
+#[derive(Clone, Debug)]
+pub enum Unmoved {}
+
+/// Refuses a call whose part of the driver is not yet on the Gallium trait (GI8 part B), by name.
+fn not_moved(call: &str) -> ! {
+    refuse(format_args!("{call}: not yet moved onto the Gallium trait"))
+}
+
+/// What the screen and every context made on it share: the back end and what is given back to it.
+pub struct Shared<B: Gpu> {
+    backend: Mutex<B>,
+    /// Objects whose holders went, given back to the back end when it is next used.
+    retired: Retired<B>,
+    caps: Caps,
+    /// The device's name, as OpenGL's renderer string ends.
+    name: CString,
+}
+
+impl<B: Gpu> Shared<B> {
+    /// The back end, for one call of the driver's. Once its device is lost the call is refused
+    /// here, so that no call of any context records work for a lost device.
+    pub fn backend(&self) -> MutexGuard<'_, B> {
+        let mut backend = whole(&self.backend);
+        if let DeviceStatus::Lost(reason) = backend.status() {
+            drop(backend);
+            guest::DEVICE_LOST.store(true, Ordering::Relaxed);
+            refuse(format_args!("the device was lost: {reason:?}"));
+        }
+        let retired = std::mem::take(&mut *whole(&self.retired));
+        for object in retired {
+            backend.destroy(object);
+        }
+        crate::screen::warn_slow_paths(&mut *backend);
+        backend
+    }
+}
+
+/// The screen: Gallium's view of the device over the back end `B`.
+pub struct Driver<B: HostWindows> {
+    shared: Arc<Shared<B>>,
+}
+
+impl<B: HostWindows> Driver<B> {
+    /// The screen over `backend`, whose device is named `name`.
+    pub fn new(backend: B, name: CString) -> Self {
+        let caps = backend.caps().clone();
+        Driver {
+            shared: Arc::new(Shared {
+                backend: Mutex::new(backend),
+                retired: Arc::new(Mutex::new(Vec::new())),
+                caps,
+                name,
+            }),
+        }
+    }
+}
+
+/// The screen on the GPU the back end finds, or none (Mesa then tries its next driver).
+pub fn driver() -> Option<Driver<wcontainers_gpu_webgpu::WebGpu>> {
+    guest_call(guest::SCREEN, None, || {
+        crate::device::webgpu().map(|(backend, name)| Driver::new(backend, name))
+    })
+}
+
+/// The keys of contexts, each made once in the process's life (0 is the screen's).
+static NEXT_CONTEXT: AtomicUsize = AtomicUsize::new(guest::SCREEN + 1);
+
+/// The state st/mesa sets between draws that the trait's calls moved so far keep.
+struct Set<B: Gpu> {
+    blend: Option<Arc<Blend>>,
+    depth_stencil: Option<Arc<DepthStencil<B>>>,
+    raster: Option<Arc<Raster<B>>>,
+    elements: Option<Arc<Elements<B>>>,
+    /// Each stage's samplers, by slot.
+    samplers: [Vec<Option<Arc<Sampler<B>>>>; Stage::ALL.len()],
+    blend_color: [u32; states::COLOR_CHANNELS],
+    stencil_ref: [u8; 2],
+    sample_mask: u32,
+    viewport: Option<ViewportState>,
+    scissor: Option<ScissorState>,
+    /// The control points of a patch (`set_patch_vertices`).
+    patch_vertices: u8,
+    /// The passes recorded, closed where later work must see what they wrote.
+    tracker: PassTracker<B>,
+}
+
+impl<B: Gpu> Default for Set<B> {
+    fn default() -> Self {
+        Set {
+            blend: None,
+            depth_stencil: None,
+            raster: None,
+            elements: None,
+            samplers: std::array::from_fn(|_| vec![None; PIPE_MAX_SAMPLERS as usize]),
+            blend_color: [0; states::COLOR_CHANNELS],
+            stencil_ref: [0; 2],
+            sample_mask: u32::MAX,
+            viewport: None,
+            scissor: None,
+            patch_vertices: 0,
+            tracker: PassTracker::default(),
+        }
+    }
+}
+
+/// One context: the state st/mesa sets and the work it records, on the screen it was made on.
+pub struct DriverContext<B: HostWindows> {
+    shared: Arc<Shared<B>>,
+    /// Its key among the guest calls' contexts ([`guest::guest_call`]).
+    key: usize,
+    set: RefCell<Set<B>>,
+}
+
+impl<B: HostWindows> DriverContext<B> {
+    /// Runs one call of this context as a guest call ([`guest::guest_call`]).
+    fn call<T>(&self, dropped: T, call: impl FnOnce() -> T) -> T {
+        guest_call(self.key, dropped, call)
+    }
+}
+
+/// The driver's stage of a Gallium stage, for the stages it takes.
+pub fn stage(stage: u32) -> Option<Stage> {
+    match mesa_shader_stage::try_from(stage).ok()? {
+        MESA_SHADER_VERTEX => Some(Stage::Vertex),
+        MESA_SHADER_FRAGMENT => Some(Stage::Fragment),
+        MESA_SHADER_COMPUTE => Some(Stage::Compute),
+        MESA_SHADER_GEOMETRY => Some(Stage::Geometry),
+        MESA_SHADER_TESS_CTRL => Some(Stage::TessControl),
+        MESA_SHADER_TESS_EVAL => Some(Stage::TessEvaluation),
+        _ => None,
+    }
+}
+
+impl<B: HostWindows> Gallium for Driver<B> {
+    type Compiler = Bridge;
+    type Context = DriverContext<B>;
+    type Resource = Unmoved;
+    type Fence = Unmoved;
+    type Blend = Arc<Blend>;
+    type DepthStencilAlpha = Arc<DepthStencil<B>>;
+    type Rasterizer = Arc<Raster<B>>;
+    type Sampler = Arc<Sampler<B>>;
+    type VertexElements = Arc<Elements<B>>;
+    type VertexShader = Unmoved;
+    type FragmentShader = Unmoved;
+    type GeometryShader = Unmoved;
+    type TessControlShader = Unmoved;
+    type TessEvaluationShader = Unmoved;
+    type ComputeShader = Unmoved;
+    type SamplerView = Unmoved;
+    type StreamOutputTarget = Unmoved;
+    type Query = Unmoved;
+    type ActiveQuery = Unmoved;
+    type EndOnlyQuery = Unmoved;
+    type Mapping = Unmoved;
+
+    fn context_create(&self, _: u64, _: u32) -> Option<Self::Context> {
+        Some(DriverContext {
+            shared: Arc::clone(&self.shared),
+            key: NEXT_CONTEXT.fetch_add(1, Ordering::Relaxed),
+            set: RefCell::new(Set::default()),
+        })
+    }
+
+    /// Reports every slow path the device took, with how many times, at the end of its life.
+    fn destroy(&self) {
+        guest_call(guest::SCREEN, (), || {
+            let mut backend = self.shared.backend();
+            for (reason, count) in crate::screen::slow_path_counts(&mut *backend) {
+                eprintln!(
+                    "{}: slow path taken {count} times: {reason}",
+                    DRIVER_NAME.to_string_lossy()
+                );
+            }
+        });
+    }
+
+    fn fence_finish(&self, _: Option<&Self::Context>, fence: &Self::Fence, _: u64) -> bool {
+        match *fence {}
+    }
+
+    fn flush_frontbuffer(
+        &self,
+        _: Option<&Self::Context>,
+        resource: &Self::Resource,
+        _: u32,
+        _: u32,
+        _: u64,
+        _: Option<&PipeBox>,
+    ) {
+        match *resource {}
+    }
+
+    fn get_device_vendor(&self) -> Vec<u8> {
+        self.shared.name.to_bytes().to_vec()
+    }
+
+    fn get_name(&self) -> Vec<u8> {
+        DRIVER_NAME.to_bytes().to_vec()
+    }
+
+    fn get_vendor(&self) -> Vec<u8> {
+        DRIVER_NAME.to_bytes().to_vec()
+    }
+
+    fn is_format_supported(
+        &self,
+        format: u32,
+        target: u32,
+        sample_count: u32,
+        storage_sample_count: u32,
+        bindings: u32,
+    ) -> bool {
+        guest_call(guest::SCREEN, false, || {
+            crate::format::supported(
+                &self.shared.caps.formats,
+                format,
+                target,
+                sample_count,
+                storage_sample_count,
+                bindings,
+            )
+        })
+    }
+
+    fn resource_create(&self, _: &ResourceTemplate) -> Option<Self::Resource> {
+        guest_call(guest::SCREEN, None, || not_moved("resource_create"))
+    }
+
+    fn resource_destroy(&self, pt: Self::Resource) {
+        match pt {}
+    }
+}
+
+/// The compiler whose received programs the shader states are made from.
+type Compiled = Bridge;
+
+impl<B: HostWindows> GalliumContext for DriverContext<B> {
+    type Screen = Driver<B>;
+
+    fn begin_query(&self, q: Unmoved) -> Option<Unmoved> {
+        match q {}
+    }
+
+    fn bind_blend_state(&self, state: Option<&Arc<Blend>>) {
+        self.set.borrow_mut().blend = state.cloned();
+    }
+
+    fn bind_compute_state(&self, state: Option<&Unmoved>) {
+        if let Some(state) = state {
+            match *state {}
+        }
+    }
+
+    fn bind_depth_stencil_alpha_state(&self, state: Option<&Arc<DepthStencil<B>>>) {
+        self.set.borrow_mut().depth_stencil = state.cloned();
+    }
+
+    fn bind_fs_state(&self, state: Option<&Unmoved>) {
+        if let Some(state) = state {
+            match *state {}
+        }
+    }
+
+    fn bind_gs_state(&self, state: Option<&Unmoved>) {
+        if let Some(state) = state {
+            match *state {}
+        }
+    }
+
+    fn bind_rasterizer_state(&self, state: Option<&Arc<Raster<B>>>) {
+        self.set.borrow_mut().raster = state.cloned();
+    }
+
+    fn bind_sampler_states(
+        &self,
+        shader: u32,
+        start_slot: u32,
+        samplers: &[Option<&Arc<Sampler<B>>>],
+    ) {
+        self.call((), || {
+            let Some(stage) = stage(shader) else {
+                return;
+            };
+            let mut set = self.set.borrow_mut();
+            let slots = &mut set.samplers[stage as usize];
+            let start = start_slot as usize;
+            let Some(slots) = slots.get_mut(start..start + samplers.len()) else {
+                refuse(format_args!(
+                    "samplers past the {} the screen reports",
+                    PIPE_MAX_SAMPLERS
+                ));
+            };
+            for (slot, sampler) in slots.iter_mut().zip(samplers) {
+                *slot = sampler.cloned();
+            }
+        });
+    }
+
+    fn bind_tcs_state(&self, state: Option<&Unmoved>) {
+        if let Some(state) = state {
+            match *state {}
+        }
+    }
+
+    fn bind_tes_state(&self, state: Option<&Unmoved>) {
+        if let Some(state) = state {
+            match *state {}
+        }
+    }
+
+    fn bind_vertex_elements_state(&self, state: Option<&Arc<Elements<B>>>) {
+        self.set.borrow_mut().elements = state.cloned();
+    }
+
+    fn bind_vs_state(&self, state: Option<&Unmoved>) {
+        if let Some(state) = state {
+            match *state {}
+        }
+    }
+
+    fn blit(&self, info: &BlitInfo<'_, Unmoved>) {
+        if let Some(resource) = info.dst.resource.or(info.src.resource) {
+            match *resource {}
+        }
+        self.call((), || not_moved("blit"));
+    }
+
+    fn buffer_map(
+        &self,
+        resource: &Unmoved,
+        _: u32,
+        _: u32,
+        _: &PipeBox,
+    ) -> Option<Mapped<Unmoved>> {
+        match *resource {}
+    }
+
+    fn buffer_subdata(&self, resource: &Unmoved, _: u32, _: u32, _: u32, _: &[u8]) {
+        match *resource {}
+    }
+
+    fn buffer_unmap(&self, transfer: Unmoved, _: &[u8]) {
+        match transfer {}
+    }
+
+    fn clear(&self, _: u32, _: u32, _: u8, _: Option<&ScissorState>, _: &[u32; 4], _: f64, _: u32) {
+        self.call((), || not_moved("clear"));
+    }
+
+    fn clear_depth_stencil(
+        &self,
+        dst: &Surface<'_, Unmoved>,
+        _: u32,
+        _: f64,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: bool,
+    ) {
+        if let Some(texture) = dst.texture {
+            match *texture {}
+        }
+        self.call((), || not_moved("clear_depth_stencil"));
+    }
+
+    fn clear_render_target(
+        &self,
+        dst: &Surface<'_, Unmoved>,
+        _: &[u32; 4],
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: bool,
+    ) {
+        if let Some(texture) = dst.texture {
+            match *texture {}
+        }
+        self.call((), || not_moved("clear_render_target"));
+    }
+
+    fn create_blend_state(&self, state: &BlendState) -> Option<Arc<Blend>> {
+        self.call(None, || Some(Arc::new(states::blend(state))))
+    }
+
+    fn create_compute_state(
+        &self,
+        _: <Compiled as MesaCompiler>::ReceivedCompute,
+        _: &ComputeState,
+    ) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_compute_state"))
+    }
+
+    fn create_depth_stencil_alpha_state(
+        &self,
+        state: &DepthStencilAlphaState,
+    ) -> Option<Arc<DepthStencil<B>>> {
+        self.call(None, || {
+            let mut backend = self.shared.backend();
+            Some(Arc::new(states::depth_stencil(
+                &mut *backend,
+                &self.shared.retired,
+                state,
+            )))
+        })
+    }
+
+    fn create_fs_state(
+        &self,
+        _: <Compiled as MesaCompiler>::ReceivedFragment,
+        _: &ShaderState,
+    ) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_fs_state"))
+    }
+
+    fn create_gs_state(
+        &self,
+        _: <Compiled as MesaCompiler>::ReceivedGeometry,
+        _: &ShaderState,
+    ) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_gs_state"))
+    }
+
+    fn create_query(&self, _: u32, _: u32) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_query"))
+    }
+
+    fn create_query_end_only_query(&self, _: u32, _: u32) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_query (end only)"))
+    }
+
+    fn create_rasterizer_state(&self, state: &RasterizerState) -> Option<Arc<Raster<B>>> {
+        self.call(None, || {
+            let mut backend = self.shared.backend();
+            Some(Arc::new(states::raster(
+                &mut *backend,
+                &self.shared.retired,
+                state,
+            )))
+        })
+    }
+
+    fn create_sampler_state(&self, state: &SamplerState) -> Option<Arc<Sampler<B>>> {
+        self.call(None, || {
+            let mut backend = self.shared.backend();
+            Some(Arc::new(states::sampler(
+                &mut *backend,
+                &self.shared.retired,
+                &self.shared.caps,
+                state,
+            )))
+        })
+    }
+
+    fn create_sampler_view(&self, texture: &Unmoved, _: &SamplerViewTemplate) -> Option<Unmoved> {
+        match *texture {}
+    }
+
+    fn create_stream_output_target(&self, resource: &Unmoved, _: u32, _: u32) -> Option<Unmoved> {
+        match *resource {}
+    }
+
+    fn create_tcs_state(
+        &self,
+        _: <Compiled as MesaCompiler>::ReceivedTessControl,
+        _: &ShaderState,
+    ) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_tcs_state"))
+    }
+
+    fn create_tes_state(
+        &self,
+        _: <Compiled as MesaCompiler>::ReceivedTessEvaluation,
+        _: &ShaderState,
+    ) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_tes_state"))
+    }
+
+    fn create_vertex_elements_state(&self, elements: &[VertexElement]) -> Option<Arc<Elements<B>>> {
+        self.call(None, || {
+            let mut backend = self.shared.backend();
+            Some(Arc::new(states::elements(
+                &mut *backend,
+                &self.shared.retired,
+                elements,
+            )))
+        })
+    }
+
+    fn create_vs_state(
+        &self,
+        _: <Compiled as MesaCompiler>::ReceivedVertex,
+        _: &ShaderState,
+    ) -> Option<Unmoved> {
+        self.call(None, || not_moved("create_vs_state"))
+    }
+
+    /// The state goes when its last holder drops it: a bound state stays until unbound.
+    fn delete_blend_state(&self, state: Arc<Blend>) {
+        drop(state);
+    }
+
+    fn delete_compute_state(&self, state: Unmoved) {
+        match state {}
+    }
+
+    fn delete_depth_stencil_alpha_state(&self, state: Arc<DepthStencil<B>>) {
+        drop(state);
+    }
+
+    fn delete_fs_state(&self, state: Unmoved) {
+        match state {}
+    }
+
+    fn delete_gs_state(&self, state: Unmoved) {
+        match state {}
+    }
+
+    fn delete_rasterizer_state(&self, state: Arc<Raster<B>>) {
+        drop(state);
+    }
+
+    fn delete_sampler_state(&self, state: Arc<Sampler<B>>) {
+        drop(state);
+    }
+
+    fn delete_tcs_state(&self, state: Unmoved) {
+        match state {}
+    }
+
+    fn delete_tes_state(&self, state: Unmoved) {
+        match state {}
+    }
+
+    fn delete_vertex_elements_state(&self, state: Arc<Elements<B>>) {
+        drop(state);
+    }
+
+    fn delete_vs_state(&self, state: Unmoved) {
+        match state {}
+    }
+
+    /// The context's states go with it; a destroyed context's reset is forgotten.
+    fn destroy(&self) {
+        *self.set.borrow_mut() = Set::default();
+        guest::forget_reset(self.key);
+    }
+
+    fn destroy_query(&self, q: Unmoved) {
+        match q {}
+    }
+
+    fn destroy_query_end_only_query(&self, q: Unmoved) {
+        match q {}
+    }
+
+    fn destroy_query_active_query(&self, q: Unmoved) {
+        match q {}
+    }
+
+    fn draw_vbo(
+        &self,
+        _: &DrawInfo<'_, Unmoved>,
+        _: u32,
+        _: Option<&DrawIndirectInfo<'_, Unmoved, Unmoved>>,
+        _: &[DrawStartCountBias],
+    ) {
+        self.call((), || not_moved("draw_vbo"));
+    }
+
+    fn end_query(&self, q: Unmoved) -> Option<Unmoved> {
+        match q {}
+    }
+
+    fn flush(&self, _: u32) -> Option<Unmoved> {
+        self.call(None, || not_moved("flush"))
+    }
+
+    /// A resource about to be shown or shared needs nothing more: every write is already ordered.
+    fn flush_resource(&self, resource: &Unmoved) {
+        match *resource {}
+    }
+
+    fn generate_mipmap(&self, resource: &Unmoved, _: u32, _: u32, _: u32, _: u32, _: u32) -> bool {
+        match *resource {}
+    }
+
+    fn get_device_reset_status(&self) -> u32 {
+        guest::reset_status(self.key)
+    }
+
+    fn get_query_result(&self, q: &Unmoved, _: bool, _: &mut [u8]) -> bool {
+        match *q {}
+    }
+
+    fn get_query_result_end_only_query(&self, q: &Unmoved, _: bool, _: &mut [u8]) -> bool {
+        match *q {}
+    }
+
+    /// The host's samples sit at the standard positions (WebGPU's, Vulkan's and Direct3D's), which
+    /// Mesa's `u_default_get_sample_position` gives; the glue is to install it (NEEDED, G2).
+    fn get_sample_position(&self, _: u32, _: u32) -> [f32; 2] {
+        self.call([0.5, 0.5], || {
+            refuse(format_args!(
+                "get_sample_position is Mesa's u_default_get_sample_position, the glue's (G2)"
+            ))
+        })
+    }
+
+    fn get_timestamp(&self) -> u64 {
+        self.call(0, || not_moved("get_timestamp"))
+    }
+
+    fn launch_grid(&self, _: &GridInfo<'_, Unmoved>) {
+        self.call((), || not_moved("launch_grid"));
+    }
+
+    /// Later work sees what earlier work wrote, to targets or storage: the open pass ends (the host
+    /// orders passes and dispatches after the ones before).
+    fn memory_barrier(&self, _: u32) {
+        self.texture_barrier(0);
+    }
+
+    fn render_condition(&self, query: &Unmoved, _: bool, _: u32) {
+        match *query {}
+    }
+
+    fn render_condition_end_only_query(&self, query: &Unmoved, _: bool, _: u32) {
+        match *query {}
+    }
+
+    fn resource_copy_region(
+        &self,
+        dst: &Unmoved,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: &Unmoved,
+        _: u32,
+        _: &PipeBox,
+    ) {
+        match *dst {}
+    }
+
+    fn sampler_view_destroy(&self, view: Unmoved) {
+        match view {}
+    }
+
+    fn set_active_query_state(&self, _: bool) {
+        self.call((), || not_moved("set_active_query_state"));
+    }
+
+    fn set_blend_color(&self, color: &BlendColor) {
+        self.set.borrow_mut().blend_color = color.color.map(f32::to_bits);
+    }
+
+    /// User clip planes are lowered into the programs by st/mesa (the screen reports none).
+    fn set_clip_state(&self, _: &ClipState) {}
+
+    fn set_constant_buffer(&self, _: u32, _: u32, buf: Option<&ConstantBuffer<'_, Unmoved>>) {
+        if let Some(resource) = buf.and_then(|b| b.buffer) {
+            match *resource {}
+        }
+        self.call((), || not_moved("set_constant_buffer"));
+    }
+
+    fn set_framebuffer_state(&self, _: &FramebufferState<'_, Unmoved>) {
+        self.call((), || not_moved("set_framebuffer_state"));
+    }
+
+    fn set_patch_vertices(&self, patch_vertices: u8) {
+        self.set.borrow_mut().patch_vertices = patch_vertices;
+    }
+
+    /// The stipple pattern applies only to a rasterizer state that stipples, which is refused by
+    /// name.
+    fn set_polygon_stipple(&self, _: &PolyStipple) {}
+
+    fn set_sample_mask(&self, sample_mask: u32) {
+        self.set.borrow_mut().sample_mask = sample_mask;
+    }
+
+    fn set_sampler_views(
+        &self,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        views: Option<&[Option<&Unmoved>]>,
+    ) {
+        if let Some(view) = views.into_iter().flatten().flatten().next() {
+            match **view {}
+        }
+        self.call((), || not_moved("set_sampler_views"));
+    }
+
+    /// The first scissor: the host has one.
+    fn set_scissor_states(&self, start_slot: u32, scissors: &[ScissorState]) {
+        if start_slot == 0
+            && let Some(first) = scissors.first()
+        {
+            self.set.borrow_mut().scissor = Some(*first);
+        }
+    }
+
+    fn set_shader_buffers(
+        &self,
+        _: u32,
+        _: u32,
+        _: u32,
+        buffers: Option<&[ShaderBuffer<'_, Unmoved>]>,
+        _: u32,
+    ) {
+        if let Some(resource) = buffers.into_iter().flatten().find_map(|b| b.buffer) {
+            match *resource {}
+        }
+        self.call((), || not_moved("set_shader_buffers"));
+    }
+
+    fn set_shader_images(
+        &self,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        images: Option<&[ImageView<'_, Unmoved>]>,
+    ) {
+        if let Some(resource) = images.into_iter().flatten().find_map(|i| i.resource) {
+            match *resource {}
+        }
+        self.call((), || not_moved("set_shader_images"));
+    }
+
+    fn set_stencil_ref(&self, value: StencilRef) {
+        self.set.borrow_mut().stencil_ref = value.ref_value;
+    }
+
+    fn set_stream_output_targets(&self, targets: &[Option<&Unmoved>], _: &[u32], _: u32) {
+        if let Some(target) = targets.iter().flatten().next() {
+            match **target {}
+        }
+        self.call((), || not_moved("set_stream_output_targets"));
+    }
+
+    fn set_vertex_buffers(&self, buffers: &[VertexBuffer<'_, Unmoved>]) {
+        if let Some(resource) = buffers.iter().find_map(|b| b.buffer.resource) {
+            match *resource {}
+        }
+        self.call((), || not_moved("set_vertex_buffers"));
+    }
+
+    /// The first viewport: the host has one.
+    fn set_viewport_states(&self, start_slot: u32, viewports: &[ViewportState]) {
+        if start_slot == 0
+            && let Some(first) = viewports.first()
+        {
+            self.set.borrow_mut().viewport = Some(*first);
+        }
+    }
+
+    fn stream_output_target_destroy(&self, target: Unmoved) {
+        match target {}
+    }
+
+    /// Later draws see what earlier ones wrote, to targets or storage: the open pass ends (the host
+    /// orders passes and dispatches after the ones before).
+    fn texture_barrier(&self, _: u32) {
+        self.call((), || {
+            let mut backend = self.shared.backend();
+            if let Err(error) = self.set.borrow_mut().tracker.close(&mut *backend) {
+                refuse(format_args!("closing a pass: {error:?}"));
+            }
+        });
+    }
+
+    fn texture_map(
+        &self,
+        resource: &Unmoved,
+        _: u32,
+        _: u32,
+        _: &PipeBox,
+    ) -> Option<Mapped<Unmoved>> {
+        match *resource {}
+    }
+
+    fn texture_subdata(
+        &self,
+        resource: &Unmoved,
+        _: u32,
+        _: u32,
+        _: &PipeBox,
+        _: &[u8],
+        _: u32,
+        _: u64,
+    ) {
+        match *resource {}
+    }
+
+    fn texture_unmap(&self, transfer: Unmoved, _: &[u8]) {
+        match transfer {}
+    }
+
+    fn transfer_flush_region(&self, transfer: &Unmoved, _: &[u8], _: &PipeBox) {
+        match *transfer {}
+    }
+
+    fn helper_transfer_map(
+        &self,
+        prsc: &Unmoved,
+        _: u32,
+        _: u32,
+        _: &PipeBox,
+    ) -> Option<Mapped<Unmoved>> {
+        match *prsc {}
+    }
+
+    fn helper_transfer_unmap(&self, ptrans: Unmoved, _: &[u8]) {
+        match ptrans {}
+    }
+
+    fn helper_transfer_flush_region(&self, ptrans: &Unmoved, _: &[u8], _: &PipeBox) {
+        match *ptrans {}
+    }
+}

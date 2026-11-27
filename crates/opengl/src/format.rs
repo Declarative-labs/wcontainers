@@ -4,7 +4,7 @@ use wcontainers_gpu::{
     caps::FormatCaps, caps::FormatUse, format::FORMAT_FACTS, format::Format, state::VertexFormat,
 };
 
-use crate::gallium::*;
+use crate::pipe::*;
 
 /// Every Gallium format the interface holds, beside the interface's format of the same bits.
 const FORMATS: &[(pipe_format, Format)] = &[
@@ -184,6 +184,19 @@ const VERTEX_FORMATS: &[(pipe_format, VertexFormat)] = &[
     (PIPE_FORMAT_R10G10B10A2_UINT, VertexFormat::Uint10_10_10_2),
     (PIPE_FORMAT_R11G11B10_FLOAT, VertexFormat::Float11_11_10),
 ];
+
+/// The bytes of one block of a format (of one element, for a vertex format), from the interface's
+/// facts of the format of the same bits. Mesa's own description (`util_format_description`) is a
+/// helper the Gallium trait does not offer (NEEDED, G4), so a format the interface has no format
+/// of is refused by its number.
+pub fn block_bytes(format: pipe_format) -> u32 {
+    match self::format(format) {
+        Some(ours) => FORMAT_FACTS[ours as usize].block.2,
+        None => crate::guest::refuse(format_args!(
+            "the size of pipe_format {format}, which the interface has no format of (G4)"
+        )),
+    }
+}
 
 /// The interface's vertex format of a Gallium format, if it reads it.
 pub fn vertex_format(format: pipe_format) -> Option<VertexFormat> {

@@ -196,10 +196,7 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.clear_render_target = Some(clear_render_target::<B>);
     c.clear_depth_stencil = Some(clear_depth_stencil::<B>);
     c.set_framebuffer_state = Some(set_framebuffer_state::<B>);
-    c.texture_barrier = Some(texture_barrier::<B>);
-    c.memory_barrier = Some(texture_barrier::<B>);
     c.launch_grid = Some(crate::compute::launch_grid::<B>);
-    c.flush_resource = Some(flush_resource);
     c.create_query = Some(query::create_query::<B>);
     c.destroy_query = Some(query::destroy_query::<B>);
     c.begin_query = Some(query::begin_query::<B>);
@@ -208,7 +205,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.set_active_query_state = Some(query::set_active_query_state::<B>);
     c.get_timestamp = Some(query::get_timestamp::<B>);
     c.render_condition = Some(query::render_condition::<B>);
-    c.set_polygon_stipple = Some(set_polygon_stipple);
     c.create_stream_output_target = Some(stream::create_stream_output_target::<B>);
     c.stream_output_target_destroy = Some(stream::stream_output_target_destroy::<B>);
     c.set_stream_output_targets = Some(stream::set_stream_output_targets::<B>);
@@ -227,7 +223,6 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     c.transfer_flush_region = Some(u_transfer_helper_transfer_flush_region);
     c.buffer_subdata = Some(resource::buffer_subdata::<B>);
     c.texture_subdata = Some(resource::texture_subdata::<B>);
-    c.get_device_reset_status = Some(state::get_device_reset_status);
     state::fill::<B>(c);
 }
 
@@ -759,25 +754,6 @@ unsafe extern "C" fn set_framebuffer_state<B: Gpu>(
         }
     })
 }
-
-/// Later draws see what earlier ones wrote, to targets or storage: the open pass ends (the host
-/// orders passes and dispatches after the ones before).
-unsafe extern "C" fn texture_barrier<B: Gpu>(pipe: *mut pipe_context, _: c_uint) {
-    crate::state::guest_call(pipe, (), move || {
-        // SAFETY: Mesa passes this driver's context.
-        let context = unsafe { Context::<B>::of(pipe) };
-        let mut backend = context.screen().backend();
-        if let Err(error) = context.tracker.close(&mut backend) {
-            state::refuse(format_args!("closing a pass: {error:?}"));
-        }
-    })
-}
-
-/// A resource about to be shown or shared needs nothing more: every write is already ordered.
-extern "C" fn flush_resource(_: *mut pipe_context, _: *mut pipe_resource) {}
-
-/// The stipple pattern applies only to a rasterizer state that stipples, which is refused by name.
-extern "C" fn set_polygon_stipple(_: *mut pipe_context, _: *const pipe_poly_stipple) {}
 
 /// The stage slot a Gallium stage's state is kept in, for the stages the driver takes.
 pub fn stage(stage: mesa_shader_stage) -> Option<Stage> {
