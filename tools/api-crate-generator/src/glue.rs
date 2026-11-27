@@ -697,6 +697,15 @@ impl<'g, 'a> Writer<'g, 'a> {
             };
             params.push((param.name.clone(), entry.0, entry.1));
         }
+        // A structure returned by a COM method crosses through a pointer the caller passes after `this`, which the method
+        // also returns (d3d12.h's C form, `RetVal`): zeros are written through it and it is answered.
+        let returned_record = named(&method.return_type)
+            .filter(|k| self.g.read.records.get(k).is_some_and(|record| matches!(record.kind, RecordKind::Struct | RecordKind::Union)) && !Generator::is_large_integer(k))
+            .and_then(|_| primitive_or_record_size(&self.layouts, &method.return_type));
+        if let Some((size, _)) = returned_record {
+            params.insert(0, ("RetVal".to_string(), "*mut u8".to_string(), Writes::Zeros(size)));
+            return Ok(Refusal { params, returned: "*mut u8".to_string(), answer: "p0".to_string(), stated: format!("the caller's pointer, {size} zero bytes written through it") });
+        }
         let (returned, answer, stated) = if named(&method.return_type).is_some_and(|k| k == key(FOUNDATION, "HRESULT")) {
             ("i32".to_string(), "wcontainers_component_object_model::constants::E_NOTIMPL.0".to_string(), "E_NOTIMPL".to_string())
         } else if method.return_type == Type::Void {

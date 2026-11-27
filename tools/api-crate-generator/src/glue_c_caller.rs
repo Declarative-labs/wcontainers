@@ -529,7 +529,8 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     let plan = Plan { interfaces, index };
     let Caller { c, exports, called, case_names, reach } = writer.c_caller(&plan)?;
     // The interfaces no object the caller can hold answers must be exactly those src/api.rs names, each with its reason.
-    let sliced = g.apis.iter().any(|api| !api.only.is_empty());
+    // The spike's slice is Direct3D 11 cut down; Direct3D 12 is cut to what its users call, a set of its own kind.
+    let sliced = g.apis.iter().any(|api| api.folder == "direct3d-11" && !api.only.is_empty());
     let listed: &[(&str, &str)] = if sliced { crate::api::UNREACHABLE_IN_SLICE } else { crate::api::UNREACHABLE_IN_WHOLE };
     let listed_names: BTreeSet<String> = listed.iter().map(|(name, _)| (*name).to_string()).collect();
     if listed_names != reach.unreachable_interfaces {
@@ -583,8 +584,12 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     let _ = writeln!(lib, "/// The hostile implementation served as the libraries' exports, each as the address C calls, in C's order.\npub fn hostile_exports() -> Vec<usize> {{");
     let mut served: Vec<usize> = exports.iter().map(|(api, _)| *api).collect();
     served.dedup();
+    // Direct3D 11's hostile library implements its own top trait and its supertraits' (DXGI, d3dcommon); an API outside
+    // them (Direct3D 12) is served by its own hostile crate's library.
+    let own_library = |api: usize| api != d3d11 && !g.apis[d3d11].supertraits.contains(&g.apis[api].folder);
     for api in &served {
-        let _ = writeln!(lib, "    let library_{api} = {}::exports(HostileLibrary);", direct_alias(g.apis[*api].folder));
+        let library = if own_library(*api) { format!("{}_hostile::HostileLibrary", package(g.apis[*api]).replace('-', "_")) } else { "HostileLibrary".to_string() };
+        let _ = writeln!(lib, "    let library_{api} = {}::exports({library});", direct_alias(g.apis[*api].folder));
     }
     let fields: Vec<String> = exports.iter().map(|(api, name)| format!("library_{api}.{name} as usize")).collect();
     let _ = writeln!(lib, "    vec![{}]\n}}\n", fields.join(", "));
@@ -603,6 +608,9 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
         }
     }
     let _ = writeln!(manifest, "{}-hostile = {{ path = \"../../hostile\" }}", package(g.apis[d3d11]));
+    for &api in served.iter().filter(|&&api| own_library(api)) {
+        let _ = writeln!(manifest, "{}-hostile = {{ path = \"../../../../{}/implementation/hostile\" }}", package(g.apis[api]), g.apis[api].folder);
+    }
     let _ = writeln!(manifest, "\n[dev-dependencies]\n{}-hostile = {{ path = \"../../hostile\" }}\n{} = {{ path = \"../../..\" }}", package(g.apis[d3d11]), package(g.apis[d3d11]));
     for spec in g.apis.iter() {
         if spec.folder != "direct3d-11" {
@@ -975,7 +983,13 @@ static void sweep(State *s, const uintptr_t *exports) {
         int before = interfaces_held(s);
         query_every_interface(s);
         for (uint64_t which = 0; which < EXPORTS; which++) {
-            if (!EXPORT_RIID[which]) continue;
+            /* An export that takes no interface id (D3D11CreateDevice) is called a few times a pass, so that the objects
+               it makes are held by the sweeps however many other cases the set has. */
+            if (!EXPORT_RIID[which]) {
+                for (int again = 0; again < 8; again++) call_export(s, exports, which);
+                s->counted[SWEPT]++;
+                continue;
+            }
             for (int want = 0; want < INTERFACES; want++) {
                 if (s->count[want]) continue;
                 s->forced_riid = want;

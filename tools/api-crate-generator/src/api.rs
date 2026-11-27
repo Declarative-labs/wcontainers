@@ -749,11 +749,145 @@ pub const DIRECT3D_11_SLICE: Api = Api {
     ..DIRECT3D_11
 };
 
+/// The library d3d12.dll (AC6, NEEDED-FROM-API-CRATES.md D3): its trait layer first; the shader compiler's reflection
+/// (d3dcompiler_47.dll) left out as for Direct3D 11.
+pub const DIRECT3D_12: Api = Api {
+    folder: "direct3d-12",
+    top_trait: Some("Direct3D12"),
+    summary: "The library d3d12.dll, and the debug layer's interfaces its objects answer.",
+    namespaces: &["Windows.Win32.Graphics.Direct3D12"],
+    referenced_namespaces: &[],
+    library: Some("d3d12.dll"),
+    function_prefixes: &["D3D12"],
+    type_prefixes: &["D3D12_", "D3D_"],
+    interface_prefixes: &["ID3D12", "ID3D"],
+    left_out: &[
+        "ID3D12FunctionParameterReflection",
+        "ID3D12FunctionReflection",
+        "ID3D12LibraryReflection",
+        "ID3D12ShaderReflection",
+        "ID3D12ShaderReflectionConstantBuffer",
+        "ID3D12ShaderReflectionType",
+        "ID3D12ShaderReflectionVariable",
+    ],
+    abstract_bases: &["ID3D12Object", "ID3D12DeviceChild", "ID3D12Pageable", "ID3D12CommandList"],
+    depends_on: &["component-object-model", "direct3d-common", "directx-graphics-infrastructure"],
+    supertraits: &["direct3d-common"],
+    faces: &[],
+    every_kind: &[],
+    only: DIRECT3D_12_SUBSET,
+    exceptions: &[],
+    pins: &[],
+    judged: DIRECT3D_12_JUDGED,
+    specials: &[],
+    effects: DIRECT3D_12_EFFECTS,
+};
+
+/// The judgments of the enumerations Direct3D 12's subset meets, and of its numbers named as masks that the metadata
+/// links to none.
+const DIRECT3D_12_JUDGED: &[Judged] = &[
+    Judged {
+        enumerations: &[
+            "D3D12_BLEND", "D3D12_BLEND_OP", "D3D12_COMMAND_LIST_TYPE", "D3D12_COMPARISON_FUNC", "D3D12_CONSERVATIVE_RASTERIZATION_MODE",
+            "D3D12_CPU_PAGE_PROPERTY", "D3D12_CULL_MODE", "D3D12_DEPTH_WRITE_MASK", "D3D12_DESCRIPTOR_HEAP_TYPE", "D3D12_FILL_MODE", "D3D12_HEAP_TYPE",
+            "D3D12_INDEX_BUFFER_STRIP_CUT_VALUE", "D3D12_INPUT_CLASSIFICATION", "D3D12_LOGIC_OP", "D3D12_MEMORY_POOL", "D3D12_PRIMITIVE_TOPOLOGY_TYPE",
+            "D3D12_QUERY_HEAP_TYPE", "D3D12_QUERY_TYPE", "D3D12_RESOURCE_BARRIER_TYPE", "D3D12_RESOURCE_DIMENSION", "D3D12_RTV_DIMENSION",
+            "D3D12_SRV_DIMENSION", "D3D12_STENCIL_OP", "D3D12_TEXTURE_COPY_TYPE", "D3D12_TEXTURE_LAYOUT", "D3D12_BUFFER_SRV_FLAGS",
+            "D3D12_DESCRIPTOR_HEAP_FLAGS", "D3D12_RESOURCE_BARRIER_FLAGS", "D3D12_RESOURCE_STATES", "D3D12_RESOURCE_FLAGS", "D3D12_PIPELINE_STATE_FLAGS",
+        ],
+        values: Values::Any,
+        why: CHECKED_BY_SYSTEM,
+    },
+    // https://learn.microsoft.com/windows/win32/api/d3d12/ne-d3d12-d3d12_command_queue_flags: DISABLE_GPU_TIMEOUT.
+    Judged { enumerations: &["D3D12_COMMAND_QUEUE_FLAGS"], values: Values::Any, why: "whether the GPU's watchdog may end the queue's work: the GPU's scheduling, no memory or code of ours" },
+    // https://learn.microsoft.com/windows/win32/api/d3d12/ne-d3d12-d3d12_fence_flags: sharing makes handles the kernel checks.
+    Judged { enumerations: &["D3D12_FENCE_FLAGS"], values: Values::Any, why: "a fence's sharing (handles the kernel checks) and monitoring; no memory of ours" },
+    // https://learn.microsoft.com/windows/win32/api/d3d12/ne-d3d12-d3d12_heap_flags: sharing, what a heap may hold, write
+    // watching and zeroing of the GPU's memory.
+    Judged { enumerations: &["D3D12_HEAP_FLAGS"], values: Values::Any, why: "a heap's sharing (handles the kernel checks), what it may hold, and whether the GPU's memory is zeroed or watched for writes: memory the GPU owns, reached by the CPU only through Map" },
+    Judged { enumerations: &["ID3D12Device::CreateCommandList(nodeMask)", "ID3D12Device::CreateRootSignature(nodeMask)"], values: Values::Any, why: "which GPU node of the adapter: the system refuses a node it does not have" },
+];
+
+/// What objects of Direct3D 12's subset do.
+const DIRECT3D_12_EFFECTS: &[Effects] = &[
+    Effects { interfaces: &["D3D12CreateDevice"], why: "makes a device on an adapter, or answers whether it could; the adapter is an object, never a module" },
+    Effects { interfaces: &["ID3D12Device"], why: "makes objects, writes descriptors and answers questions of layout; a descriptor handle and a GPU address are the kinds the glue judges by their own rows" },
+    Effects { interfaces: &["ID3D12CommandAllocator"], why: "resets the memory of the lists it backs, which the GPU owns" },
+    Effects { interfaces: &["ID3D12CommandQueue"], why: "runs closed lists on the GPU and signals fences: work of the GPU on its own memory" },
+    Effects { interfaces: &["ID3D12DescriptorHeap"], why: "describes itself and answers its handles' starts" },
+    Effects { interfaces: &["ID3D12Fence"], why: "a fence's value and an event it signals (a handle the kernel checks)" },
+    Effects { interfaces: &["ID3D12GraphicsCommandList"], why: "records work for the GPU, run only when a queue executes the list: binds, draws, copies and barriers on the GPU's memory" },
+    Effects { interfaces: &["ID3D12Resource"], why: "describes itself and answers its GPU address; Map and Unmap lend memory until Unmap, a kind refused with no exception line" },
+];
+
+/// What the shader tests call of Direct3D 12 (NEEDED-FROM-API-CRATES.md D3, its 30 methods), and what makes and runs the
+/// objects they call it on (graphics-test's d3d12 helpers, which move with them).
+const DIRECT3D_12_SUBSET: &[&str] = &[
+    // D3's methods.
+    "ID3D12GraphicsCommandList::BeginQuery",
+    "ID3D12GraphicsCommandList::ClearRenderTargetView",
+    "ID3D12GraphicsCommandList::CopyBufferRegion",
+    "ID3D12GraphicsCommandList::CopyTextureRegion",
+    "ID3D12GraphicsCommandList::Dispatch",
+    "ID3D12GraphicsCommandList::DrawIndexedInstanced",
+    "ID3D12GraphicsCommandList::DrawInstanced",
+    "ID3D12GraphicsCommandList::EndQuery",
+    "ID3D12GraphicsCommandList::IASetIndexBuffer",
+    "ID3D12GraphicsCommandList::IASetPrimitiveTopology",
+    "ID3D12GraphicsCommandList::IASetVertexBuffers",
+    "ID3D12GraphicsCommandList::OMSetRenderTargets",
+    "ID3D12GraphicsCommandList::ResolveQueryData",
+    "ID3D12GraphicsCommandList::ResourceBarrier",
+    "ID3D12GraphicsCommandList::SOSetTargets",
+    "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView",
+    "ID3D12GraphicsCommandList::SetComputeRootSignature",
+    "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView",
+    "ID3D12GraphicsCommandList::SetDescriptorHeaps",
+    "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView",
+    "ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable",
+    "ID3D12GraphicsCommandList::SetGraphicsRootSignature",
+    "ID3D12GraphicsCommandList::SetPipelineState",
+    "ID3D12Device::CreateComputePipelineState",
+    "ID3D12Device::CreateGraphicsPipelineState",
+    "ID3D12Device::CreateQueryHeap",
+    "ID3D12Device::CreateRenderTargetView",
+    "ID3D12Device::CreateShaderResourceView",
+    "ID3D12Device::GetCopyableFootprints",
+    "ID3D12Resource::GetDesc",
+    "ID3D12Resource::GetGPUVirtualAddress",
+    "ID3D12Resource::Map",
+    "ID3D12Resource::Unmap",
+    // What makes the device, its queue, lists, heaps, resources, root signatures and fences, and runs the lists.
+    "D3D12CreateDevice",
+    "ID3D12Device::CreateCommandQueue",
+    "ID3D12Device::CreateCommandAllocator",
+    "ID3D12Device::CreateCommandList",
+    "ID3D12Device::CreateDescriptorHeap",
+    "ID3D12Device::GetDescriptorHandleIncrementSize",
+    "ID3D12Device::CreateRootSignature",
+    "ID3D12Device::CreateCommittedResource",
+    "ID3D12Device::CreateFence",
+    "ID3D12DescriptorHeap::GetDesc",
+    "ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart",
+    "ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart",
+    "ID3D12CommandAllocator::Reset",
+    "ID3D12GraphicsCommandList::Close",
+    "ID3D12GraphicsCommandList::Reset",
+    "ID3D12CommandQueue::ExecuteCommandLists",
+    "ID3D12CommandQueue::Signal",
+    "ID3D12Fence::GetCompletedValue",
+    "ID3D12Fence::SetEventOnCompletion",
+];
+
 /// The crates written together: each API with the ones it names, lowest first.
 pub const SETS: &[(&str, &[&Api])] = &[
     ("direct3d-11", &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_11]),
     // The same APIs with both glues for every method (AC3), kept apart from the trait layer until they build.
     ("direct3d-11-glue", &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_11]),
+    // Direct3D 12's trait layer (AC6's first step), beside the APIs it names.
+    ("direct3d-12", &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_12]),
+    // Every Direct3D API with both glues, one generation (one COM crate holds the plain data all of them name).
+    ("direct3d-glue", &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_11, &DIRECT3D_12]),
     (
         "direct3d-11-slice",
         &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE_SLICE, &DIRECT3D_11_SLICE],
@@ -779,7 +913,7 @@ pub const UNREACHABLE_IN_SLICE: &[(&str, &str)] = &[
 
 /// Whether a set's direct crates are written: a slice's, and the whole APIs' glue set.
 pub fn writes_glue(name: &str) -> bool {
-    name != "direct3d-11"
+    name != "direct3d-11" && name != "direct3d-12"
 }
 
 pub fn by_name(name: &str) -> Option<&'static [&'static Api]> {

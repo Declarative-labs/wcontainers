@@ -624,6 +624,8 @@ impl<'a> Generator<'a> {
                 let named_key = named(ty).unwrap_or_default();
                 self.kind_of.contains_key(&named_key)
                     || self.interface_api.contains_key(&named_key)
+                    // An IUnknown field is the API's `UnknownObject`, generic over the API as well.
+                    || named_key == key(UNKNOWN.0, UNKNOWN.1)
                     || (self.read.records.get(&named_key).is_some_and(|r| r.kind == RecordKind::Struct || r.kind == RecordKind::Union)
                         && self.record_is_generic(&named_key))
             }
@@ -1714,7 +1716,8 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
     let kinds_report = classified.report.clone();
     *generator.classified.borrow_mut() = Some(classified);
     // The glue: each API's direct crate, for a slice and for the whole APIs (AC3).
-    let sliced = apis.iter().any(|api| !api.only.is_empty());
+    // The spike's slice is Direct3D 11 cut down; Direct3D 12 is cut to what its users call, a set of its own kind.
+    let sliced = apis.iter().any(|api| api.folder == "direct3d-11" && !api.only.is_empty());
     let mut failures: Vec<String> = Vec::new();
     if writes_glue {
         let writer = glue::Writer::new(&generator);
