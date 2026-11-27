@@ -38,18 +38,20 @@ pub(crate) enum Exit {
     IllegalInstruction,
     /// A breakpoint instruction (`brk`), with its 16-bit comment.
     Breakpoint { comment: u16 },
-    /// A read of the generic timer's counter or frequency that EL1 traps, with the program counter
-    /// at its instruction and the general register it reads into (31 for none).
-    CounterRead { counter: Counter, register: u8 },
+    /// A read of a system register that EL1 traps and Linux answers for the program, with the
+    /// program counter at its instruction and the general register it reads into (31 for none).
+    SystemRegisterRead { read: EmulatedRead, register: u8 },
 }
 
-/// What a trapped counter read asks for.
+/// What a trapped system register read the kernel answers asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Counter {
+pub(crate) enum EmulatedRead {
     /// CNTFRQ_EL0: the counter's ticks a second.
     Frequency,
     /// CNTVCT_EL0, CNTPCT_EL0 and their self-synchronized forms: the count.
     Count,
+    /// An identification register, and what it reads.
+    Identification(u64),
 }
 
 /// The encoding fields (op0, op1, CRn, CRm) every EL0 counter register shares
@@ -59,13 +61,32 @@ const COUNTER_REGISTERS: (u8, u8, u8, u8) = (3, 3, 14, 0);
 /// Returns the counter a read of the system register of encoding op2 `op2` among
 /// [`COUNTER_REGISTERS`] gives: 0 is CNTFRQ_EL0, 1 CNTPCT_EL0, 2 CNTVCT_EL0, 5 CNTPCTSS_EL0 and
 /// 6 CNTVCTSS_EL0.
-fn counter_of(op2: u8) -> Option<Counter> {
+fn counter_of(op2: u8) -> Option<EmulatedRead> {
     match op2 {
-        0 => Some(Counter::Frequency),
-        1 | 2 | 5 | 6 => Some(Counter::Count),
+        0 => Some(EmulatedRead::Frequency),
+        1 | 2 | 5 | 6 => Some(EmulatedRead::Count),
         _ => None,
     }
 }
+
+/// PSTATE's SSBS, DIT and TCO, at their bits of SPSR_EL1, which a thread's saved PSTATE keeps
+/// beside the condition flags, as Linux keeps them in its saved registers.
+pub(crate) const PROCESS_STATE_CONTROLS: u64 = {
+    let mut mask = 0;
+    let mut index = 0;
+    while index
+        < wcontainers_processor_architecture_arm64::system_register::PROCESS_STATE_CONTROLS.len()
+    {
+        if let Some(bit) =
+            wcontainers_processor_architecture_arm64::system_register::PROCESS_STATE_CONTROLS[index]
+                .to_process_state_bit()
+        {
+            mask |= bit;
+        }
+        index += 1;
+    }
+    mask
+};
 
 /// The processor's state of a thread at EL0, which adds no state to what every level has.
 type Processor = wcontainers_processor_architecture_arm64::Processor<()>;
@@ -250,14 +271,22 @@ fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock
 }
 
 /// Returns the exit of a trapped system access of encoding `(op0, op1, CRn, CRm)` and `op2`, into
-/// or from general register `register`, a read if `read`: a counter read the kernel answers,
-/// else an access the kernel does not emulate, which ends as an undefined instruction does.
+/// or from general register `register`, a read if `read`: a read of the counter or of an
+/// identification register the kernel answers as Linux does, else an access Linux does not
+/// emulate, which ends as an undefined instruction does.
 fn exit_of_system_access(encoding: (u8, u8, u8, u8), op2: u8, register: u8, read: bool) -> Exit {
-    match counter_of(op2) {
-        Some(counter) if read && encoding == COUNTER_REGISTERS => {
-            Exit::CounterRead { counter, register }
-        }
-        _ => Exit::IllegalInstruction,
+    if !read {
+        return Exit::IllegalInstruction;
+    }
+    let emulated = if encoding == COUNTER_REGISTERS {
+        counter_of(op2)
+    } else {
+        crate::identification::read(&crate::identification::PRESENTED, encoding, op2)
+            .map(EmulatedRead::Identification)
+    };
+    match emulated {
+        Some(read) => Exit::SystemRegisterRead { read, register },
+        None => Exit::IllegalInstruction,
     }
 }
 
@@ -282,6 +311,7 @@ fn to_processor(registers: &RegisterBlock, predicates: Predicates) -> Processor 
         floating_point_status: u64::from(registers.fpsr),
         predicate_registers: predicates.registers,
         first_fault_register: predicates.first_fault,
+        process_state_controls: registers.pstate & PROCESS_STATE_CONTROLS,
         software_thread_id: registers.tpidr_el0,
         exclusive_monitor: ExclusiveMonitor::Open,
         exception: None,
@@ -300,7 +330,8 @@ fn to_registers(processor: &Processor) -> RegisterBlock {
         x: processor.general_purpose_registers,
         sp: processor.stack_pointer,
         pc: processor.program_counter,
-        pstate: u64::from(processor.condition_flags.bits()),
+        pstate: u64::from(processor.condition_flags.bits())
+            | processor.process_state_controls & PROCESS_STATE_CONTROLS,
         v: processor.vector_registers.map(halves),
         fpsr: u32::try_from(processor.floating_point_status)
             .expect("FPSR's upper half is reserved as zero"),
@@ -323,7 +354,7 @@ mod tests {
         }
         registers.sp = u64::MAX;
         registers.pc = u64::from(u32::MAX);
-        registers.pstate = u64::from(ConditionFlags::all().bits());
+        registers.pstate = u64::from(ConditionFlags::all().bits()) | PROCESS_STATE_CONTROLS;
         registers.v[1] = [u64::MAX, u64::MIN];
         registers.v[2] = [u64::MIN, u64::MAX];
         registers.fpsr = u32::MAX;
@@ -442,7 +473,8 @@ mod tests {
     }
 
     #[test]
-    fn trapped_counter_reads_are_answered_and_other_system_accesses_are_undefined() {
+    fn trapped_counter_and_identification_reads_are_answered_and_other_system_accesses_are_undefined()
+     {
         let registers = RegisterBlock::ZERO;
         let frequency = (3, 3, 14, 0, 0);
         let physical = (3, 3, 14, 0, 1);
@@ -450,37 +482,45 @@ mod tests {
         let virtual_self_synchronized = (3, 3, 14, 0, 6);
         let virtual_timer_control = (3, 3, 14, 3, 1);
         let main_id = (3, 0, 0, 0, 0);
+        let system_control = (3, 0, 1, 0, 0);
         let cases = [
             (
                 frequency,
-                Exit::CounterRead {
-                    counter: Counter::Frequency,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Frequency,
                     register: 3,
                 },
             ),
             (
                 physical,
-                Exit::CounterRead {
-                    counter: Counter::Count,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Count,
                     register: 3,
                 },
             ),
             (
                 virtual_count,
-                Exit::CounterRead {
-                    counter: Counter::Count,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Count,
                     register: 3,
                 },
             ),
             (
                 virtual_self_synchronized,
-                Exit::CounterRead {
-                    counter: Counter::Count,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Count,
                     register: 3,
                 },
             ),
             (virtual_timer_control, Exit::IllegalInstruction),
-            (main_id, Exit::IllegalInstruction),
+            (
+                main_id,
+                Exit::SystemRegisterRead {
+                    read: EmulatedRead::Identification(0x000F_0000),
+                    register: 3,
+                },
+            ),
+            (system_control, Exit::IllegalInstruction),
         ];
         for (encoding, exit) in cases {
             assert_eq!(

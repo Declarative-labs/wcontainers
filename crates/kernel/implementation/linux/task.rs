@@ -171,27 +171,29 @@ impl Kernel {
                 let pc = self.thread_pc(cx, tid);
                 self.force_fault(cx, tid, SIGTRAP, TRAP_BRKPT as i32, pc)
             }
-            Exit::CounterRead { counter, register } => {
-                self.answer_counter_read(cx, tid, counter, register);
+            Exit::SystemRegisterRead { read, register } => {
+                self.answer_system_register_read(cx, tid, read, register);
             }
         }
     }
 
-    /// Answers a counter read the executor trapped as the instruction would on a host that lets
-    /// EL0 read the counter: the value goes into general register `register` (31, the zero
-    /// register, takes nothing) and the thread goes on after the instruction. The count is the
-    /// kernel's monotonic clock at [`COUNTER_FREQUENCY`], so it never goes backwards, also across
-    /// a restore, and a replay reads it from the system's clock as it reads every other time.
-    fn answer_counter_read<S: crate::System, C: Executor + 'static>(
+    /// Answers a system register read the executor trapped as Linux does for a program (or as a
+    /// host that lets EL0 read the counter would): the value goes into general register
+    /// `register` (31, the zero register, takes nothing) and the thread goes on after the
+    /// instruction. The count is the kernel's monotonic clock at [`COUNTER_FREQUENCY`], so it
+    /// never goes backwards, also across a restore, and a replay reads it from the system's clock
+    /// as it reads every other time.
+    fn answer_system_register_read<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         tid: Tid,
-        counter: crate::running::Counter,
+        read: crate::running::EmulatedRead,
         register: u8,
     ) {
-        let value = match counter {
-            crate::running::Counter::Frequency => COUNTER_FREQUENCY,
-            crate::running::Counter::Count => cx.monotonic(),
+        let value = match read {
+            crate::running::EmulatedRead::Frequency => COUNTER_FREQUENCY,
+            crate::running::EmulatedRead::Count => cx.monotonic(),
+            crate::running::EmulatedRead::Identification(value) => value,
         };
         let thread = self.threads[&tid].cpu;
         let mut registers = RegisterBlock::ZERO;

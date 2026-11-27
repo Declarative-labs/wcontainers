@@ -24,6 +24,7 @@ mod file;
 mod fs;
 mod guest_machine;
 mod hugetlb;
+mod identification;
 pub mod linux;
 mod linux_extra;
 mod loader;
