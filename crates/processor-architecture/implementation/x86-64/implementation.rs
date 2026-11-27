@@ -151,7 +151,9 @@ pub const FORBIDDEN_FORMS: [Instruction; 2] = [Instruction::Xstore, Instruction:
 /// SEAMCALL, SEAMOPS and SEAMRET outside VMX root operation, TDCALL outside a trust domain, ENCLV and VMFUNC
 /// outside VMX non-root operation (the [Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
 /// volume 2, and Intel's TDX module specification). SEAMCALL and TDCALL check the privilege level first inside a
-/// virtual machine, where they raise #GP(0), so they are in [`PRIVILEGED_FORMS`] too.
+/// virtual machine, where they raise #GP(0), so they are in [`PRIVILEGED_FORMS`] too. ENCLV, SEAMOPS, SEAMRET and
+/// VMFUNC are not optional ([`is_optional`] is false: no CPUID feature gates them): they are here because undefined
+/// instruction is every chip's one behavior for them at ring 3, not because a chip may lack them.
 pub const RING_3_UNDEFINED_FORMS: [Instruction; 6] = [
     Instruction::Seamcall,
     Instruction::Seamops,
@@ -551,7 +553,9 @@ pub enum PreciseInstruction {
         across_fault: StoreAcrossFault,
         masked_faults: sse::MaskedStoreFaults,
     },
-    /// The form raises #UD once it is fetched: the chip lacks its feature, or the form is one of [`FORBIDDEN_FORMS`].
+    /// The form raises #UD once it is fetched: the chip lacks its feature; or the chip has it but the program's mode
+    /// leaves it undefined (ring 3, VMX off, CET off), as for this chip's VMX, CET shadow stack, CLAC and STAC forms;
+    /// or the form is one of [`RING_3_UNDEFINED_FORMS`] or [`FORBIDDEN_FORMS`].
     Undefined(Instruction),
     /// A form of [`avx::AVX_FORMS`].
     Avx {
