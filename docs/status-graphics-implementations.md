@@ -1070,6 +1070,187 @@ the probes.
   track's Mesa compiler (AC11) and Gallium (AC8) traits; the browser route and two-sided stencil on the API track
   (NEEDED-FROM-API-CRATES.md, "After GI7").
 
+## The eleventh run (2026-11-27): GI8 part B on the Mesa compiler's trait, the bridge's home, the two webgl failures
+
+Logs in the scratch folder graphics-implementations/r11/ (at-383cea56b-arm.log and -x86.log are the measurement
+at the pushed tip; dev*.log the work; probe*-*.log the experiments; lint-* the linter outputs); the job is
+tools/r11-job.sh, the port of direct.rs tools/gi8b_direct.py with gi8b_flat.rs.txt, the rule tables
+tools/r11_rules.py, the experiment r11/probe_r11.rs (never committed: put into a scratch copy only). Commits
+8570ccee4, 915486ad5, 383cea56b, pushed.
+
+### His main
+
+- `git fetch /Users/thomaseaton/Documents/GitHub/wcontainers main` gives ac696ea19; `git merge-base --is-ancestor
+  FETCH_HEAD HEAD` exit 0, `git log HEAD..FETCH_HEAD` empty: nothing to merge (MEASURED). The day's
+  instruction-interface changes are in it, as the ninth run recorded; no graphics crate names those interfaces.
+
+### The API track's proposal: the bridge's C and its build move into crates/mesa-compiler/implementation/direct
+
+**Yes.** The bridge is the outside API's C; it belongs beside the only crate that calls it, and nir then holds no
+C. A second reason, MEASURED this run: nir's tests link today only because the direct crate's undefined `wc_*`
+references are met by the archive nir's build makes (both linkers, ARM64 ld.bfd and x86-64 rust-lld); nir itself no
+longer names a bridge function, so with ld.bfd's one pass this rests on the order rustc lists the two crates'
+archives (INFERRED). With the build in the direct crate its own archive follows its own references.
+
+What moves (paths as on this branch):
+- crates/nir/bridge/: bridge.c, bridge.h, bridge_private.h, flat.c, flat.h, glsl.cpp, spirv.c, to
+  crates/mesa-compiler/implementation/direct/bridge/.
+- From crates/nir/build.rs into the direct crate's own build.rs: the bridge's compile (the `cc` build of bridge.c
+  and flat.c, spirv.c with `standalone`, and the GLSL front glsl.cpp: lines 144 to 171 and 194 to 202), the include
+  folders and the flags read from Mesa's compile commands (`INCLUDES`, `FLAGS_FROM`, `CPP_FLAGS_FROM`), the static
+  link of Mesa's compiler libraries (`LIBRARIES`, lines 204 to 219), the renamed copy of Mesa's BLAKE3
+  (`renamed_blake3`, `tool` and their constants), `mesa_dependencies` and `SYSTEM_LIBRARIES`.
+- nir's `standalone` feature becomes the direct crate's (nir's feature turns it on), since the OpenGL driver linked
+  into Mesa's own library takes only bridge.c and flat.c and links no Mesa library twice.
+
+What nir keeps: src/ (bind.rs, direct.rs, lib.rs, mesa.rs, spirv.rs, the routes over the trait), tests/ and
+corpus/, and a build.rs that only sets `cfg(mesa)` and the converter version's parts and the reference paths:
+`WCONTAINERS_MESA_MADE_FROM`, `WCONTAINERS_NIR_SOURCES`, `WCONTAINERS_LAVAPIPE`, `WCONTAINERS_EGL`. The pinned Mesa
+build itself (crates/nir/mesa: the flake, `build`, meson_build.rs) stays where it is for now: opengl's build.rs,
+the webgpu suite on lavapipe and the webgl suite on Mesa's EGL use it too; moving it is a separate step.
+
+Conditions, each measured before as needed: (a) the ARM64 link repairs stay (no libmesa; Mesa's BLAKE3 from the
+renamed copy: seventh and eighth runs); (b) with no `WCONTAINERS_MESA` the direct crate compiles nothing and links
+nothing, so every build without Mesa still checks; (c) the converter version still changes when the bridge's C
+changes (cache keys): the direct crate hands its bridge's hash to nir (a `links` key and `DEP_` variable, as
+shader-converters-linked does) or nir hashes the moved folder; (d) the standalone-only functions are declared
+only with the feature (NEEDED-FROM-API-CRATES.md, "After GI8 part B's first step", item 3).
+
+### GI8 part B, first step: nir on the Mesa compiler's trait (8570ccee4, 915486ad5, 383cea56b)
+
+- crates/mesa-compiler and crates/mesa-compiler/implementation/direct taken from origin/graphics-api-crates
+  051b56c5f by `git checkout <commit> -- crates/mesa-compiler` (only that path; nothing else of that branch), byte
+  for byte. Cargo.lock: the two workspace packages added and nir's and opengl's new edges, no outside crate
+  (14 added lines; hash 7c2859246daceed2 the same before and after every job on both machines).
+- `Nir<M: MesaCompiler>` holds the compiler and its shader; its methods (`impl<M: MesaCompiler + Clone>`) call the
+  trait; `route`, `route_patches` and `module` are generic. nir's own types (`Stage`, `Swizzle`, `Wrap`,
+  `TextureSwizzle`, `NearestSampler`, `PositionTransform`, `StreamedOutput`, `GlslName`) stay and are converted to
+  the trait's at the call, so opengl's code changed only in naming `Nir` (an alias over the direct crate's
+  `Bridge` in src/state.rs). `from_raw` and `compiler_options` are gone (the Gallium side, AC8).
+- Every number the bridge gives is read by a checked conversion (zerocopy's `TryFromBytes` on the enumerations, in
+  their C order), refused by name as `ConvertError::Unknown(enumeration, value)`: the flat form's stage, type
+  kinds, scalars, dimensions, variable modes, built-ins, interpolations, storage formats, instruction kinds,
+  geometry and tessellation enumerations; `to_common_form`'s result code and each binding's kind (the kind was an
+  unchecked array index before); the GLSL names' kind and interpolation. This closes the second open SECURITY
+  finding (enumerations from the C bridge transmuted with no range check) on our side.
+- Hostile test, tests/hostile_compiler.rs: a stand-in implementation of the trait giving numbers past every
+  enumeration (0x80000001); 7 tests, each refusal by name, no panic, no Mesa reached.
+- MEASURED at the pushed 383cea56b, both machines alike (Mesa built in the job, 101 s x86-64):
+
+| | ARM64 (ld.bfd) | x86-64 (rust-lld) |
+|---|---|---|
+| check, Mesa on, workspace lints (`forbid`): mesa-compiler, mesa-compiler-direct | exit 0, 0 errors | exit 0, 0 errors |
+| check, Mesa on, `forbid`: nir `--lib` | exit 0 (before: 59 errors, GI1) | exit 0 |
+| check `--all-targets`, Mesa on, `forbid`: nir | exit 101: 43 unsafe errors, all in the corpus tests' llvmpipe.rs and lavapipe.rs (A6, A7) | the same |
+| check without Mesa: nir, opengl | exit 0 | exit 0 |
+| nir `--lib --test route --test hostile_compiler` under `forbid` | 35 passed | 35 passed |
+| nir, whole package, old table in the scratch copy | 48 passed, 2 ignored (41 + 7 hostile) | 48 passed, 2 ignored |
+| clippy `-D warnings` (nir, mesa-compiler, -direct; lib, route, hostile_compiler) | exit 0 | exit 0 |
+| `cargo fmt --check -p wcontainers-nir` | exit 0 | exit 0 |
+| opengl, Mesa on, old table in the scratch copy | does not compile: `compiler_options` not found (screen.rs:578), `from_raw` not found (state.rs:1138), 3 errors following from them | the same |
+| gpu-webgl on Mesa's EGL (unchanged code) | 89 passed, 2 failed (the two below) | 89 passed, 2 failed |
+
+- What it costs: opengl's Mesa build (scratch copy, old table) passed 11 tests before this run and does not compile
+  now, until the Gallium crate gives the screen's options and the shader states' owned shaders
+  (NEEDED-FROM-API-CRATES.md, "After GI8 part B's first step", item 1). It was never under `forbid`. GI8's bar (the
+  GLES lists, at least 110,431 of 110,703) needs opengl, so it waits on AC8.
+- Linter da55b9d7, no model key, tables identical on both machines (83,865 findings each), against the same linter
+  on 7e53ee79e (ARM64): crates/nir 984 to 953 (magic_literal 121 to 105, name_unanswered 58 to 40, verb_not_first 28
+  to 14; summary_unanswered 6 to 16 and the summary-form rules +3 to +6 for the new items, which wait on the model's
+  answers; depends_on_implementation 1 to 2: nir's tests depend on the direct crate, as they must to reach Mesa);
+  crates/opengl 1,327 to 1,329 (depends_on_implementation +1: it names the direct crate, being Mesa's driver;
+  summary_unanswered +1); crates/mesa-compiler 477 (the API track's crates: number_constant_without_link 209,
+  summary_unanswered 79, magic_literal 67, name_unanswered 47, public_outside_interface 8, the rest below 20).
+  Also new, from the added crate: shaders' constant_defined_twice +1 (`NARROW_BITS = 16` in
+  src/dxil/widths.rs equals the bridge's; shaders cannot name it). compiler_view_missing 53 to 43 is the before
+  run's own compile gap (wcontainers_arm64 did not compile in that copy), not this change.
+
+### The two suite programs that fail on webgl over Mesa: causes (MEASURED, both machines alike)
+
+Experiment r11/probe_r11.rs, run in a scratch copy of webgl as unit tests against Mesa's EGL (llvmpipe, LLVM
+21.1.8; ARM64 128-bit and x86-64 256-bit give the same lines).
+
+**`edges_through_pixel_centres_follow_the_top_left_rule`: Mesa's GL state tracker, under the upper-left clip
+origin the back end chooses; the test's expectation is right (Direct3D's rule, which the fronts need).** The suite's
+two triangles drawn in plain GL, each route of the back end, memory row 0 (Direct3D's top) first:
+
+| EXT_clip_control upper-left, y as given (the back end's route where the extension exists) | lower-left, y negated in the program (its route without it) | the suite's expectation |
+|---|---|---|
+| `....` `AAB.` `ABB.` `BBB.` | `AAA.` `AAB.` `ABB.` `....` | `AAA.` `AAB.` `ABB.` `....` |
+
+With the upper-left origin the top row and left column are dropped and the bottom row taken: the bottom-left
+rule. READ in the pinned Mesa, src/mesa/state_tracker/st_atom_rasterizer.c:277-283: `bottom_edge_rule` is set for
+a top-origin framebuffer and toggled again when `ClipOrigin == GL_UPPER_LEFT`, and llvmpipe applies it
+(lp_setup_tri.c:312, 505). GL does not fix which edge rule a rasterizer uses, so this is allowed GL; the back end
+assumes upper-left gives Direct3D's rule (true on ANGLE over Direct3D 11, the route it was built on). Fix, next
+step: the back end probes the rule once (these two triangles) and, where upper-left gives the bottom-left rule,
+draws with the lower-left origin and y negated (keeping `ZERO_TO_ONE` depth through EXT_clip_control), which the
+second column shows gives Direct3D's rule on llvmpipe. Not built this run.
+
+**`a_copy_within_one_depth_or_stencil_subresource_moves_the_region` (Depth24Plus texel 5, 0.6249999 for 0.625):
+the back end's write and read arithmetic, which Mesa's compiler and sampler do not meet; the expectation is right.**
+The texel was not copied: it is the write and the read alone. Per value v (24-bit), the float the write program
+makes (E), what llvmpipe stores for it and what the read program gives back:
+
+| v (texel) | v / (2^24 - 1), nearest float | E, the write program's float | stored | read back |
+|---|---|---|---|---|
+| 10,485,759 (0.625, texel 5) | 0x3f200000 | 0x3f1fffff | 10,485,758 | 10,485,758 (fails) |
+| 12,582,911 (0.75) | 0x3f400000 | 0x3f3fffff | 12,582,910 | 12,582,910 |
+| 14,680,063 (0.875) | 0x3f600000 | 0x3f5fffff | 14,680,062 | 14,680,063 |
+| 16,777,215 (1.0) | 0x3f800000 | 0x3f7fffff | 16,777,214 | 16,777,215 |
+| 14,680,063 written from 0x3f600000 | | | 14,680,063 | 14,680,064 |
+
+- Write: E is v 2^-24 exactly, one float step under the nearest: the program's `v * 2^-24 + v * 2^-48` (convert.rs;
+  webgpu's fill.rs writes the same sum in WGSL) is regrouped by Mesa's NIR into `v * (2^-24 + 2^-48)` (READ:
+  nir_opt_algebraic.py:246, the inexact rule `fadd(fmul(a, b), fmul(a, c))` to `fmul(a, fadd(b, c))`), and
+  2^-24 + 2^-48 rounds to 2^-24. llvmpipe then stores round(E (2^24 - 1)) (READ: lp_bld_conv.c:307-323), one low
+  for every v above 2^23. GLSL ES and WGSL let a compiler regroup; the comment's "rounded once" does not hold.
+- Read: llvmpipe samples a stored k as k times the float nearest 1/(2^24 - 1) (READ: lp_bld_conv.c:416-427), one or
+  two steps above k 2^-24, so the read program's round(d (2^24 - 1)) gives k + 1 in the upper quarter of each
+  binade (k = 14,680,063 reads 14,680,064 in the last row). For 0.875 and 1.0 the two errors cancel; for 0.625 and
+  0.75 only the write's shows (the suite stops at the first, texel 5).
+- The same two steps explain GI2's lavapipe failure of this program and of webgpu's
+  `depth_and_stencil_parts_copy_and_read_back_exactly` (identical message; webgpu's write is the same sum).
+  INFERRED for webgpu's read: not probed.
+- Fix, next step, both halves together (the write alone turns 0.875 into a failure: k + 1 on read): write the
+  nearest float with integers only (`uintBitsToFloat(floatBitsToUint(float(v) * 2^-24) + (v != 0 ? 1 : 0))`: v
+  2^-24 is exact and the remainder is more than half and at most one step; MEASURED above: the "E + 1" write of
+  0x3f200000 stores 10,485,759), and read by inverting the device's own conversion, chosen by a probe at start
+  (nearest float, as a Direct3D device gives, against k times the rounded reciprocal, as llvmpipe gives), since the
+  two give the same float for different k in the upper quarter. The write half is saved as
+  r11/depth-write-fix/write-half.patch, not committed.
+
+### shader-converters' 5 lines and opengl's 354: which API crate takes them, and what each waits on (READ)
+
+- shader-converters, 5 (implementation/linked/implementation.rs: the `BoundaryFunction` type, the `unsafe extern
+  "C"` block of our C boundary over dxbc-spirv and dxil-spirv, the call, the config's `PointerAndLength`, the
+  output read). The outside API is our C boundary (cpp/) over the two converters; by the one-crate-per-API ruling
+  they go to the API track's crate for it (the generator's trait over that boundary, linked/ becoming its
+  `implementation/direct`), or go entirely with the linked route if GI6 removes it. Waits on: the owner's question
+  1 (may the linked route stay, given the contained route's measured cost: 150 to 330 ms once per process, about
+  twice per shader, 22 to 32 s more on the worst game shader, third run); only if it stays does the API track
+  write the crate.
+- opengl, 354 (MEASURED by kind with the counting method: 249 lines in `unsafe` blocks reading and writing Gallium's
+  structures through pointers and calling Mesa's helpers, 82 `unsafe extern "C" fn` callbacks Mesa calls through
+  `pipe_screen` and `pipe_context`, 13 `unsafe fn` of ours, 8 `Box::from_raw` of driver objects Mesa hands back, 1
+  `extern` block, 1 `#[unsafe(no_mangle)]` entry point `wcontainers_screen_create`). All go to the Gallium crate
+  (AC8): its trait of the 95 callbacks our driver fills, its trait of the 23 helper calls and our two field readers
+  (NEEDED-FROM-API-CRATES.md, seventh run), with the screen's NIR options and owned shader states of item 1 above;
+  opengl then implements the callbacks' trait over `Gpu`. Waits on: AC8, which the API track's ORDER line has
+  waiting on agreement of where the OpenGL driver lives (the back-ends track).
+
+### Milestones
+
+- Reached: none of the brief's bars newly. Done and measured at a pushed commit: GI8 part B's first step (nir on
+  the Mesa compiler's trait, its library under `forbid` with Mesa on, nir 113 to 56 `unsafe` lines, the enum
+  SECURITY finding closed on our side with a hostile test); the proposal answered; both webgl failures' causes found
+  by experiment. GI7's independent check held (orchestrator's note).
+- Next: the two webgl fixes above (wait on nothing; the next run's first work); GI8 part B's rest (opengl as the
+  Gallium trait's implementation, the GLES lists) waits on AC8 and on the bridge's move (the API track); nir's
+  corpus tests' 56 lines on A6 (a desktop OpenGL crate) and A7 (Vulkan); GI4 and the window question on the owner;
+  GI6's removal on question 1.
+- Not done: the hostile-guest suite (none exists; the thread-test design review is still owed to the owner).
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -1115,3 +1296,13 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   table denies unsafe code (an outside API's `implementation/direct`). New dependencies: the five workspace crates
   wcontainers-egl, -egl-direct, -opengl-es, -opengl-es-direct, -opengl-es-conformance (libloading 0.8.9 through
   egl-direct, already in the lock); webgl dropped glow and khronos-egl. No hostile-guest suite exists, none was run.
+- Eleventh run (8570ccee4 to 383cea56b): nir 113 to 56 lines (src/mesa.rs 52 and src/direct.rs 5 to 0; the corpus
+  tests' llvmpipe.rs 39 and lavapipe.rs 17 left), MEASURED with count-unsafe.sh at 7e53ee79e and 383cea56b; the
+  track's total 574 to 517 (webgpu 19, shaders 71, shader-converters 5, nir 56, opengl 354, test-window 12, the
+  rest 0). No marked exception written here. Brought in, not written here: crates/mesa-compiler/implementation/direct
+  49 lines under 48 `#[expect(unsafe_code, reason)]` marks, in a crate whose own table denies unsafe code (an
+  outside API's `implementation/direct`); crates/mesa-compiler 0. Closed on our side: enumerations from the C bridge
+  read with no range check (every one now a checked conversion, hostile test tests/hostile_compiler.rs, 7 passing on
+  both machines). New dependencies: the workspace crates wcontainers-mesa-compiler and -direct only (no outside
+  crate; Cargo.lock hash 7c2859246daceed2 before and after every job). The SAMPLES_PASSED abort finding is opengl's
+  and waits with it on AC8. No hostile-guest suite exists, none was run.
