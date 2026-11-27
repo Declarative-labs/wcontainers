@@ -1008,5 +1008,11 @@ pub const SUITE_DIFFERENT: &[(&str, &str)] = &[
     ("ID3D11DeviceChild::GetDevice on DeviceContext", "the serving glue answers the device it made the context with, never asking the implementation"),
     ("D3D11CreateDevice", "the calling glue turns on the device's multithread protection (SetMultithreadProtected(TRUE)) before handing the device out"),
     ("D3D11CreateDeviceAndSwapChain", "the calling glue turns on the device's multithread protection (SetMultithreadProtected(TRUE)) before handing the device out"),
+    ("ID3D11Device::CreateBuffer", "the suite's known initial data is 1 byte for a known buffer of 58: fewer bytes than lengths.rs `initial_length_buffer` are refused"),
+    ("ID3D11DeviceContext1::UpdateSubresource1", "the suite's known subresource 93 is past a buffer's one subresource: refused by lengths.rs `upload_length_buffer` after the serving glue asks the buffer's description"),
+    ("ID3D11DeviceContext::UpdateSubresource", "the suite's known subresource 93 is past a buffer's one subresource: refused by lengths.rs `upload_length_buffer` after the serving glue asks the buffer's description"),
+    ("ID3D11DeviceContext::IASetVertexBuffers", "the suite's known start slot 41 is past the 32 vertex input slots: refused by the header's `_In_range_` (a count line)"),
+    ("ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews", "the suite's known start slot is past the unordered access view slots: refused by the header's `_In_range_` (a count line)"),
+    ("ID3D11DeviceContext::Unmap", "the suite's known subresource is not mapped: the serving glue has nothing lent to end and does not pass the call on"),
     ("ID3D11DeviceContext::Map", "the recorder's pitches (rows of 4 KiB, slices of 64 KiB) are past the bound the serving glue lends for the suite's known buffer of under 127 bytes, so the glue answers E_FAIL"),
 ];

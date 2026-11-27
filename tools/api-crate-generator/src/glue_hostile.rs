@@ -676,7 +676,17 @@ impl Writer<'_, '_> {
             }
             return Some(if t.starts_with("Option<") { "Some(&lying)".to_string() } else { "&lying".to_string() });
         }
-        if t.starts_with("Option<") {
+        if let Some(inner) = t.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
+            // An object the suite holds, or a known value of plain data, so that dropping it on the way is seen.
+            let inner = inner.trim();
+            if let Shape::Object { kind, by_ref: true } = self.shape(inner, scope) {
+                return Some(format!("o.k{kind}.as_ref()"));
+            }
+            if let Some(data) = inner.strip_prefix('&')
+                && let Some(value) = codecs.shapes.known(data, super::record::salt_of(name), true).filter(|value| value != "None")
+            {
+                return Some(format!("Some(&{value})"));
+            }
             return Some("None".to_string());
         }
         // Plain data is a known value (src/glue_hostile.rs `Shapes`): never its type's default where it has another, and
@@ -688,6 +698,14 @@ impl Writer<'_, '_> {
             return Some(codecs.shapes.known(bare_type, salt, true).map_or(format!("{reference}Default::default()"), |value| format!("{reference}{value}")));
         }
         if let Some(element) = t.strip_prefix("&[").or_else(|| t.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']')) {
+            // One element, as every array the suite passes (arrays of one count must have one length): an object the
+            // suite holds (or none), or a known value.
+            if let Some(object) = element.trim().strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
+                if let Shape::Object { kind, by_ref: true } = self.shape(object.trim(), scope) {
+                    return Some(format!("&[o.k{kind}.as_ref()]"));
+                }
+                return Some("&[None]".to_string());
+            }
             return Some(codecs.shapes.known(element, salt, true).filter(|value| value != "None").map_or("&[]".to_string(), |value| format!("&[{value}]")));
         }
         if t == "&str" {
@@ -1669,7 +1687,9 @@ impl Writer<'_, '_> {
             } else if bytes {
                 count("returns nothing: compared, the caller's bytes it writes", place);
             } else {
-                count("returns nothing and writes nothing: no value to compare", place);
+                // Nothing comes back, but what the implementation received is still compared (`Answers`).
+                count("returns nothing and writes nothing: compared, what the implementation received", place);
+                let _ = write!(lines, "answers.push(\"{place} -> nothing\".to_string()); ");
             }
             if bytes {
                 let _ = write!(lines, "answers.bytes(\"{place}\", &lying); ");

@@ -157,7 +157,8 @@ def serve_plants(path, text):
             arguments = body[open_at + 1:close]
             for index, (s, e) in enumerate(split_arguments(arguments)):
                 whole = body[match.start():close + 1]
-                planted = whole[:open_at - match.start() + 1] + arguments[:s] + " Default::default()" + arguments[e:] + ")"
+                default = " &Default::default()" if arguments[s:e].strip().startswith("&") else " Default::default()"
+                planted = whole[:open_at - match.start() + 1] + arguments[:s] + default + arguments[e:] + ")"
                 plants.append((path, f"{name}.{match.group(1)}.argument{index}", name, whole, planted))
     return plants
 

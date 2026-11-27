@@ -30,6 +30,12 @@ wcontainers_directx_graphics_infrastructure_conformance::tests!(
         "ID3D11DeviceChild::GetDevice on DeviceContext",
         "D3D11CreateDevice",
         "D3D11CreateDeviceAndSwapChain",
+        "ID3D11Device::CreateBuffer",
+        "ID3D11DeviceContext1::UpdateSubresource1",
+        "ID3D11DeviceContext::UpdateSubresource",
+        "ID3D11DeviceContext::IASetVertexBuffers",
+        "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews",
+        "ID3D11DeviceContext::Unmap",
         "ID3D11DeviceContext::Map"
     ]
 );

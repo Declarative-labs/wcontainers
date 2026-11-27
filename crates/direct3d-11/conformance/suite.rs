@@ -3184,7 +3184,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device3::create_shader_resource_view1(this, v1, None);
+                    let answer = direct3d_11::Device3::create_shader_resource_view1(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDesc1Anonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -3211,8 +3211,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer =
-                        direct3d_11::Device3::create_unordered_access_view1(this, v1, None);
+                    let answer = direct3d_11::Device3::create_unordered_access_view1(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDesc1Anonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -3239,7 +3238,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device3::create_render_target_view1(this, v1, None);
+                    let answer = direct3d_11::Device3::create_render_target_view1(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDesc1Anonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -5412,7 +5411,11 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                             misc_flags: 86_u32,
                             structure_byte_stride: 93_u32,
                         },
-                        None,
+                        Some(&direct3d_11::structures::SubresourceData {
+                            sys_mem: vec![32_u8],
+                            sys_mem_pitch: 39_u32,
+                            sys_mem_slice_pitch: 46_u32,
+                        }),
                     );
                     answer.ok()
                 })
@@ -5488,7 +5491,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_shader_resource_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_shader_resource_view(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDescAnonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -5515,7 +5518,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_unordered_access_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_unordered_access_view(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDescAnonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -5542,7 +5545,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_render_target_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_render_target_view(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDescAnonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -5569,7 +5572,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_depth_stencil_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_depth_stencil_view(this, v1, Some(&direct3d_11::structures::DepthStencilViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_DSV_DIMENSION_TEXTURE1D, flags: 72_u32, anonymous: direct3d_11::structures::DepthStencilViewDescAnonymous { texture_1d: direct3d_11::structures::Tex1DDsv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DDsv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsDsv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayDsv { first_array_slice: 0_u32, array_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -5601,7 +5604,8 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_vertex_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_vertex_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -5617,7 +5621,8 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_geometry_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_geometry_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -5646,7 +5651,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                         }],
                         &[91_u32],
                         43_u32,
-                        None,
+                        o.k6.as_ref(),
                     );
                     answer.ok()
                 })
@@ -5663,7 +5668,8 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_pixel_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_pixel_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -5679,7 +5685,8 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_hull_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_hull_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -5695,7 +5702,8 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_domain_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_domain_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -5711,7 +5719,8 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_compute_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_compute_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -9371,7 +9380,12 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                             data3: 92_u16,
                             data4: core::array::from_fn(|_| 99_u8),
                         },
-                        None,
+                        Some(&component_object_model::structures::Guid {
+                            data1: 73_u32,
+                            data2: 80_u16,
+                            data3: 87_u16,
+                            data4: core::array::from_fn(|_| 94_u8),
+                        }),
                         &component_object_model::structures::Guid {
                             data1: 15_u32,
                             data2: 22_u16,
@@ -10799,7 +10813,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, Some(&directx_graphics_infrastructure::structures::SwapChainFullscreenDesc { refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 87_u32, denominator: 94_u32 }, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, windowed: true }), o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -10893,7 +10907,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -10948,7 +10962,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -11418,7 +11432,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -11474,7 +11488,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                         None
                     })?;
                     let v2 = o.k72.as_ref()?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -15051,7 +15065,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 made(|| {
                     let answer = direct3d_11::Direct3D11::create_device(
                         &o.api,
-                        None,
+                        o.k61.as_ref(),
                         direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
                         component_object_model::structures::Hmodule(0),
                         direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
@@ -15075,16 +15089,7 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
-                        component_object_model::structures::Hmodule(0),
-                        direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
-                        &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
-                        124_u32,
-                        None,
-                    );
+                    let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 15_u32, height: 22_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 36_u32, denominator: 43_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 22_u32, quality: 29_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 29_u32, output_window: component_object_model::structures::Hwnd(36), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 57_u32 }));
                     answer.ok()
                 })
             };
@@ -15535,12 +15540,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered(direct3d_11::Resource::get_type(this))
     });
     // ID3D11Resource::SetEvictionPriority on Buffer
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k4.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::set_eviction_priority(this, 97_u32))
+        answered({
+            let answer = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
+            answers.push("ID3D11Resource::SetEvictionPriority -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::SetEvictionPriority on Buffer");
     // ID3D11Resource::GetEvictionPriority on Buffer
     let noted = answers.len();
     answers.start();
@@ -15875,7 +15887,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(
             directx_graphics_infrastructure::Resource1::create_shared_handle(
-                this, None, 93_u32, None,
+                this,
+                Some(&component_object_model::structures::SecurityAttributes {
+                    n_length: 1_u32,
+                    lp_security_descriptor: vec![8_u8],
+                    b_inherit_handle: true,
+                }),
+                93_u32,
+                None,
             ),
         )
     });
@@ -16980,7 +16999,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Debug::set_swap_chain(this, None);
+            let answer = direct3d_11::Debug::set_swap_chain(this, o.k74.as_ref());
             answers.push(format!(
                 "ID3D11Debug::SetSwapChain -> {}",
                 format!("{:?}", &answer)
@@ -17488,23 +17507,28 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "ID3D11Device4::RegisterDeviceRemovedEvent on Device");
     // ID3D11Device4::UnregisterDeviceRemoved on Device
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Device4::unregister_device_removed(
-            this, 87_u32,
-        ))
+        answered({
+            let answer = direct3d_11::Device4::unregister_device_removed(this, 87_u32);
+            answers.push("ID3D11Device4::UnregisterDeviceRemoved -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Device4::UnregisterDeviceRemoved on Device");
     // ID3D11Device3::CreateTexture2D1 on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else { return false; };
-        failure_is_negative(direct3d_11::Device3::create_texture_2d1(this, &direct3d_11::structures::Texture2DDesc1 { width: 81_u32, height: 88_u32, mip_levels: 95_u32, array_size: 102_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 123_u32, quality: 4_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 4_u32, cpu_access_flags: 11_u32, misc_flags: 18_u32, texture_layout: direct3d_11::enumerations::D3D11_TEXTURE_LAYOUT_ROW_MAJOR }, None))
+        failure_is_negative(direct3d_11::Device3::create_texture_2d1(this, &direct3d_11::structures::Texture2DDesc1 { width: 81_u32, height: 88_u32, mip_levels: 95_u32, array_size: 102_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 123_u32, quality: 4_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 4_u32, cpu_access_flags: 11_u32, misc_flags: 18_u32, texture_layout: direct3d_11::enumerations::D3D11_TEXTURE_LAYOUT_ROW_MAJOR }, Some(&direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 })))
     });
     // ID3D11Device3::CreateTexture3D1 on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else { return false; };
-        failure_is_negative(direct3d_11::Device3::create_texture_3d1(this, &direct3d_11::structures::Texture3DDesc1 { width: 81_u32, height: 88_u32, depth: 95_u32, mip_levels: 102_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 123_u32, cpu_access_flags: 4_u32, misc_flags: 11_u32, texture_layout: direct3d_11::enumerations::D3D11_TEXTURE_LAYOUT_ROW_MAJOR }, None))
+        failure_is_negative(direct3d_11::Device3::create_texture_3d1(this, &direct3d_11::structures::Texture3DDesc1 { width: 81_u32, height: 88_u32, depth: 95_u32, mip_levels: 102_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 123_u32, cpu_access_flags: 4_u32, misc_flags: 11_u32, texture_layout: direct3d_11::enumerations::D3D11_TEXTURE_LAYOUT_ROW_MAJOR }, Some(&direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 })))
     });
     // ID3D11Device3::CreateRasterizerState2 on Device
     let noted = answers.len();
@@ -17547,99 +17571,27 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else {
-            return false;
-        };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
-        failure_is_negative({
-            let answer = direct3d_11::Device3::create_shader_resource_view1(this, v1, None);
-            answers.push(format!(
-                "ID3D11Device3::CreateShaderResourceView1 -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        failure_is_negative({ let answer = direct3d_11::Device3::create_shader_resource_view1(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDesc1Anonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } })); answers.push(format!("ID3D11Device3::CreateShaderResourceView1 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D11Device3::CreateShaderResourceView1 on Device");
     // ID3D11Device3::CreateUnorderedAccessView1 on Device
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else {
-            return false;
-        };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
-        failure_is_negative({
-            let answer = direct3d_11::Device3::create_unordered_access_view1(this, v1, None);
-            answers.push(format!(
-                "ID3D11Device3::CreateUnorderedAccessView1 -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        failure_is_negative({ let answer = direct3d_11::Device3::create_unordered_access_view1(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDesc1Anonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } })); answers.push(format!("ID3D11Device3::CreateUnorderedAccessView1 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D11Device3::CreateUnorderedAccessView1 on Device");
     // ID3D11Device3::CreateRenderTargetView1 on Device
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else {
-            return false;
-        };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
-        failure_is_negative({
-            let answer = direct3d_11::Device3::create_render_target_view1(this, v1, None);
-            answers.push(format!(
-                "ID3D11Device3::CreateRenderTargetView1 -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        failure_is_negative({ let answer = direct3d_11::Device3::create_render_target_view1(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDesc1Anonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } })); answers.push(format!("ID3D11Device3::CreateRenderTargetView1 -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D11Device3::CreateRenderTargetView1 on Device");
     // ID3D11Device3::CreateQuery1 on Device
@@ -17718,7 +17670,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         let lying = bytes();
         answered(direct3d_11::Device3::write_to_subresource(
-            this, v1, 93_u32, None, &lying, 58_u32, 14_u32,
+            this,
+            v1,
+            93_u32,
+            Some(&direct3d_11::structures::Box {
+                left: 79_u32,
+                top: 86_u32,
+                front: 93_u32,
+                right: 100_u32,
+                bottom: 107_u32,
+                back: 114_u32,
+            }),
+            &lying,
+            58_u32,
+            14_u32,
         ))
     });
     // ID3D11Device3::ReadFromSubresource on Device
@@ -17741,7 +17706,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         answered(direct3d_11::Device3::read_from_subresource(
-            this, &lying, 12_u32, 39_u32, v1, 16_u32, None,
+            this,
+            &lying,
+            12_u32,
+            39_u32,
+            v1,
+            16_u32,
+            Some(&direct3d_11::structures::Box {
+                left: 67_u32,
+                top: 74_u32,
+                front: 81_u32,
+                right: 88_u32,
+                bottom: 95_u32,
+                back: 102_u32,
+            }),
         ))
     });
     // ID3D11Device2::GetImmediateContext2 on Device
@@ -18040,7 +18018,11 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     misc_flags: 86_u32,
                     structure_byte_stride: 93_u32,
                 },
-                None,
+                Some(&direct3d_11::structures::SubresourceData {
+                    sys_mem: vec![32_u8],
+                    sys_mem_pitch: 39_u32,
+                    sys_mem_slice_pitch: 46_u32,
+                }),
             );
             answers.push(format!(
                 "ID3D11Device::CreateBuffer -> {}",
@@ -18081,132 +18063,36 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else {
-            return false;
-        };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
-        failure_is_negative({
-            let answer = direct3d_11::Device::create_shader_resource_view(this, v1, None);
-            answers.push(format!(
-                "ID3D11Device::CreateShaderResourceView -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        failure_is_negative({ let answer = direct3d_11::Device::create_shader_resource_view(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDescAnonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } })); answers.push(format!("ID3D11Device::CreateShaderResourceView -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D11Device::CreateShaderResourceView on Device");
     // ID3D11Device::CreateUnorderedAccessView on Device
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else {
-            return false;
-        };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
-        failure_is_negative({
-            let answer = direct3d_11::Device::create_unordered_access_view(this, v1, None);
-            answers.push(format!(
-                "ID3D11Device::CreateUnorderedAccessView -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        failure_is_negative({ let answer = direct3d_11::Device::create_unordered_access_view(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDescAnonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } })); answers.push(format!("ID3D11Device::CreateUnorderedAccessView -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D11Device::CreateUnorderedAccessView on Device");
     // ID3D11Device::CreateRenderTargetView on Device
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else {
-            return false;
-        };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
-        failure_is_negative({
-            let answer = direct3d_11::Device::create_render_target_view(this, v1, None);
-            answers.push(format!(
-                "ID3D11Device::CreateRenderTargetView -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        failure_is_negative({ let answer = direct3d_11::Device::create_render_target_view(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDescAnonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } })); answers.push(format!("ID3D11Device::CreateRenderTargetView -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D11Device::CreateRenderTargetView on Device");
     // ID3D11Device::CreateDepthStencilView on Device
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else {
-            return false;
-        };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-            Some(direct3d_11::ResourceRef::Buffer(x))
-        } else if let Some(x) = o.k35.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture1D(x))
-        } else if let Some(x) = o.k36.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture2D(x))
-        } else if let Some(x) = o.k37.as_ref() {
-            Some(direct3d_11::ResourceRef::Texture3D(x))
-        } else {
-            None
-        }) else {
-            return false;
-        };
-        failure_is_negative({
-            let answer = direct3d_11::Device::create_depth_stencil_view(this, v1, None);
-            answers.push(format!(
-                "ID3D11Device::CreateDepthStencilView -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", "an object".to_string()),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        failure_is_negative({ let answer = direct3d_11::Device::create_depth_stencil_view(this, v1, Some(&direct3d_11::structures::DepthStencilViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_DSV_DIMENSION_TEXTURE1D, flags: 72_u32, anonymous: direct3d_11::structures::DepthStencilViewDescAnonymous { texture_1d: direct3d_11::structures::Tex1DDsv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DDsv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsDsv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayDsv { first_array_slice: 0_u32, array_size: 0_u32 } } })); answers.push(format!("ID3D11Device::CreateDepthStencilView -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D11Device::CreateDepthStencilView on Device");
     // ID3D11Device::CreateInputLayout on Device
@@ -18225,7 +18111,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Device::create_vertex_shader(this, &[122_u8], None);
+            let answer = direct3d_11::Device::create_vertex_shader(this, &[122_u8], o.k6.as_ref());
             answers.push(format!(
                 "ID3D11Device::CreateVertexShader -> {}",
                 match &answer {
@@ -18245,7 +18131,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Device::create_geometry_shader(this, &[122_u8], None);
+            let answer =
+                direct3d_11::Device::create_geometry_shader(this, &[122_u8], o.k6.as_ref());
             answers.push(format!(
                 "ID3D11Device::CreateGeometryShader -> {}",
                 match &answer {
@@ -18278,7 +18165,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 }],
                 &[91_u32],
                 43_u32,
-                None,
+                o.k6.as_ref(),
             );
             answers.push(format!(
                 "ID3D11Device::CreateGeometryShaderWithStreamOutput -> {}",
@@ -18302,7 +18189,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Device::create_pixel_shader(this, &[122_u8], None);
+            let answer = direct3d_11::Device::create_pixel_shader(this, &[122_u8], o.k6.as_ref());
             answers.push(format!(
                 "ID3D11Device::CreatePixelShader -> {}",
                 match &answer {
@@ -18322,7 +18209,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Device::create_hull_shader(this, &[122_u8], None);
+            let answer = direct3d_11::Device::create_hull_shader(this, &[122_u8], o.k6.as_ref());
             answers.push(format!(
                 "ID3D11Device::CreateHullShader -> {}",
                 match &answer {
@@ -18342,7 +18229,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Device::create_domain_shader(this, &[122_u8], None);
+            let answer = direct3d_11::Device::create_domain_shader(this, &[122_u8], o.k6.as_ref());
             answers.push(format!(
                 "ID3D11Device::CreateDomainShader -> {}",
                 match &answer {
@@ -18362,7 +18249,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::Device::create_compute_shader(this, &[122_u8], None);
+            let answer = direct3d_11::Device::create_compute_shader(this, &[122_u8], o.k6.as_ref());
             answers.push(format!(
                 "ID3D11Device::CreateComputeShader -> {}",
                 match &answer {
@@ -19052,7 +18939,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, None); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIDevice::CreateSurface on Device");
     // IDXGIDevice::QueryResourceResidency on Device
@@ -19061,7 +18948,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative(
-            directx_graphics_infrastructure::Device::query_resource_residency(this, &[]),
+            directx_graphics_infrastructure::Device::query_resource_residency(this, &[None]),
         )
     });
     // IDXGIDevice::SetGPUThreadPriority on Device
@@ -19141,7 +19028,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(directx_graphics_infrastructure::Device2::offer_resources(
             this,
-            &[],
+            &[o.k72.as_ref()],
             directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
         ))
     });
@@ -19152,7 +19039,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(directx_graphics_infrastructure::Device2::reclaim_resources(
             this,
-            &[],
+            &[o.k72.as_ref()],
         ))
     });
     // IDXGIDevice2::EnqueueSetEvent on Device
@@ -19176,12 +19063,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "IDXGIDevice2::EnqueueSetEvent on Device");
     // IDXGIDevice3::Trim on Device
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Device3::trim(this))
+        answered({
+            let answer = directx_graphics_infrastructure::Device3::trim(this);
+            answers.push("IDXGIDevice3::Trim -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice3::Trim on Device");
     // IDXGIDevice4::OfferResources1 on Device
     driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else {
@@ -19189,7 +19083,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(directx_graphics_infrastructure::Device4::offer_resources1(
             this,
-            &[],
+            &[o.k72.as_ref()],
             directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             31_u32,
         ))
@@ -19199,7 +19093,9 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k14.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[]))
+        failure_is_negative(
+            directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[o.k72.as_ref()]),
+        )
     });
     // ID3D11Multithread::Enter on Device
     driven.attempt(|| {
@@ -19318,25 +19214,40 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "ID3D11DeviceContext4::Wait on DeviceContext");
     // ID3D11DeviceContext3::Flush1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext3::flush1(
-            this,
-            direct3d_11::enumerations::D3D11_CONTEXT_TYPE_3D,
-            component_object_model::structures::Handle(82),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext3::flush1(
+                this,
+                direct3d_11::enumerations::D3D11_CONTEXT_TYPE_3D,
+                component_object_model::structures::Handle(82),
+            );
+            answers.push("ID3D11DeviceContext3::Flush1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext3::Flush1 on DeviceContext");
     // ID3D11DeviceContext3::SetHardwareProtectionState on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext3::set_hardware_protection_state(
-            this, true,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext3::set_hardware_protection_state(this, true);
+            answers.push("ID3D11DeviceContext3::SetHardwareProtectionState -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext3::SetHardwareProtectionState on DeviceContext",
+    );
     // ID3D11DeviceContext3::GetHardwareProtectionState on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -19394,7 +19305,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     height: 60_u16,
                     depth: 67_u16,
                 }],
-                None,
+                o.k4.as_ref(),
                 &[39_u32],
                 &[20_u32],
                 &[118_u32],
@@ -19482,6 +19393,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11DeviceContext2::CopyTileMappings on DeviceContext",
     );
     // ID3D11DeviceContext2::CopyTiles on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -19502,27 +19415,32 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v2) = o.k4.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext2::copy_tiles(
-            this,
-            v1,
-            &direct3d_11::structures::TiledResourceCoordinate {
-                x: 119_u32,
-                y: 126_u32,
-                z: 7_u32,
-                subresource: 14_u32,
-            },
-            &direct3d_11::structures::TileRegionSize {
-                num_tiles: 76_u32,
-                b_use_box: true,
-                width: 90_u32,
-                height: 97_u16,
-                depth: 104_u16,
-            },
-            v2,
-            13_u64,
-            31_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext2::copy_tiles(
+                this,
+                v1,
+                &direct3d_11::structures::TiledResourceCoordinate {
+                    x: 119_u32,
+                    y: 126_u32,
+                    z: 7_u32,
+                    subresource: 14_u32,
+                },
+                &direct3d_11::structures::TileRegionSize {
+                    num_tiles: 76_u32,
+                    b_use_box: true,
+                    width: 90_u32,
+                    height: 97_u16,
+                    depth: 104_u16,
+                },
+                v2,
+                13_u64,
+                31_u32,
+            );
+            answers.push("ID3D11DeviceContext2::CopyTiles -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext2::CopyTiles on DeviceContext");
     // ID3D11DeviceContext2::UpdateTiles on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -19586,14 +19504,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11DeviceContext2::ResizeTilePool on DeviceContext",
     );
     // ID3D11DeviceContext2::TiledResourceBarrier on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext2::tiled_resource_barrier(
-            this, None, None,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext2::tiled_resource_barrier(this, None, None);
+            answers.push("ID3D11DeviceContext2::TiledResourceBarrier -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext2::TiledResourceBarrier on DeviceContext",
+    );
     // ID3D11DeviceContext2::IsAnnotationEnabled on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -19615,35 +19541,53 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11DeviceContext2::IsAnnotationEnabled on DeviceContext",
     );
     // ID3D11DeviceContext2::SetMarkerInt on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext2::set_marker_int(
-            this,
-            &[5_u16],
-            115_i32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext2::set_marker_int(this, &[5_u16], 115_i32);
+            answers.push("ID3D11DeviceContext2::SetMarkerInt -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext2::SetMarkerInt on DeviceContext");
     // ID3D11DeviceContext2::BeginEventInt on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext2::begin_event_int(
-            this,
-            &[5_u16],
-            115_i32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext2::begin_event_int(this, &[5_u16], 115_i32);
+            answers.push("ID3D11DeviceContext2::BeginEventInt -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext2::BeginEventInt on DeviceContext",
+    );
     // ID3D11DeviceContext2::EndEvent on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext2::end_event(this))
+        answered({
+            let answer = direct3d_11::DeviceContext2::end_event(this);
+            answers.push("ID3D11DeviceContext2::EndEvent -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext2::EndEvent on DeviceContext");
     // ID3D11DeviceContext1::CopySubresourceRegion1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -19674,11 +19618,37 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::copy_subresource_region1(
-            this, v1, 93_u32, 2_u32, 103_u32, 44_u32, v2, 16_u32, None, 24_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::copy_subresource_region1(
+                this,
+                v1,
+                93_u32,
+                2_u32,
+                103_u32,
+                44_u32,
+                v2,
+                16_u32,
+                Some(&direct3d_11::structures::Box {
+                    left: 67_u32,
+                    top: 74_u32,
+                    front: 81_u32,
+                    right: 88_u32,
+                    bottom: 95_u32,
+                    back: 102_u32,
+                }),
+                24_u32,
+            );
+            answers.push("ID3D11DeviceContext1::CopySubresourceRegion1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::CopySubresourceRegion1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::UpdateSubresource1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -19696,17 +19666,32 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::update_subresource1(
-            this,
-            v1,
-            93_u32,
-            None,
-            &[76_u8],
-            58_u32,
-            14_u32,
-            24_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::update_subresource1(
+                this,
+                v1,
+                93_u32,
+                Some(&direct3d_11::structures::Box {
+                    left: 79_u32,
+                    top: 86_u32,
+                    front: 93_u32,
+                    right: 100_u32,
+                    bottom: 107_u32,
+                    back: 114_u32,
+                }),
+                &[76_u8],
+                58_u32,
+                14_u32,
+                24_u32,
+            );
+            answers.push("ID3D11DeviceContext1::UpdateSubresource1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::UpdateSubresource1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::DiscardResource on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -19754,83 +19739,143 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered(direct3d_11::DeviceContext1::discard_view(this, v1))
     });
     // ID3D11DeviceContext1::VSSetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::vs_set_constant_buffers1(
-            this,
-            41_u32,
-            &[],
-            &[3_u32],
-            &[34_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::vs_set_constant_buffers1(
+                this,
+                41_u32,
+                &[o.k4.as_ref()],
+                &[3_u32],
+                &[34_u32],
+            );
+            answers.push("ID3D11DeviceContext1::VSSetConstantBuffers1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::VSSetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::HSSetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::hs_set_constant_buffers1(
-            this,
-            41_u32,
-            &[],
-            &[3_u32],
-            &[34_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::hs_set_constant_buffers1(
+                this,
+                41_u32,
+                &[o.k4.as_ref()],
+                &[3_u32],
+                &[34_u32],
+            );
+            answers.push("ID3D11DeviceContext1::HSSetConstantBuffers1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::HSSetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::DSSetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::ds_set_constant_buffers1(
-            this,
-            41_u32,
-            &[],
-            &[3_u32],
-            &[34_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::ds_set_constant_buffers1(
+                this,
+                41_u32,
+                &[o.k4.as_ref()],
+                &[3_u32],
+                &[34_u32],
+            );
+            answers.push("ID3D11DeviceContext1::DSSetConstantBuffers1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::DSSetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::GSSetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::gs_set_constant_buffers1(
-            this,
-            41_u32,
-            &[],
-            &[3_u32],
-            &[34_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::gs_set_constant_buffers1(
+                this,
+                41_u32,
+                &[o.k4.as_ref()],
+                &[3_u32],
+                &[34_u32],
+            );
+            answers.push("ID3D11DeviceContext1::GSSetConstantBuffers1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::GSSetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::PSSetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::ps_set_constant_buffers1(
-            this,
-            41_u32,
-            &[],
-            &[3_u32],
-            &[34_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::ps_set_constant_buffers1(
+                this,
+                41_u32,
+                &[o.k4.as_ref()],
+                &[3_u32],
+                &[34_u32],
+            );
+            answers.push("ID3D11DeviceContext1::PSSetConstantBuffers1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::PSSetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::CSSetConstantBuffers1 on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::cs_set_constant_buffers1(
-            this,
-            41_u32,
-            &[],
-            &[3_u32],
-            &[34_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::cs_set_constant_buffers1(
+                this,
+                41_u32,
+                &[o.k4.as_ref()],
+                &[3_u32],
+                &[34_u32],
+            );
+            answers.push("ID3D11DeviceContext1::CSSetConstantBuffers1 -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext1::CSSetConstantBuffers1 on DeviceContext",
+    );
     // ID3D11DeviceContext1::VSGetConstantBuffers1 on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -20086,6 +20131,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11DeviceContext1::SwapDeviceContextState on DeviceContext",
     );
     // ID3D11DeviceContext1::ClearView on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20109,18 +20156,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext1::clear_view(
-            this,
-            v1,
-            &core::array::from_fn(|_| 72.5_f32),
-            &[component_object_model::structures::Rect {
-                left: 37_i32,
-                top: 44_i32,
-                right: 51_i32,
-                bottom: 58_i32,
-            }],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext1::clear_view(
+                this,
+                v1,
+                &core::array::from_fn(|_| 72.5_f32),
+                &[component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }],
+            );
+            answers.push("ID3D11DeviceContext1::ClearView -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext1::ClearView on DeviceContext");
     // ID3D11DeviceContext1::DiscardView1 on DeviceContext
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
@@ -20157,68 +20209,117 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         ))
     });
     // ID3D11DeviceContext::VSSetConstantBuffers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::vs_set_constant_buffers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::vs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
+            answers.push("ID3D11DeviceContext::VSSetConstantBuffers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::VSSetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::PSSetShaderResources on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ps_set_shader_resources(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ps_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
+            answers.push("ID3D11DeviceContext::PSSetShaderResources -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::PSSetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::PSSetShader on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ps_set_shader(this, None, &[]))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::ps_set_shader(this, o.k23.as_ref(), &[o.k5.as_ref()]);
+            answers.push("ID3D11DeviceContext::PSSetShader -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::PSSetShader on DeviceContext");
     // ID3D11DeviceContext::PSSetSamplers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ps_set_samplers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::ps_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
+            answers.push("ID3D11DeviceContext::PSSetSamplers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::PSSetSamplers on DeviceContext");
     // ID3D11DeviceContext::VSSetShader on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::vs_set_shader(this, None, &[]))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::vs_set_shader(this, o.k40.as_ref(), &[o.k5.as_ref()]);
+            answers.push("ID3D11DeviceContext::VSSetShader -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::VSSetShader on DeviceContext");
     // ID3D11DeviceContext::DrawIndexed on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::draw_indexed(
-            this, 22_u32, 81_u32, 38_i32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::draw_indexed(this, 22_u32, 81_u32, 38_i32);
+            answers.push("ID3D11DeviceContext::DrawIndexed -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::DrawIndexed on DeviceContext");
     // ID3D11DeviceContext::Draw on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::draw(this, 17_u32, 95_u32))
+        answered({
+            let answer = direct3d_11::DeviceContext::draw(this, 17_u32, 95_u32);
+            answers.push("ID3D11DeviceContext::Draw -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::Draw on DeviceContext");
     // ID3D11DeviceContext::Map on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -20259,6 +20360,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "ID3D11DeviceContext::Map on DeviceContext");
     // ID3D11DeviceContext::Unmap on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20276,120 +20379,219 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::unmap(this, v1, 64_u32))
+        answered({
+            let answer = direct3d_11::DeviceContext::unmap(this, v1, 64_u32);
+            answers.push("ID3D11DeviceContext::Unmap -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::Unmap on DeviceContext");
     // ID3D11DeviceContext::PSSetConstantBuffers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ps_set_constant_buffers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::ps_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
+            answers.push("ID3D11DeviceContext::PSSetConstantBuffers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::PSSetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::IASetInputLayout on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_set_input_layout(this, None))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_set_input_layout(this, o.k21.as_ref());
+            answers.push("ID3D11DeviceContext::IASetInputLayout -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IASetInputLayout on DeviceContext",
+    );
     // ID3D11DeviceContext::IASetVertexBuffers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_set_vertex_buffers(
-            this,
-            41_u32,
-            &[],
-            &[86_u32],
-            &[92_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_set_vertex_buffers(
+                this,
+                41_u32,
+                &[o.k4.as_ref()],
+                &[86_u32],
+                &[92_u32],
+            );
+            answers.push("ID3D11DeviceContext::IASetVertexBuffers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IASetVertexBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::IASetIndexBuffer on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_set_index_buffer(
-            this,
-            None,
-            directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
-            103_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_set_index_buffer(
+                this,
+                o.k4.as_ref(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                103_u32,
+            );
+            answers.push("ID3D11DeviceContext::IASetIndexBuffer -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IASetIndexBuffer on DeviceContext",
+    );
     // ID3D11DeviceContext::DrawIndexedInstanced on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::draw_indexed_instanced(
-            this, 75_u32, 17_u32, 81_u32, 38_i32, 32_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::draw_indexed_instanced(
+                this, 75_u32, 17_u32, 81_u32, 38_i32, 32_u32,
+            );
+            answers.push("ID3D11DeviceContext::DrawIndexedInstanced -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DrawIndexedInstanced on DeviceContext",
+    );
     // ID3D11DeviceContext::DrawInstanced on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::draw_instanced(
-            this, 77_u32, 17_u32, 95_u32, 32_u32,
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::draw_instanced(this, 77_u32, 17_u32, 95_u32, 32_u32);
+            answers.push("ID3D11DeviceContext::DrawInstanced -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::DrawInstanced on DeviceContext");
     // ID3D11DeviceContext::GSSetConstantBuffers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::gs_set_constant_buffers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::gs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
+            answers.push("ID3D11DeviceContext::GSSetConstantBuffers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::GSSetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::GSSetShader on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::gs_set_shader(this, None, &[]))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::gs_set_shader(this, o.k18.as_ref(), &[o.k5.as_ref()]);
+            answers.push("ID3D11DeviceContext::GSSetShader -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::GSSetShader on DeviceContext");
     // ID3D11DeviceContext::IASetPrimitiveTopology on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ia_set_primitive_topology(
-            this,
-            direct3d_common::enumerations::D3D_PRIMITIVE_TOPOLOGY_POINTLIST,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ia_set_primitive_topology(
+                this,
+                direct3d_common::enumerations::D3D_PRIMITIVE_TOPOLOGY_POINTLIST,
+            );
+            answers.push("ID3D11DeviceContext::IASetPrimitiveTopology -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::IASetPrimitiveTopology on DeviceContext",
+    );
     // ID3D11DeviceContext::VSSetShaderResources on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::vs_set_shader_resources(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::vs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
+            answers.push("ID3D11DeviceContext::VSSetShaderResources -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::VSSetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::VSSetSamplers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::vs_set_samplers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::vs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
+            answers.push("ID3D11DeviceContext::VSSetSamplers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::VSSetSamplers on DeviceContext");
     // ID3D11DeviceContext::Begin on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20405,9 +20607,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::begin(this, v1))
+        answered({
+            let answer = direct3d_11::DeviceContext::begin(this, v1);
+            answers.push("ID3D11DeviceContext::Begin -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::Begin on DeviceContext");
     // ID3D11DeviceContext::End on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20423,8 +20632,13 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::end(this, v1))
+        answered({
+            let answer = direct3d_11::DeviceContext::end(this, v1);
+            answers.push("ID3D11DeviceContext::End -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::End on DeviceContext");
     // ID3D11DeviceContext::GetData on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -20456,95 +20670,182 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "ID3D11DeviceContext::GetData on DeviceContext");
     // ID3D11DeviceContext::SetPredication on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::set_predication(
-            this, None, true,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::set_predication(this, o.k24.as_ref(), true);
+            answers.push("ID3D11DeviceContext::SetPredication -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::SetPredication on DeviceContext",
+    );
     // ID3D11DeviceContext::GSSetShaderResources on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::gs_set_shader_resources(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::gs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
+            answers.push("ID3D11DeviceContext::GSSetShaderResources -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::GSSetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::GSSetSamplers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::gs_set_samplers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::gs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
+            answers.push("ID3D11DeviceContext::GSSetSamplers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::GSSetSamplers on DeviceContext");
     // ID3D11DeviceContext::OMSetRenderTargets on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::om_set_render_targets(
-            this,
-            &[],
-            None,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::om_set_render_targets(
+                this,
+                &[o.k29.as_ref()],
+                o.k13.as_ref(),
+            );
+            answers.push("ID3D11DeviceContext::OMSetRenderTargets -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMSetRenderTargets on DeviceContext",
+    );
     // ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::DeviceContext::om_set_render_targets_and_unordered_access_views(
-                this, None, None, 15_u32, None, None,
-            ),
-        )
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::om_set_render_targets_and_unordered_access_views(
+                    this,
+                    None,
+                    o.k13.as_ref(),
+                    15_u32,
+                    None,
+                    None,
+                );
+            answers.push(
+                "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews -> nothing"
+                    .to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews on DeviceContext",
+    );
     // ID3D11DeviceContext::OMSetBlendState on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::om_set_blend_state(
-            this, None, None, 97_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::om_set_blend_state(
+                this,
+                o.k3.as_ref(),
+                Some(&core::array::from_fn(|_| 25.5_f32)),
+                97_u32,
+            );
+            answers.push("ID3D11DeviceContext::OMSetBlendState -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMSetBlendState on DeviceContext",
+    );
     // ID3D11DeviceContext::OMSetDepthStencilState on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::om_set_depth_stencil_state(
-            this, None, 106_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::om_set_depth_stencil_state(
+                this,
+                o.k12.as_ref(),
+                106_u32,
+            );
+            answers.push("ID3D11DeviceContext::OMSetDepthStencilState -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::OMSetDepthStencilState on DeviceContext",
+    );
     // ID3D11DeviceContext::SOSetTargets on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::so_set_targets(
-            this,
-            &[],
-            &[92_u32],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::so_set_targets(this, &[o.k4.as_ref()], &[92_u32]);
+            answers.push("ID3D11DeviceContext::SOSetTargets -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::SOSetTargets on DeviceContext");
     // ID3D11DeviceContext::DrawAuto on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::draw_auto(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::draw_auto(this);
+            answers.push("ID3D11DeviceContext::DrawAuto -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::DrawAuto on DeviceContext");
     // ID3D11DeviceContext::DrawIndexedInstancedIndirect on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20552,11 +20853,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k4.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::draw_indexed_instanced_indirect(
-            this, v1, 8_u32,
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::draw_indexed_instanced_indirect(this, v1, 8_u32);
+            answers
+                .push("ID3D11DeviceContext::DrawIndexedInstancedIndirect -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DrawIndexedInstancedIndirect on DeviceContext",
+    );
     // ID3D11DeviceContext::DrawInstancedIndirect on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20564,20 +20875,33 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k4.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::draw_instanced_indirect(
-            this, v1, 8_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::draw_instanced_indirect(this, v1, 8_u32);
+            answers.push("ID3D11DeviceContext::DrawInstancedIndirect -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DrawInstancedIndirect on DeviceContext",
+    );
     // ID3D11DeviceContext::Dispatch on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::dispatch(
-            this, 105_u32, 63_u32, 122_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::dispatch(this, 105_u32, 63_u32, 122_u32);
+            answers.push("ID3D11DeviceContext::Dispatch -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::Dispatch on DeviceContext");
     // ID3D11DeviceContext::DispatchIndirect on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20585,50 +20909,85 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k4.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::dispatch_indirect(
-            this, v1, 8_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::dispatch_indirect(this, v1, 8_u32);
+            answers.push("ID3D11DeviceContext::DispatchIndirect -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DispatchIndirect on DeviceContext",
+    );
     // ID3D11DeviceContext::RSSetState on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::rs_set_state(this, None))
+        answered({
+            let answer = direct3d_11::DeviceContext::rs_set_state(this, o.k26.as_ref());
+            answers.push("ID3D11DeviceContext::RSSetState -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::RSSetState on DeviceContext");
     // ID3D11DeviceContext::RSSetViewports on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::rs_set_viewports(
-            this,
-            &[direct3d_11::structures::Viewport {
-                top_left_x: 59.5_f32,
-                top_left_y: 66.5_f32,
-                width: 73.5_f32,
-                height: 80.5_f32,
-                min_depth: 87.5_f32,
-                max_depth: 94.5_f32,
-            }],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::rs_set_viewports(
+                this,
+                &[direct3d_11::structures::Viewport {
+                    top_left_x: 59.5_f32,
+                    top_left_y: 66.5_f32,
+                    width: 73.5_f32,
+                    height: 80.5_f32,
+                    min_depth: 87.5_f32,
+                    max_depth: 94.5_f32,
+                }],
+            );
+            answers.push("ID3D11DeviceContext::RSSetViewports -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::RSSetViewports on DeviceContext",
+    );
     // ID3D11DeviceContext::RSSetScissorRects on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::rs_set_scissor_rects(
-            this,
-            &[component_object_model::structures::Rect {
-                left: 8_i32,
-                top: 15_i32,
-                right: 22_i32,
-                bottom: 29_i32,
-            }],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::rs_set_scissor_rects(
+                this,
+                &[component_object_model::structures::Rect {
+                    left: 8_i32,
+                    top: 15_i32,
+                    right: 22_i32,
+                    bottom: 29_i32,
+                }],
+            );
+            answers.push("ID3D11DeviceContext::RSSetScissorRects -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::RSSetScissorRects on DeviceContext",
+    );
     // ID3D11DeviceContext::CopySubresourceRegion on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20659,11 +21018,36 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::copy_subresource_region(
-            this, v1, 93_u32, 2_u32, 103_u32, 44_u32, v2, 16_u32, None,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::copy_subresource_region(
+                this,
+                v1,
+                93_u32,
+                2_u32,
+                103_u32,
+                44_u32,
+                v2,
+                16_u32,
+                Some(&direct3d_11::structures::Box {
+                    left: 67_u32,
+                    top: 74_u32,
+                    front: 81_u32,
+                    right: 88_u32,
+                    bottom: 95_u32,
+                    back: 102_u32,
+                }),
+            );
+            answers.push("ID3D11DeviceContext::CopySubresourceRegion -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CopySubresourceRegion on DeviceContext",
+    );
     // ID3D11DeviceContext::CopyResource on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20694,9 +21078,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::copy_resource(this, v1, v2))
+        answered({
+            let answer = direct3d_11::DeviceContext::copy_resource(this, v1, v2);
+            answers.push("ID3D11DeviceContext::CopyResource -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::CopyResource on DeviceContext");
     // ID3D11DeviceContext::UpdateSubresource on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20714,17 +21105,34 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::update_subresource(
-            this,
-            v1,
-            93_u32,
-            None,
-            &[76_u8],
-            58_u32,
-            14_u32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::update_subresource(
+                this,
+                v1,
+                93_u32,
+                Some(&direct3d_11::structures::Box {
+                    left: 79_u32,
+                    top: 86_u32,
+                    front: 93_u32,
+                    right: 100_u32,
+                    bottom: 107_u32,
+                    back: 114_u32,
+                }),
+                &[76_u8],
+                58_u32,
+                14_u32,
+            );
+            answers.push("ID3D11DeviceContext::UpdateSubresource -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::UpdateSubresource on DeviceContext",
+    );
     // ID3D11DeviceContext::CopyStructureCount on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20735,11 +21143,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v2) = o.k39.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::copy_structure_count(
-            this, v1, 29_u32, v2,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::copy_structure_count(this, v1, 29_u32, v2);
+            answers.push("ID3D11DeviceContext::CopyStructureCount -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CopyStructureCount on DeviceContext",
+    );
     // ID3D11DeviceContext::ClearRenderTargetView on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20747,13 +21163,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k29.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::clear_render_target_view(
-            this,
-            v1,
-            &core::array::from_fn(|_| 75.5_f32),
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::clear_render_target_view(
+                this,
+                v1,
+                &core::array::from_fn(|_| 75.5_f32),
+            );
+            answers.push("ID3D11DeviceContext::ClearRenderTargetView -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::ClearRenderTargetView on DeviceContext",
+    );
     // ID3D11DeviceContext::ClearUnorderedAccessViewUint on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20761,15 +21187,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k39.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::DeviceContext::clear_unordered_access_view_uint(
+        answered({
+            let answer = direct3d_11::DeviceContext::clear_unordered_access_view_uint(
                 this,
                 v1,
                 &core::array::from_fn(|_| 123_u32),
-            ),
-        )
+            );
+            answers
+                .push("ID3D11DeviceContext::ClearUnorderedAccessViewUint -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::ClearUnorderedAccessViewUint on DeviceContext",
+    );
     // ID3D11DeviceContext::ClearUnorderedAccessViewFloat on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20777,15 +21212,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k39.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::DeviceContext::clear_unordered_access_view_float(
+        answered({
+            let answer = direct3d_11::DeviceContext::clear_unordered_access_view_float(
                 this,
                 v1,
                 &core::array::from_fn(|_| 123.5_f32),
-            ),
-        )
+            );
+            answers
+                .push("ID3D11DeviceContext::ClearUnorderedAccessViewFloat -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::ClearUnorderedAccessViewFloat on DeviceContext",
+    );
     // ID3D11DeviceContext::ClearDepthStencilView on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20793,11 +21237,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k13.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::clear_depth_stencil_view(
-            this, v1, 55_u32, 92.5_f32, 31_u8,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::clear_depth_stencil_view(
+                this, v1, 55_u32, 92.5_f32, 31_u8,
+            );
+            answers.push("ID3D11DeviceContext::ClearDepthStencilView -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::ClearDepthStencilView on DeviceContext",
+    );
     // ID3D11DeviceContext::GenerateMips on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20805,9 +21259,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k31.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::generate_mips(this, v1))
+        answered({
+            let answer = direct3d_11::DeviceContext::generate_mips(this, v1);
+            answers.push("ID3D11DeviceContext::GenerateMips -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::GenerateMips on DeviceContext");
     // ID3D11DeviceContext::SetResourceMinLOD on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20825,10 +21286,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::set_resource_min_lod(
-            this, v1, 81.5_f32,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::set_resource_min_lod(this, v1, 81.5_f32);
+            answers.push("ID3D11DeviceContext::SetResourceMinLOD -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::SetResourceMinLOD on DeviceContext",
+    );
     // ID3D11DeviceContext::GetResourceMinLOD on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -20863,6 +21330,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11DeviceContext::GetResourceMinLOD on DeviceContext",
     );
     // ID3D11DeviceContext::ResolveSubresource on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20893,16 +21362,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         }) else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::resolve_subresource(
-            this,
-            v1,
-            93_u32,
-            v2,
-            16_u32,
-            directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::resolve_subresource(
+                this,
+                v1,
+                93_u32,
+                v2,
+                16_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+            );
+            answers.push("ID3D11DeviceContext::ResolveSubresource -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::ResolveSubresource on DeviceContext",
+    );
     // ID3D11DeviceContext::ExecuteCommandList on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
@@ -20910,142 +21389,245 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k7.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::execute_command_list(
-            this, v1, true,
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::execute_command_list(this, v1, true);
+            answers.push("ID3D11DeviceContext::ExecuteCommandList -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::ExecuteCommandList on DeviceContext",
+    );
     // ID3D11DeviceContext::HSSetShaderResources on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::hs_set_shader_resources(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::hs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
+            answers.push("ID3D11DeviceContext::HSSetShaderResources -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::HSSetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::HSSetShader on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::hs_set_shader(this, None, &[]))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::hs_set_shader(this, o.k19.as_ref(), &[o.k5.as_ref()]);
+            answers.push("ID3D11DeviceContext::HSSetShader -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::HSSetShader on DeviceContext");
     // ID3D11DeviceContext::HSSetSamplers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::hs_set_samplers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::hs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
+            answers.push("ID3D11DeviceContext::HSSetSamplers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::HSSetSamplers on DeviceContext");
     // ID3D11DeviceContext::HSSetConstantBuffers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::hs_set_constant_buffers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::hs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
+            answers.push("ID3D11DeviceContext::HSSetConstantBuffers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::HSSetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::DSSetShaderResources on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ds_set_shader_resources(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::ds_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
+            answers.push("ID3D11DeviceContext::DSSetShaderResources -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DSSetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::DSSetShader on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ds_set_shader(this, None, &[]))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::ds_set_shader(this, o.k16.as_ref(), &[o.k5.as_ref()]);
+            answers.push("ID3D11DeviceContext::DSSetShader -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::DSSetShader on DeviceContext");
     // ID3D11DeviceContext::DSSetSamplers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ds_set_samplers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::ds_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
+            answers.push("ID3D11DeviceContext::DSSetSamplers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::DSSetSamplers on DeviceContext");
     // ID3D11DeviceContext::DSSetConstantBuffers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::ds_set_constant_buffers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::ds_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
+            answers.push("ID3D11DeviceContext::DSSetConstantBuffers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::DSSetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::CSSetShaderResources on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_set_shader_resources(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::cs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
+            answers.push("ID3D11DeviceContext::CSSetShaderResources -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CSSetShaderResources on DeviceContext",
+    );
     // ID3D11DeviceContext::CSSetUnorderedAccessViews on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_set_unordered_access_views(
-            this,
-            41_u32,
-            &[],
-            &[120_u32],
-        ))
+        answered({
+            let answer = direct3d_11::DeviceContext::cs_set_unordered_access_views(
+                this,
+                41_u32,
+                &[o.k39.as_ref()],
+                &[120_u32],
+            );
+            answers.push("ID3D11DeviceContext::CSSetUnorderedAccessViews -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CSSetUnorderedAccessViews on DeviceContext",
+    );
     // ID3D11DeviceContext::CSSetShader on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_set_shader(this, None, &[]))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::cs_set_shader(this, o.k8.as_ref(), &[o.k5.as_ref()]);
+            answers.push("ID3D11DeviceContext::CSSetShader -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::CSSetShader on DeviceContext");
     // ID3D11DeviceContext::CSSetSamplers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_set_samplers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::cs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
+            answers.push("ID3D11DeviceContext::CSSetSamplers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::CSSetSamplers on DeviceContext");
     // ID3D11DeviceContext::CSSetConstantBuffers on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::cs_set_constant_buffers(
-            this,
-            41_u32,
-            &[],
-        ))
+        answered({
+            let answer =
+                direct3d_11::DeviceContext::cs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
+            answers.push("ID3D11DeviceContext::CSSetConstantBuffers -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11DeviceContext::CSSetConstantBuffers on DeviceContext",
+    );
     // ID3D11DeviceContext::VSGetConstantBuffers on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -22007,19 +22589,33 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11DeviceContext::CSGetConstantBuffers on DeviceContext",
     );
     // ID3D11DeviceContext::ClearState on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::clear_state(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::clear_state(this);
+            answers.push("ID3D11DeviceContext::ClearState -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::ClearState on DeviceContext");
     // ID3D11DeviceContext::Flush on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::DeviceContext::flush(this))
+        answered({
+            let answer = direct3d_11::DeviceContext::flush(this);
+            answers.push("ID3D11DeviceContext::Flush -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11DeviceContext::Flush on DeviceContext");
     // ID3D11DeviceContext::GetType on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -22256,15 +22852,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3DUserDefinedAnnotation::EndEvent on DeviceContext",
     );
     // ID3DUserDefinedAnnotation::SetMarker on DeviceContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k15.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::set_marker(
-            this,
-            &[124_u16],
-        ))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::set_marker(this, &[124_u16]);
+            answers.push("ID3DUserDefinedAnnotation::SetMarker -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::SetMarker on DeviceContext",
+    );
     // ID3DUserDefinedAnnotation::GetStatus on DeviceContext
     let noted = answers.len();
     answers.start();
@@ -22449,7 +23052,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative(direct3d_11::Fence::create_shared_handle(
-            this, None, 93_u32, None,
+            this,
+            Some(&component_object_model::structures::SecurityAttributes {
+                n_length: 1_u32,
+                lp_security_descriptor: vec![8_u8],
+                b_inherit_handle: true,
+            }),
+            93_u32,
+            None,
         ))
     });
     // ID3D11Fence::GetCompletedValue on Fence
@@ -22880,12 +23490,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "ID3D11InfoQueue::SetMessageCountLimit on InfoQueue");
     // ID3D11InfoQueue::ClearStoredMessages on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::clear_stored_messages(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::clear_stored_messages(this);
+            answers.push("ID3D11InfoQueue::ClearStoredMessages -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::ClearStoredMessages on InfoQueue");
     // ID3D11InfoQueue::GetMessage on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
@@ -23031,12 +23648,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         ))
     });
     // ID3D11InfoQueue::ClearStorageFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::clear_storage_filter(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::clear_storage_filter(this);
+            answers.push("ID3D11InfoQueue::ClearStorageFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::ClearStorageFilter on InfoQueue");
     // ID3D11InfoQueue::PushEmptyStorageFilter on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -23083,12 +23707,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative(direct3d_11::InfoQueue::push_storage_filter(this, &direct3d_11::structures::InfoQueueFilter { allow_list: direct3d_11::structures::InfoQueueFilterDesc { num_categories: 9_u32, category_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 23_u32, severity_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR], num_i_ds: 37_u32, id_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD] }, deny_list: direct3d_11::structures::InfoQueueFilterDesc { num_categories: 16_u32, category_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 30_u32, severity_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR], num_i_ds: 44_u32, id_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD] } }))
     });
     // ID3D11InfoQueue::PopStorageFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::pop_storage_filter(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::pop_storage_filter(this);
+            answers.push("ID3D11InfoQueue::PopStorageFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::PopStorageFilter on InfoQueue");
     // ID3D11InfoQueue::GetStorageFilterStackSize on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -23126,12 +23757,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         ))
     });
     // ID3D11InfoQueue::ClearRetrievalFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::clear_retrieval_filter(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::clear_retrieval_filter(this);
+            answers.push("ID3D11InfoQueue::ClearRetrievalFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::ClearRetrievalFilter on InfoQueue");
     // ID3D11InfoQueue::PushEmptyRetrievalFilter on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -23178,12 +23816,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative(direct3d_11::InfoQueue::push_retrieval_filter(this, &direct3d_11::structures::InfoQueueFilter { allow_list: direct3d_11::structures::InfoQueueFilterDesc { num_categories: 9_u32, category_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 23_u32, severity_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR], num_i_ds: 37_u32, id_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD] }, deny_list: direct3d_11::structures::InfoQueueFilterDesc { num_categories: 16_u32, category_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 30_u32, severity_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR], num_i_ds: 44_u32, id_list: vec![direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD] } }))
     });
     // ID3D11InfoQueue::PopRetrievalFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::pop_retrieval_filter(this))
+        answered({
+            let answer = direct3d_11::InfoQueue::pop_retrieval_filter(this);
+            answers.push("ID3D11InfoQueue::PopRetrievalFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::PopRetrievalFilter on InfoQueue");
     // ID3D11InfoQueue::GetRetrievalFilterStackSize on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -23372,12 +24017,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "ID3D11InfoQueue::GetBreakOnID on InfoQueue");
     // ID3D11InfoQueue::SetMuteDebugOutput on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k20.as_ref() else {
             return false;
         };
-        answered(direct3d_11::InfoQueue::set_mute_debug_output(this, true))
+        answered({
+            let answer = direct3d_11::InfoQueue::set_mute_debug_output(this, true);
+            answers.push("ID3D11InfoQueue::SetMuteDebugOutput -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11InfoQueue::SetMuteDebugOutput on InfoQueue");
     // ID3D11InfoQueue::GetMuteDebugOutput on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -24839,12 +25491,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "ID3D11ShaderTrace::TraceReady on ShaderTrace");
     // ID3D11ShaderTrace::ResetTrace on ShaderTrace
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k32.as_ref() else {
             return false;
         };
-        answered(direct3d_11::ShaderTrace::reset_trace(this))
+        answered({
+            let answer = direct3d_11::ShaderTrace::reset_trace(this);
+            answers.push("ID3D11ShaderTrace::ResetTrace -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11ShaderTrace::ResetTrace on ShaderTrace");
     // ID3D11ShaderTrace::GetTraceStats on ShaderTrace
     let noted = answers.len();
     answers.start();
@@ -25260,12 +25919,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered(direct3d_11::Resource::get_type(this))
     });
     // ID3D11Resource::SetEvictionPriority on Texture1D
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k35.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::set_eviction_priority(this, 97_u32))
+        answered({
+            let answer = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
+            answers.push("ID3D11Resource::SetEvictionPriority -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::SetEvictionPriority on Texture1D");
     // ID3D11Resource::GetEvictionPriority on Texture1D
     let noted = answers.len();
     answers.start();
@@ -25603,7 +26269,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(
             directx_graphics_infrastructure::Resource1::create_shared_handle(
-                this, None, 93_u32, None,
+                this,
+                Some(&component_object_model::structures::SecurityAttributes {
+                    n_length: 1_u32,
+                    lp_security_descriptor: vec![8_u8],
+                    b_inherit_handle: true,
+                }),
+                93_u32,
+                None,
             ),
         )
     });
@@ -25672,12 +26345,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered(direct3d_11::Resource::get_type(this))
     });
     // ID3D11Resource::SetEvictionPriority on Texture2D
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k36.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::set_eviction_priority(this, 97_u32))
+        answered({
+            let answer = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
+            answers.push("ID3D11Resource::SetEvictionPriority -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::SetEvictionPriority on Texture2D");
     // ID3D11Resource::GetEvictionPriority on Texture2D
     let noted = answers.len();
     answers.start();
@@ -26015,7 +26695,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(
             directx_graphics_infrastructure::Resource1::create_shared_handle(
-                this, None, 93_u32, None,
+                this,
+                Some(&component_object_model::structures::SecurityAttributes {
+                    n_length: 1_u32,
+                    lp_security_descriptor: vec![8_u8],
+                    b_inherit_handle: true,
+                }),
+                93_u32,
+                None,
             ),
         )
     });
@@ -26058,7 +26745,13 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative(directx_graphics_infrastructure::Surface1::release_dc(
-            this, None,
+            this,
+            Some(&component_object_model::structures::Rect {
+                left: 1_i32,
+                top: 8_i32,
+                right: 15_i32,
+                bottom: 22_i32,
+            }),
         ))
     });
     // IDXGISurface2::GetResource on Texture2D
@@ -26157,12 +26850,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         answered(direct3d_11::Resource::get_type(this))
     });
     // ID3D11Resource::SetEvictionPriority on Texture3D
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k37.as_ref() else {
             return false;
         };
-        answered(direct3d_11::Resource::set_eviction_priority(this, 97_u32))
+        answered({
+            let answer = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
+            answers.push("ID3D11Resource::SetEvictionPriority -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D11Resource::SetEvictionPriority on Texture3D");
     // ID3D11Resource::GetEvictionPriority on Texture3D
     let noted = answers.len();
     answers.start();
@@ -26500,7 +27200,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(
             directx_graphics_infrastructure::Resource1::create_shared_handle(
-                this, None, 93_u32, None,
+                this,
+                Some(&component_object_model::structures::SecurityAttributes {
+                    n_length: 1_u32,
+                    lp_security_descriptor: vec![8_u8],
+                    b_inherit_handle: true,
+                }),
+                93_u32,
+                None,
             ),
         )
     });
@@ -27035,7 +27742,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 v2,
                 None,
                 &[28_u32],
-                &[],
+                &[o.k4.as_ref()],
             );
             answers.push(format!(
                 "ID3D11VideoContext3::DecoderBeginFrame1 -> {}",
@@ -27079,6 +27786,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         ))
     });
     // ID3D11VideoContext2::VideoProcessorSetOutputHDRMetaData on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27086,15 +27795,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext2::video_processor_set_output_hdr_meta_data(
+        answered({
+            let answer = direct3d_11::VideoContext2::video_processor_set_output_hdr_meta_data(
                 this,
                 v1,
                 directx_graphics_infrastructure::enumerations::DXGI_HDR_METADATA_TYPE_HDR10,
                 None,
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext2::VideoProcessorSetOutputHDRMetaData -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext2::VideoProcessorSetOutputHDRMetaData on VideoContext",
+    );
     // ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData on VideoContext
     let noted = answers.len();
     answers.start();
@@ -27128,6 +27845,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData on VideoContext",
     );
     // ID3D11VideoContext2::VideoProcessorSetStreamHDRMetaData on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27135,16 +27854,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext2::video_processor_set_stream_hdr_meta_data(
+        answered({
+            let answer = direct3d_11::VideoContext2::video_processor_set_stream_hdr_meta_data(
                 this,
                 v1,
                 118_u32,
                 directx_graphics_infrastructure::enumerations::DXGI_HDR_METADATA_TYPE_HDR10,
                 None,
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext2::VideoProcessorSetStreamHDRMetaData -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext2::VideoProcessorSetStreamHDRMetaData on VideoContext",
+    );
     // ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData on VideoContext
     let noted = answers.len();
     answers.start();
@@ -27278,12 +28005,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11VideoContext1::DecoderUpdateDownsampling on VideoContext",
     );
     // ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1 on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else { return false; };
         let Some(v1) = o.k45.as_ref() else { return false; };
-        answered(direct3d_11::VideoContext1::video_processor_set_output_color_space1(this, v1, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709))
+        answered({ let answer = direct3d_11::VideoContext1::video_processor_set_output_color_space1(this, v1, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709); answers.push("ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1 -> nothing".to_string()); answer })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1 on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorSetOutputShaderUsage on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27291,10 +28026,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext1::video_processor_set_output_shader_usage(this, v1, true),
-        )
+        answered({
+            let answer =
+                direct3d_11::VideoContext1::video_processor_set_output_shader_usage(this, v1, true);
+            answers.push(
+                "ID3D11VideoContext1::VideoProcessorSetOutputShaderUsage -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorSetOutputShaderUsage on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1 on VideoContext
     let noted = answers.len();
     answers.start();
@@ -27344,12 +28088,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage on VideoContext",
     );
     // ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1 on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else { return false; };
         let Some(v1) = o.k45.as_ref() else { return false; };
-        answered(direct3d_11::VideoContext1::video_processor_set_stream_color_space1(this, v1, 118_u32, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709))
+        answered({ let answer = direct3d_11::VideoContext1::video_processor_set_stream_color_space1(this, v1, 118_u32, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709); answers.push("ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1 -> nothing".to_string()); answer })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1 on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorSetStreamMirror on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27357,12 +28109,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext1::video_processor_set_stream_mirror(
+        answered({
+            let answer = direct3d_11::VideoContext1::video_processor_set_stream_mirror(
                 this, v1, 118_u32, true, true, true,
-            ),
-        )
+            );
+            answers
+                .push("ID3D11VideoContext1::VideoProcessorSetStreamMirror -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext1::VideoProcessorSetStreamMirror on VideoContext",
+    );
     // ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1 on VideoContext
     let noted = answers.len();
     answers.start();
@@ -27535,6 +28294,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         ))
     });
     // ID3D11VideoContext::VideoProcessorSetOutputTargetRect on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27542,11 +28303,31 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_output_target_rect(this, v1, true, None),
-        )
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_output_target_rect(
+                this,
+                v1,
+                true,
+                Some(&component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }),
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetOutputTargetRect -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetOutputTargetRect on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetOutputBackgroundColor on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27554,8 +28335,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_output_background_color(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_output_background_color(
                 this,
                 v1,
                 true,
@@ -27575,10 +28356,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                         },
                     },
                 },
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetOutputBackgroundColor -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetOutputBackgroundColor on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetOutputColorSpace on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27586,15 +28377,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_output_color_space(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_output_color_space(
                 this,
                 v1,
                 &direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 12_u32 },
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetOutputColorSpace -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetOutputColorSpace on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetOutputAlphaFillMode on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27602,15 +28403,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_output_alpha_fill_mode(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_output_alpha_fill_mode(
                 this,
                 v1,
                 direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_ALPHA_FILL_MODE_BACKGROUND,
                 118_u32,
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetOutputAlphaFillMode -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetOutputAlphaFillMode on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetOutputConstriction on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -27632,6 +28441,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         )
     });
     // ID3D11VideoContext::VideoProcessorSetOutputStereoMode on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27639,8 +28450,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_set_output_stereo_mode(this, v1, true))
+        answered({
+            let answer =
+                direct3d_11::VideoContext::video_processor_set_output_stereo_mode(this, v1, true);
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetOutputStereoMode -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetOutputStereoMode on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetOutputExtension on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -27848,6 +28670,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11VideoContext::VideoProcessorGetOutputExtension on VideoContext",
     );
     // ID3D11VideoContext::VideoProcessorSetStreamFrameFormat on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27855,16 +28679,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_frame_format(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_frame_format(
                 this,
                 v1,
                 118_u32,
                 direct3d_11::enumerations::D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST,
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetStreamFrameFormat -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamFrameFormat on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamColorSpace on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27872,16 +28706,26 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_color_space(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_color_space(
                 this,
                 v1,
                 118_u32,
                 &direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 12_u32 },
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetStreamColorSpace -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamColorSpace on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamOutputRate on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27889,18 +28733,31 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_output_rate(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_output_rate(
                 this,
                 v1,
                 118_u32,
                 direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_OUTPUT_RATE_HALF,
                 true,
-                None,
-            ),
-        )
+                Some(&directx_graphics_infrastructure::structures::Rational {
+                    numerator: 40_u32,
+                    denominator: 47_u32,
+                }),
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetStreamOutputRate -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamOutputRate on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamSourceRect on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27908,13 +28765,32 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_source_rect(
-                this, v1, 118_u32, true, None,
-            ),
-        )
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_source_rect(
+                this,
+                v1,
+                118_u32,
+                true,
+                Some(&component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }),
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetStreamSourceRect -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamSourceRect on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamDestRect on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27922,13 +28798,31 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_dest_rect(
-                this, v1, 118_u32, true, None,
-            ),
-        )
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_dest_rect(
+                this,
+                v1,
+                118_u32,
+                true,
+                Some(&component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }),
+            );
+            answers
+                .push("ID3D11VideoContext::VideoProcessorSetStreamDestRect -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamDestRect on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamAlpha on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27936,11 +28830,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::video_processor_set_stream_alpha(
-            this, v1, 118_u32, true, 51.5_f32,
-        ))
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_alpha(
+                this, v1, 118_u32, true, 51.5_f32,
+            );
+            answers.push("ID3D11VideoContext::VideoProcessorSetStreamAlpha -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamAlpha on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamPalette on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27948,16 +28852,25 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_palette(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_palette(
                 this,
                 v1,
                 118_u32,
                 &[40_u32],
-            ),
-        )
+            );
+            answers
+                .push("ID3D11VideoContext::VideoProcessorSetStreamPalette -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamPalette on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamPixelAspectRatio on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27965,13 +28878,35 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_pixel_aspect_ratio(
-                this, v1, 118_u32, true, None, None,
-            ),
-        )
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_pixel_aspect_ratio(
+                this,
+                v1,
+                118_u32,
+                true,
+                Some(&directx_graphics_infrastructure::structures::Rational {
+                    numerator: 42_u32,
+                    denominator: 49_u32,
+                }),
+                Some(&directx_graphics_infrastructure::structures::Rational {
+                    numerator: 41_u32,
+                    denominator: 48_u32,
+                }),
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetStreamPixelAspectRatio -> nothing"
+                    .to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamPixelAspectRatio on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamLumaKey on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27979,13 +28914,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_luma_key(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_luma_key(
                 this, v1, 118_u32, true, 99.5_f32, 26.5_f32,
-            ),
-        )
+            );
+            answers
+                .push("ID3D11VideoContext::VideoProcessorSetStreamLumaKey -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamLumaKey on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamStereoFormat on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -27993,8 +28937,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_stereo_format(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_stereo_format(
                 this,
                 v1,
                 118_u32,
@@ -28004,10 +28948,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 true,
                 direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_STEREO_FLIP_FRAME0,
                 33_i32,
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetStreamStereoFormat -> nothing".to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamStereoFormat on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamAutoProcessingMode on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -28015,13 +28969,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_auto_processing_mode(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_auto_processing_mode(
                 this, v1, 118_u32, true,
-            ),
-        )
+            );
+            answers.push(
+                "ID3D11VideoContext::VideoProcessorSetStreamAutoProcessingMode -> nothing"
+                    .to_string(),
+            );
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamAutoProcessingMode on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamFilter on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -28029,17 +28994,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_filter(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_filter(
                 this,
                 v1,
                 118_u32,
                 direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_FILTER_CONTRAST,
                 true,
                 50_i32,
-            ),
-        )
+            );
+            answers
+                .push("ID3D11VideoContext::VideoProcessorSetStreamFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamFilter on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorSetStreamExtension on VideoContext
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
@@ -28499,7 +29471,11 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 v1,
                 v2,
                 v3,
-                None,
+                Some(&direct3d_11::structures::EncryptedBlockInfo {
+                    num_encrypted_bytes_at_beginning: 89_u32,
+                    num_bytes_in_skip_pattern: 96_u32,
+                    num_bytes_in_encrypt_pattern: 103_u32,
+                }),
                 None,
                 Some(&lying),
             );
@@ -28530,6 +29506,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11VideoContext::StartSessionKeyRefresh on VideoContext",
     );
     // ID3D11VideoContext::FinishSessionKeyRefresh on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -28537,10 +29515,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k10.as_ref() else {
             return false;
         };
-        answered(direct3d_11::VideoContext::finish_session_key_refresh(
-            this, v1,
-        ))
+        answered({
+            let answer = direct3d_11::VideoContext::finish_session_key_refresh(this, v1);
+            answers.push("ID3D11VideoContext::FinishSessionKeyRefresh -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::FinishSessionKeyRefresh on VideoContext",
+    );
     // ID3D11VideoContext::GetEncryptionBltKey on VideoContext
     let noted = answers.len();
     answers.start();
@@ -28647,6 +29631,8 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3D11VideoContext::ConfigureAuthenticatedChannel on VideoContext",
     );
     // ID3D11VideoContext::VideoProcessorSetStreamRotation on VideoContext
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else {
             return false;
@@ -28654,16 +29640,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(v1) = o.k45.as_ref() else {
             return false;
         };
-        answered(
-            direct3d_11::VideoContext::video_processor_set_stream_rotation(
+        answered({
+            let answer = direct3d_11::VideoContext::video_processor_set_stream_rotation(
                 this,
                 v1,
                 118_u32,
                 true,
                 direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_ROTATION_90,
-            ),
-        )
+            );
+            answers
+                .push("ID3D11VideoContext::VideoProcessorSetStreamRotation -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3D11VideoContext::VideoProcessorSetStreamRotation on VideoContext",
+    );
     // ID3D11VideoContext::VideoProcessorGetStreamRotation on VideoContext
     let noted = answers.len();
     answers.start();
@@ -29208,7 +30201,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 92_u16,
                     data4: core::array::from_fn(|_| 99_u8),
                 },
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
                 &component_object_model::structures::Guid {
                     data1: 15_u32,
                     data2: 22_u16,
@@ -29250,7 +30248,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     denominator: 69_u32,
                 },
                 91_u32,
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 78_u32,
+                    data2: 85_u16,
+                    data3: 92_u16,
+                    data4: core::array::from_fn(|_| 99_u8),
+                }),
             );
             answers.push(format!(
                 "ID3D11VideoDevice1::GetVideoDecoderCaps -> {}",
@@ -29364,7 +30367,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 92_u16,
                     data4: core::array::from_fn(|_| 99_u8),
                 },
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
                 &component_object_model::structures::Guid {
                     data1: 15_u32,
                     data2: 22_u16,
@@ -29654,7 +30662,21 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_11::VideoDevice::get_content_protection_caps(this, None, None);
+            let answer = direct3d_11::VideoDevice::get_content_protection_caps(
+                this,
+                Some(&component_object_model::structures::Guid {
+                    data1: 78_u32,
+                    data2: 85_u16,
+                    data3: 92_u16,
+                    data4: core::array::from_fn(|_| 99_u8),
+                }),
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
+            );
             answers.push(format!(
                 "ID3D11VideoDevice::GetContentProtectionCaps -> {}",
                 format!("{:?}", &answer)
@@ -29682,7 +30704,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 92_u16,
                     data4: core::array::from_fn(|_| 99_u8),
                 },
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
                 35_u32,
             );
             answers.push(format!(
@@ -30702,15 +31729,22 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "ID3DUserDefinedAnnotation::EndEvent on UserDefinedAnnotation",
     );
     // ID3DUserDefinedAnnotation::SetMarker on UserDefinedAnnotation
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k50.as_ref() else {
             return false;
         };
-        answered(direct3d_11::UserDefinedAnnotation::set_marker(
-            this,
-            &[124_u16],
-        ))
+        answered({
+            let answer = direct3d_11::UserDefinedAnnotation::set_marker(this, &[124_u16]);
+            answers.push("ID3DUserDefinedAnnotation::SetMarker -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "ID3DUserDefinedAnnotation::SetMarker on UserDefinedAnnotation",
+    );
     // ID3DUserDefinedAnnotation::GetStatus on UserDefinedAnnotation
     let noted = answers.len();
     answers.start();
@@ -30793,10 +31827,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent on Adapter",
     );
     // IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        answered(directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, 87_u32))
+        answered({ let answer = directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, 87_u32); answers.push("IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus -> nothing".to_string()); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter",
+    );
     // IDXGIAdapter3::QueryVideoMemoryInfo on Adapter
     let noted = answers.len();
     answers.start();
@@ -30852,10 +31892,16 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent on Adapter",
     );
     // IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        answered(directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, 87_u32))
+        answered({ let answer = directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, 87_u32); answers.push("IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification -> nothing".to_string()); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter",
+    );
     // IDXGIAdapter2::GetDesc2 on Adapter
     let noted = answers.len();
     answers.start();
@@ -31050,19 +32096,35 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "IDXGIObject::GetParent on Adapter");
     // IDXGIDebug1::EnableLeakTrackingForThread on Debug
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k62.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Debug1::enable_leak_tracking_for_thread(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Debug1::enable_leak_tracking_for_thread(this);
+            answers.push("IDXGIDebug1::EnableLeakTrackingForThread -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDebug1::EnableLeakTrackingForThread on Debug");
     // IDXGIDebug1::DisableLeakTrackingForThread on Debug
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k62.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Debug1::disable_leak_tracking_for_thread(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Debug1::disable_leak_tracking_for_thread(this);
+            answers.push("IDXGIDebug1::DisableLeakTrackingForThread -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDebug1::DisableLeakTrackingForThread on Debug");
     // IDXGIDebug1::IsLeakTrackingEnabledForThread on Debug
     let noted = answers.len();
     answers.start();
@@ -31311,7 +32373,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(directx_graphics_infrastructure::Device4::offer_resources1(
             this,
-            &[],
+            &[o.k72.as_ref()],
             directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             31_u32,
         ))
@@ -31321,15 +32383,24 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[]))
+        failure_is_negative(
+            directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[o.k72.as_ref()]),
+        )
     });
     // IDXGIDevice3::Trim on Device
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Device3::trim(this))
+        answered({
+            let answer = directx_graphics_infrastructure::Device3::trim(this);
+            answers.push("IDXGIDevice3::Trim -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice3::Trim on Device");
     // IDXGIDevice2::OfferResources on Device
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
@@ -31337,7 +32408,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(directx_graphics_infrastructure::Device2::offer_resources(
             this,
-            &[],
+            &[o.k72.as_ref()],
             directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
         ))
     });
@@ -31348,7 +32419,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(directx_graphics_infrastructure::Device2::reclaim_resources(
             this,
-            &[],
+            &[o.k72.as_ref()],
         ))
     });
     // IDXGIDevice2::EnqueueSetEvent on Device
@@ -31431,7 +32502,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, None); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIDevice::CreateSurface on Device");
     // IDXGIDevice::QueryResourceResidency on Device
@@ -31440,7 +32511,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative(
-            directx_graphics_infrastructure::Device::query_resource_residency(this, &[]),
+            directx_graphics_infrastructure::Device::query_resource_residency(this, &[None]),
         )
     });
     // IDXGIDevice::SetGPUThreadPriority on Device
@@ -31596,12 +32667,23 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "IDXGIDisplayControl::IsStereoEnabled on DisplayControl",
     );
     // IDXGIDisplayControl::SetStereoEnabled on DisplayControl
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k65.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::DisplayControl::set_stereo_enabled(this, true))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::DisplayControl::set_stereo_enabled(this, true);
+            answers.push("IDXGIDisplayControl::SetStereoEnabled -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDisplayControl::SetStereoEnabled on DisplayControl",
+    );
     // IDXGIFactory7::RegisterAdaptersChangedEvent on Factory
     let noted = answers.len();
     answers.start();
@@ -31794,7 +32876,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None); answers.push(format!("IDXGIFactory2::CreateSwapChainForHwnd -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, Some(&directx_graphics_infrastructure::structures::SwapChainFullscreenDesc { refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 87_u32, denominator: 94_u32 }, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, windowed: true }), o.k70.as_ref()); answers.push(format!("IDXGIFactory2::CreateSwapChainForHwnd -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIFactory2::CreateSwapChainForHwnd on Factory");
     // IDXGIFactory2::CreateSwapChainForCoreWindow on Factory
@@ -31804,7 +32886,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None); answers.push(format!("IDXGIFactory2::CreateSwapChainForCoreWindow -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref()); answers.push(format!("IDXGIFactory2::CreateSwapChainForCoreWindow -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -31879,12 +32961,20 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "IDXGIFactory2::RegisterStereoStatusEvent on Factory");
     // IDXGIFactory2::UnregisterStereoStatus on Factory
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Factory2::unregister_stereo_status(this, 87_u32))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Factory2::unregister_stereo_status(this, 87_u32);
+            answers.push("IDXGIFactory2::UnregisterStereoStatus -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory2::UnregisterStereoStatus on Factory");
     // IDXGIFactory2::RegisterOcclusionStatusWindow on Factory
     let noted = answers.len();
     answers.start();
@@ -31934,21 +33024,28 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "IDXGIFactory2::RegisterOcclusionStatusEvent on Factory",
     );
     // IDXGIFactory2::UnregisterOcclusionStatus on Factory
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::Factory2::unregister_occlusion_status(this, 87_u32),
-        )
+        answered({
+            let answer = directx_graphics_infrastructure::Factory2::unregister_occlusion_status(
+                this, 87_u32,
+            );
+            answers.push("IDXGIFactory2::UnregisterOcclusionStatus -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory2::UnregisterOcclusionStatus on Factory");
     // IDXGIFactory2::CreateSwapChainForComposition on Factory
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None); answers.push(format!("IDXGIFactory2::CreateSwapChainForComposition -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref()); answers.push(format!("IDXGIFactory2::CreateSwapChainForComposition -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -32173,7 +33270,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     driven.attempt(|| {
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None); answers.push(format!("IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref()); answers.push(format!("IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -32186,7 +33283,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = o.k72.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None); answers.push(format!("IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, o.k70.as_ref()); answers.push(format!("IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -32219,12 +33316,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::SetMessageCountLimit on InfoQueue");
     // IDXGIInfoQueue::ClearStoredMessages on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::clear_stored_messages(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::clear_stored_messages(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -32232,9 +33331,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::ClearStoredMessages -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::ClearStoredMessages on InfoQueue");
     // IDXGIInfoQueue::GetMessage on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -32372,12 +33474,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         )
     });
     // IDXGIInfoQueue::ClearStorageFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::clear_storage_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::clear_storage_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -32385,9 +33489,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::ClearStorageFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::ClearStorageFilter on InfoQueue");
     // IDXGIInfoQueue::PushEmptyStorageFilter on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -32475,12 +33582,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative(directx_graphics_infrastructure::InfoQueue::push_storage_filter(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, &directx_graphics_infrastructure::structures::InfoQueueFilter { allow_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 9_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 23_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 37_u32, id_list: vec![44_i32] }, deny_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 16_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 30_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 44_u32, id_list: vec![51_i32] } }))
     });
     // IDXGIInfoQueue::PopStorageFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::pop_storage_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::pop_storage_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -32488,9 +33597,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::PopStorageFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::PopStorageFilter on InfoQueue");
     // IDXGIInfoQueue::GetStorageFilterStackSize on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -32544,12 +33656,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         )
     });
     // IDXGIInfoQueue::ClearRetrievalFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::clear_retrieval_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::clear_retrieval_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -32557,9 +33671,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::ClearRetrievalFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::ClearRetrievalFilter on InfoQueue");
     // IDXGIInfoQueue::PushEmptyRetrievalFilter on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -32650,12 +33767,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative(directx_graphics_infrastructure::InfoQueue::push_retrieval_filter(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, &directx_graphics_infrastructure::structures::InfoQueueFilter { allow_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 9_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 23_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 37_u32, id_list: vec![44_i32] }, deny_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 16_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 30_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 44_u32, id_list: vec![51_i32] } }))
     });
     // IDXGIInfoQueue::PopRetrievalFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::pop_retrieval_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::pop_retrieval_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -32663,9 +33782,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::PopRetrievalFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::PopRetrievalFilter on InfoQueue");
     // IDXGIInfoQueue::GetRetrievalFilterStackSize on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -32797,12 +33919,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::GetBreakOnID on InfoQueue");
     // IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::set_mute_debug_output(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::set_mute_debug_output(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -32811,9 +33935,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                     data4: core::array::from_fn(|_| 105_u8),
                 },
                 true,
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::SetMuteDebugOutput -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue");
     // IDXGIInfoQueue::GetMuteDebugOutput on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -33370,14 +34497,19 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     });
     answers.not_called_since(noted, "IDXGIOutput::TakeOwnership on Output");
     // IDXGIOutput::ReleaseOwnership on Output
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Output::release_ownership(
-            this,
-        ))
+        answered({
+            let answer = directx_graphics_infrastructure::Output::release_ownership(this);
+            answers.push("IDXGIOutput::ReleaseOwnership -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::ReleaseOwnership on Output");
     // IDXGIOutput::GetGammaControlCapabilities on Output
     let noted = answers.len();
     answers.start();
@@ -33897,7 +35029,14 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         };
         failure_is_negative(
             directx_graphics_infrastructure::Resource1::create_shared_handle(
-                this, None, 93_u32, None,
+                this,
+                Some(&component_object_model::structures::SecurityAttributes {
+                    n_length: 1_u32,
+                    lp_security_descriptor: vec![8_u8],
+                    b_inherit_handle: true,
+                }),
+                93_u32,
+                None,
             ),
         )
     });
@@ -34143,7 +35282,13 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative(directx_graphics_infrastructure::Surface1::release_dc(
-            this, None,
+            this,
+            Some(&component_object_model::structures::Rect {
+                left: 1_i32,
+                top: 8_i32,
+                right: 15_i32,
+                bottom: 22_i32,
+            }),
         ))
     });
     // IDXGISurface::GetDesc on Surface
@@ -34369,7 +35514,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
                 directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
                 5_u32,
                 &[117_u32],
-                &[],
+                &[None],
             ),
         )
     });
@@ -34802,8 +35947,11 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
             return false;
         };
         failure_is_negative({
-            let answer =
-                directx_graphics_infrastructure::SwapChain::set_fullscreen_state(this, true, None);
+            let answer = directx_graphics_infrastructure::SwapChain::set_fullscreen_state(
+                this,
+                true,
+                o.k70.as_ref(),
+            );
             answers.push(format!(
                 "IDXGISwapChain::SetFullscreenState -> {}",
                 format!("{:?}", &answer)
@@ -35119,19 +36267,36 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         "IDXGISwapChainMedia::CheckPresentDurationSupport on SwapChainMedia",
     );
     // IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k76.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::GraphicsAnalysis::begin_capture(this))
+        answered({
+            let answer = directx_graphics_infrastructure::GraphicsAnalysis::begin_capture(this);
+            answers.push("IDXGraphicsAnalysis::BeginCapture -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis",
+    );
     // IDXGraphicsAnalysis::EndCapture on GraphicsAnalysis
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k76.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::GraphicsAnalysis::end_capture(this))
+        answered({
+            let answer = directx_graphics_infrastructure::GraphicsAnalysis::end_capture(this);
+            answers.push("IDXGraphicsAnalysis::EndCapture -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGraphicsAnalysis::EndCapture on GraphicsAnalysis");
     // D3D11CreateDevice
     let noted = answers.len();
     answers.start();
@@ -35139,7 +36304,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
         failure_is_negative({
             let answer = direct3d_11::Direct3D11::create_device(
                 &o.api,
-                None,
+                o.k61.as_ref(),
                 direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
                 component_object_model::structures::Hmodule(0),
                 direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
@@ -35169,35 +36334,7 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>, answers: &Answers) -> Drive
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
-        failure_is_negative({
-            let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(
-                &o.api,
-                None,
-                direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
-                component_object_model::structures::Hmodule(0),
-                direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
-                &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
-                124_u32,
-                None,
-            );
-            answers.push(format!(
-                "D3D11CreateDeviceAndSwapChain -> {}",
-                match &answer {
-                    Ok(v0) => format!("Ok({})", {
-                        let (t1_0, t1_1, t1_2, t1_3) = v0;
-                        format!(
-                            "({}, {}, {}, {})",
-                            "an object".to_string(),
-                            "an object".to_string(),
-                            format!("{:?}", t1_2),
-                            "an object".to_string()
-                        )
-                    }),
-                    Err(v0) => format!("Err({:#x})", v0.0),
-                }
-            ));
-            answer
-        })
+        failure_is_negative({ let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 15_u32, height: 22_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 36_u32, denominator: 43_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 22_u32, quality: 29_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 29_u32, output_window: component_object_model::structures::Hwnd(36), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 57_u32 })); answers.push(format!("D3D11CreateDeviceAndSwapChain -> {}", match &answer { Ok(v0) => format!("Ok({})", { let (t1_0, t1_1, t1_2, t1_3) = v0; format!("({}, {}, {}, {})", "an object".to_string(), "an object".to_string(), format!("{:?}", t1_2), "an object".to_string()) }), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "D3D11CreateDeviceAndSwapChain");
     driven
@@ -35208,7 +36345,7 @@ const CALLS: usize = 1010;
 
 /// The number of answers the suite notes and compares: each answer of a method both glues carry to the
 /// implementation, and the caller's bytes after each such method that writes them.
-const COMPARED: usize = 680;
+const COMPARED: usize = 817;
 
 /// Makes an object of every kind the implementation makes and calls every method of every kind and every export on
 /// them: no method panics, a failure is negative, an object handed out equals its clone.

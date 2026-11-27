@@ -1562,7 +1562,7 @@ fn make_all<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, Some(&directx_graphics_infrastructure::structures::SwapChainFullscreenDesc { refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 87_u32, denominator: 94_u32 }, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, windowed: true }), o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -1656,7 +1656,7 @@ fn make_all<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -1711,7 +1711,7 @@ fn make_all<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -2181,7 +2181,7 @@ fn make_all<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -2237,7 +2237,7 @@ fn make_all<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                         None
                     })?;
                     let v2 = o.k72.as_ref()?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -6822,10 +6822,16 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         "IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent on Adapter",
     );
     // IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        answered(directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, 87_u32))
+        answered({ let answer = directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, 87_u32); answers.push("IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus -> nothing".to_string()); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter",
+    );
     // IDXGIAdapter3::QueryVideoMemoryInfo on Adapter
     let noted = answers.len();
     answers.start();
@@ -6881,10 +6887,16 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         "IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent on Adapter",
     );
     // IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        answered(directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, 87_u32))
+        answered({ let answer = directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, 87_u32); answers.push("IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification -> nothing".to_string()); answer })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter",
+    );
     // IDXGIAdapter2::GetDesc2 on Adapter
     let noted = answers.len();
     answers.start();
@@ -7079,19 +7091,35 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     });
     answers.not_called_since(noted, "IDXGIObject::GetParent on Adapter");
     // IDXGIDebug1::EnableLeakTrackingForThread on Debug
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k62.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Debug1::enable_leak_tracking_for_thread(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Debug1::enable_leak_tracking_for_thread(this);
+            answers.push("IDXGIDebug1::EnableLeakTrackingForThread -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDebug1::EnableLeakTrackingForThread on Debug");
     // IDXGIDebug1::DisableLeakTrackingForThread on Debug
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k62.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Debug1::disable_leak_tracking_for_thread(this))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Debug1::disable_leak_tracking_for_thread(this);
+            answers.push("IDXGIDebug1::DisableLeakTrackingForThread -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDebug1::DisableLeakTrackingForThread on Debug");
     // IDXGIDebug1::IsLeakTrackingEnabledForThread on Debug
     let noted = answers.len();
     answers.start();
@@ -7340,7 +7368,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         };
         failure_is_negative(directx_graphics_infrastructure::Device4::offer_resources1(
             this,
-            &[],
+            &[o.k72.as_ref()],
             directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             31_u32,
         ))
@@ -7350,15 +7378,24 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        failure_is_negative(directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[]))
+        failure_is_negative(
+            directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[o.k72.as_ref()]),
+        )
     });
     // IDXGIDevice3::Trim on Device
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Device3::trim(this))
+        answered({
+            let answer = directx_graphics_infrastructure::Device3::trim(this);
+            answers.push("IDXGIDevice3::Trim -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIDevice3::Trim on Device");
     // IDXGIDevice2::OfferResources on Device
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else {
@@ -7366,7 +7403,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         };
         failure_is_negative(directx_graphics_infrastructure::Device2::offer_resources(
             this,
-            &[],
+            &[o.k72.as_ref()],
             directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
         ))
     });
@@ -7377,7 +7414,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         };
         failure_is_negative(directx_graphics_infrastructure::Device2::reclaim_resources(
             this,
-            &[],
+            &[o.k72.as_ref()],
         ))
     });
     // IDXGIDevice2::EnqueueSetEvent on Device
@@ -7460,7 +7497,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, None); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) })); answers.push(format!("IDXGIDevice::CreateSurface -> {}", match &answer { Ok(v0) => format!("Ok({})", format!("[{}]", v0.iter().map(|v1| match v1 { Some(v2) => format!("Some({})", "an object".to_string()), None => "None".to_string() }).collect::<Vec<String>>().join(", "))), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIDevice::CreateSurface on Device");
     // IDXGIDevice::QueryResourceResidency on Device
@@ -7469,7 +7506,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             return false;
         };
         failure_is_negative(
-            directx_graphics_infrastructure::Device::query_resource_residency(this, &[]),
+            directx_graphics_infrastructure::Device::query_resource_residency(this, &[None]),
         )
     });
     // IDXGIDevice::SetGPUThreadPriority on Device
@@ -7625,12 +7662,23 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         "IDXGIDisplayControl::IsStereoEnabled on DisplayControl",
     );
     // IDXGIDisplayControl::SetStereoEnabled on DisplayControl
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k65.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::DisplayControl::set_stereo_enabled(this, true))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::DisplayControl::set_stereo_enabled(this, true);
+            answers.push("IDXGIDisplayControl::SetStereoEnabled -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGIDisplayControl::SetStereoEnabled on DisplayControl",
+    );
     // IDXGIFactory7::RegisterAdaptersChangedEvent on Factory
     let noted = answers.len();
     answers.start();
@@ -7823,7 +7871,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None); answers.push(format!("IDXGIFactory2::CreateSwapChainForHwnd -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, Some(&directx_graphics_infrastructure::structures::SwapChainFullscreenDesc { refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 87_u32, denominator: 94_u32 }, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, windowed: true }), o.k70.as_ref()); answers.push(format!("IDXGIFactory2::CreateSwapChainForHwnd -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "IDXGIFactory2::CreateSwapChainForHwnd on Factory");
     // IDXGIFactory2::CreateSwapChainForCoreWindow on Factory
@@ -7833,7 +7881,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None); answers.push(format!("IDXGIFactory2::CreateSwapChainForCoreWindow -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref()); answers.push(format!("IDXGIFactory2::CreateSwapChainForCoreWindow -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -7908,12 +7956,20 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     });
     answers.not_called_since(noted, "IDXGIFactory2::RegisterStereoStatusEvent on Factory");
     // IDXGIFactory2::UnregisterStereoStatus on Factory
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Factory2::unregister_stereo_status(this, 87_u32))
+        answered({
+            let answer =
+                directx_graphics_infrastructure::Factory2::unregister_stereo_status(this, 87_u32);
+            answers.push("IDXGIFactory2::UnregisterStereoStatus -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory2::UnregisterStereoStatus on Factory");
     // IDXGIFactory2::RegisterOcclusionStatusWindow on Factory
     let noted = answers.len();
     answers.start();
@@ -7963,21 +8019,28 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         "IDXGIFactory2::RegisterOcclusionStatusEvent on Factory",
     );
     // IDXGIFactory2::UnregisterOcclusionStatus on Factory
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::Factory2::unregister_occlusion_status(this, 87_u32),
-        )
+        answered({
+            let answer = directx_graphics_infrastructure::Factory2::unregister_occlusion_status(
+                this, 87_u32,
+            );
+            answers.push("IDXGIFactory2::UnregisterOcclusionStatus -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIFactory2::UnregisterOcclusionStatus on Factory");
     // IDXGIFactory2::CreateSwapChainForComposition on Factory
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None); answers.push(format!("IDXGIFactory2::CreateSwapChainForComposition -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref()); answers.push(format!("IDXGIFactory2::CreateSwapChainForComposition -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -8202,7 +8265,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     driven.attempt(|| {
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None); answers.push(format!("IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref()); answers.push(format!("IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -8215,7 +8278,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = o.k72.as_ref() else { return false; };
-        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None); answers.push(format!("IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, o.k70.as_ref()); answers.push(format!("IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(
         noted,
@@ -8248,12 +8311,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::SetMessageCountLimit on InfoQueue");
     // IDXGIInfoQueue::ClearStoredMessages on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::clear_stored_messages(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::clear_stored_messages(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -8261,9 +8326,12 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::ClearStoredMessages -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::ClearStoredMessages on InfoQueue");
     // IDXGIInfoQueue::GetMessage on InfoQueue
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
@@ -8401,12 +8469,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         )
     });
     // IDXGIInfoQueue::ClearStorageFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::clear_storage_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::clear_storage_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -8414,9 +8484,12 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::ClearStorageFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::ClearStorageFilter on InfoQueue");
     // IDXGIInfoQueue::PushEmptyStorageFilter on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -8504,12 +8577,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative(directx_graphics_infrastructure::InfoQueue::push_storage_filter(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, &directx_graphics_infrastructure::structures::InfoQueueFilter { allow_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 9_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 23_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 37_u32, id_list: vec![44_i32] }, deny_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 16_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 30_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 44_u32, id_list: vec![51_i32] } }))
     });
     // IDXGIInfoQueue::PopStorageFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::pop_storage_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::pop_storage_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -8517,9 +8592,12 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::PopStorageFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::PopStorageFilter on InfoQueue");
     // IDXGIInfoQueue::GetStorageFilterStackSize on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -8573,12 +8651,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         )
     });
     // IDXGIInfoQueue::ClearRetrievalFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::clear_retrieval_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::clear_retrieval_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -8586,9 +8666,12 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::ClearRetrievalFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::ClearRetrievalFilter on InfoQueue");
     // IDXGIInfoQueue::PushEmptyRetrievalFilter on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -8679,12 +8762,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         failure_is_negative(directx_graphics_infrastructure::InfoQueue::push_retrieval_filter(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, &directx_graphics_infrastructure::structures::InfoQueueFilter { allow_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 9_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 23_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 37_u32, id_list: vec![44_i32] }, deny_list: directx_graphics_infrastructure::structures::InfoQueueFilterDesc { num_categories: 16_u32, category_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS], num_severities: 30_u32, severity_list: vec![directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR], num_i_ds: 44_u32, id_list: vec![51_i32] } }))
     });
     // IDXGIInfoQueue::PopRetrievalFilter on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::pop_retrieval_filter(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::pop_retrieval_filter(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -8692,9 +8777,12 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     data3: 98_u16,
                     data4: core::array::from_fn(|_| 105_u8),
                 },
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::PopRetrievalFilter -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::PopRetrievalFilter on InfoQueue");
     // IDXGIInfoQueue::GetRetrievalFilterStackSize on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -8826,12 +8914,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     });
     answers.not_called_since(noted, "IDXGIInfoQueue::GetBreakOnID on InfoQueue");
     // IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else {
             return false;
         };
-        answered(
-            directx_graphics_infrastructure::InfoQueue::set_mute_debug_output(
+        answered({
+            let answer = directx_graphics_infrastructure::InfoQueue::set_mute_debug_output(
                 this,
                 component_object_model::structures::Guid {
                     data1: 84_u32,
@@ -8840,9 +8930,12 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                     data4: core::array::from_fn(|_| 105_u8),
                 },
                 true,
-            ),
-        )
+            );
+            answers.push("IDXGIInfoQueue::SetMuteDebugOutput -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue");
     // IDXGIInfoQueue::GetMuteDebugOutput on InfoQueue
     let noted = answers.len();
     answers.start();
@@ -9399,14 +9492,19 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
     });
     answers.not_called_since(noted, "IDXGIOutput::TakeOwnership on Output");
     // IDXGIOutput::ReleaseOwnership on Output
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::Output::release_ownership(
-            this,
-        ))
+        answered({
+            let answer = directx_graphics_infrastructure::Output::release_ownership(this);
+            answers.push("IDXGIOutput::ReleaseOwnership -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGIOutput::ReleaseOwnership on Output");
     // IDXGIOutput::GetGammaControlCapabilities on Output
     let noted = answers.len();
     answers.start();
@@ -9926,7 +10024,14 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         };
         failure_is_negative(
             directx_graphics_infrastructure::Resource1::create_shared_handle(
-                this, None, 93_u32, None,
+                this,
+                Some(&component_object_model::structures::SecurityAttributes {
+                    n_length: 1_u32,
+                    lp_security_descriptor: vec![8_u8],
+                    b_inherit_handle: true,
+                }),
+                93_u32,
+                None,
             ),
         )
     });
@@ -10172,7 +10277,13 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             return false;
         };
         failure_is_negative(directx_graphics_infrastructure::Surface1::release_dc(
-            this, None,
+            this,
+            Some(&component_object_model::structures::Rect {
+                left: 1_i32,
+                top: 8_i32,
+                right: 15_i32,
+                bottom: 22_i32,
+            }),
         ))
     });
     // IDXGISurface::GetDesc on Surface
@@ -10398,7 +10509,7 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
                 directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
                 5_u32,
                 &[117_u32],
-                &[],
+                &[None],
             ),
         )
     });
@@ -10831,8 +10942,11 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
             return false;
         };
         failure_is_negative({
-            let answer =
-                directx_graphics_infrastructure::SwapChain::set_fullscreen_state(this, true, None);
+            let answer = directx_graphics_infrastructure::SwapChain::set_fullscreen_state(
+                this,
+                true,
+                o.k70.as_ref(),
+            );
             answers.push(format!(
                 "IDXGISwapChain::SetFullscreenState -> {}",
                 format!("{:?}", &answer)
@@ -11148,19 +11262,36 @@ fn drive<A: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>(
         "IDXGISwapChainMedia::CheckPresentDurationSupport on SwapChainMedia",
     );
     // IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k76.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::GraphicsAnalysis::begin_capture(this))
+        answered({
+            let answer = directx_graphics_infrastructure::GraphicsAnalysis::begin_capture(this);
+            answers.push("IDXGraphicsAnalysis::BeginCapture -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(
+        noted,
+        "IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis",
+    );
     // IDXGraphicsAnalysis::EndCapture on GraphicsAnalysis
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k76.as_ref() else {
             return false;
         };
-        answered(directx_graphics_infrastructure::GraphicsAnalysis::end_capture(this))
+        answered({
+            let answer = directx_graphics_infrastructure::GraphicsAnalysis::end_capture(this);
+            answers.push("IDXGraphicsAnalysis::EndCapture -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "IDXGraphicsAnalysis::EndCapture on GraphicsAnalysis");
     // CreateDXGIFactory
     let noted = answers.len();
     answers.start();
@@ -11230,7 +11361,7 @@ const CALLS: usize = 232;
 
 /// The number of answers the suite notes and compares: each answer of a method both glues carry to the
 /// implementation, and the caller's bytes after each such method that writes them.
-const COMPARED: usize = 185;
+const COMPARED: usize = 202;
 
 /// Makes an object of every kind the implementation makes and calls every method of every kind and every export on
 /// them: no method panics, a failure is negative, an object handed out equals its clone.

@@ -20037,7 +20037,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device3::create_shader_resource_view1(this, v1, None);
+                    let answer = direct3d_11::Device3::create_shader_resource_view1(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDesc1Anonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -20064,8 +20064,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer =
-                        direct3d_11::Device3::create_unordered_access_view1(this, v1, None);
+                    let answer = direct3d_11::Device3::create_unordered_access_view1(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDesc1Anonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -20092,7 +20091,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device3::create_render_target_view1(this, v1, None);
+                    let answer = direct3d_11::Device3::create_render_target_view1(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDesc1Anonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -22265,7 +22264,11 @@ pub fn make_all(o: &mut Objects) -> usize {
                             misc_flags: 86_u32,
                             structure_byte_stride: 93_u32,
                         },
-                        None,
+                        Some(&direct3d_11::structures::SubresourceData {
+                            sys_mem: vec![32_u8],
+                            sys_mem_pitch: 39_u32,
+                            sys_mem_slice_pitch: 46_u32,
+                        }),
                     );
                     answer.ok()
                 })
@@ -22341,7 +22344,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_shader_resource_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_shader_resource_view(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDescAnonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -22368,7 +22371,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_unordered_access_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_unordered_access_view(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDescAnonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -22395,7 +22398,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_render_target_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_render_target_view(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDescAnonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -22422,7 +22425,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::Device::create_depth_stencil_view(this, v1, None);
+                    let answer = direct3d_11::Device::create_depth_stencil_view(this, v1, Some(&direct3d_11::structures::DepthStencilViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_DSV_DIMENSION_TEXTURE1D, flags: 72_u32, anonymous: direct3d_11::structures::DepthStencilViewDescAnonymous { texture_1d: direct3d_11::structures::Tex1DDsv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DDsv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsDsv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayDsv { first_array_slice: 0_u32, array_size: 0_u32 } } }));
                     answer.ok()
                 })
             };
@@ -22454,7 +22457,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_vertex_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_vertex_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -22470,7 +22474,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_geometry_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_geometry_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -22499,7 +22504,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                         }],
                         &[91_u32],
                         43_u32,
-                        None,
+                        o.k6.as_ref(),
                     );
                     answer.ok()
                 })
@@ -22516,7 +22521,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_pixel_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_pixel_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -22532,7 +22538,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_hull_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_hull_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -22548,7 +22555,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_domain_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_domain_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -22564,7 +22572,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_compute_shader(this, &[122_u8], None);
+                    let answer =
+                        direct3d_11::Device::create_compute_shader(this, &[122_u8], o.k6.as_ref());
                     answer.ok()
                 })
             };
@@ -26224,7 +26233,12 @@ pub fn make_all(o: &mut Objects) -> usize {
                             data3: 92_u16,
                             data4: core::array::from_fn(|_| 99_u8),
                         },
-                        None,
+                        Some(&component_object_model::structures::Guid {
+                            data1: 73_u32,
+                            data2: 80_u16,
+                            data3: 87_u16,
+                            data4: core::array::from_fn(|_| 94_u8),
+                        }),
                         &component_object_model::structures::Guid {
                             data1: 15_u32,
                             data2: 22_u16,
@@ -27652,7 +27666,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, Some(&directx_graphics_infrastructure::structures::SwapChainFullscreenDesc { refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 87_u32, denominator: 94_u32 }, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, windowed: true }), o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -27746,7 +27760,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -27801,7 +27815,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -28252,7 +28266,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -28308,7 +28322,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                         None
                     })?;
                     let v2 = o.k72.as_ref()?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, o.k70.as_ref());
                     answer.ok()
                 })
             };
@@ -31885,7 +31899,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 made(|| {
                     let answer = direct3d_11::Direct3D11::create_device(
                         &o.api,
-                        None,
+                        o.k61.as_ref(),
                         direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
                         component_object_model::structures::Hmodule(0),
                         direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
@@ -31909,16 +31923,7 @@ pub fn make_all(o: &mut Objects) -> usize {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
-                        component_object_model::structures::Hmodule(0),
-                        direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
-                        &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
-                        124_u32,
-                        None,
-                    );
+                    let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 15_u32, height: 22_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 36_u32, denominator: 43_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 22_u32, quality: 29_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 29_u32, output_window: component_object_model::structures::Hwnd(36), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 57_u32 }));
                     answer.ok()
                 })
             };
@@ -32895,7 +32900,7 @@ pub fn drive_where(
             let Some(this) = o.k11.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Debug::set_swap_chain(this, None);
+            let _ = direct3d_11::Debug::set_swap_chain(this, o.k74.as_ref());
             true
         });
     }
@@ -33189,70 +33194,28 @@ pub fn drive_where(
     // ID3D11Device3::CreateShaderResourceView1 on Device
     if wanted(ID_3D11_DEVICE3) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-                Some(direct3d_11::ResourceRef::Buffer(x))
-            } else if let Some(x) = o.k35.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture1D(x))
-            } else if let Some(x) = o.k36.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture2D(x))
-            } else if let Some(x) = o.k37.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture3D(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = direct3d_11::Device3::create_shader_resource_view1(this, v1, None);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        let _ = direct3d_11::Device3::create_shader_resource_view1(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDesc1Anonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv1 { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } }));
+        true
         });
     }
     // ID3D11Device3::CreateUnorderedAccessView1 on Device
     if wanted(ID_3D11_DEVICE3) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-                Some(direct3d_11::ResourceRef::Buffer(x))
-            } else if let Some(x) = o.k35.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture1D(x))
-            } else if let Some(x) = o.k36.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture2D(x))
-            } else if let Some(x) = o.k37.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture3D(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = direct3d_11::Device3::create_unordered_access_view1(this, v1, None);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        let _ = direct3d_11::Device3::create_unordered_access_view1(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDesc1Anonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
+        true
         });
     }
     // ID3D11Device3::CreateRenderTargetView1 on Device
     if wanted(ID_3D11_DEVICE3) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-                Some(direct3d_11::ResourceRef::Buffer(x))
-            } else if let Some(x) = o.k35.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture1D(x))
-            } else if let Some(x) = o.k36.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture2D(x))
-            } else if let Some(x) = o.k37.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture3D(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = direct3d_11::Device3::create_render_target_view1(this, v1, None);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        let _ = direct3d_11::Device3::create_render_target_view1(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc1 { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDesc1Anonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv1 { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv1 { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
+        true
         });
     }
     // ID3D11Device3::CreateQuery1 on Device
@@ -33478,7 +33441,11 @@ pub fn drive_where(
                     misc_flags: 86_u32,
                     structure_byte_stride: 93_u32,
                 },
-                None,
+                Some(&direct3d_11::structures::SubresourceData {
+                    sys_mem: vec![32_u8],
+                    sys_mem_pitch: 39_u32,
+                    sys_mem_slice_pitch: 46_u32,
+                }),
             );
             true
         });
@@ -33510,93 +33477,37 @@ pub fn drive_where(
     // ID3D11Device::CreateShaderResourceView on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-                Some(direct3d_11::ResourceRef::Buffer(x))
-            } else if let Some(x) = o.k35.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture1D(x))
-            } else if let Some(x) = o.k36.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture2D(x))
-            } else if let Some(x) = o.k37.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture3D(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_shader_resource_view(this, v1, None);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        let _ = direct3d_11::Device::create_shader_resource_view(this, v1, Some(&direct3d_11::structures::ShaderResourceViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_common::enumerations::D3D_SRV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::ShaderResourceViewDescAnonymous { buffer: direct3d_11::structures::BufferSrv { anonymous1: direct3d_11::structures::BufferSrvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferSrvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube: direct3d_11::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32 }, texture_cube_array: direct3d_11::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32 }, buffer_ex: direct3d_11::structures::BufferexSrv { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 } } }));
+        true
         });
     }
     // ID3D11Device::CreateUnorderedAccessView on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-                Some(direct3d_11::ResourceRef::Buffer(x))
-            } else if let Some(x) = o.k35.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture1D(x))
-            } else if let Some(x) = o.k36.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture2D(x))
-            } else if let Some(x) = o.k37.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture3D(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_unordered_access_view(this, v1, None);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        let _ = direct3d_11::Device::create_unordered_access_view(this, v1, Some(&direct3d_11::structures::UnorderedAccessViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_UAV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::UnorderedAccessViewDescAnonymous { buffer: direct3d_11::structures::BufferUav { first_element: 0_u32, num_elements: 0_u32, flags: 0_u32 }, texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DUav { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayUav { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DUav { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
+        true
         });
     }
     // ID3D11Device::CreateRenderTargetView on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-                Some(direct3d_11::ResourceRef::Buffer(x))
-            } else if let Some(x) = o.k35.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture1D(x))
-            } else if let Some(x) = o.k36.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture2D(x))
-            } else if let Some(x) = o.k37.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture3D(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_render_target_view(this, v1, None);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        let _ = direct3d_11::Device::create_render_target_view(this, v1, Some(&direct3d_11::structures::RenderTargetViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_RTV_DIMENSION_BUFFER, anonymous: direct3d_11::structures::RenderTargetViewDescAnonymous { buffer: direct3d_11::structures::BufferRtv { anonymous1: direct3d_11::structures::BufferRtvAnonymous1 { first_element: 0_u32, element_offset: 0_u32 }, anonymous2: direct3d_11::structures::BufferRtvAnonymous2 { num_elements: 0_u32, element_width: 0_u32 } }, texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DRtv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_11::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }));
+        true
         });
     }
     // ID3D11Device::CreateDepthStencilView on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
-                Some(direct3d_11::ResourceRef::Buffer(x))
-            } else if let Some(x) = o.k35.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture1D(x))
-            } else if let Some(x) = o.k36.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture2D(x))
-            } else if let Some(x) = o.k37.as_ref() {
-                Some(direct3d_11::ResourceRef::Texture3D(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_depth_stencil_view(this, v1, None);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
+        let _ = direct3d_11::Device::create_depth_stencil_view(this, v1, Some(&direct3d_11::structures::DepthStencilViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_11::enumerations::D3D11_DSV_DIMENSION_TEXTURE1D, flags: 72_u32, anonymous: direct3d_11::structures::DepthStencilViewDescAnonymous { texture_1d: direct3d_11::structures::Tex1DDsv { mip_slice: 0_u32 }, texture_1d_array: direct3d_11::structures::Tex1DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_11::structures::Tex2DDsv { mip_slice: 0_u32 }, texture_2d_array: direct3d_11::structures::Tex2DArrayDsv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2dms: direct3d_11::structures::Tex2DmsDsv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_11::structures::Tex2DmsArrayDsv { first_array_slice: 0_u32, array_size: 0_u32 } } }));
+        true
         });
     }
     // ID3D11Device::CreateInputLayout on Device
@@ -33613,7 +33524,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_vertex_shader(this, &[122_u8], None);
+            let _ = direct3d_11::Device::create_vertex_shader(this, &[122_u8], o.k6.as_ref());
             true
         });
     }
@@ -33623,7 +33534,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_geometry_shader(this, &[122_u8], None);
+            let _ = direct3d_11::Device::create_geometry_shader(this, &[122_u8], o.k6.as_ref());
             true
         });
     }
@@ -33646,7 +33557,7 @@ pub fn drive_where(
                 }],
                 &[91_u32],
                 43_u32,
-                None,
+                o.k6.as_ref(),
             );
             true
         });
@@ -33657,7 +33568,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_pixel_shader(this, &[122_u8], None);
+            let _ = direct3d_11::Device::create_pixel_shader(this, &[122_u8], o.k6.as_ref());
             true
         });
     }
@@ -33667,7 +33578,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_hull_shader(this, &[122_u8], None);
+            let _ = direct3d_11::Device::create_hull_shader(this, &[122_u8], o.k6.as_ref());
             true
         });
     }
@@ -33677,7 +33588,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_domain_shader(this, &[122_u8], None);
+            let _ = direct3d_11::Device::create_domain_shader(this, &[122_u8], o.k6.as_ref());
             true
         });
     }
@@ -33687,7 +33598,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_compute_shader(this, &[122_u8], None);
+            let _ = direct3d_11::Device::create_compute_shader(this, &[122_u8], o.k6.as_ref());
             true
         });
     }
@@ -34106,7 +34017,7 @@ pub fn drive_where(
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, None);
+        let _ = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) }));
         true
         });
     }
@@ -34159,7 +34070,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Device2::offer_resources(
                 this,
-                &[],
+                &[o.k72.as_ref()],
                 directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             );
             true
@@ -34171,7 +34082,10 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device2::reclaim_resources(this, &[]);
+            let _ = directx_graphics_infrastructure::Device2::reclaim_resources(
+                this,
+                &[o.k72.as_ref()],
+            );
             true
         });
     }
@@ -34206,7 +34120,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Device4::offer_resources1(
                 this,
-                &[],
+                &[o.k72.as_ref()],
                 directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
                 31_u32,
             );
@@ -34219,7 +34133,10 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[]);
+            let _ = directx_graphics_infrastructure::Device4::reclaim_resources1(
+                this,
+                &[o.k72.as_ref()],
+            );
             true
         });
     }
@@ -34369,7 +34286,7 @@ pub fn drive_where(
                     height: 60_u16,
                     depth: 67_u16,
                 }],
-                None,
+                o.k4.as_ref(),
                 &[39_u32],
                 &[20_u32],
                 &[118_u32],
@@ -34579,7 +34496,23 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext1::copy_subresource_region1(
-                this, v1, 93_u32, 2_u32, 103_u32, 44_u32, v2, 16_u32, None, 24_u32,
+                this,
+                v1,
+                93_u32,
+                2_u32,
+                103_u32,
+                44_u32,
+                v2,
+                16_u32,
+                Some(&direct3d_11::structures::Box {
+                    left: 67_u32,
+                    top: 74_u32,
+                    front: 81_u32,
+                    right: 88_u32,
+                    bottom: 95_u32,
+                    back: 102_u32,
+                }),
+                24_u32,
             );
             true
         });
@@ -34607,7 +34540,14 @@ pub fn drive_where(
                 this,
                 v1,
                 93_u32,
-                None,
+                Some(&direct3d_11::structures::Box {
+                    left: 79_u32,
+                    top: 86_u32,
+                    front: 93_u32,
+                    right: 100_u32,
+                    bottom: 107_u32,
+                    back: 114_u32,
+                }),
                 &[76_u8],
                 58_u32,
                 14_u32,
@@ -34677,7 +34617,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext1::vs_set_constant_buffers1(
                 this,
                 41_u32,
-                &[],
+                &[o.k4.as_ref()],
                 &[3_u32],
                 &[34_u32],
             );
@@ -34693,7 +34633,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext1::hs_set_constant_buffers1(
                 this,
                 41_u32,
-                &[],
+                &[o.k4.as_ref()],
                 &[3_u32],
                 &[34_u32],
             );
@@ -34709,7 +34649,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext1::ds_set_constant_buffers1(
                 this,
                 41_u32,
-                &[],
+                &[o.k4.as_ref()],
                 &[3_u32],
                 &[34_u32],
             );
@@ -34725,7 +34665,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext1::gs_set_constant_buffers1(
                 this,
                 41_u32,
-                &[],
+                &[o.k4.as_ref()],
                 &[3_u32],
                 &[34_u32],
             );
@@ -34741,7 +34681,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext1::ps_set_constant_buffers1(
                 this,
                 41_u32,
-                &[],
+                &[o.k4.as_ref()],
                 &[3_u32],
                 &[34_u32],
             );
@@ -34757,7 +34697,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext1::cs_set_constant_buffers1(
                 this,
                 41_u32,
-                &[],
+                &[o.k4.as_ref()],
                 &[3_u32],
                 &[34_u32],
             );
@@ -34920,7 +34860,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_set_constant_buffers(this, 41_u32, &[]);
+            let _ =
+                direct3d_11::DeviceContext::vs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
             true
         });
     }
@@ -34930,7 +34871,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_set_shader_resources(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::ps_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
             true
         });
     }
@@ -34940,7 +34885,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_set_shader(this, None, &[]);
+            let _ =
+                direct3d_11::DeviceContext::ps_set_shader(this, o.k23.as_ref(), &[o.k5.as_ref()]);
             true
         });
     }
@@ -34950,7 +34896,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_set_samplers(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::ps_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
             true
         });
     }
@@ -34960,7 +34906,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_set_shader(this, None, &[]);
+            let _ =
+                direct3d_11::DeviceContext::vs_set_shader(this, o.k40.as_ref(), &[o.k5.as_ref()]);
             true
         });
     }
@@ -35042,7 +34989,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_set_constant_buffers(this, 41_u32, &[]);
+            let _ =
+                direct3d_11::DeviceContext::ps_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
             true
         });
     }
@@ -35052,7 +35000,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ia_set_input_layout(this, None);
+            let _ = direct3d_11::DeviceContext::ia_set_input_layout(this, o.k21.as_ref());
             true
         });
     }
@@ -35065,7 +35013,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::ia_set_vertex_buffers(
                 this,
                 41_u32,
-                &[],
+                &[o.k4.as_ref()],
                 &[86_u32],
                 &[92_u32],
             );
@@ -35080,7 +35028,7 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext::ia_set_index_buffer(
                 this,
-                None,
+                o.k4.as_ref(),
                 directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
                 103_u32,
             );
@@ -35116,7 +35064,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_set_constant_buffers(this, 41_u32, &[]);
+            let _ =
+                direct3d_11::DeviceContext::gs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
             true
         });
     }
@@ -35126,7 +35075,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_set_shader(this, None, &[]);
+            let _ =
+                direct3d_11::DeviceContext::gs_set_shader(this, o.k18.as_ref(), &[o.k5.as_ref()]);
             true
         });
     }
@@ -35149,7 +35099,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_set_shader_resources(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::vs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
             true
         });
     }
@@ -35159,7 +35113,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_set_samplers(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::vs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
             true
         });
     }
@@ -35233,7 +35187,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::set_predication(this, None, true);
+            let _ = direct3d_11::DeviceContext::set_predication(this, o.k24.as_ref(), true);
             true
         });
     }
@@ -35243,7 +35197,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_set_shader_resources(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::gs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
             true
         });
     }
@@ -35253,7 +35211,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_set_samplers(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::gs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
             true
         });
     }
@@ -35263,7 +35221,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::om_set_render_targets(this, &[], None);
+            let _ = direct3d_11::DeviceContext::om_set_render_targets(
+                this,
+                &[o.k29.as_ref()],
+                o.k13.as_ref(),
+            );
             true
         });
     }
@@ -35274,7 +35236,12 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::om_set_render_targets_and_unordered_access_views(
-                this, None, None, 15_u32, None, None,
+                this,
+                None,
+                o.k13.as_ref(),
+                15_u32,
+                None,
+                None,
             );
             true
         });
@@ -35285,7 +35252,12 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::om_set_blend_state(this, None, None, 97_u32);
+            let _ = direct3d_11::DeviceContext::om_set_blend_state(
+                this,
+                o.k3.as_ref(),
+                Some(&core::array::from_fn(|_| 25.5_f32)),
+                97_u32,
+            );
             true
         });
     }
@@ -35295,7 +35267,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::om_set_depth_stencil_state(this, None, 106_u32);
+            let _ = direct3d_11::DeviceContext::om_set_depth_stencil_state(
+                this,
+                o.k12.as_ref(),
+                106_u32,
+            );
             true
         });
     }
@@ -35305,7 +35281,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::so_set_targets(this, &[], &[92_u32]);
+            let _ = direct3d_11::DeviceContext::so_set_targets(this, &[o.k4.as_ref()], &[92_u32]);
             true
         });
     }
@@ -35374,7 +35350,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::rs_set_state(this, None);
+            let _ = direct3d_11::DeviceContext::rs_set_state(this, o.k26.as_ref());
             true
         });
     }
@@ -35449,7 +35425,22 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::copy_subresource_region(
-                this, v1, 93_u32, 2_u32, 103_u32, 44_u32, v2, 16_u32, None,
+                this,
+                v1,
+                93_u32,
+                2_u32,
+                103_u32,
+                44_u32,
+                v2,
+                16_u32,
+                Some(&direct3d_11::structures::Box {
+                    left: 67_u32,
+                    top: 74_u32,
+                    front: 81_u32,
+                    right: 88_u32,
+                    bottom: 95_u32,
+                    back: 102_u32,
+                }),
             );
             true
         });
@@ -35513,7 +35504,14 @@ pub fn drive_where(
                 this,
                 v1,
                 93_u32,
-                None,
+                Some(&direct3d_11::structures::Box {
+                    left: 79_u32,
+                    top: 86_u32,
+                    front: 93_u32,
+                    right: 100_u32,
+                    bottom: 107_u32,
+                    back: 114_u32,
+                }),
                 &[76_u8],
                 58_u32,
                 14_u32,
@@ -35724,7 +35722,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_set_shader_resources(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::hs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
             true
         });
     }
@@ -35734,7 +35736,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_set_shader(this, None, &[]);
+            let _ =
+                direct3d_11::DeviceContext::hs_set_shader(this, o.k19.as_ref(), &[o.k5.as_ref()]);
             true
         });
     }
@@ -35744,7 +35747,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_set_samplers(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::hs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
             true
         });
     }
@@ -35754,7 +35757,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_set_constant_buffers(this, 41_u32, &[]);
+            let _ =
+                direct3d_11::DeviceContext::hs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
             true
         });
     }
@@ -35764,7 +35768,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_set_shader_resources(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::ds_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
             true
         });
     }
@@ -35774,7 +35782,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_set_shader(this, None, &[]);
+            let _ =
+                direct3d_11::DeviceContext::ds_set_shader(this, o.k16.as_ref(), &[o.k5.as_ref()]);
             true
         });
     }
@@ -35784,7 +35793,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_set_samplers(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::ds_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
             true
         });
     }
@@ -35794,7 +35803,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_set_constant_buffers(this, 41_u32, &[]);
+            let _ =
+                direct3d_11::DeviceContext::ds_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
             true
         });
     }
@@ -35804,7 +35814,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_set_shader_resources(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::cs_set_shader_resources(
+                this,
+                41_u32,
+                &[o.k31.as_ref()],
+            );
             true
         });
     }
@@ -35817,7 +35831,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::cs_set_unordered_access_views(
                 this,
                 41_u32,
-                &[],
+                &[o.k39.as_ref()],
                 &[120_u32],
             );
             true
@@ -35829,7 +35843,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_set_shader(this, None, &[]);
+            let _ =
+                direct3d_11::DeviceContext::cs_set_shader(this, o.k8.as_ref(), &[o.k5.as_ref()]);
             true
         });
     }
@@ -35839,7 +35854,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_set_samplers(this, 41_u32, &[]);
+            let _ = direct3d_11::DeviceContext::cs_set_samplers(this, 41_u32, &[o.k30.as_ref()]);
             true
         });
     }
@@ -35849,7 +35864,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_set_constant_buffers(this, 41_u32, &[]);
+            let _ =
+                direct3d_11::DeviceContext::cs_set_constant_buffers(this, 41_u32, &[o.k4.as_ref()]);
             true
         });
     }
@@ -38423,7 +38439,15 @@ pub fn drive_where(
             let Some(this) = o.k36.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Surface1::release_dc(this, None);
+            let _ = directx_graphics_infrastructure::Surface1::release_dc(
+                this,
+                Some(&component_object_model::structures::Rect {
+                    left: 1_i32,
+                    top: 8_i32,
+                    right: 15_i32,
+                    bottom: 22_i32,
+                }),
+            );
             true
         });
     }
@@ -38986,7 +39010,7 @@ pub fn drive_where(
                 v2,
                 None,
                 &[28_u32],
-                &[],
+                &[o.k4.as_ref()],
             );
             true
         });
@@ -39276,7 +39300,15 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_output_target_rect(
-                this, v1, true, None,
+                this,
+                v1,
+                true,
+                Some(&component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }),
             );
             true
         });
@@ -39517,7 +39549,10 @@ pub fn drive_where(
                 118_u32,
                 direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_OUTPUT_RATE_HALF,
                 true,
-                None,
+                Some(&directx_graphics_infrastructure::structures::Rational {
+                    numerator: 40_u32,
+                    denominator: 47_u32,
+                }),
             );
             true
         });
@@ -39532,7 +39567,16 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_source_rect(
-                this, v1, 118_u32, true, None,
+                this,
+                v1,
+                118_u32,
+                true,
+                Some(&component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }),
             );
             true
         });
@@ -39547,7 +39591,16 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_dest_rect(
-                this, v1, 118_u32, true, None,
+                this,
+                v1,
+                118_u32,
+                true,
+                Some(&component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }),
             );
             true
         });
@@ -39595,7 +39648,18 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_pixel_aspect_ratio(
-                this, v1, 118_u32, true, None, None,
+                this,
+                v1,
+                118_u32,
+                true,
+                Some(&directx_graphics_infrastructure::structures::Rational {
+                    numerator: 42_u32,
+                    denominator: 49_u32,
+                }),
+                Some(&directx_graphics_infrastructure::structures::Rational {
+                    numerator: 41_u32,
+                    denominator: 48_u32,
+                }),
             );
             true
         });
@@ -39933,7 +39997,11 @@ pub fn drive_where(
                 v1,
                 v2,
                 v3,
-                None,
+                Some(&direct3d_11::structures::EncryptedBlockInfo {
+                    num_encrypted_bytes_at_beginning: 89_u32,
+                    num_bytes_in_skip_pattern: 96_u32,
+                    num_bytes_in_encrypt_pattern: 103_u32,
+                }),
                 None,
                 Some(&lying),
             );
@@ -40313,7 +40381,12 @@ pub fn drive_where(
                     data3: 92_u16,
                     data4: core::array::from_fn(|_| 99_u8),
                 },
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
                 &component_object_model::structures::Guid {
                     data1: 15_u32,
                     data2: 22_u16,
@@ -40345,7 +40418,12 @@ pub fn drive_where(
                     denominator: 69_u32,
                 },
                 91_u32,
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 78_u32,
+                    data2: 85_u16,
+                    data3: 92_u16,
+                    data4: core::array::from_fn(|_| 99_u8),
+                }),
             );
             true
         });
@@ -40414,7 +40492,12 @@ pub fn drive_where(
                     data3: 92_u16,
                     data4: core::array::from_fn(|_| 99_u8),
                 },
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
                 &component_object_model::structures::Guid {
                     data1: 15_u32,
                     data2: 22_u16,
@@ -40613,7 +40696,21 @@ pub fn drive_where(
             let Some(this) = o.k44.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoDevice::get_content_protection_caps(this, None, None);
+            let _ = direct3d_11::VideoDevice::get_content_protection_caps(
+                this,
+                Some(&component_object_model::structures::Guid {
+                    data1: 78_u32,
+                    data2: 85_u16,
+                    data3: 92_u16,
+                    data4: core::array::from_fn(|_| 99_u8),
+                }),
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
+            );
             true
         });
     }
@@ -40631,7 +40728,12 @@ pub fn drive_where(
                     data3: 92_u16,
                     data4: core::array::from_fn(|_| 99_u8),
                 },
-                None,
+                Some(&component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                }),
                 35_u32,
             );
             true
@@ -41504,7 +41606,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Device4::offer_resources1(
                 this,
-                &[],
+                &[o.k72.as_ref()],
                 directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
                 31_u32,
             );
@@ -41517,7 +41619,10 @@ pub fn drive_where(
             let Some(this) = o.k64.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[]);
+            let _ = directx_graphics_infrastructure::Device4::reclaim_resources1(
+                this,
+                &[o.k72.as_ref()],
+            );
             true
         });
     }
@@ -41539,7 +41644,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Device2::offer_resources(
                 this,
-                &[],
+                &[o.k72.as_ref()],
                 directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
             );
             true
@@ -41551,7 +41656,10 @@ pub fn drive_where(
             let Some(this) = o.k64.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device2::reclaim_resources(this, &[]);
+            let _ = directx_graphics_infrastructure::Device2::reclaim_resources(
+                this,
+                &[o.k72.as_ref()],
+            );
             true
         });
     }
@@ -41603,7 +41711,7 @@ pub fn drive_where(
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, None);
+        let _ = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, Some(&directx_graphics_infrastructure::structures::SharedResource { handle: component_object_model::structures::Handle(55) }));
         true
         });
     }
@@ -41806,7 +41914,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None);
+        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, Some(&directx_graphics_infrastructure::structures::SwapChainFullscreenDesc { refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 87_u32, denominator: 94_u32 }, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, windowed: true }), o.k70.as_ref());
         true
         });
     }
@@ -41816,7 +41924,7 @@ pub fn drive_where(
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
         true
         });
     }
@@ -41915,7 +42023,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
         true
         });
     }
@@ -42043,7 +42151,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
+        let _ = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, o.k70.as_ref());
         true
         });
     }
@@ -42053,7 +42161,7 @@ pub fn drive_where(
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = o.k72.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None);
+        let _ = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, o.k70.as_ref());
         true
         });
     }
@@ -43333,7 +43441,15 @@ pub fn drive_where(
             let Some(this) = o.k73.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Surface1::release_dc(this, None);
+            let _ = directx_graphics_infrastructure::Surface1::release_dc(
+                this,
+                Some(&component_object_model::structures::Rect {
+                    left: 1_i32,
+                    top: 8_i32,
+                    right: 15_i32,
+                    bottom: 22_i32,
+                }),
+            );
             true
         });
     }
@@ -43706,8 +43822,11 @@ pub fn drive_where(
             let Some(this) = o.k74.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::SwapChain::set_fullscreen_state(this, true, None);
+            let _ = directx_graphics_infrastructure::SwapChain::set_fullscreen_state(
+                this,
+                true,
+                o.k70.as_ref(),
+            );
             true
         });
     }
@@ -43919,7 +44038,7 @@ pub fn drive_where(
         driven.attempt(|| {
             let _ = direct3d_11::Direct3D11::create_device(
                 &o.api,
-                None,
+                o.k61.as_ref(),
                 direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
                 component_object_model::structures::Hmodule(0),
                 direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
@@ -43932,17 +44051,8 @@ pub fn drive_where(
     // D3D11CreateDeviceAndSwapChain
     if wanted(D_3D11_CREATE_DEVICE_AND_SWAP_CHAIN) {
         driven.attempt(|| {
-            let _ = direct3d_11::Direct3D11::create_device_and_swap_chain(
-                &o.api,
-                None,
-                direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
-                component_object_model::structures::Hmodule(0),
-                direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
-                &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
-                124_u32,
-                None,
-            );
-            true
+        let _ = direct3d_11::Direct3D11::create_device_and_swap_chain(&o.api, o.k61.as_ref(), direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE, component_object_model::structures::Hmodule(0), direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF, &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC], 124_u32, Some(&directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 15_u32, height: 22_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 36_u32, denominator: 43_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 22_u32, quality: 29_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 29_u32, output_window: component_object_model::structures::Hwnd(36), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 57_u32 }));
+        true
         });
     }
     driven
