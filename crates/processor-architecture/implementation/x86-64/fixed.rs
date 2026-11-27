@@ -32,8 +32,8 @@ pub enum FixedOutcome {
     WritesUndecided,
     /// XTEST outside a transaction: ZF set, CF, OF, SF, AF and PF cleared.
     OutsideTransaction,
-    /// The register operand is written with a random value, which a behavior does not compare, CF is set and OF, SF,
-    /// ZF, AF and PF are cleared, as RDRAND and RDSEED do when the random source had a value ready.
+    /// The register operand is written with a random value and CF is set, or both cleared when the random source had no
+    /// value ready, so a behavior compares neither; OF, SF, ZF, AF and PF are cleared, as RDRAND and RDSEED do.
     WritesRandom,
     /// SYSENTER in 64-bit mode on Intel's chips: the kernel is entered at the MSRs Linux sets, with no return address
     /// kept.

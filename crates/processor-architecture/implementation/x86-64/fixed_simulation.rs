@@ -54,8 +54,7 @@ pub(super) fn execute_fixed(
         FixedOutcome::NoOperation | FixedOutcome::WritesUndecided => Ok(()),
         FixedOutcome::WritesRandom if is_active(Bug::RandomLeavesStatusFlags) => Ok(()),
         FixedOutcome::WritesRandom => {
-            let carry = if is_active(Bug::RandomClearsCarry) { Flags::empty() } else { Flags::CARRY };
-            processor.flags = processor.flags.difference(Flags::STATUS).union(carry);
+            processor.flags = processor.flags.difference(Flags::STATUS).union(Flags::CARRY);
             Ok(())
         }
         FixedOutcome::OutsideTransaction => {
