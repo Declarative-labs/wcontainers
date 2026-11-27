@@ -10,6 +10,7 @@ mod complete;
 mod cheader;
 mod mesacompiler;
 mod emit;
+mod gallium;
 mod khronos;
 mod layout;
 mod mapping;
@@ -90,6 +91,20 @@ fn main() -> ExitCode {
         return match texts {
             Ok(texts) => {
                 print!("{}", cheader::census(&cheader::read(&texts)));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("api-crate-generator: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    // Gallium's trait layer, planned (AC8): the pointers in scope, each with its roles over the kinds, checked.
+    if let ("gallium-plan", [in_scope, headers @ ..]) = (command.as_str(), rest) {
+        let texts: Result<Vec<String>, String> = std::iter::once(in_scope).chain(headers).map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
+        return match texts.and_then(|texts| gallium::check(&texts[0], &cheader::read(&texts[1..]))) {
+            Ok(report) => {
+                print!("{report}");
                 ExitCode::SUCCESS
             }
             Err(error) => {

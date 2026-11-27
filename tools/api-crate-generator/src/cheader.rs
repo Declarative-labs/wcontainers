@@ -140,8 +140,14 @@ fn declaration(text: &str) -> CParam {
     };
     let pointers = text.matches('*').count();
     let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || c == '*').filter(|w| !w.is_empty()).collect();
+    // An unnamed parameter (`struct pipe_context *`, `unsigned`, `const struct pipe_box *`): its last word is the
+    // type's own: a basic type's name, or a tag after `struct`, `enum` or `union`.
+    let unnamed = |name: &str, base: &[&str]| {
+        matches!(name, "void" | "int" | "unsigned" | "char" | "bool" | "float" | "double" | "long" | "short")
+            || matches!(base.last(), Some(&("struct" | "enum" | "union")))
+    };
     let (name, base) = match words.split_last() {
-        Some((name, base)) if !base.is_empty() && !matches!(*name, "void") => (name.to_string(), base.join(" ")),
+        Some((name, base)) if !base.is_empty() && !unnamed(name, base) => (name.to_string(), base.join(" ")),
         _ => (String::new(), words.join(" ")),
     };
     // A `const` after the stars (`*const`) is the pointer's own and says nothing of what it points at.
