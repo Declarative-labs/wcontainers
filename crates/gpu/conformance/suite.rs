@@ -7067,7 +7067,9 @@ const DEPTH24_WORDS: [u32; 18] = [
 /// the depth of `Depth24PlusStencil8`, every word comes back bit for bit where the back end stores 24-bit depth as
 /// 24-bit unorm ([`Features::DEPTH24_UNORM`]) and otherwise within one step of 2^-24, the bytes between rows and
 /// layers are kept, the texels around the region keep their depth, and the stencil keeps its bytes. Where the format
-/// copies out.
+/// copies out. A back end reading depth by sampling it on a device that samples two stored words as one float
+/// (llvmpipe and lavapipe sample 0xfffffe and 0xffffff both as 1.0) cannot tell them apart; a failure names every word
+/// that came back otherwise.
 pub fn depth_copies_through_buffers_keep_their_pitches_and_values<B: Gpu>(mut b: B) {
     for format in [Format::Depth24Plus, Format::Depth24PlusStencil8] {
         if b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
@@ -7175,23 +7177,28 @@ fn depth_copies_through_buffers<B: Gpu>(b: &mut B, format: Format) {
     let tolerance = u32::from(!b.caps().features.contains(Features::DEPTH24_UNORM));
     let near = |got: u32, expected: u32| (got & 0xff_ffff).abs_diff(expected) <= tolerance;
     let mut expected = before;
+    // Every word that came back otherwise, so that a failure names them all.
+    let mut wrong = Vec::new();
     for layer in 0..layers {
         for y in 0..rh {
             for x in 0..rw {
                 let at = (out_offset + (layer * out_rows + y) * out_pitch + x * 4) as usize;
                 let word = u32::from_le_bytes(got[at..at + 4].try_into().expect("a word"));
                 let wanted = word_of(layer, y, x);
-                assert!(
-                    near(word, wanted),
-                    "{format:?} word of layer {layer} row {y} column {x}: {word:#x}, not {wanted:#x}"
-                );
+                if !near(word, wanted) {
+                    wrong.push(format!(
+                        "layer {layer} row {y} column {x}: {word:#x}, not {wanted:#x}"
+                    ));
+                }
                 // The word's own bytes are checked above; every other byte is as it was.
                 expected[at..at + 4].copy_from_slice(&got[at..at + 4]);
             }
         }
     }
+    assert!(wrong.is_empty(), "{format:?} words in the buffer: {wrong:?}");
     assert_eq!(got, expected, "{format:?}: bytes outside the words");
     // The texture: the region holds the words, the texels around it a quarter.
+    let mut wrong = Vec::new();
     let depth = read_texture(b, whole(0, false), extent(width, height, layers), 4);
     for layer in 0..layers {
         for y in 0..height {
@@ -7204,13 +7211,15 @@ fn depth_copies_through_buffers<B: Gpu>(b: &mut B, format: Format) {
                 } else {
                     quarter
                 };
-                assert!(
-                    near(word, wanted),
-                    "{format:?} texel of layer {layer} at ({x}, {y}): {word:#x}, not {wanted:#x}"
-                );
+                if !near(word, wanted) {
+                    wrong.push(format!(
+                        "layer {layer} at ({x}, {y}): {word:#x}, not {wanted:#x}"
+                    ));
+                }
             }
         }
     }
+    assert!(wrong.is_empty(), "{format:?} texels: {wrong:?}");
     if has_stencil {
         let got = read_texture(b, whole(0, true), extent(width, height, layers), 1);
         assert_eq!(got, stencil, "{format:?} stencil");

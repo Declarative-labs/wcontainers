@@ -1,0 +1,1211 @@
+// Written by tools/api-crate-generator from Mesa 26.3.1's Gallium headers (p_defines.h, p_state.h, p_screen.h, p_context.h, u_transfer_helper.h) and the plan in src/gallium.rs. Do not edit.
+//! Gallium, the driver interface Mesa's OpenGL calls in our driver, as safe traits: `Gallium` (the screen) and
+//! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa
+//! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only
+//! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received
+//! program of that stage. Plain data is owned, each object it names a reference of its kind. Declared values are
+//! `u32`, checked by the glue.
+
+/// Mesa's `struct pipe_box`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PipeBox {
+    /// The `x` of `pipe_box`.
+    pub x: i32,
+    /// The `width` of `pipe_box`.
+    pub width: i32,
+    /// The `y` of `pipe_box`.
+    pub y: i32,
+    /// The `height` of `pipe_box`.
+    pub height: i32,
+    /// The `z` of `pipe_box`.
+    pub z: i16,
+    /// The `depth` of `pipe_box`.
+    pub depth: i16,
+}
+
+/// Mesa's `struct pipe_resource`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResourceTemplate {
+    // `reference)` is not carried: Mesa's count, declared through the EXCLUSIVE_CACHELINE macro (the header reader names it so): the glue's.
+    /// The `width0` of `pipe_resource`.
+    pub width0: u32,
+    /// The `height0` of `pipe_resource`.
+    pub height0: u32,
+    /// The `depth0` of `pipe_resource`.
+    pub depth0: u16,
+    /// The `array_size` of `pipe_resource`.
+    pub array_size: u16,
+    /// The `format` of `pipe_resource` (16 bits in C: a value past them is refused).
+    pub format: u32,
+    /// The `target` of `pipe_resource` (8 bits in C: a value past them is refused).
+    pub target: u32,
+    /// The `last_level` of `pipe_resource`.
+    pub last_level: u8,
+    /// The `nr_samples` of `pipe_resource`.
+    pub nr_samples: u8,
+    /// The `nr_storage_samples` of `pipe_resource`.
+    pub nr_storage_samples: u8,
+    /// The `nr_sparse_levels` of `pipe_resource`.
+    pub nr_sparse_levels: u8,
+    /// The `compression_rate` of `pipe_resource` (4 bits in C: a value past them is refused).
+    pub compression_rate: u32,
+    /// The `usage` of `pipe_resource` (4 bits in C: a value past them is refused).
+    pub usage: u32,
+    /// The `bind` of `pipe_resource`.
+    pub bind: u32,
+    /// The `flags` of `pipe_resource`.
+    pub flags: u32,
+    // `clientptr_heap` is not carried: the frontend's heap of client pointers, which the driver never reads (the glue's, zero).
+    // `next` is not carried: a chain of planes the driver makes itself; resource_create's template has none (st_texture.c:106).
+    // `screen` is not carried: the screen that made it: the glue's own, the implementation is the screen.
+}
+
+/// Mesa's `struct pipe_blit_info.dst`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct BlitInfoDst<'a, Resource> {
+    /// The `resource` of `pipe_blit_info.dst`.
+    pub resource: Option<&'a Resource>,
+    /// The `level` of `pipe_blit_info.dst`.
+    pub level: u32,
+    /// The `box` of `pipe_blit_info.dst`.
+    pub box_: PipeBox,
+    /// The `format` of `pipe_blit_info.dst`.
+    pub format: u32,
+}
+
+/// Mesa's `struct pipe_blit_info.src`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct BlitInfoSrc<'a, Resource> {
+    /// The `resource` of `pipe_blit_info.src`.
+    pub resource: Option<&'a Resource>,
+    /// The `level` of `pipe_blit_info.src`.
+    pub level: u32,
+    /// The `box` of `pipe_blit_info.src`.
+    pub box_: PipeBox,
+    /// The `format` of `pipe_blit_info.src`.
+    pub format: u32,
+}
+
+/// Mesa's `struct pipe_scissor_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScissorState {
+    /// The `minx` of `pipe_scissor_state`.
+    pub minx: u32,
+    /// The `miny` of `pipe_scissor_state`.
+    pub miny: u32,
+    /// The `maxx` of `pipe_scissor_state`.
+    pub maxx: u32,
+    /// The `maxy` of `pipe_scissor_state`.
+    pub maxy: u32,
+}
+
+/// Mesa's `struct pipe_blit_info`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct BlitInfo<'a, Resource> {
+    /// The `dst` of `pipe_blit_info`.
+    pub dst: BlitInfoDst<'a, Resource>,
+    /// The `src` of `pipe_blit_info`.
+    pub src: BlitInfoSrc<'a, Resource>,
+    /// The `mask` of `pipe_blit_info`.
+    pub mask: u32,
+    /// The `filter` of `pipe_blit_info`.
+    pub filter: u32,
+    /// The `dst_sample` of `pipe_blit_info`.
+    pub dst_sample: u8,
+    /// The `sample0_only` of `pipe_blit_info`.
+    pub sample0_only: bool,
+    /// The `scissor_enable` of `pipe_blit_info`.
+    pub scissor_enable: bool,
+    /// The `scissor` of `pipe_blit_info`.
+    pub scissor: ScissorState,
+    /// The `swizzle_enable` of `pipe_blit_info`.
+    pub swizzle_enable: bool,
+    /// The `swizzle` of `pipe_blit_info`.
+    pub swizzle: [u8; 4],
+    /// The `window_rectangle_include` of `pipe_blit_info`.
+    pub window_rectangle_include: bool,
+    /// The `num_window_rectangles` of `pipe_blit_info`.
+    pub num_window_rectangles: u32,
+    /// The `window_rectangles` of `pipe_blit_info`.
+    pub window_rectangles: [ScissorState; 8],
+    /// The `render_condition_enable` of `pipe_blit_info`.
+    pub render_condition_enable: bool,
+    /// The `alpha_blend` of `pipe_blit_info`.
+    pub alpha_blend: bool,
+}
+
+/// Mesa's `struct pipe_reference`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reference {
+    /// The `count` of `pipe_reference`.
+    pub count: i32,
+}
+
+/// Mesa's `struct pipe_surface`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct Surface<'a, Resource> {
+    /// The `reference` of `pipe_surface`.
+    pub reference: Reference,
+    /// The `format` of `pipe_surface` (16 bits in C: a value past them is refused).
+    pub format: u32,
+    /// The `nr_samples` of `pipe_surface` (16 bits in C: a value past them is refused).
+    pub nr_samples: u32,
+    /// The `first_layer` of `pipe_surface` (16 bits in C: a value past them is refused).
+    pub first_layer: u32,
+    /// The `last_layer` of `pipe_surface` (16 bits in C: a value past them is refused).
+    pub last_layer: u32,
+    /// The `level` of `pipe_surface`.
+    pub level: u32,
+    /// The `texture` of `pipe_surface`.
+    pub texture: Option<&'a Resource>,
+}
+
+/// Mesa's `struct pipe_rt_blend_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RtBlendState {
+    /// The `blend_enable` of `pipe_rt_blend_state` (1 bits in C: a value past them is refused).
+    pub blend_enable: u32,
+    /// The `rgb_func` of `pipe_rt_blend_state` (3 bits in C: a value past them is refused).
+    pub rgb_func: u32,
+    /// The `rgb_src_factor` of `pipe_rt_blend_state` (5 bits in C: a value past them is refused).
+    pub rgb_src_factor: u32,
+    /// The `rgb_dst_factor` of `pipe_rt_blend_state` (5 bits in C: a value past them is refused).
+    pub rgb_dst_factor: u32,
+    /// The `alpha_func` of `pipe_rt_blend_state` (3 bits in C: a value past them is refused).
+    pub alpha_func: u32,
+    /// The `alpha_src_factor` of `pipe_rt_blend_state` (5 bits in C: a value past them is refused).
+    pub alpha_src_factor: u32,
+    /// The `alpha_dst_factor` of `pipe_rt_blend_state` (5 bits in C: a value past them is refused).
+    pub alpha_dst_factor: u32,
+    /// The `colormask` of `pipe_rt_blend_state` (4 bits in C: a value past them is refused).
+    pub colormask: u32,
+}
+
+/// Mesa's `struct pipe_blend_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendState {
+    /// The `independent_blend_enable` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub independent_blend_enable: u32,
+    /// The `logicop_enable` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub logicop_enable: u32,
+    /// The `logicop_func` of `pipe_blend_state` (4 bits in C: a value past them is refused).
+    pub logicop_func: u32,
+    /// The `dither` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub dither: u32,
+    /// The `alpha_to_coverage` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub alpha_to_coverage: u32,
+    /// The `alpha_to_coverage_dither` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub alpha_to_coverage_dither: u32,
+    /// The `alpha_to_one` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub alpha_to_one: u32,
+    /// The `max_rt` of `pipe_blend_state` (3 bits in C: a value past them is refused).
+    pub max_rt: u32,
+    /// The `advanced_blend_func` of `pipe_blend_state` (4 bits in C: a value past them is refused).
+    pub advanced_blend_func: u32,
+    /// The `blend_coherent` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub blend_coherent: u32,
+    /// The `is_yuv` of `pipe_blend_state` (1 bits in C: a value past them is refused).
+    pub is_yuv: u32,
+    /// The `rt` of `pipe_blend_state`.
+    pub rt: [RtBlendState; 8],
+}
+
+/// Mesa's `struct pipe_compute_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ComputeState {
+    // `ir_type` is not carried: always NIR from st/mesa, the received program's.
+    // `prog` is not carried: the program: the method's received program.
+    /// The `static_shared_mem` of `pipe_compute_state`.
+    pub static_shared_mem: u32,
+}
+
+/// Mesa's `struct pipe_stencil_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StencilState {
+    /// The `enabled` of `pipe_stencil_state` (1 bits in C: a value past them is refused).
+    pub enabled: u32,
+    /// The `func` of `pipe_stencil_state` (3 bits in C: a value past them is refused).
+    pub func: u32,
+    /// The `fail_op` of `pipe_stencil_state` (3 bits in C: a value past them is refused).
+    pub fail_op: u32,
+    /// The `zpass_op` of `pipe_stencil_state` (3 bits in C: a value past them is refused).
+    pub zpass_op: u32,
+    /// The `zfail_op` of `pipe_stencil_state` (3 bits in C: a value past them is refused).
+    pub zfail_op: u32,
+    /// The `valuemask` of `pipe_stencil_state` (8 bits in C: a value past them is refused).
+    pub valuemask: u32,
+    /// The `writemask` of `pipe_stencil_state` (8 bits in C: a value past them is refused).
+    pub writemask: u32,
+}
+
+/// Mesa's `struct pipe_depth_stencil_alpha_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthStencilAlphaState {
+    /// The `stencil` of `pipe_depth_stencil_alpha_state`.
+    pub stencil: [StencilState; 2],
+    /// The `alpha_enabled` of `pipe_depth_stencil_alpha_state` (1 bits in C: a value past them is refused).
+    pub alpha_enabled: u32,
+    /// The `alpha_func` of `pipe_depth_stencil_alpha_state` (3 bits in C: a value past them is refused).
+    pub alpha_func: u32,
+    /// The `depth_enabled` of `pipe_depth_stencil_alpha_state` (1 bits in C: a value past them is refused).
+    pub depth_enabled: u32,
+    /// The `depth_writemask` of `pipe_depth_stencil_alpha_state` (1 bits in C: a value past them is refused).
+    pub depth_writemask: u32,
+    /// The `depth_func` of `pipe_depth_stencil_alpha_state` (3 bits in C: a value past them is refused).
+    pub depth_func: u32,
+    /// The `depth_bounds_test` of `pipe_depth_stencil_alpha_state` (1 bits in C: a value past them is refused).
+    pub depth_bounds_test: u32,
+    /// The `alpha_ref_value` of `pipe_depth_stencil_alpha_state`.
+    pub alpha_ref_value: f32,
+    /// The `depth_bounds_min` of `pipe_depth_stencil_alpha_state`.
+    pub depth_bounds_min: f64,
+    /// The `depth_bounds_max` of `pipe_depth_stencil_alpha_state`.
+    pub depth_bounds_max: f64,
+}
+
+/// Mesa's `struct pipe_stream_output`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StreamOutput {
+    /// The `register_index` of `pipe_stream_output` (6 bits in C: a value past them is refused).
+    pub register_index: u32,
+    /// The `start_component` of `pipe_stream_output` (2 bits in C: a value past them is refused).
+    pub start_component: u32,
+    /// The `num_components` of `pipe_stream_output` (3 bits in C: a value past them is refused).
+    pub num_components: u32,
+    /// The `output_buffer` of `pipe_stream_output` (3 bits in C: a value past them is refused).
+    pub output_buffer: u32,
+    /// The `dst_offset` of `pipe_stream_output` (16 bits in C: a value past them is refused).
+    pub dst_offset: u32,
+    /// The `stream` of `pipe_stream_output` (2 bits in C: a value past them is refused).
+    pub stream: u32,
+}
+
+/// Mesa's `struct pipe_stream_output_info`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StreamOutputInfo {
+    /// The `num_outputs` of `pipe_stream_output_info`.
+    pub num_outputs: u32,
+    /// The `stride` of `pipe_stream_output_info`.
+    pub stride: [u16; 4],
+    /// The `output` of `pipe_stream_output_info`.
+    pub output: [StreamOutput; 128],
+}
+
+/// Mesa's `struct pipe_shader_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShaderState {
+    // `type` is not carried: the program's form: always NIR from st/mesa (PIPE_SHADER_IR_NIR), the received program's.
+    // `tokens` is not carried: TGSI tokens, which st/mesa does not pass with NIR.
+    // `ir` is not carried: the program: the method's received program of its stage.
+    /// The `stream_output` of `pipe_shader_state`.
+    pub stream_output: StreamOutputInfo,
+    /// The `report_compile_error` of `pipe_shader_state`.
+    pub report_compile_error: bool,
+    // `error_message` is not carried: a text the driver allocates for Mesa: the glue writes none.
+}
+
+/// Mesa's `struct pipe_rasterizer_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RasterizerState {
+    /// The `flatshade` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub flatshade: u32,
+    /// The `light_twoside` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub light_twoside: u32,
+    /// The `clamp_vertex_color` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub clamp_vertex_color: u32,
+    /// The `clamp_fragment_color` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub clamp_fragment_color: u32,
+    /// The `front_ccw` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub front_ccw: u32,
+    /// The `cull_face` of `pipe_rasterizer_state` (2 bits in C: a value past them is refused).
+    pub cull_face: u32,
+    /// The `fill_front` of `pipe_rasterizer_state` (2 bits in C: a value past them is refused).
+    pub fill_front: u32,
+    /// The `fill_back` of `pipe_rasterizer_state` (2 bits in C: a value past them is refused).
+    pub fill_back: u32,
+    /// The `offset_point` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub offset_point: u32,
+    /// The `offset_line` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub offset_line: u32,
+    /// The `offset_tri` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub offset_tri: u32,
+    /// The `scissor` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub scissor: u32,
+    /// The `poly_smooth` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub poly_smooth: u32,
+    /// The `poly_stipple_enable` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub poly_stipple_enable: u32,
+    /// The `point_smooth` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub point_smooth: u32,
+    /// The `sprite_coord_mode` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub sprite_coord_mode: u32,
+    /// The `point_quad_rasterization` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub point_quad_rasterization: u32,
+    /// The `point_line_tri_clip` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub point_line_tri_clip: u32,
+    /// The `point_size_per_vertex` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub point_size_per_vertex: u32,
+    /// The `multisample` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub multisample: u32,
+    /// The `no_ms_sample_mask_out` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub no_ms_sample_mask_out: u32,
+    /// The `force_persample_interp` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub force_persample_interp: u32,
+    /// The `line_smooth` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub line_smooth: u32,
+    /// The `line_stipple_enable` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub line_stipple_enable: u32,
+    /// The `line_last_pixel` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub line_last_pixel: u32,
+    /// The `line_rectangular` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub line_rectangular: u32,
+    /// The `conservative_raster_mode` of `pipe_rasterizer_state` (2 bits in C: a value past them is refused).
+    pub conservative_raster_mode: u32,
+    /// The `flatshade_first` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub flatshade_first: u32,
+    /// The `half_pixel_center` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub half_pixel_center: u32,
+    /// The `bottom_edge_rule` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub bottom_edge_rule: u32,
+    /// The `subpixel_precision_x` of `pipe_rasterizer_state` (4 bits in C: a value past them is refused).
+    pub subpixel_precision_x: u32,
+    /// The `subpixel_precision_y` of `pipe_rasterizer_state` (4 bits in C: a value past them is refused).
+    pub subpixel_precision_y: u32,
+    /// The `rasterizer_discard` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub rasterizer_discard: u32,
+    /// The `rasterization_stream` of `pipe_rasterizer_state` (2 bits in C: a value past them is refused).
+    pub rasterization_stream: u32,
+    /// The `tile_raster_order_fixed` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub tile_raster_order_fixed: u32,
+    /// The `tile_raster_order_increasing_x` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub tile_raster_order_increasing_x: u32,
+    /// The `tile_raster_order_increasing_y` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub tile_raster_order_increasing_y: u32,
+    /// The `depth_clip_near` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub depth_clip_near: u32,
+    /// The `depth_clip_far` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub depth_clip_far: u32,
+    /// The `depth_clamp` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub depth_clamp: u32,
+    /// The `clip_halfz` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub clip_halfz: u32,
+    /// The `offset_units_unscaled` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub offset_units_unscaled: u32,
+    /// The `unclamped_fragment_depth_values` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub unclamped_fragment_depth_values: u32,
+    /// The `clip_plane_enable` of `pipe_rasterizer_state` (PIPE_MAX_CLIP_PLANES bits in C: a value past them is refused).
+    pub clip_plane_enable: u32,
+    /// The `representative_fragment_test` of `pipe_rasterizer_state` (1 bits in C: a value past them is refused).
+    pub representative_fragment_test: u32,
+    /// The `line_stipple_factor` of `pipe_rasterizer_state` (8 bits in C: a value past them is refused).
+    pub line_stipple_factor: u32,
+    /// The `line_stipple_pattern` of `pipe_rasterizer_state` (16 bits in C: a value past them is refused).
+    pub line_stipple_pattern: u32,
+    /// The `sprite_coord_enable` of `pipe_rasterizer_state`.
+    pub sprite_coord_enable: u16,
+    /// The `line_width` of `pipe_rasterizer_state`.
+    pub line_width: f32,
+    /// The `point_size` of `pipe_rasterizer_state`.
+    pub point_size: f32,
+    /// The `offset_units` of `pipe_rasterizer_state`.
+    pub offset_units: f32,
+    /// The `offset_scale` of `pipe_rasterizer_state`.
+    pub offset_scale: f32,
+    /// The `offset_clamp` of `pipe_rasterizer_state`.
+    pub offset_clamp: f32,
+    /// The `conservative_raster_dilate` of `pipe_rasterizer_state`.
+    pub conservative_raster_dilate: f32,
+}
+
+/// Mesa's `struct pipe_sampler_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerState {
+    /// The `wrap_s` of `pipe_sampler_state` (3 bits in C: a value past them is refused).
+    pub wrap_s: u32,
+    /// The `wrap_t` of `pipe_sampler_state` (3 bits in C: a value past them is refused).
+    pub wrap_t: u32,
+    /// The `wrap_r` of `pipe_sampler_state` (3 bits in C: a value past them is refused).
+    pub wrap_r: u32,
+    /// The `min_img_filter` of `pipe_sampler_state` (1 bits in C: a value past them is refused).
+    pub min_img_filter: u32,
+    /// The `min_mip_filter` of `pipe_sampler_state` (2 bits in C: a value past them is refused).
+    pub min_mip_filter: u32,
+    /// The `mag_img_filter` of `pipe_sampler_state` (1 bits in C: a value past them is refused).
+    pub mag_img_filter: u32,
+    /// The `compare_mode` of `pipe_sampler_state` (1 bits in C: a value past them is refused).
+    pub compare_mode: u32,
+    /// The `compare_func` of `pipe_sampler_state` (3 bits in C: a value past them is refused).
+    pub compare_func: u32,
+    /// The `unnormalized_coords` of `pipe_sampler_state` (1 bits in C: a value past them is refused).
+    pub unnormalized_coords: u32,
+    /// The `max_anisotropy` of `pipe_sampler_state` (5 bits in C: a value past them is refused).
+    pub max_anisotropy: u32,
+    /// The `seamless_cube_map` of `pipe_sampler_state` (1 bits in C: a value past them is refused).
+    pub seamless_cube_map: u32,
+    /// The `border_color_is_integer` of `pipe_sampler_state` (1 bits in C: a value past them is refused).
+    pub border_color_is_integer: u32,
+    /// The `reduction_mode` of `pipe_sampler_state` (2 bits in C: a value past them is refused).
+    pub reduction_mode: u32,
+    /// The `pad` of `pipe_sampler_state` (5 bits in C: a value past them is refused).
+    pub pad: u32,
+    /// The `lod_bias` of `pipe_sampler_state`.
+    pub lod_bias: f32,
+    /// The `max_lod` of `pipe_sampler_state`.
+    pub max_lod: f32,
+    /// The `border_color` of `pipe_sampler_state`.
+    pub border_color: [u32; 4],
+    /// The `border_color_format` of `pipe_sampler_state`.
+    pub border_color_format: u32,
+}
+
+/// Mesa's `struct pipe_sampler_view.u.tex`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerViewUTex {
+    /// The `first_layer` of `pipe_sampler_view.u.tex` (16 bits in C: a value past them is refused).
+    pub first_layer: u32,
+    /// The `last_layer` of `pipe_sampler_view.u.tex` (16 bits in C: a value past them is refused).
+    pub last_layer: u32,
+    /// The `first_level` of `pipe_sampler_view.u.tex` (8 bits in C: a value past them is refused).
+    pub first_level: u32,
+    /// The `last_level` of `pipe_sampler_view.u.tex` (8 bits in C: a value past them is refused).
+    pub last_level: u32,
+    /// The `min_lod_clamp` of `pipe_sampler_view.u.tex`.
+    pub min_lod_clamp: f32,
+}
+
+/// Mesa's `struct pipe_sampler_view.u.buf`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerViewUBuf {
+    /// The `offset` of `pipe_sampler_view.u.buf`.
+    pub offset: u32,
+    /// The `size` of `pipe_sampler_view.u.buf`.
+    pub size: u32,
+}
+
+/// Mesa's `struct pipe_tex2d_from_buf`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tex2dFromBuf {
+    /// The `offset` of `pipe_tex2d_from_buf`.
+    pub offset: u32,
+    /// The `row_stride` of `pipe_tex2d_from_buf`.
+    pub row_stride: u16,
+    /// The `width` of `pipe_tex2d_from_buf`.
+    pub width: u16,
+    /// The `height` of `pipe_tex2d_from_buf`.
+    pub height: u16,
+}
+
+/// Mesa's `union pipe_sampler_view.u`, owned. A union in C: the glue fills the one member the structure around it selects, the others zero.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerViewU {
+    /// The `tex` of `pipe_sampler_view.u`.
+    pub tex: SamplerViewUTex,
+    /// The `buf` of `pipe_sampler_view.u`.
+    pub buf: SamplerViewUBuf,
+    /// The `tex2d_from_buf` of `pipe_sampler_view.u`.
+    pub tex2d_from_buf: Tex2dFromBuf,
+}
+
+/// Mesa's `struct pipe_sampler_view`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerViewTemplate {
+    // `reference` is not carried: Mesa's count: the glue's.
+    /// The `format` of `pipe_sampler_view` (12 bits in C: a value past them is refused).
+    pub format: u32,
+    /// The `astc_decode_format` of `pipe_sampler_view` (2 bits in C: a value past them is refused).
+    pub astc_decode_format: u32,
+    /// The `is_tex2d_from_buf` of `pipe_sampler_view` (1 bits in C: a value past them is refused).
+    pub is_tex2d_from_buf: bool,
+    /// The `target` of `pipe_sampler_view` (5 bits in C: a value past them is refused).
+    pub target: u32,
+    /// The `swizzle_r` of `pipe_sampler_view` (3 bits in C: a value past them is refused).
+    pub swizzle_r: u32,
+    /// The `swizzle_g` of `pipe_sampler_view` (3 bits in C: a value past them is refused).
+    pub swizzle_g: u32,
+    /// The `swizzle_b` of `pipe_sampler_view` (3 bits in C: a value past them is refused).
+    pub swizzle_b: u32,
+    /// The `swizzle_a` of `pipe_sampler_view` (3 bits in C: a value past them is refused).
+    pub swizzle_a: u32,
+    // `texture` is not carried: the resource viewed: create_sampler_view's own parameter.
+    // `context` is not carried: the context the view is made on: the method's receiver.
+    /// The `u` of `pipe_sampler_view`.
+    pub u: SamplerViewU,
+}
+
+/// Mesa's `struct pipe_vertex_element`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VertexElement {
+    /// The `src_offset` of `pipe_vertex_element`.
+    pub src_offset: u16,
+    /// The `vertex_buffer_index` of `pipe_vertex_element` (7 bits in C: a value past them is refused).
+    pub vertex_buffer_index: u8,
+    /// The `dual_slot` of `pipe_vertex_element` (1 bits in C: a value past them is refused).
+    pub dual_slot: bool,
+    /// The `src_format` of `pipe_vertex_element`.
+    pub src_format: u8,
+    /// The `src_stride` of `pipe_vertex_element`.
+    pub src_stride: u32,
+    /// The `instance_divisor` of `pipe_vertex_element`.
+    pub instance_divisor: u32,
+}
+
+/// Mesa's `union pipe_draw_info.index`, owned, each object it names a reference of its kind. A union in C: the glue fills the one member the structure around it selects, the others zero.
+#[derive(Debug)]
+pub struct DrawInfoIndex<'a, Resource> {
+    /// The `resource` of `pipe_draw_info.index`.
+    pub resource: Option<&'a Resource>,
+    // `user` is not carried: client memory as indices: refused, the driver reports no user index buffers (PIPE_CAP has_user_indices false).
+}
+
+/// Mesa's `struct pipe_draw_info`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct DrawInfo<'a, Resource> {
+    /// The `mode` of `pipe_draw_info`.
+    pub mode: u32,
+    /// The `index_size` of `pipe_draw_info`.
+    pub index_size: u16,
+    /// The `primitive_restart` of `pipe_draw_info` (1 bits in C: a value past them is refused).
+    pub primitive_restart: bool,
+    /// The `has_user_indices` of `pipe_draw_info` (1 bits in C: a value past them is refused).
+    pub has_user_indices: bool,
+    /// The `index_bounds_valid` of `pipe_draw_info` (1 bits in C: a value past them is refused).
+    pub index_bounds_valid: bool,
+    /// The `increment_draw_id` of `pipe_draw_info` (1 bits in C: a value past them is refused).
+    pub increment_draw_id: bool,
+    /// The `index_bias_varies` of `pipe_draw_info` (1 bits in C: a value past them is refused).
+    pub index_bias_varies: bool,
+    /// The `was_line_loop` of `pipe_draw_info` (1 bits in C: a value past them is refused).
+    pub was_line_loop: bool,
+    /// The `_pad` of `pipe_draw_info` (2 bits in C: a value past them is refused).
+    pub _pad: u8,
+    /// The `start_instance` of `pipe_draw_info`.
+    pub start_instance: u32,
+    /// The `instance_count` of `pipe_draw_info`.
+    pub instance_count: u32,
+    /// The `restart_index` of `pipe_draw_info`.
+    pub restart_index: u32,
+    /// The `index` of `pipe_draw_info`.
+    pub index: DrawInfoIndex<'a, Resource>,
+    /// The `min_index` of `pipe_draw_info`.
+    pub min_index: u32,
+    /// The `max_index` of `pipe_draw_info`.
+    pub max_index: u32,
+}
+
+/// Mesa's `struct pipe_draw_indirect_info`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct DrawIndirectInfo<'a, Resource, StreamOutputTarget> {
+    /// The `offset` of `pipe_draw_indirect_info`.
+    pub offset: u32,
+    /// The `stride` of `pipe_draw_indirect_info`.
+    pub stride: u32,
+    /// The `draw_count` of `pipe_draw_indirect_info`.
+    pub draw_count: u32,
+    /// The `indirect_draw_count_offset` of `pipe_draw_indirect_info`.
+    pub indirect_draw_count_offset: u32,
+    /// The `buffer` of `pipe_draw_indirect_info`.
+    pub buffer: Option<&'a Resource>,
+    /// The `indirect_draw_count` of `pipe_draw_indirect_info`.
+    pub indirect_draw_count: Option<&'a Resource>,
+    /// The `count_from_stream_output` of `pipe_draw_indirect_info`.
+    pub count_from_stream_output: Option<&'a StreamOutputTarget>,
+}
+
+/// Mesa's `struct pipe_draw_start_count_bias`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawStartCountBias {
+    /// The `start` of `pipe_draw_start_count_bias`.
+    pub start: u32,
+    /// The `count` of `pipe_draw_start_count_bias`.
+    pub count: u32,
+    /// The `index_bias` of `pipe_draw_start_count_bias`.
+    pub index_bias: i32,
+}
+
+/// Mesa's `struct pipe_grid_info`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct GridInfo<'a, Resource> {
+    /// The `variable_shared_mem` of `pipe_grid_info`.
+    pub variable_shared_mem: u32,
+    /// The `work_dim` of `pipe_grid_info`.
+    pub work_dim: u32,
+    /// The `block` of `pipe_grid_info`.
+    pub block: [u32; 3],
+    /// The `last_block` of `pipe_grid_info`.
+    pub last_block: [u32; 3],
+    /// The `grid` of `pipe_grid_info`.
+    pub grid: [u32; 3],
+    /// The `grid_base` of `pipe_grid_info`.
+    pub grid_base: [u32; 3],
+    /// The `indirect` of `pipe_grid_info`.
+    pub indirect: Option<&'a Resource>,
+    /// The `indirect_offset` of `pipe_grid_info`.
+    pub indirect_offset: u32,
+    /// The `indirect_stride` of `pipe_grid_info`.
+    pub indirect_stride: u32,
+    /// The `draw_count` of `pipe_grid_info`.
+    pub draw_count: u32,
+    /// The `indirect_draw_count_offset` of `pipe_grid_info`.
+    pub indirect_draw_count_offset: u32,
+    /// The `indirect_draw_count` of `pipe_grid_info`.
+    pub indirect_draw_count: Option<&'a Resource>,
+    // `num_globals` is not carried: the count of `globals`, left out with it.
+    // `globals` is not carried: global buffers of OpenCL's frontend (none from st/mesa).
+}
+
+/// Mesa's `struct pipe_blend_color`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendColor {
+    /// The `color` of `pipe_blend_color`.
+    pub color: [f32; 4],
+}
+
+/// Mesa's `struct pipe_clip_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipState {
+    /// The `ucp` of `pipe_clip_state`.
+    pub ucp: [[f32; 4]; 8],
+}
+
+/// Mesa's `struct pipe_constant_buffer`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct ConstantBuffer<'a, Resource> {
+    /// The `buffer` of `pipe_constant_buffer`.
+    pub buffer: Option<&'a Resource>,
+    /// The `buffer_offset` of `pipe_constant_buffer`.
+    pub buffer_offset: u32,
+    /// The `buffer_size` of `pipe_constant_buffer`.
+    pub buffer_size: u32,
+    // `user_buffer` is not carried: client memory as a constant buffer: refused, the driver reports no user constant buffers.
+}
+
+/// Mesa's `struct pipe_framebuffer_state`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct FramebufferState<'a, Resource> {
+    /// The `height` of `pipe_framebuffer_state`.
+    pub height: u32,
+    /// The `layers` of `pipe_framebuffer_state`.
+    pub layers: u16,
+    /// The `samples` of `pipe_framebuffer_state`.
+    pub samples: u8,
+    /// The `nr_cbufs` of `pipe_framebuffer_state`.
+    pub nr_cbufs: u8,
+    /// The `pls_enabled` of `pipe_framebuffer_state` (1 bits in C: a value past them is refused).
+    pub pls_enabled: bool,
+    /// The `downscale_cbufs` of `pipe_framebuffer_state` (1 bits in C: a value past them is refused).
+    pub downscale_cbufs: bool,
+    /// The `_pad` of `pipe_framebuffer_state` (6 bits in C: a value past them is refused).
+    pub _pad: u8,
+    /// The `viewmask` of `pipe_framebuffer_state`.
+    pub viewmask: u8,
+    /// The `cbufs` of `pipe_framebuffer_state`.
+    pub cbufs: [Surface<'a, Resource>; 8],
+    /// The `zsbuf` of `pipe_framebuffer_state`.
+    pub zsbuf: Surface<'a, Resource>,
+    /// The `resolve` of `pipe_framebuffer_state`.
+    pub resolve: Option<&'a Resource>,
+}
+
+/// Mesa's `struct pipe_poly_stipple`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PolyStipple {
+    /// The `stipple` of `pipe_poly_stipple`.
+    pub stipple: [u32; 32],
+}
+
+/// Mesa's `struct pipe_shader_buffer`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct ShaderBuffer<'a, Resource> {
+    /// The `buffer` of `pipe_shader_buffer`.
+    pub buffer: Option<&'a Resource>,
+    /// The `buffer_offset` of `pipe_shader_buffer`.
+    pub buffer_offset: u32,
+    /// The `buffer_size` of `pipe_shader_buffer`.
+    pub buffer_size: u32,
+}
+
+/// Mesa's `struct pipe_image_view.u.tex`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageViewUTex {
+    /// The `first_layer` of `pipe_image_view.u.tex` (16 bits in C: a value past them is refused).
+    pub first_layer: u32,
+    /// The `last_layer` of `pipe_image_view.u.tex` (16 bits in C: a value past them is refused).
+    pub last_layer: u32,
+    /// The `level` of `pipe_image_view.u.tex` (8 bits in C: a value past them is refused).
+    pub level: u32,
+    /// The `single_layer_view` of `pipe_image_view.u.tex`.
+    pub single_layer_view: bool,
+    /// The `is_2d_view_of_3d` of `pipe_image_view.u.tex`.
+    pub is_2d_view_of_3d: bool,
+}
+
+/// Mesa's `struct pipe_image_view.u.buf`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageViewUBuf {
+    /// The `offset` of `pipe_image_view.u.buf`.
+    pub offset: u32,
+    /// The `size` of `pipe_image_view.u.buf`.
+    pub size: u32,
+}
+
+/// Mesa's `union pipe_image_view.u`, owned. A union in C: the glue fills the one member the structure around it selects, the others zero.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageViewU {
+    /// The `tex` of `pipe_image_view.u`.
+    pub tex: ImageViewUTex,
+    /// The `buf` of `pipe_image_view.u`.
+    pub buf: ImageViewUBuf,
+    /// The `tex2d_from_buf` of `pipe_image_view.u`.
+    pub tex2d_from_buf: Tex2dFromBuf,
+}
+
+/// Mesa's `struct pipe_image_view`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct ImageView<'a, Resource> {
+    /// The `resource` of `pipe_image_view`.
+    pub resource: Option<&'a Resource>,
+    /// The `format` of `pipe_image_view`.
+    pub format: u32,
+    /// The `access` of `pipe_image_view`.
+    pub access: u16,
+    /// The `shader_access` of `pipe_image_view`.
+    pub shader_access: u16,
+    /// The `u` of `pipe_image_view`.
+    pub u: ImageViewU,
+}
+
+/// Mesa's `struct pipe_stencil_ref`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StencilRef {
+    /// The `ref_value` of `pipe_stencil_ref`.
+    pub ref_value: [u8; 2],
+}
+
+/// Mesa's `union pipe_vertex_buffer.buffer`, owned, each object it names a reference of its kind. A union in C: the glue fills the one member the structure around it selects, the others zero.
+#[derive(Debug)]
+pub struct VertexBufferBuffer<'a, Resource> {
+    /// The `resource` of `pipe_vertex_buffer.buffer`.
+    pub resource: Option<&'a Resource>,
+    // `user` is not carried: client memory as a vertex buffer: refused, the driver reports no user vertex buffers.
+}
+
+/// Mesa's `struct pipe_vertex_buffer`, owned, each object it names a reference of its kind.
+#[derive(Debug)]
+pub struct VertexBuffer<'a, Resource> {
+    /// The `is_user_buffer` of `pipe_vertex_buffer`.
+    pub is_user_buffer: bool,
+    /// The `buffer_offset` of `pipe_vertex_buffer`.
+    pub buffer_offset: u32,
+    /// The `buffer` of `pipe_vertex_buffer`.
+    pub buffer: VertexBufferBuffer<'a, Resource>,
+}
+
+/// Mesa's `struct pipe_viewport_state`, owned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewportState {
+    /// The `scale` of `pipe_viewport_state`.
+    pub scale: [f32; 3],
+    /// The `translate` of `pipe_viewport_state`.
+    pub translate: [f32; 3],
+    /// The `swizzle_x` of `pipe_viewport_state` (8 bits in C: a value past them is refused).
+    pub swizzle_x: u32,
+    /// The `swizzle_y` of `pipe_viewport_state` (8 bits in C: a value past them is refused).
+    pub swizzle_y: u32,
+    /// The `swizzle_z` of `pipe_viewport_state` (8 bits in C: a value past them is refused).
+    pub swizzle_z: u32,
+    /// The `swizzle_w` of `pipe_viewport_state` (8 bits in C: a value past them is refused).
+    pub swizzle_w: u32,
+}
+
+
+/// A resource's bytes mapped for the CPU: the implementation's mapping and the bytes, a copy the glue lends Mesa until the unmap.
+#[derive(Debug)]
+pub struct Mapped<Mapping> {
+    /// The implementation's mapping, given back at the unmap.
+    pub mapping: Mapping,
+    /// The mapped bytes as the implementation has them.
+    pub bytes: Vec<u8>,
+    /// Bytes from one row to the next.
+    pub stride: u32,
+    /// Bytes from one layer to the next.
+    pub layer_stride: u64,
+}
+
+/// The screen: the library Mesa's frontend loads, holding the kinds of its objects.
+pub trait Gallium: Sized {
+    /// The shader compiler the programs come from.
+    type Compiler: wcontainers_mesa_compiler::MesaCompiler;
+
+    /// A rendering context.
+    type Context: GalliumContext<Screen = Self>;
+
+    /// A buffer or texture, counted by Mesa (pipe_reference) and given back by resource_destroy at zero.
+    type Resource;
+
+    /// A point in a context's commands, counted by fence_reference.
+    type Fence: Clone;
+
+    /// A blend state.
+    type Blend;
+
+    /// A depth, stencil and alpha state.
+    type DepthStencilAlpha;
+
+    /// A rasterizer state.
+    type Rasterizer;
+
+    /// A sampler state.
+    type Sampler;
+
+    /// A vertex elements state.
+    type VertexElements;
+
+    /// A vertex program, made from mesa-compiler's Received of that stage.
+    type VertexShader;
+
+    /// A fragment program, from a Received of that stage.
+    type FragmentShader;
+
+    /// A geometry program, from a Received of that stage.
+    type GeometryShader;
+
+    /// A tessellation control program, from a Received of that stage.
+    type TessControlShader;
+
+    /// A tessellation evaluation program, from a Received of that stage.
+    type TessEvaluationShader;
+
+    /// A compute program, from a Received of that stage.
+    type ComputeShader;
+
+    /// A view of a resource for sampling.
+    type SamplerView;
+
+    /// A range of a buffer that streamed outputs are written to.
+    type StreamOutputTarget;
+
+    /// A query that is begun and ended (begin_query, end_query).
+    type Query;
+
+    /// A query between its begin and its end.
+    type ActiveQuery;
+
+    /// A query only ended (PIPE_QUERY_TIMESTAMP, PIPE_QUERY_GPU_FINISHED: queryobj.c:269 to 277).
+    type EndOnlyQuery;
+
+    /// A resource's bytes mapped for the CPU, between a map and its unmap.
+    type Mapping;
+
+    /// Mesa's `pipe_screen.context_create`, called first at mesa/state_tracker/st_manager.c:1023.
+    fn context_create(&self, priv_: u64, flags: u32) -> Option<Self::Context>;
+
+    /// Mesa's `pipe_screen.destroy`, called first at gallium/frontends/dri/dri_screen.c:580.
+    fn destroy(&self);
+
+    /// Mesa's `pipe_screen.fence_finish`, called first at mesa/state_tracker/st_manager.c:819.
+    fn fence_finish(&self, ctx: Option<&Self::Context>, fence: &Self::Fence, timeout: u64) -> bool;
+
+    /// Mesa's `pipe_screen.flush_frontbuffer`, called first at gallium/frontends/dri/drisw.c:173.
+    fn flush_frontbuffer(&self, ctx: Option<&Self::Context>, resource: &Self::Resource, level: u32, layer: u32, winsys_drawable_handle: u64, subbox: Option<&PipeBox>);
+
+    /// Mesa's `pipe_screen.get_device_vendor`, called first at gallium/frontends/dri/dri_util.c:1140.
+    fn get_device_vendor(&self) -> Vec<u8>;
+
+    /// Mesa's `pipe_screen.get_name`, called first at mesa/main/getstring.c:149.
+    fn get_name(&self) -> Vec<u8>;
+
+    /// Mesa's `pipe_screen.get_vendor`, called first at mesa/main/getstring.c:143.
+    fn get_vendor(&self) -> Vec<u8>;
+
+    /// Mesa's `pipe_screen.is_format_supported`, called first at mesa/state_tracker/st_cb_eglimage.c:48.
+    fn is_format_supported(&self, format: u32, target: u32, sample_count: u32, storage_sample_count: u32, bindings: u32) -> bool;
+
+    /// Mesa's `pipe_screen.resource_create`, called first at mesa/state_tracker/st_texture.c:106.
+    fn resource_create(&self, templat: &ResourceTemplate) -> Option<Self::Resource>;
+
+    /// Mesa's `pipe_screen.resource_destroy`, called first at gallium/auxiliary/util/u_inlines.h:183.
+    fn resource_destroy(&self, pt: Self::Resource);
+
+}
+
+/// A rendering context of a screen.
+pub trait GalliumContext: Sized {
+    /// The screen it was made on.
+    type Screen: Gallium<Context = Self>;
+
+    /// Mesa's `pipe_context.begin_query`, called first at mesa/main/performance_monitor.c:198.
+    fn begin_query(&self, q: <Self::Screen as Gallium>::Query) -> Option<<Self::Screen as Gallium>::ActiveQuery>;
+
+    /// Mesa's `pipe_context.bind_blend_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:449.
+    fn bind_blend_state(&self, arg1: Option<&<Self::Screen as Gallium>::Blend>);
+
+    /// Mesa's `pipe_context.bind_compute_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:525.
+    fn bind_compute_state(&self, arg1: Option<&<Self::Screen as Gallium>::ComputeShader>);
+
+    /// Mesa's `pipe_context.bind_depth_stencil_alpha_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:510.
+    fn bind_depth_stencil_alpha_state(&self, arg1: Option<&<Self::Screen as Gallium>::DepthStencilAlpha>);
+
+    /// Mesa's `pipe_context.bind_fs_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:513.
+    fn bind_fs_state(&self, arg1: Option<&<Self::Screen as Gallium>::FragmentShader>);
+
+    /// Mesa's `pipe_context.bind_gs_state`, called first at mesa/state_tracker/st_context.c:957.
+    fn bind_gs_state(&self, arg1: Option<&<Self::Screen as Gallium>::GeometryShader>);
+
+    /// Mesa's `pipe_context.bind_rasterizer_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:450.
+    fn bind_rasterizer_state(&self, arg1: Option<&<Self::Screen as Gallium>::Rasterizer>);
+
+    /// Mesa's `pipe_context.bind_sampler_states`, called first at gallium/auxiliary/cso_cache/cso_context.c:493.
+    fn bind_sampler_states(&self, shader: u32, start_slot: u32, samplers: &[Option<&<Self::Screen as Gallium>::Sampler>]);
+
+    /// Mesa's `pipe_context.bind_tcs_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:521.
+    fn bind_tcs_state(&self, arg1: Option<&<Self::Screen as Gallium>::TessControlShader>);
+
+    /// Mesa's `pipe_context.bind_tes_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:522.
+    fn bind_tes_state(&self, arg1: Option<&<Self::Screen as Gallium>::TessEvaluationShader>);
+
+    /// Mesa's `pipe_context.bind_vertex_elements_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:531.
+    fn bind_vertex_elements_state(&self, arg1: Option<&<Self::Screen as Gallium>::VertexElements>);
+
+    /// Mesa's `pipe_context.bind_vs_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:515.
+    fn bind_vs_state(&self, arg1: Option<&<Self::Screen as Gallium>::VertexShader>);
+
+    /// Mesa's `pipe_context.blit`, called first at mesa/state_tracker/st_cb_readpixels.c:350.
+    fn blit(&self, info: &BlitInfo<'_, <Self::Screen as Gallium>::Resource>);
+
+    /// Mesa's `pipe_context.buffer_map`, called first at gallium/auxiliary/util/u_inlines.h:530.
+    fn buffer_map(&self, resource: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, arg4: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
+
+    /// Mesa's `pipe_context.buffer_subdata`, called first at mesa/main/bufferobj.c:116.
+    fn buffer_subdata(&self, arg1: &<Self::Screen as Gallium>::Resource, usage: u32, offset: u32, size: u32, data: &[u8]);
+
+    /// Mesa's `pipe_context.buffer_unmap`, called first at gallium/auxiliary/util/u_inlines.h:565.
+    fn buffer_unmap(&self, transfer: <Self::Screen as Gallium>::Mapping, written: &[u8]);
+
+    /// Mesa's `pipe_context.clear`, called first at mesa/state_tracker/st_cb_clear.c:521.
+    #[expect(clippy::too_many_arguments, reason = "the pointer's parameters, as Mesa's header declares them")]
+    fn clear(&self, buffers: u32, color_clear_mask: u32, stencil_clear_mask: u8, scissor_state: Option<&ScissorState>, color: &[u32; 4], depth: f64, stencil: u32);
+
+    /// Mesa's `pipe_context.clear_depth_stencil`, called first at gallium/auxiliary/util/u_threaded_context.c:5469.
+    #[expect(clippy::too_many_arguments, reason = "the pointer's parameters, as Mesa's header declares them")]
+    fn clear_depth_stencil(&self, dst: &Surface<'_, <Self::Screen as Gallium>::Resource>, clear_flags: u32, depth: f64, stencil: u32, dstx: u32, dsty: u32, width: u32, height: u32, render_condition_enabled: bool);
+
+    /// Mesa's `pipe_context.clear_render_target`, called first at gallium/auxiliary/util/u_threaded_context.c:5422.
+    #[expect(clippy::too_many_arguments, reason = "the pointer's parameters, as Mesa's header declares them")]
+    fn clear_render_target(&self, dst: &Surface<'_, <Self::Screen as Gallium>::Resource>, color: &[u32; 4], dstx: u32, dsty: u32, width: u32, height: u32, render_condition_enabled: bool);
+
+    /// Mesa's `pipe_context.create_blend_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:649.
+    fn create_blend_state(&self, arg1: &BlendState) -> Option<<Self::Screen as Gallium>::Blend>;
+
+    /// Mesa's `pipe_context.create_compute_state`, called first at gallium/auxiliary/util/u_tests.c:844.
+    fn create_compute_state(&self, program: <<Self::Screen as Gallium>::Compiler as wcontainers_mesa_compiler::MesaCompiler>::ReceivedCompute, arg1: &ComputeState) -> Option<<Self::Screen as Gallium>::ComputeShader>;
+
+    /// Mesa's `pipe_context.create_depth_stencil_alpha_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:709.
+    fn create_depth_stencil_alpha_state(&self, arg1: &DepthStencilAlphaState) -> Option<<Self::Screen as Gallium>::DepthStencilAlpha>;
+
+    /// Mesa's `pipe_context.create_fs_state`, called first at mesa/state_tracker/st_program.c:573.
+    fn create_fs_state(&self, program: <<Self::Screen as Gallium>::Compiler as wcontainers_mesa_compiler::MesaCompiler>::ReceivedFragment, arg1: &ShaderState) -> Option<<Self::Screen as Gallium>::FragmentShader>;
+
+    /// Mesa's `pipe_context.create_gs_state`, called first at mesa/state_tracker/st_program.c:570.
+    fn create_gs_state(&self, program: <<Self::Screen as Gallium>::Compiler as wcontainers_mesa_compiler::MesaCompiler>::ReceivedGeometry, arg1: &ShaderState) -> Option<<Self::Screen as Gallium>::GeometryShader>;
+
+    /// Mesa's `pipe_context.create_query`, on a Query, called first at mesa/main/performance_monitor.c:125.
+    fn create_query(&self, query_type: u32, index: u32) -> Option<<Self::Screen as Gallium>::Query>;
+
+    /// Mesa's `pipe_context.create_query`, on a EndOnlyQuery, called first at mesa/main/performance_monitor.c:125.
+    fn create_query_end_only_query(&self, query_type: u32, index: u32) -> Option<<Self::Screen as Gallium>::EndOnlyQuery>;
+
+    /// Mesa's `pipe_context.create_rasterizer_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:777.
+    fn create_rasterizer_state(&self, arg1: &RasterizerState) -> Option<<Self::Screen as Gallium>::Rasterizer>;
+
+    /// Mesa's `pipe_context.create_sampler_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:1591.
+    fn create_sampler_state(&self, arg1: &SamplerState) -> Option<<Self::Screen as Gallium>::Sampler>;
+
+    /// Mesa's `pipe_context.create_sampler_view`, called first at mesa/state_tracker/st_sampler_view.c:524.
+    fn create_sampler_view(&self, texture: &<Self::Screen as Gallium>::Resource, templat: &SamplerViewTemplate) -> Option<<Self::Screen as Gallium>::SamplerView>;
+
+    /// Mesa's `pipe_context.create_stream_output_target`, called first at mesa/main/transformfeedback.c:445.
+    fn create_stream_output_target(&self, arg1: &<Self::Screen as Gallium>::Resource, buffer_offset: u32, buffer_size: u32) -> Option<<Self::Screen as Gallium>::StreamOutputTarget>;
+
+    /// Mesa's `pipe_context.create_tcs_state`, called first at mesa/state_tracker/st_program.c:564.
+    fn create_tcs_state(&self, program: <<Self::Screen as Gallium>::Compiler as wcontainers_mesa_compiler::MesaCompiler>::ReceivedTessControl, arg1: &ShaderState) -> Option<<Self::Screen as Gallium>::TessControlShader>;
+
+    /// Mesa's `pipe_context.create_tes_state`, called first at mesa/state_tracker/st_program.c:567.
+    fn create_tes_state(&self, program: <<Self::Screen as Gallium>::Compiler as wcontainers_mesa_compiler::MesaCompiler>::ReceivedTessEvaluation, arg1: &ShaderState) -> Option<<Self::Screen as Gallium>::TessEvaluationShader>;
+
+    /// Mesa's `pipe_context.create_vertex_elements_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:1409.
+    fn create_vertex_elements_state(&self, arg2: &[VertexElement]) -> Option<<Self::Screen as Gallium>::VertexElements>;
+
+    /// Mesa's `pipe_context.create_vs_state`, called first at mesa/state_tracker/st_program.c:561.
+    fn create_vs_state(&self, program: <<Self::Screen as Gallium>::Compiler as wcontainers_mesa_compiler::MesaCompiler>::ReceivedVertex, arg1: &ShaderState) -> Option<<Self::Screen as Gallium>::VertexShader>;
+
+    /// Mesa's `pipe_context.delete_blend_state`, called first at gallium/auxiliary/cso_cache/cso_cache.c:46.
+    fn delete_blend_state(&self, arg1: <Self::Screen as Gallium>::Blend);
+
+    /// Mesa's `pipe_context.delete_compute_state`, called first at mesa/state_tracker/st_context.c:312.
+    fn delete_compute_state(&self, arg1: <Self::Screen as Gallium>::ComputeShader);
+
+    /// Mesa's `pipe_context.delete_depth_stencil_alpha_state`, called first at gallium/auxiliary/cso_cache/cso_cache.c:52.
+    fn delete_depth_stencil_alpha_state(&self, arg1: <Self::Screen as Gallium>::DepthStencilAlpha);
+
+    /// Mesa's `pipe_context.delete_fs_state`, called first at mesa/state_tracker/st_context.c:296.
+    fn delete_fs_state(&self, arg1: <Self::Screen as Gallium>::FragmentShader);
+
+    /// Mesa's `pipe_context.delete_gs_state`, called first at mesa/state_tracker/st_context.c:300.
+    fn delete_gs_state(&self, arg1: <Self::Screen as Gallium>::GeometryShader);
+
+    /// Mesa's `pipe_context.delete_rasterizer_state`, called first at gallium/auxiliary/cso_cache/cso_cache.c:56.
+    fn delete_rasterizer_state(&self, arg1: <Self::Screen as Gallium>::Rasterizer);
+
+    /// Mesa's `pipe_context.delete_sampler_state`, called first at gallium/auxiliary/cso_cache/cso_cache.c:49.
+    fn delete_sampler_state(&self, arg1: <Self::Screen as Gallium>::Sampler);
+
+    /// Mesa's `pipe_context.delete_tcs_state`, called first at mesa/state_tracker/st_context.c:304.
+    fn delete_tcs_state(&self, arg1: <Self::Screen as Gallium>::TessControlShader);
+
+    /// Mesa's `pipe_context.delete_tes_state`, called first at mesa/state_tracker/st_context.c:308.
+    fn delete_tes_state(&self, arg1: <Self::Screen as Gallium>::TessEvaluationShader);
+
+    /// Mesa's `pipe_context.delete_vertex_elements_state`, called first at gallium/auxiliary/cso_cache/cso_cache.c:59.
+    fn delete_vertex_elements_state(&self, arg1: <Self::Screen as Gallium>::VertexElements);
+
+    /// Mesa's `pipe_context.delete_vs_state`, called first at mesa/state_tracker/st_context.c:292.
+    fn delete_vs_state(&self, arg1: <Self::Screen as Gallium>::VertexShader);
+
+    /// Mesa's `pipe_context.destroy`, called first at mesa/state_tracker/st_context.c:370.
+    fn destroy(&self);
+
+    /// Mesa's `pipe_context.destroy_query`, on a Query, called first at mesa/main/performance_monitor.c:159.
+    fn destroy_query(&self, q: <Self::Screen as Gallium>::Query);
+
+    /// Mesa's `pipe_context.destroy_query`, on a EndOnlyQuery, called first at mesa/main/performance_monitor.c:159.
+    fn destroy_query_end_only_query(&self, q: <Self::Screen as Gallium>::EndOnlyQuery);
+
+    /// Mesa's `pipe_context.destroy_query`, on a ActiveQuery, called first at mesa/main/performance_monitor.c:159.
+    fn destroy_query_active_query(&self, q: <Self::Screen as Gallium>::ActiveQuery);
+
+    /// Mesa's `pipe_context.draw_vbo`, called first at gallium/auxiliary/cso_cache/cso_context.h:314.
+    fn draw_vbo(&self, info: &DrawInfo<'_, <Self::Screen as Gallium>::Resource>, drawid_offset: u32, indirect: Option<&DrawIndirectInfo<'_, <Self::Screen as Gallium>::Resource, <Self::Screen as Gallium>::StreamOutputTarget>>, draws: &[DrawStartCountBias]);
+
+    /// Mesa's `pipe_context.end_query`, called first at mesa/main/performance_monitor.c:223.
+    fn end_query(&self, q: <Self::Screen as Gallium>::ActiveQuery) -> Option<<Self::Screen as Gallium>::Query>;
+
+    /// Mesa's `pipe_context.flush`, called first at mesa/state_tracker/st_interop.c:438.
+    fn flush(&self, flags: u32) -> Option<<Self::Screen as Gallium>::Fence>;
+
+    /// Mesa's `pipe_context.flush_resource`, called first at mesa/state_tracker/st_interop.c:373.
+    fn flush_resource(&self, resource: &<Self::Screen as Gallium>::Resource);
+
+    /// Mesa's `pipe_context.generate_mipmap`, called first at mesa/state_tracker/st_gen_mipmap.c:145.
+    fn generate_mipmap(&self, resource: &<Self::Screen as Gallium>::Resource, format: u32, base_level: u32, last_level: u32, first_layer: u32, last_layer: u32) -> bool;
+
+    /// Mesa's `pipe_context.get_device_reset_status`, called first at mesa/state_tracker/st_cb_flush.c:162.
+    fn get_device_reset_status(&self) -> u32;
+
+    /// Mesa's `pipe_context.get_query_result`, on a Query, called first at mesa/main/performance_monitor.c:259.
+    fn get_query_result(&self, q: &<Self::Screen as Gallium>::Query, wait: bool, result: &mut [u8]) -> bool;
+
+    /// Mesa's `pipe_context.get_query_result`, on a EndOnlyQuery, called first at mesa/main/performance_monitor.c:259.
+    fn get_query_result_end_only_query(&self, q: &<Self::Screen as Gallium>::EndOnlyQuery, wait: bool, result: &mut [u8]) -> bool;
+
+    /// Mesa's `pipe_context.get_sample_position`, called first at mesa/main/multisample.c:96.
+    fn get_sample_position(&self, sample_count: u32, sample_index: u32) -> [f32; 2];
+
+    /// Mesa's `pipe_context.get_timestamp`, called first at mesa/main/queryobj.c:417.
+    fn get_timestamp(&self) -> u64;
+
+    /// Mesa's `pipe_context.launch_grid`, called first at mesa/state_tracker/st_pbo_compute.c:1170.
+    fn launch_grid(&self, info: &GridInfo<'_, <Self::Screen as Gallium>::Resource>);
+
+    /// Mesa's `pipe_context.memory_barrier`, called first at mesa/state_tracker/st_cb_readpixels.c:245.
+    fn memory_barrier(&self, flags: u32);
+
+    /// Mesa's `pipe_context.render_condition`, on a Query, called first at gallium/auxiliary/cso_cache/cso_context.c:1084.
+    fn render_condition(&self, query: &<Self::Screen as Gallium>::Query, condition: bool, mode: u32);
+
+    /// Mesa's `pipe_context.render_condition`, on a EndOnlyQuery, called first at gallium/auxiliary/cso_cache/cso_context.c:1084.
+    fn render_condition_end_only_query(&self, query: &<Self::Screen as Gallium>::EndOnlyQuery, condition: bool, mode: u32);
+
+    /// Mesa's `pipe_context.resource_copy_region`, called first at mesa/state_tracker/st_texture.c:423.
+    #[expect(clippy::too_many_arguments, reason = "the pointer's parameters, as Mesa's header declares them")]
+    fn resource_copy_region(&self, dst: &<Self::Screen as Gallium>::Resource, dst_level: u32, dstx: u32, dsty: u32, dstz: u32, src: &<Self::Screen as Gallium>::Resource, src_level: u32, src_box: &PipeBox);
+
+    /// Mesa's `pipe_context.sampler_view_destroy`, called first at gallium/auxiliary/util/u_inlines.h:248.
+    fn sampler_view_destroy(&self, view: <Self::Screen as Gallium>::SamplerView);
+
+    /// Mesa's `pipe_context.set_active_query_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:1919.
+    fn set_active_query_state(&self, enable: bool);
+
+    /// Mesa's `pipe_context.set_blend_color`, called first at mesa/state_tracker/st_atom_blend.c:367.
+    fn set_blend_color(&self, arg1: &BlendColor);
+
+    /// Mesa's `pipe_context.set_clip_state`, called first at mesa/state_tracker/st_atom_clip.c:67.
+    fn set_clip_state(&self, arg1: &ClipState);
+
+    /// Mesa's `pipe_context.set_constant_buffer`, called first at mesa/state_tracker/st_atom_constbuf.c:60.
+    fn set_constant_buffer(&self, shader: u32, index: u32, buf: Option<&ConstantBuffer<'_, <Self::Screen as Gallium>::Resource>>);
+
+    /// Mesa's `pipe_context.set_framebuffer_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:538.
+    fn set_framebuffer_state(&self, arg1: &FramebufferState<'_, <Self::Screen as Gallium>::Resource>);
+
+    /// Mesa's `pipe_context.set_patch_vertices`, called first at mesa/state_tracker/st_atom_tess.c:53.
+    fn set_patch_vertices(&self, patch_vertices: u8);
+
+    /// Mesa's `pipe_context.set_polygon_stipple`, called first at mesa/state_tracker/st_atom_stipple.c:86.
+    fn set_polygon_stipple(&self, arg1: &PolyStipple);
+
+    /// Mesa's `pipe_context.set_sample_mask`, called first at gallium/auxiliary/cso_cache/cso_context.c:573.
+    fn set_sample_mask(&self, sample_mask: u32);
+
+    /// Mesa's `pipe_context.set_sampler_views`, called first at mesa/state_tracker/st_cb_readpixels.c:184.
+    fn set_sampler_views(&self, shader: u32, start_slot: u32, num_views: u32, unbind_num_trailing_slots: u32, views: Option<&[Option<&<Self::Screen as Gallium>::SamplerView>]>);
+
+    /// Mesa's `pipe_context.set_scissor_states`, called first at mesa/state_tracker/st_atom_scissor.c:106.
+    fn set_scissor_states(&self, start_slot: u32, arg3: &[ScissorState]);
+
+    /// Mesa's `pipe_context.set_shader_buffers`, called first at mesa/state_tracker/st_draw_hw_select.c:703.
+    fn set_shader_buffers(&self, shader: u32, start_slot: u32, count: u32, buffers: Option<&[ShaderBuffer<'_, <Self::Screen as Gallium>::Resource>]>, writable_bitmask: u32);
+
+    /// Mesa's `pipe_context.set_shader_images`, called first at mesa/state_tracker/st_atom_image.c:161.
+    fn set_shader_images(&self, shader: u32, start_slot: u32, count: u32, unbind_num_trailing_slots: u32, images: Option<&[ImageView<'_, <Self::Screen as Gallium>::Resource>]>);
+
+    /// Mesa's `pipe_context.set_stencil_ref`, called first at gallium/auxiliary/cso_cache/cso_context.c:512.
+    fn set_stencil_ref(&self, ref_: StencilRef);
+
+    /// Mesa's `pipe_context.set_stream_output_targets`, called first at gallium/auxiliary/cso_cache/cso_context.c:535.
+    fn set_stream_output_targets(&self, targets: &[Option<&<Self::Screen as Gallium>::StreamOutputTarget>], offsets: &[u32], output_prim: u32);
+
+    /// Mesa's `pipe_context.set_vertex_buffers`, called first at gallium/auxiliary/cso_cache/cso_context.c:532.
+    fn set_vertex_buffers(&self, arg2: &[VertexBuffer<'_, <Self::Screen as Gallium>::Resource>]);
+
+    /// Mesa's `pipe_context.set_viewport_states`, called first at mesa/state_tracker/st_atom_viewport.c:81.
+    fn set_viewport_states(&self, start_slot: u32, arg3: &[ViewportState]);
+
+    /// Mesa's `pipe_context.stream_output_target_destroy`, called first at gallium/auxiliary/util/u_inlines.h:293.
+    fn stream_output_target_destroy(&self, arg1: <Self::Screen as Gallium>::StreamOutputTarget);
+
+    /// Mesa's `pipe_context.texture_barrier`, called first at mesa/main/barrier.c:118.
+    fn texture_barrier(&self, flags: u32);
+
+    /// Mesa's `pipe_context.texture_map`, called first at mesa/state_tracker/st_texture.c:364.
+    fn texture_map(&self, resource: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, arg4: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
+
+    /// Mesa's `pipe_context.texture_subdata`, called first at mesa/state_tracker/st_texcompress_compute.c:534.
+    #[expect(clippy::too_many_arguments, reason = "the pointer's parameters, as Mesa's header declares them")]
+    fn texture_subdata(&self, arg1: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, arg4: &PipeBox, data: &[u8], stride: u32, layer_stride: u64);
+
+    /// Mesa's `pipe_context.texture_unmap`, called first at mesa/state_tracker/st_texture.c:368.
+    fn texture_unmap(&self, transfer: <Self::Screen as Gallium>::Mapping, written: &[u8]);
+
+    /// Mesa's `pipe_context.transfer_flush_region`, called first at gallium/auxiliary/util/u_inlines.h:589.
+    fn transfer_flush_region(&self, transfer: &<Self::Screen as Gallium>::Mapping, written: &[u8], arg2: &PipeBox);
+
+    /// Mesa's `u_transfer_vtbl.transfer_map`, called first at gallium/auxiliary/util/u_transfer_helper.c:376.
+    fn helper_transfer_map(&self, prsc: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, box_: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
+
+    /// Mesa's `u_transfer_vtbl.transfer_unmap`, called first at gallium/auxiliary/util/u_transfer_helper.c:519.
+    fn helper_transfer_unmap(&self, ptrans: <Self::Screen as Gallium>::Mapping, written: &[u8]);
+
+    /// Mesa's `u_transfer_vtbl.transfer_flush_region`, called first at gallium/auxiliary/util/u_inlines.h:589.
+    fn helper_transfer_flush_region(&self, ptrans: &<Self::Screen as Gallium>::Mapping, written: &[u8], box_: &PipeBox);
+
+}
