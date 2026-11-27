@@ -16,6 +16,8 @@ wcontainers-linux-process = { path = ".." }
 rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "mm", "param", "process", "thread"] }
 # Another process that maps the shared words, and a thread of it to signal.
 nix = { version = "0.31.3", default-features = false, features = ["process", "signal"] }
+# A second, writable mapping of a code file, which its seal refuses.
+memmap2 = "0.9.12"
 
 [lints]
 workspace = true

@@ -3,7 +3,7 @@
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nix::sys::signal::Signal as NixSignal;
 use wcontainers_linux_process::{Errno, LinuxProcess, Pid, ProtFlags, Signal};
@@ -79,6 +79,66 @@ const EXIT_BYTES: usize = wcontainers_linux_process::EXIT_BYTES;
 const CODE_STACK: u64 = 0x10_0000;
 #[cfg(target_arch = "aarch64")]
 const NEW_STACK: u64 = 0x20_0000;
+/// A tenth, rounded to nearest: rounding toward zero makes it one unit in the last place smaller
+/// ([binary64](https://en.wikipedia.org/wiki/Double-precision_floating-point_format)).
+#[cfg(target_arch = "aarch64")]
+const TENTH_ROUNDED_TO_NEAREST: u64 = 0x3fb9_9999_9999_999a;
+#[cfg(target_arch = "aarch64")]
+const TEN: f64 = 10.0;
+/// Where the fault, stop and early-stop tests search: apart from the others.
+#[cfg(target_arch = "aarch64")]
+const FAULT_SEARCH_START: usize = SEARCH_START * 9;
+#[cfg(target_arch = "aarch64")]
+const STOP_SEARCH_START: usize = SEARCH_START * 11;
+#[cfg(target_arch = "aarch64")]
+const EARLY_STOP_SEARCH_START: usize = SEARCH_START * 13;
+/// Instructions that fault or raise a signal, each followed by an exit that only a mutant reaches
+/// ([Arm ARM, C6.2](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions)): `ldr x0, [x1]`,
+/// `str x0, [x1]`, `ldr x0, [sp]`, `br x1`, `udf #0`, `brk #0`; then `add x23, x23, #0x100` and `blr x23`.
+#[cfg(target_arch = "aarch64")]
+const LOAD_THROUGH_X1: u32 = 0xf940_0020;
+#[cfg(target_arch = "aarch64")]
+const STORE_THROUGH_X1: u32 = 0xf900_0020;
+#[cfg(target_arch = "aarch64")]
+const LOAD_THROUGH_SP: u32 = 0xf940_03e0;
+#[cfg(target_arch = "aarch64")]
+const BRANCH_TO_X1: u32 = 0xd61f_0020;
+#[cfg(target_arch = "aarch64")]
+const UNDEFINED: u32 = 0;
+#[cfg(target_arch = "aarch64")]
+const BREAKPOINT: u32 = 0xd420_0000;
+#[cfg(target_arch = "aarch64")]
+const TO_EXIT: [u32; 2] = [0x9104_02f7, 0xd63f_02e0];
+/// `b .`: code that runs until it is stopped.
+#[cfg(target_arch = "aarch64")]
+const BRANCH_TO_ITSELF: u32 = 0x1400_0000;
+/// The register the faulting instructions take their address from.
+#[cfg(target_arch = "aarch64")]
+const ADDRESS_FROM: usize = 1;
+/// The hostile stack's bytes, a pattern no signal frame leaves.
+#[cfg(target_arch = "aarch64")]
+const HOSTILE_STACK_WORDS: usize = 1 << 13;
+/// How long the stopping thread waits between stops.
+#[cfg(target_arch = "aarch64")]
+const BETWEEN_STOPS: std::time::Duration = std::time::Duration::from_millis(1);
+/// The signals a prepared thread leaves unblocked, and the two no mask can block.
+#[cfg(target_arch = "aarch64")]
+const UNBLOCKED: [Signal; 8] = [
+    Signal::SEGV,
+    Signal::BUS,
+    Signal::ILL,
+    Signal::TRAP,
+    Signal::FPE,
+    wcontainers_linux_process::RUN_STOP_SIGNAL,
+    Signal::KILL,
+    Signal::STOP,
+];
+/// The line of `/proc/thread-self/status` that holds the thread's blocked signals, in hexadecimal.
+#[cfg(target_arch = "aarch64")]
+const BLOCKED_LINE: &str = "SigBlk:";
+#[cfg(target_arch = "aarch64")]
+const HEXADECIMAL: u32 = 16;
+
 /// FPCR's rounding mode toward zero (RMode, bits 23 and 22).
 #[cfg(target_arch = "aarch64")]
 const ROUND_TOWARD_ZERO: u64 = 0b11 << 22;
@@ -424,6 +484,18 @@ pub fn maps_code_no_one_can_write(linux: impl LinuxProcess) {
         "a write through /proc/self/mem: {written:?}"
     );
     assert_eq!(bytes_at(address, code.len()), code);
+    // The file it is mapped from is sealed: neither a write nor a second, writable mapping of it is allowed.
+    let file = linux.code_file(&mapping);
+    let seals = rustix::fs::fcntl_get_seals(file).expect("the file's seals");
+    assert!(seals.contains(rustix::fs::SealFlags::WRITE), "{seals:?}");
+    assert_eq!(rustix::io::pwrite(file, &[0; 8], 0), Err(Errno::PERM));
+    let writable = memmap2::MmapOptions::new().len(code.len()).map_raw(&file);
+    assert_eq!(
+        writable.map_err(|error| error.raw_os_error()).err(),
+        Some(Some(Errno::PERM.raw_os_error())),
+        "a second, writable mapping of the code's file"
+    );
+    assert_eq!(bytes_at(address, code.len()), code);
     drop(mapping);
     assert!(!is_mapped(address));
 }
@@ -433,7 +505,7 @@ pub fn maps_code_no_one_can_write(linux: impl LinuxProcess) {
 /// thread pointer, rounding mode and the registers a call keeps, which the code changed, are as before.
 #[cfg(target_arch = "aarch64")]
 pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProcess + Sync) {
-    use wcontainers_linux_process::{Arm64Registers, RunFrame};
+    use wcontainers_linux_process::{Arm64Registers, RunEnd, RunFrame};
     let page = rustix::param::page_size();
     let (address, held) = fixed_pages(&linux, RUN_SEARCH_START, 1);
     drop(held);
@@ -462,16 +534,19 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
     frame.registers = registers;
     frame.words = [WORD; wcontainers_linux_process::RUN_FRAME_WORDS];
     THREAD_OWN.set(WORD);
-    let third = std::hint::black_box(1.0_f64) / std::hint::black_box(3.0_f64);
-    let exit = linux.run_code(&mut frame);
+    let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+    let control = linux.read_fpcr();
+    assert_eq!(tenth().to_bits(), TENTH_ROUNDED_TO_NEAREST);
+    let exit = linux.run_code(&mut thread, &mut frame);
     assert_eq!(THREAD_OWN.get(), WORD, "the thread's own thread-local");
+    assert_eq!(linux.read_fpcr(), control, "the thread's floating-point control");
     assert_eq!(
-        std::hint::black_box(1.0_f64) / std::hint::black_box(3.0_f64),
-        third,
+        tenth().to_bits(),
+        TENTH_ROUNDED_TO_NEAREST,
         "the thread's rounding"
     );
     let exit_at = address as u64 + EXIT_AT as u64;
-    assert_eq!(exit, exit_at);
+    assert_eq!(exit, RunEnd::Exit(exit_at));
     let left = frame.registers;
     let mut wanted = registers;
     wanted.x[EXIT_SCRATCH] = exit_at;
@@ -499,14 +574,211 @@ pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProce
                         registers,
                         ..RunFrame::default()
                     };
-                    (linux.run_code(&mut frame), frame.registers.sp)
+                    let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+                    (linux.run_code(&mut thread, &mut frame), frame.registers.sp)
                 })
             })
             .collect();
         for run in runs {
-            assert_eq!(run.join().expect("the thread ends"), (exit_at, NEW_STACK));
+            assert_eq!(
+                run.join().expect("the thread ends"),
+                (RunEnd::Exit(exit_at), NEW_STACK)
+            );
         }
     });
+}
+
+/// A tenth, computed with this thread's rounding mode.
+#[cfg(target_arch = "aarch64")]
+fn tenth() -> f64 {
+    std::hint::black_box(1.0_f64) / std::hint::black_box(TEN)
+}
+
+/// Code of `instructions` at the first of `CODE_PAGES` free pages at or above `from`, its exit at [`EXIT_AT`].
+#[cfg(target_arch = "aarch64")]
+fn code_of<L: LinuxProcess>(linux: &L, from: usize, instructions: &[u32]) -> (u64, L::CodeMapping) {
+    let page = rustix::param::page_size();
+    let (address, held) = fixed_pages(linux, from, CODE_PAGES);
+    drop(held);
+    let mut code = vec![0_u8; page];
+    for (at, word) in (0..).step_by(size_of::<u32>()).zip(instructions) {
+        code[at..at + size_of::<u32>()].copy_from_slice(&word.to_le_bytes());
+    }
+    code[EXIT_AT..EXIT_AT + EXIT_BYTES].copy_from_slice(&linux.exit_code());
+    let mapping = linux.map_code(address, &code).expect("the code is mapped");
+    (address as u64, mapping)
+}
+
+/// A frame whose code starts at `pc`, each general register its own value but `ADDRESS_FROM`, which holds `address`.
+#[cfg(target_arch = "aarch64")]
+fn frame_at(pc: u64, address: u64, sp: u64) -> wcontainers_linux_process::RunFrame {
+    let mut frame = wcontainers_linux_process::RunFrame::default();
+    for (r, value) in frame.registers.x.iter_mut().enumerate() {
+        *value = WORD.rotate_left(r as u32);
+    }
+    frame.registers.x[ADDRESS_FROM] = address;
+    frame.registers.sp = sp;
+    frame.registers.pc = pc;
+    frame
+}
+
+/// Ends a run at an access that faults, whether for its page or its alignment, and at an instruction that raises a
+/// signal: the frame holds the registers at the instruction, and the thread goes on as before.
+#[cfg(target_arch = "aarch64")]
+pub fn ends_a_run_at_a_fault_of_its_code(linux: impl LinuxProcess) {
+    use wcontainers_linux_process::RunEnd;
+    let page = rustix::param::page_size();
+    let (unmapped, held) = fixed_pages(&linux, FAULT_SEARCH_START, 1);
+    drop(held);
+    let unmapped = unmapped as u64 + (page / 2) as u64;
+    let misaligned = CODE_STACK + 1;
+    let fault = |address, write, alignment| RunEnd::Fault {
+        address,
+        write,
+        alignment,
+    };
+    // Each instruction, the address in x1, the stack pointer, how the run ends, and whether it ends at the target of
+    // a branch to x1 rather than at the instruction.
+    let cases = [
+        (LOAD_THROUGH_X1, unmapped, CODE_STACK, fault(unmapped, false, false), false),
+        (STORE_THROUGH_X1, unmapped, CODE_STACK, fault(unmapped, true, false), false),
+        (LOAD_THROUGH_SP, unmapped, misaligned, fault(misaligned, false, true), false),
+        (UNDEFINED, unmapped, CODE_STACK, RunEnd::Raised(Signal::ILL), false),
+        (BREAKPOINT, unmapped, CODE_STACK, RunEnd::Raised(Signal::TRAP), false),
+        (BRANCH_TO_X1, 0, CODE_STACK, RunEnd::Raised(Signal::ILL), true),
+    ];
+    let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+    for (k, (instruction, address, stack, wanted, branches)) in cases.into_iter().enumerate() {
+        let from = FAULT_SEARCH_START + (k + 1) * CODE_PAGES * page;
+        let (pc, _code) = code_of(&linux, from, &[instruction, TO_EXIT[0], TO_EXIT[1]]);
+        // A branch to a misaligned address in the code faults at that address.
+        let (address, wanted, ends_at) = if branches {
+            let target = pc + 1;
+            (target, fault(target, false, true), target)
+        } else {
+            (address, wanted, pc)
+        };
+        let mut frame = frame_at(pc, address, stack);
+        let before = frame.registers;
+        THREAD_OWN.set(WORD);
+        let end = linux.run_code(&mut thread, &mut frame);
+        assert_eq!(end, wanted, "the instruction {instruction:#010x}");
+        let mut at_fault = before;
+        at_fault.x[EXIT_SCRATCH] = pc;
+        at_fault.x[FRAME] = core::ptr::from_ref(&frame) as u64;
+        assert_eq!(frame.registers.x, at_fault.x);
+        assert_eq!(frame.registers.pc, ends_at);
+        assert_eq!(frame.registers.sp, stack);
+        assert_eq!(THREAD_OWN.get(), WORD, "the thread's own thread-local");
+    }
+}
+
+/// Stops running code with the stop signal from another thread, and takes the signal on the thread's own signal stack,
+/// never at the code's stack pointer, whether that points into this process's memory or at nothing.
+#[cfg(target_arch = "aarch64")]
+pub fn stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer(
+    linux: impl LinuxProcess + Sync,
+) {
+    use wcontainers_linux_process::{RUN_STOP_SIGNAL, RunEnd};
+    let page = rustix::param::page_size();
+    let hostile = vec![WORD; HOSTILE_STACK_WORDS];
+    let into_this_process = hostile.as_ptr() as u64 + (hostile.len() * size_of::<u64>()) as u64;
+    let (nothing, held) = fixed_pages(&linux, STOP_SEARCH_START, 1);
+    drop(held);
+    let (pc, _code) = code_of(&linux, STOP_SEARCH_START + page, &[BRANCH_TO_ITSELF]);
+    for stack in [into_this_process, nothing as u64 + page as u64, 0] {
+        let ran = AtomicBool::new(false);
+        let (tid_sender, tid) = std::sync::mpsc::channel();
+        let end = std::thread::scope(|scope| {
+            let linux = &linux;
+            let ran = &ran;
+            let runner = scope.spawn(move || {
+                let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+                tid_sender.send(own_thread()).expect("the test waits");
+                THREAD_OWN.set(WORD);
+                let mut frame = frame_at(pc, 0, stack);
+                let end = loop {
+                    match linux.run_code(&mut thread, &mut frame) {
+                        RunEnd::NotEntered => {}
+                        end => break end,
+                    }
+                };
+                ran.store(true, Ordering::Release);
+                (end, frame.registers.pc, frame.registers.sp, THREAD_OWN.get())
+            });
+            let thread = tid.recv().expect("the runner's thread");
+            while !ran.load(Ordering::Acquire) {
+                linux
+                    .tgkill(own_process(), thread, RUN_STOP_SIGNAL)
+                    .expect("the runner is signalled");
+                std::thread::sleep(BETWEEN_STOPS);
+            }
+            runner.join().expect("the runner ends")
+        });
+        assert_eq!(end, (RunEnd::Stopped, pc, stack, WORD), "the stack {stack:#x}");
+        assert!(
+            hostile.iter().all(|word| *word == WORD),
+            "no signal frame written at the code's stack pointer"
+        );
+    }
+}
+
+/// A stop that reaches a prepared thread before its run ends the run before its code starts, the frame unchanged; the
+/// next run goes on as usual.
+#[cfg(target_arch = "aarch64")]
+pub fn ends_a_run_before_its_code_at_a_stop_that_came_before(linux: impl LinuxProcess) {
+    use wcontainers_linux_process::{RUN_STOP_SIGNAL, RunEnd};
+    let (pc, _code) = code_of(&linux, EARLY_STOP_SEARCH_START, &TO_EXIT);
+    let mut thread = linux.prepare_run_thread().expect("the thread is prepared");
+    linux
+        .tgkill(own_process(), own_thread(), RUN_STOP_SIGNAL)
+        .expect("this thread is signalled");
+    let mut frame = frame_at(pc, 0, CODE_STACK);
+    let before = frame.clone();
+    assert_eq!(linux.run_code(&mut thread, &mut frame), RunEnd::NotEntered);
+    assert_eq!(frame.registers, before.registers);
+    assert_eq!(
+        linux.run_code(&mut thread, &mut frame),
+        RunEnd::Exit(pc + EXIT_AT as u64)
+    );
+}
+
+/// The signals this thread blocks, read from `/proc/thread-self/status`.
+#[cfg(target_arch = "aarch64")]
+fn blocked() -> u64 {
+    let status = std::fs::read_to_string("/proc/thread-self/status").expect("the thread's status");
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix(BLOCKED_LINE))
+        .expect("the blocked signals");
+    u64::from_str_radix(line.trim(), HEXADECIMAL).expect("a hexadecimal mask")
+}
+
+/// Blocks every signal but a run's on the prepared thread alone, the two glibc keeps for itself among them; refuses a
+/// second preparation; puts the mask back on drop.
+#[cfg(target_arch = "aarch64")]
+pub fn blocks_every_signal_but_a_run_s_on_the_prepared_thread(linux: impl LinuxProcess + Sync) {
+    let before = blocked();
+    let unblocked = UNBLOCKED
+        .iter()
+        .fold(0_u64, |kept, signal| kept | 1 << (signal.as_raw() - 1));
+    // Another thread, started before the preparation, which a new thread's mask would be taken from.
+    let (prepared_sender, prepared) = std::sync::mpsc::channel::<()>();
+    let (other, thread) = std::thread::scope(|scope| {
+        let other = scope.spawn(move || {
+            prepared.recv().expect("the test prepares its thread");
+            blocked()
+        });
+        let thread = linux.prepare_run_thread().expect("the thread is prepared");
+        prepared_sender.send(()).expect("the other thread waits");
+        (other.join().expect("the other thread ends"), thread)
+    });
+    assert_eq!(blocked(), !unblocked);
+    assert_eq!(linux.prepare_run_thread().err(), Some(Errno::BUSY));
+    assert_eq!(other, before, "another thread's mask");
+    drop(thread);
+    assert_eq!(blocked(), before);
+    drop(linux.prepare_run_thread().expect("prepared again after the drop"));
 }
 
 /// Each new memory starts zeroed, and two are apart.
@@ -609,6 +881,30 @@ macro_rules! tests {
         #[test]
         fn runs_code_until_an_exit_and_keeps_the_thread_s_own() {
             $crate::runs_code_until_an_exit_and_keeps_the_thread_s_own($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn ends_a_run_at_a_fault_of_its_code() {
+            $crate::ends_a_run_at_a_fault_of_its_code($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer() {
+            $crate::stops_a_run_on_its_signal_stack_whatever_the_code_s_stack_pointer($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn ends_a_run_before_its_code_at_a_stop_that_came_before() {
+            $crate::ends_a_run_before_its_code_at_a_stop_that_came_before($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn blocks_every_signal_but_a_run_s_on_the_prepared_thread() {
+            $crate::blocks_every_signal_but_a_run_s_on_the_prepared_thread($value);
         }
 
         #[test]

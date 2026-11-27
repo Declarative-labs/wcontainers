@@ -36,7 +36,7 @@ pub const EXIT_BYTES: usize = 16;
 pub const RUN_FRAME_WORDS: usize = 32;
 /// The words of a [`RunFrame`] a run owns.
 #[cfg(target_arch = "aarch64")]
-pub const RUN_EXIT_WORDS: usize = 4;
+pub const RUN_EXIT_WORDS: usize = 8;
 /// The general registers, x0 to x30.
 #[cfg(target_arch = "aarch64")]
 pub const GENERAL_REGISTERS: usize = 31;
@@ -60,6 +60,32 @@ pub struct Arm64Registers {
     pub tpidr_el0: u64,
 }
 
+/// The signal that stops a run on the thread it is sent to with [`LinuxProcess::tgkill`], wherever its code is.
+#[cfg(target_arch = "aarch64")]
+pub const RUN_STOP_SIGNAL: Signal = Signal::USR1;
+
+/// How a run of code ended, as [`LinuxProcess::run_code`] returns it.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunEnd {
+    /// The code branched with link to the exit at this address.
+    Exit(u64),
+    /// [`RUN_STOP_SIGNAL`] came before the code started: the frame's registers are those it would have started with.
+    NotEntered,
+    /// [`RUN_STOP_SIGNAL`] came while the code ran: the frame holds its registers, `pc` the instruction not yet run.
+    Stopped,
+    /// An access by the code faulted: the frame holds its registers, `pc` the faulting instruction.
+    Fault {
+        /// The address the host reports, its tag cleared.
+        address: u64,
+        write: bool,
+        /// Whether the access faulted for its alignment.
+        alignment: bool,
+    },
+    /// An instruction of the code raised the signal (an undefined instruction, a breakpoint), at the frame's `pc`.
+    Raised(Signal),
+}
+
 /// What one run of code holds: words its code reads and writes through [`FRAME_REGISTER`], the words of the run, and
 /// the registers it starts with and leaves.
 #[cfg(target_arch = "aarch64")]
@@ -68,8 +94,8 @@ pub struct Arm64Registers {
 pub struct RunFrame {
     /// The code's own words: [`FRAME_REGISTER`] holds their address while it runs.
     pub words: [u64; RUN_FRAME_WORDS],
-    /// The run's own words: what an exit found in [`EXIT_SCRATCH_REGISTER`] and x30, where the exits go, and the
-    /// stack of the thread that runs. Nothing they hold before or after a run means anything.
+    /// The run's own words: what an exit found in [`EXIT_SCRATCH_REGISTER`] and x30, where the exits go, the stack and
+    /// the signal stack of the thread that runs, and how the run ended. Nothing they hold before a run means anything.
     pub exit: [u64; RUN_EXIT_WORDS],
     /// The registers the code starts with, but [`EXIT_SCRATCH_REGISTER`] (its first address, `pc`) and
     /// [`FRAME_REGISTER`] (this frame's address); then the registers it left at its exit, `pc` and x30 the address
@@ -90,6 +116,10 @@ pub trait LinuxProcess {
     type SharedWords;
     /// Code this process runs, at an address it chose, which no one can write; unmapped on drop.
     type CodeMapping;
+    /// The thread that made it, ready to run code: its own signal stack and every other signal blocked, both as they
+    /// were again on drop.
+    #[cfg(target_arch = "aarch64")]
+    type RunThread;
 
     /// Sends [the signal to one thread](https://man7.org/linux/man-pages/man2/tgkill.2.html) of a process.
     fn tgkill(&self, process: Pid, thread: Pid, signal: Signal) -> Result<(), Errno>;
@@ -135,17 +165,33 @@ pub trait LinuxProcess {
     /// older than 4.17.
     fn map_code(&self, address: usize, code: &[u8]) -> Result<Self::CodeMapping, Errno>;
 
+    /// Returns the sealed memory file the code is mapped from.
+    fn code_file<'code>(&self, code: &'code Self::CodeMapping) -> BorrowedFd<'code>;
+
     /// The instructions of an exit: code run by [`Self::run_code`] that branches with link (`blr`) to a copy of them,
     /// [`FRAME_REGISTER`] holding its frame, ends the run there.
     #[cfg(target_arch = "aarch64")]
     fn exit_code(&self) -> [u8; EXIT_BYTES];
 
-    /// Runs the code at the frame's `registers.pc` on this thread, with every register from the frame as
-    /// [`RunFrame::registers`] says, until it branches with link to an exit ([`Self::exit_code`]); then the frame
-    /// holds the registers it left, and the thread's own are as before. Returns the exit's address. The code must
-    /// reach no memory but its own mappings and the frame's words, and the code's stack is the code's.
+    /// Prepares this thread to run code: an [alternate signal stack](https://man7.org/linux/man-pages/man2/sigaltstack.2.html)
+    /// of its own, which every signal of a run is taken on, this process's handlers of a run (installed once), and
+    /// every signal blocked but a run's (an access fault, an undefined instruction, a breakpoint, [`RUN_STOP_SIGNAL`]),
+    /// by the [raw mask](https://man7.org/linux/man-pages/man2/rt_sigprocmask.2.html), which reaches the two signals
+    /// glibc keeps for itself too. `EBUSY` where the thread is already prepared.
     #[cfg(target_arch = "aarch64")]
-    fn run_code(&self, frame: &mut RunFrame) -> u64;
+    fn prepare_run_thread(&self) -> Result<Self::RunThread, Errno>;
+
+    /// Runs the code at the frame's `registers.pc` on the prepared thread, with every register from the frame as
+    /// [`RunFrame::registers`] says, until it branches with link to an exit ([`Self::exit_code`]), faults, raises a
+    /// signal or is stopped; then the frame holds the registers it left, and the thread's own are as before.
+    ///
+    /// The caller keeps the code to this, which no type can check: it reads and writes no memory but the mappings made
+    /// for it and the frame's [`RunFrame::words`]; its stack is its own, whatever its stack pointer holds; it makes no
+    /// system call; it may change the general and vector registers, NZCV, FPSR, FPCR and TPIDR_EL0, and no other
+    /// register user space can write (TPIDR2_EL0, SVCR, DIT, SSBS, TCO, the SVE bits above each vector's 128); and
+    /// [`FRAME_REGISTER`] holds the frame's address at each of its instructions.
+    #[cfg(target_arch = "aarch64")]
+    fn run_code(&self, thread: &mut Self::RunThread, frame: &mut RunFrame) -> RunEnd;
 
     /// Makes a sealed [memory file](https://man7.org/linux/man-pages/man2/memfd_create.2.html) of the length, which
     /// cannot shrink, and maps it shared; `EINVAL` for an empty one, which mmap(2) refuses.
@@ -159,6 +205,11 @@ pub trait LinuxProcess {
 
     /// Returns the memory as 64-bit atomic words.
     fn shared_words64<'words>(&self, words: &'words Self::SharedWords) -> &'words [AtomicU64];
+
+    /// Reads [`FPCR`](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPCR--Floating-point-Control-Register),
+    /// this thread's floating-point control.
+    #[cfg(target_arch = "aarch64")]
+    fn read_fpcr(&self) -> u64;
 
     /// Reads [`CTR_EL0`](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register),
     /// the cache type register.

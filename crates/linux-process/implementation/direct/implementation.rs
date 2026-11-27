@@ -1,16 +1,20 @@
 //! The calls and instructions themselves, on this host: each use of `unsafe` is one marked line.
 #![cfg(target_os = "linux")]
 
-use core::ffi::c_void;
+use core::ffi::{c_int, c_void};
+#[cfg(target_arch = "aarch64")]
+use core::marker::PhantomData;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicU32, AtomicU64};
+#[cfg(target_arch = "aarch64")]
+use std::sync::OnceLock;
 
 use rustix::fs::{MemfdFlags, SealFlags};
 use rustix::mm::{MapFlags, MprotectFlags};
 #[cfg(target_arch = "aarch64")]
 use wcontainers_linux_process::{
-    Arm64Registers, EXIT_BYTES, EXIT_SCRATCH_REGISTER, FRAME_REGISTER, LARGEST_PREDICATE_BYTES,
-    PredicatesAfterSystemCall, RunFrame,
+    Arm64Registers, EXIT_BYTES, EXIT_SCRATCH_REGISTER, FRAME_REGISTER, GENERAL_REGISTERS,
+    LARGEST_PREDICATE_BYTES, PredicatesAfterSystemCall, RUN_STOP_SIGNAL, RunEnd, RunFrame,
 };
 use wcontainers_linux_process::{Errno, LinuxProcess, Pid, ProtFlags, Signal};
 
@@ -36,13 +40,39 @@ const BASE_SHIFT: u32 = 5;
 const PAIR_OFFSET_SHIFT: u32 = 15;
 #[cfg(target_arch = "aarch64")]
 const LOAD_OFFSET_SHIFT: u32 = 10;
-/// The run's words: x23 and x30 as an exit found them, where exits go, and the thread's stack.
+/// The run's words: x23 and x30 as an exit found them, where exits go, the thread's stack, its signal stack's top
+/// record, and how the run ended: the signal (none for an exit), the exit's or the fault's address, and what more.
 #[cfg(target_arch = "aarch64")]
 const EXIT_AT: usize = core::mem::offset_of!(RunFrame, exit);
 #[cfg(target_arch = "aarch64")]
-const EXITS_GO_AT: usize = EXIT_AT + 2 * size_of::<u64>();
+const EXITS_GO: usize = 2;
 #[cfg(target_arch = "aarch64")]
-const THREAD_STACK_AT: usize = EXIT_AT + 3 * size_of::<u64>();
+const THREAD_STACK: usize = 3;
+#[cfg(target_arch = "aarch64")]
+const SIGNAL_STACK: usize = 4;
+#[cfg(target_arch = "aarch64")]
+const END: usize = 5;
+#[cfg(target_arch = "aarch64")]
+const END_ADDRESS: usize = 6;
+#[cfg(target_arch = "aarch64")]
+const END_DETAIL: usize = 7;
+#[cfg(target_arch = "aarch64")]
+const EXITS_GO_AT: usize = EXIT_AT + EXITS_GO * size_of::<u64>();
+#[cfg(target_arch = "aarch64")]
+const THREAD_STACK_AT: usize = EXIT_AT + THREAD_STACK * size_of::<u64>();
+#[cfg(target_arch = "aarch64")]
+const SIGNAL_STACK_AT: usize = EXIT_AT + SIGNAL_STACK * size_of::<u64>();
+#[cfg(target_arch = "aarch64")]
+const END_AT: usize = EXIT_AT + END * size_of::<u64>();
+#[cfg(target_arch = "aarch64")]
+const END_DETAIL_AT: usize = EXIT_AT + END_DETAIL * size_of::<u64>();
+/// What more a run's end says: the code had not started; the access was a write; it faulted for its alignment.
+#[cfg(target_arch = "aarch64")]
+const NOT_ENTERED: u64 = 1;
+#[cfg(target_arch = "aarch64")]
+const WRITE: u64 = 1 << 1;
+#[cfg(target_arch = "aarch64")]
+const ALIGNMENT: u64 = 1 << 2;
 /// The bytes of an exit before x30 is the address after its branch.
 #[cfg(target_arch = "aarch64")]
 const EXIT_LINKED: usize = 3 * size_of::<u32>();
@@ -77,9 +107,65 @@ const KEPT_D_AT: usize = 12 * size_of::<u64>();
 #[cfg(target_arch = "aarch64")]
 const KEPT_SYSTEM_AT: usize = 20 * size_of::<u64>();
 
+/// Where the record at a signal stack's bottom keeps each word.
+#[cfg(target_arch = "aarch64")]
+const TOP_RUNNING_AT: usize = core::mem::offset_of!(SignalStackRecord, running);
+#[cfg(target_arch = "aarch64")]
+const TOP_PENDING_AT: usize = core::mem::offset_of!(SignalStackRecord, pending);
+#[cfg(target_arch = "aarch64")]
+const TOP_ENTRY_AT: usize = core::mem::offset_of!(SignalStackRecord, entry_first);
+#[cfg(target_arch = "aarch64")]
+const TOP_EXIT_AT: usize = core::mem::offset_of!(SignalStackRecord, exit_first);
+#[cfg(target_arch = "aarch64")]
+const TOP_LABELS_AT: usize = core::mem::offset_of!(SignalStackRecord, abort);
+/// The signal stack's least size, before it grows with what Linux says a signal frame may take
+/// ([AT_MINSIGSTKSZ](https://docs.kernel.org/arch/arm64/elf_hwcaps.html), a few times over for nested signals).
+#[cfg(target_arch = "aarch64")]
+const SIGNAL_STACK_BYTES: usize = 1 << 18;
+#[cfg(target_arch = "aarch64")]
+const SIGNAL_FRAMES: usize = 8;
+/// The signals of a run, each a fault an instruction raises but the last, [`RUN_STOP_SIGNAL`].
+#[cfg(target_arch = "aarch64")]
+const RUN_SIGNALS: [c_int; 5] = [
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    libc::SIGILL,
+    libc::SIGTRAP,
+    RUN_STOP_SIGNAL.as_raw(),
+];
+/// The signals a run's thread leaves unblocked: a run's, and the one an arithmetic fault raises.
+#[cfg(target_arch = "aarch64")]
+const UNBLOCKED: [c_int; 6] = [
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    libc::SIGILL,
+    libc::SIGTRAP,
+    libc::SIGFPE,
+    RUN_STOP_SIGNAL.as_raw(),
+];
+/// The [records](https://github.com/torvalds/linux/blob/master/arch/arm64/include/uapi/asm/sigcontext.h) after a
+/// signal frame's registers: where they start, how many bytes they take, and the magic of the one holding ESR_EL1.
+#[cfg(target_arch = "aarch64")]
+const RECORDS_ALIGNMENT: usize = 16;
+#[cfg(target_arch = "aarch64")]
+const RECORDS_BYTES: usize = 4096;
+#[cfg(target_arch = "aarch64")]
+const ESR_MAGIC: u32 = 0x4553_5201;
+/// [ESR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-)'s
+/// exception class, its data aborts from a lower level, and the bit that says a data abort was a write (WnR).
+#[cfg(target_arch = "aarch64")]
+const EXCEPTION_CLASS_SHIFT: u32 = 26;
+#[cfg(target_arch = "aarch64")]
+const EXCEPTION_CLASS_MASK: u64 = 0x3f;
+#[cfg(target_arch = "aarch64")]
+const DATA_ABORT_LOWER: u64 = 0x24;
+#[cfg(target_arch = "aarch64")]
+const WRITE_NOT_READ: u64 = 1 << 6;
+
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(
     EXIT_AT.is_multiple_of(size_of::<u64>())
+        && END_DETAIL < wcontainers_linux_process::RUN_EXIT_WORDS
         && EXIT_AT / size_of::<u64>() < 1 << 6
         && REGISTERS_AT.is_multiple_of(2 * size_of::<u64>())
         && KEPT_BYTES.is_multiple_of(2 * size_of::<u64>())
@@ -106,8 +192,54 @@ pub struct DirectFixedMapping {
 /// Code mapped from a memory file sealed against writes, at an address this process chose.
 #[derive(Debug)]
 pub struct DirectCodeMapping {
+    file: OwnedFd,
     _mapping: DirectFixedMapping,
 }
+
+/// A thread prepared to run code: its signal stack, and the stack and mask it had before.
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug)]
+pub struct DirectRunThread {
+    record: usize,
+    /// The earlier signal stack's bottom, flags and size.
+    earlier_stack: (usize, c_int, usize),
+    earlier_mask: u64,
+    /// Below the stack, a page nothing may touch; then the record, then the stack.
+    _stack: DirectFixedMapping,
+    /// The signal stack and the mask are this thread's alone: the handle never moves to another.
+    _one_thread: PhantomData<*const ()>,
+}
+
+/// What a run and its signals' handler share, at the bottom of the thread's signal stack, where the guest's code never
+/// reaches: the frame while a run is on, a stop that came outside its code, and where each part of the run lies.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug)]
+struct SignalStackRecord {
+    /// The record's own address, which tells it from a signal stack that is not this crate's.
+    own: u64,
+    running: u64,
+    pending: u64,
+    /// The run's first instruction and its branch to the code; its first instruction after the code and the end of
+    /// its instructions; where a run stopped before its code goes, and where a handler that ends one sends it.
+    entry_first: u64,
+    entry_last: u64,
+    exit_first: u64,
+    exit_end: u64,
+    abort: u64,
+    saved: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+std::thread_local! {
+    /// Whether this thread is prepared to run code.
+    static PREPARED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// The handlers this process had before a run's, one for each of [`RUN_SIGNALS`].
+#[cfg(target_arch = "aarch64")]
+static EARLIER_HANDLERS: OnceLock<Result<[libc::sigaction; RUN_SIGNALS.len()], Errno>> =
+    OnceLock::new();
 
 /// A sealed memory file and this process's shared mapping of it.
 #[derive(Debug)]
@@ -120,6 +252,8 @@ impl LinuxProcess for DirectLinuxProcess {
     type FixedMapping = DirectFixedMapping;
     type SharedWords = DirectSharedWords;
     type CodeMapping = DirectCodeMapping;
+    #[cfg(target_arch = "aarch64")]
+    type RunThread = DirectRunThread;
 
     fn tgkill(&self, process: Pid, thread: Pid, signal: Signal) -> Result<(), Errno> {
         #[expect(
@@ -265,10 +399,17 @@ impl LinuxProcess for DirectLinuxProcess {
         };
         // As `mmap_fixed_noreplace`: an old Linux maps elsewhere, and that mapping is unmapped again.
         if mapping.address == address {
-            Ok(DirectCodeMapping { _mapping: mapping })
+            Ok(DirectCodeMapping {
+                file,
+                _mapping: mapping,
+            })
         } else {
             Err(Errno::NOSYS)
         }
+    }
+
+    fn code_file<'code>(&self, code: &'code DirectCodeMapping) -> BorrowedFd<'code> {
+        code.file.as_fd()
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -298,8 +439,135 @@ impl LinuxProcess for DirectLinuxProcess {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn run_code(&self, frame: &mut RunFrame) -> u64 {
-        entering::run(core::ptr::from_mut(frame))
+    fn prepare_run_thread(&self) -> Result<DirectRunThread, Errno> {
+        if PREPARED.get() {
+            return Err(Errno::BUSY);
+        }
+        install_run_handlers()?;
+        let page = rustix::param::page_size();
+        let stack = SIGNAL_STACK_BYTES
+            .max(rustix::param::linux_minsigstksz() * SIGNAL_FRAMES)
+            .next_multiple_of(page);
+        let length = page + stack;
+        #[expect(
+            unsafe_code,
+            reason = "maps memory at an address the kernel picks, which rustix leaves unsafe"
+        )]
+        // SAFETY: a new private mapping, which replaces nothing and which the handle alone holds.
+        let mapped = unsafe {
+            rustix::mm::mmap_anonymous(
+                core::ptr::null_mut(),
+                length,
+                ProtFlags::READ | ProtFlags::WRITE,
+                MapFlags::PRIVATE | MapFlags::NORESERVE,
+            )
+        }?;
+        let mapping = DirectFixedMapping {
+            address: mapped.addr(),
+            length,
+        };
+        #[expect(
+            unsafe_code,
+            reason = "changes the protection of pages, which rustix leaves to the caller to keep sound"
+        )]
+        // SAFETY: the mapping's first page, which the handle alone holds and nothing refers to, becomes inaccessible.
+        unsafe { rustix::mm::mprotect(mapped, page, MprotectFlags::empty()) }?;
+        let record = mapping.address + page;
+        #[expect(
+            unsafe_code,
+            reason = "writes the record into memory only a handler and the run read, through its address"
+        )]
+        // SAFETY: the record's page is mapped readable and writable, aligned, and held by the handle alone.
+        unsafe {
+            core::ptr::write(
+                record as *mut SignalStackRecord,
+                SignalStackRecord {
+                    own: record as u64,
+                    running: 0,
+                    pending: 0,
+                    entry_first: 0,
+                    entry_last: 0,
+                    exit_first: 0,
+                    exit_end: 0,
+                    abort: 0,
+                    saved: 0,
+                },
+            );
+        }
+        let wanted = libc::stack_t {
+            ss_sp: record as *mut c_void,
+            ss_flags: 0,
+            ss_size: stack,
+        };
+        let mut earlier_stack = libc::stack_t {
+            ss_sp: core::ptr::null_mut(),
+            ss_flags: 0,
+            ss_size: 0,
+        };
+        let blocked = !UNBLOCKED
+            .iter()
+            .fold(0_u64, |kept, signal| kept | signal_bit(*signal));
+        let mut earlier_mask = 0_u64;
+        #[expect(
+            unsafe_code,
+            reason = "sets the thread's signal stack and its raw mask, which neither rustix nor nix offers safely"
+        )]
+        // SAFETY: the stack is mapped and held by the returned handle, which puts back the earlier stack before it
+        // unmaps it and never leaves this thread, as this does where the mask is refused; the masks are the kernel's
+        // 64-bit sets.
+        let set = unsafe {
+            let stack_set = libc::sigaltstack(&wanted, &mut earlier_stack) == 0;
+            let mask_set = stack_set
+                && libc::syscall(
+                    libc::SYS_rt_sigprocmask,
+                    libc::SIG_SETMASK,
+                    core::ptr::from_ref(&blocked),
+                    core::ptr::from_mut(&mut earlier_mask),
+                    size_of::<u64>(),
+                ) == 0;
+            if stack_set && !mask_set {
+                libc::sigaltstack(&earlier_stack, core::ptr::null_mut());
+            }
+            mask_set
+        };
+        if !set {
+            return Err(Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::INVAL));
+        }
+        PREPARED.set(true);
+        Ok(DirectRunThread {
+            record,
+            earlier_stack: (
+                earlier_stack.ss_sp as usize,
+                earlier_stack.ss_flags,
+                earlier_stack.ss_size,
+            ),
+            earlier_mask,
+            _stack: mapping,
+            _one_thread: PhantomData,
+        })
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn run_code(&self, thread: &mut DirectRunThread, frame: &mut RunFrame) -> RunEnd {
+        frame.exit[SIGNAL_STACK] = thread.record as u64;
+        entering::run(core::ptr::from_mut(frame));
+        let [.., end, address, detail] = frame.exit;
+        match i32::try_from(end).unwrap_or_default() {
+            0 => RunEnd::Exit(address),
+            libc::SIGSEGV | libc::SIGBUS => RunEnd::Fault {
+                address,
+                write: detail & WRITE != 0,
+                alignment: detail & ALIGNMENT != 0,
+            },
+            stop if stop == RUN_STOP_SIGNAL.as_raw() => {
+                if detail & NOT_ENTERED != 0 {
+                    RunEnd::NotEntered
+                } else {
+                    RunEnd::Stopped
+                }
+            }
+            raised => RunEnd::Raised(Signal::from_named_raw(raised).unwrap_or(Signal::ILL)),
+        }
     }
 
     fn create_shared_words(&self, name: &str, length: usize) -> Result<DirectSharedWords, Errno> {
@@ -350,6 +618,20 @@ impl LinuxProcess for DirectLinuxProcess {
                 words.mapping.len() / size_of::<AtomicU64>(),
             )
         }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn read_fpcr(&self) -> u64 {
+        let value: u64;
+        #[expect(
+            unsafe_code,
+            reason = "reads FPCR, which no crate wraps"
+        )]
+        // SAFETY: the read has no effect beyond its output register.
+        unsafe {
+            core::arch::asm!("mrs {}, fpcr", out(reg) value, options(nomem, nostack, preserves_flags));
+        }
+        value
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -460,24 +742,288 @@ impl DirectFixedMapping {
     }
 }
 
+/// The bit of a signal in the kernel's 64-bit set.
+#[cfg(target_arch = "aarch64")]
+fn signal_bit(signal: c_int) -> u64 {
+    1 << (signal - 1)
+}
+
+/// Installs the handler of a run for each of [`RUN_SIGNALS`], once in this process, keeping the handlers before it.
+#[cfg(target_arch = "aarch64")]
+fn install_run_handlers() -> Result<(), Errno> {
+    let installed = EARLIER_HANDLERS.get_or_init(|| {
+        let handler = on_run_signal as extern "C" fn(c_int, *mut libc::siginfo_t, *mut c_void);
+        let mut earlier = [const { None }; RUN_SIGNALS.len()];
+        for (signal, into) in RUN_SIGNALS.into_iter().zip(&mut earlier) {
+            let stop = signal == RUN_STOP_SIGNAL.as_raw();
+            // A fault in a handler is delivered, never fatal for being blocked; the stop waits while one runs.
+            let flags = if stop {
+                libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_RESTART
+            } else {
+                libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_NODEFER
+            };
+            #[expect(
+                unsafe_code,
+                reason = "installs a signal handler, which neither rustix nor nix offers with a handler of three arguments safely"
+            )]
+            // SAFETY: the handler reads only what the kernel hands it and the run's own record, and writes only the
+            // running frame and the interrupted context, as `on_run_signal` says; each action is a whole value.
+            let action = unsafe {
+                let mut action: libc::sigaction = core::mem::zeroed();
+                action.sa_sigaction = handler as usize;
+                action.sa_flags = flags;
+                libc::sigemptyset(&mut action.sa_mask);
+                libc::sigaddset(&mut action.sa_mask, RUN_STOP_SIGNAL.as_raw());
+                let mut before: libc::sigaction = core::mem::zeroed();
+                (libc::sigaction(signal, &action, &mut before) == 0).then_some(before)
+            };
+            *into = Some(action.ok_or_else(|| {
+                Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::INVAL)
+            })?);
+        }
+        Ok(earlier.map(|action| action.unwrap_or_else(|| unreachable!("each signal's handler was kept"))))
+    });
+    installed.as_ref().map(|_| ()).map_err(|error| *error)
+}
+
+/// What a run's handler does with a signal.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handling {
+    /// Nothing: a stop that reached a thread prepared for no run.
+    Nothing,
+    /// The handler this process had before takes it: a fault outside a run's code.
+    Earlier,
+    /// The run ends at its next start: a stop that came outside its code.
+    Pending,
+    /// The run ends before its code starts.
+    Abort,
+    /// The run ends here, with what more its end says.
+    End { address: u64, detail: u64 },
+}
+
+/// What a handler of a run does with `signal`, which came at `pc` with x23 holding `scratch`, given the record at the
+/// bottom of the thread's signal stack, if it has one of this crate's.
+#[cfg(target_arch = "aarch64")]
+fn handling(
+    signal: c_int,
+    pc: u64,
+    scratch: u64,
+    record: Option<&SignalStackRecord>,
+    fault: (u64, u64, c_int),
+) -> Handling {
+    let stop = signal == RUN_STOP_SIGNAL.as_raw();
+    let Some(record) = record else {
+        return if stop { Handling::Nothing } else { Handling::Earlier };
+    };
+    if record.running == 0 {
+        return if stop { Handling::Pending } else { Handling::Earlier };
+    }
+    let in_entry = (record.entry_first..=record.entry_last).contains(&pc);
+    // From an exit's load of where exits go to the run's last instruction, the code's registers are being saved; a
+    // fault can come there only from the run's own instructions.
+    let in_exit = (record.exit_first..record.exit_end).contains(&pc)
+        || (stop && scratch == record.exit_first);
+    match (stop, in_entry, in_exit) {
+        (true, true, _) => Handling::Abort,
+        (true, _, true) => Handling::Pending,
+        (false, true, _) | (false, _, true) => Handling::Earlier,
+        (true, false, false) => Handling::End {
+            address: 0,
+            detail: 0,
+        },
+        (false, false, false) => {
+            let (address, syndrome, code) = fault;
+            let mut detail = 0;
+            if (syndrome >> EXCEPTION_CLASS_SHIFT) & EXCEPTION_CLASS_MASK == DATA_ABORT_LOWER
+                && syndrome & WRITE_NOT_READ != 0
+            {
+                detail |= WRITE;
+            }
+            if signal == libc::SIGBUS && code == libc::BUS_ADRALN {
+                detail |= ALIGNMENT;
+            }
+            Handling::End { address, detail }
+        }
+    }
+}
+
+/// ESR_EL1 as the records after a signal frame's registers hold it, or zero.
+#[cfg(target_arch = "aarch64")]
+fn syndrome(records: &[u8; RECORDS_BYTES]) -> u64 {
+    let word = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(records.get(at..at + size_of::<u32>())?.try_into().ok()?))
+    };
+    let mut at = 0;
+    while let (Some(magic), Some(size)) = (word(at), word(at + size_of::<u32>())) {
+        if magic == 0 || size == 0 {
+            break;
+        }
+        if magic == ESR_MAGIC {
+            let value = at + 2 * size_of::<u32>();
+            return records
+                .get(value..value + size_of::<u64>())
+                .and_then(|bytes| bytes.try_into().ok())
+                .map_or(0, u64::from_le_bytes);
+        }
+        at += size as usize;
+    }
+    0
+}
+
+/// The handler of every signal of a run: on the thread's signal stack, never the code's, whatever its stack pointer
+/// holds. It touches no thread-local and calls nothing that sets errno, since the code's thread pointer may be the
+/// code's own.
+#[cfg(target_arch = "aarch64")]
+extern "C" fn on_run_signal(signal: c_int, info: *mut libc::siginfo_t, context: *mut c_void) {
+    #[expect(
+        unsafe_code,
+        reason = "a signal handler is handed its signal's information and context as pointers"
+    )]
+    // SAFETY: the kernel hands a handler installed with SA_SIGINFO both, valid and this handler's alone while it runs.
+    let (info, context) = unsafe { (&*info, &mut *context.cast::<libc::ucontext_t>()) };
+    #[expect(
+        unsafe_code,
+        reason = "the faulting address is a field of a union, which libc reads unsafely"
+    )]
+    // SAFETY: for every signal of a run the kernel fills the union's fault address, unused for the stop.
+    let address = unsafe { info.si_addr() } as u64;
+    let records_at = core::ptr::from_ref(&context.uc_mcontext) as usize
+        + (core::mem::offset_of!(libc::mcontext_t, pstate) + size_of::<u64>())
+            .next_multiple_of(RECORDS_ALIGNMENT);
+    #[expect(
+        unsafe_code,
+        reason = "the records after the frame's registers are a field libc keeps private"
+    )]
+    // SAFETY: the kernel's frame holds those records' bytes right after the registers, aligned to 16, as its header
+    // says, and they are this handler's to read.
+    let records = unsafe { &*(records_at as *const [u8; RECORDS_BYTES]) };
+    let stack = &context.uc_stack;
+    let bottom = stack.ss_sp as usize;
+    let record = if stack.ss_flags & libc::SS_DISABLE == 0 && bottom != 0 {
+        #[expect(
+            unsafe_code,
+            reason = "the record is found by the signal stack's address, which the kernel hands the handler"
+        )]
+        // SAFETY: a signal stack's bottom is mapped readable and writable; on one of this crate's the record lies
+        // there, which only this thread's run and handler use, never at once; on another, its first word is not its
+        // own address.
+        let record = unsafe { &mut *(bottom as *mut SignalStackRecord) };
+        (record.own == bottom as u64).then_some(record)
+    } else {
+        None
+    };
+    let registers = &mut context.uc_mcontext;
+    let fault = (address, syndrome(records), info.si_code);
+    let scratch = registers.regs[usize::from(EXIT_SCRATCH_REGISTER)];
+    match (handling(signal, registers.pc, scratch, record.as_deref(), fault), record) {
+        (Handling::Nothing, _) => {}
+        (Handling::Pending, Some(record)) => record.pending = 1,
+        (Handling::Abort, Some(record)) => {
+            registers.regs[0] = record.running;
+            registers.regs[usize::from(FRAME_REGISTER)] = record.running;
+            registers.pc = record.abort;
+        }
+        (Handling::End { address, detail }, Some(record)) => {
+            #[expect(
+                unsafe_code,
+                reason = "the running frame is found by the address the run left in the record"
+            )]
+            // SAFETY: while a run is on, the record holds its frame's address, which the run borrows mutably and does
+            // not touch until this handler returns.
+            let frame = unsafe { &mut *(record.running as *mut RunFrame) };
+            let into = &mut frame.registers;
+            into.x.copy_from_slice(&registers.regs[..GENERAL_REGISTERS]);
+            into.sp = registers.sp;
+            into.pc = registers.pc;
+            into.nzcv = registers.pstate & NZCV;
+            frame.exit[END] = signal as u64;
+            frame.exit[END_ADDRESS] = address;
+            frame.exit[END_DETAIL] = detail;
+            if signal == RUN_STOP_SIGNAL.as_raw() {
+                record.pending = 0;
+            }
+            registers.regs[usize::from(FRAME_REGISTER)] = record.running;
+            registers.pc = record.saved;
+        }
+        (Handling::Earlier, _) | (_, None) => on_signal_elsewhere(signal),
+    }
+}
+
+/// Gives the signal back to the handler this process had before a run's: it is put back, and the instruction that
+/// faulted faults again.
+#[cfg(target_arch = "aarch64")]
+fn on_signal_elsewhere(signal: c_int) {
+    let Some(Ok(earlier)) = EARLIER_HANDLERS.get() else {
+        return;
+    };
+    let Some(index) = RUN_SIGNALS.iter().position(|kept| *kept == signal) else {
+        return;
+    };
+    if signal == RUN_STOP_SIGNAL.as_raw() {
+        return;
+    }
+    #[expect(
+        unsafe_code,
+        reason = "puts back a signal handler, which neither rustix nor nix offers safely"
+    )]
+    // SAFETY: the action is the one the kernel gave back when this crate installed its own, whole and unchanged.
+    unsafe {
+        libc::sigaction(signal, &earlier[index], core::ptr::null_mut());
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Drop for DirectRunThread {
+    fn drop(&mut self) {
+        let mut ignored = 0_u64;
+        let (bottom, flags, size) = self.earlier_stack;
+        let earlier = libc::stack_t {
+            ss_sp: bottom as *mut c_void,
+            ss_flags: flags,
+            ss_size: size,
+        };
+        #[expect(
+            unsafe_code,
+            reason = "puts back the thread's signal stack and its raw mask, which neither rustix nor nix offers safely"
+        )]
+        // SAFETY: the stack and mask this thread had when the handle was made, on that same thread, before the
+        // handle's stack is unmapped.
+        unsafe {
+            libc::sigaltstack(&earlier, core::ptr::null_mut());
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_SETMASK,
+                core::ptr::from_ref(&self.earlier_mask),
+                core::ptr::from_mut(&mut ignored),
+                size_of::<u64>(),
+            );
+        }
+        PREPARED.set(false);
+    }
+}
+
 /// The run itself, a function of assembly alone.
 #[cfg(target_arch = "aarch64")]
 #[expect(
     unsafe_code,
-    reason = "UNSOUND: a safe fn that runs whatever code the frame's pc names, with its own stack, so nothing but that code's promise (translated code reaches only its window and its frame) keeps this process's memory as Rust holds it; no safe form of entering other code exists"
+    reason = "UNSOUND: a safe fn that runs whatever code the frame's pc names; only the caller's keeping that code to what LinuxProcess::run_code says (its mappings and the frame's words alone, its own stack, no system call, only the registers named there changed, x28 the frame) keeps this process's memory as Rust holds it; no safe form of entering other code exists"
 )]
 mod entering {
     use super::{
-        EXIT_AT, EXIT_LINKED, EXITS_GO_AT, FPCR_AT, FPSR_AT, KEPT_BYTES, KEPT_D_AT, KEPT_SYSTEM_AT,
-        NZCV, NZCV_AT, PC_AT, REGISTERS_AT, RunFrame, SP_AT, THREAD_STACK_AT, TPIDR_AT, V_AT, X_AT,
+        END_AT, END_DETAIL_AT, EXIT_AT, EXIT_LINKED, EXITS_GO_AT, FPCR_AT, FPSR_AT, KEPT_BYTES,
+        KEPT_D_AT, KEPT_SYSTEM_AT, NOT_ENTERED, NZCV, NZCV_AT, PC_AT, REGISTERS_AT, RUN_STOP_SIGNAL,
+        RunFrame, SIGNAL_STACK_AT, SP_AT, THREAD_STACK_AT, TOP_ENTRY_AT, TOP_EXIT_AT,
+        TOP_LABELS_AT, TOP_PENDING_AT, TOP_RUNNING_AT, TPIDR_AT, V_AT, X_AT,
     };
 
-    /// Runs the frame's code until it branches with link to an exit, as [`LinuxProcess::run_code`] says; returns the
-    /// exit's address.
+    /// Runs the frame's code until it branches with link to an exit, faults or is stopped, as
+    /// [`LinuxProcess::run_code`] says; the frame's run words say how it ended.
     #[unsafe(naked)]
-    pub(super) extern "C" fn run(frame: *mut RunFrame) -> u64 {
+    pub(super) extern "C" fn run(frame: *mut RunFrame) {
         core::arch::naked_asm!(
             // The thread's own: the registers a call keeps, FPCR and TPIDR_EL0, on its stack, whose top the frame keeps.
+            "0:",
             "sub sp, sp, #{kept}",
             "stp x19, x20, [sp, #0]",
             "stp x21, x22, [sp, #16]",
@@ -495,6 +1041,21 @@ mod entering {
             "adr x9, 2f",
             "mov x10, sp",
             "stp x9, x10, [x0, #{exits_go}]",
+            // Where a signal finds each part of the run, then the frame: from here a stop ends the run, and one that
+            // came before ends it now.
+            "ldr x11, [x0, #{signal_stack}]",
+            "adr x9, 0b",
+            "adr x10, 3f",
+            "stp x9, x10, [x11, #{top_entry}]",
+            "adr x9, 2f",
+            "adr x10, 5f",
+            "stp x9, x10, [x11, #{top_exit}]",
+            "adr x9, 6f",
+            "adr x10, 4f",
+            "stp x9, x10, [x11, #{top_labels}]",
+            "str x0, [x11, #{top_running}]",
+            "ldr x9, [x11, #{top_pending}]",
+            "cbnz x9, 6f",
             // The code's: every register from the frame, x28 the frame, x23 the code's first address.
             "mov x28, x0",
             "add x9, x28, #{registers}",
@@ -544,6 +1105,7 @@ mod entering {
             "ldr x30, [x9, #240]",
             "ldr x8, [x9, #64]",
             "ldr x9, [x9, #72]",
+            "3:",
             "br x23",
             // An exit: the code's x23 and x30 in the frame's words, x30 the address after the exit's branch.
             "2:",
@@ -572,6 +1134,11 @@ mod entering {
             "str x0, [x23, #{sp}]",
             "mrs x0, nzcv",
             "str x0, [x23, #{nzcv}]",
+            "sub x0, x30, #{exit_linked}",
+            "stp xzr, x0, [x28, #{end}]",
+            // A handler that ends a run comes here, the general registers saved, x28 the frame.
+            "4:",
+            "add x23, x28, #{registers}",
             "mrs x0, fpsr",
             "str x0, [x23, #{fpsr}]",
             "mrs x0, fpcr",
@@ -594,8 +1161,10 @@ mod entering {
             "stp q26, q27, [x23, #{v} + 416]",
             "stp q28, q29, [x23, #{v} + 448]",
             "stp q30, q31, [x23, #{v} + 480]",
-            // Back to the thread: its stack, its own registers, and the exit's address.
-            "sub x0, x30, #{exit_linked}",
+            // Back to the thread: the run is off, then its stack and its own registers.
+            "7:",
+            "ldr x11, [x28, #{signal_stack}]",
+            "str xzr, [x11, #{top_running}]",
             "ldr x9, [x28, #{thread_stack}]",
             "mov sp, x9",
             "ldp x9, x10, [sp, #{kept_system}]",
@@ -613,13 +1182,34 @@ mod entering {
             "ldp x29, x30, [sp, #80]",
             "add sp, sp, #{kept}",
             "ret",
+            // A stop before the code started, x0 the frame: its registers stay as they were.
+            "6:",
+            "mov x28, x0",
+            "ldr x11, [x28, #{signal_stack}]",
+            "str xzr, [x11, #{top_pending}]",
+            "mov x9, #{stop}",
+            "str x9, [x28, #{end}]",
+            "mov x9, #{not_entered}",
+            "str x9, [x28, #{end_detail}]",
+            "b 7b",
+            "5:",
             kept = const KEPT_BYTES,
             kept_d = const KEPT_D_AT,
             kept_system = const KEPT_SYSTEM_AT,
             exits_go = const EXITS_GO_AT,
             exit = const EXIT_AT,
             thread_stack = const THREAD_STACK_AT,
+            signal_stack = const SIGNAL_STACK_AT,
+            end = const END_AT,
+            end_detail = const END_DETAIL_AT,
             exit_linked = const EXIT_LINKED,
+            top_entry = const TOP_ENTRY_AT,
+            top_exit = const TOP_EXIT_AT,
+            top_labels = const TOP_LABELS_AT,
+            top_running = const TOP_RUNNING_AT,
+            top_pending = const TOP_PENDING_AT,
+            stop = const RUN_STOP_SIGNAL.as_raw(),
+            not_entered = const NOT_ENTERED,
             registers = const REGISTERS_AT,
             v = const V_AT,
             x = const X_AT,
