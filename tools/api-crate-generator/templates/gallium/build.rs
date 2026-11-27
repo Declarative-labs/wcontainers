@@ -1,4 +1,4 @@
-//! Compiles the glue's C (flat.c) against the pinned Mesa's Gallium headers when `WCONTAINERS_MESA` names Mesa's Meson
+//! Compiles the glue's C (flat.c, serve.c; and the hostile C caller, caller.c, with the `hostile` feature) against the pinned Mesa's Gallium headers when `WCONTAINERS_MESA` names Mesa's Meson
 //! build folder; without it the crate builds without its C and the `mesa` cfg is not set.
 
 use std::env;
@@ -11,6 +11,10 @@ use meson_build::{CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_
 /// The glue's C and its header.
 const FLAT_SOURCE: &str = "flat.c";
 const FLAT_HEADER: &str = "flat.h";
+const SERVE_SOURCE: &str = "serve.c";
+/// The hostile C caller the direct crate's own test drives, built with the `hostile` feature only.
+const CALLER_SOURCE: &str = "caller.c";
+const HOSTILE_FEATURE: &str = "CARGO_FEATURE_HOSTILE";
 const GLUE_LIBRARY: &str = "wcontainers_gallium_direct_glue";
 /// The Gallium file whose defines and C standard the glue's C takes from Mesa's compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
@@ -25,11 +29,16 @@ fn main() {
     };
     println!("{RERUN_IF_CHANGED}{FLAT_SOURCE}");
     println!("{RERUN_IF_CHANGED}{FLAT_HEADER}");
+    println!("{RERUN_IF_CHANGED}{SERVE_SOURCE}");
+    println!("{RERUN_IF_CHANGED}{CALLER_SOURCE}");
     let roots = [source_folder(&build), build.clone()];
     let includes: Vec<PathBuf> = INCLUDES.iter().flat_map(|folder| roots.iter().map(move |root| root.join(folder))).collect();
     let mut glue = cc::Build::new();
     // Mesa's headers warn under the flags cc adds by default; Mesa builds them without those.
-    glue.file(FLAT_SOURCE).includes(&includes).warnings(false);
+    glue.file(FLAT_SOURCE).file(SERVE_SOURCE).includes(&includes).warnings(false);
+    if env::var_os(HOSTILE_FEATURE).is_some() {
+        glue.file(CALLER_SOURCE);
+    }
     for flag in mesa_flags(&build, FLAGS_FROM) {
         glue.flag(flag);
     }

@@ -14,8 +14,15 @@ build = "build.rs"
 [lib]
 path = "implementation.rs"
 
+[features]
+# The hostile C caller (caller.c), built and driven by tests/served.rs.
+hostile = []
+
 [dependencies]
 wcontainers-gallium = { path = "../.." }
+
+[dev-dependencies]
+wcontainers-gallium-recording = { path = "../recording" }
 
 [build-dependencies]
 cc = "1"

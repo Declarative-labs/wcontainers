@@ -590,6 +590,9 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     let mut context_methods = String::new();
     let mut failures = Vec::new();
     let mut methods = 0;
+    // Each method as written (on the screen's trait or the context's, name, parameters, return), for the recording
+    // implementation.
+    let mut written: Vec<(bool, String, Vec<String>, String)> = Vec::new();
     for entry in PLAN {
         // A count is the kind's Clone and Drop, kept by the glue.
         // A pointer Mesa's own function fills, or the same function as another, is the direct crate's, not a method.
@@ -606,6 +609,7 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
                     let name = method_name(entry, kind, at == 0);
                     // Clippy counts every parameter, the receiver among them, and each `a: A, b: B` of one param text.
                     let arguments = 1 + params.iter().map(|param| param.matches(": ").count()).sum::<usize>();
+                    written.push((on_screen(entry), name.clone(), params.clone(), ret.clone()));
                     let receiver = std::iter::once("&self".to_string()).chain(params).collect::<Vec<_>>().join(", ");
                     let arrow = if ret.is_empty() { String::new() } else { format!(" -> {ret}") };
                     let target = if on_screen(entry) { &mut screen_methods } else { &mut context_methods };
@@ -638,6 +642,12 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
             "    /// Mesa's `pipe_screen.{}`{of_stage}, filled once when the screen is made and read from then on (first at {}): `caps`\n    /// holds {} for the implementation to change.\n    fn {}(&self, {stage}caps: &mut {name});\n",
             filled.field, filled.reader, filled.defaults, filled.field
         );
+        let mut filled_params: Vec<String> = Vec::new();
+        if filled.by_stage {
+            filled_params.push("stage: values::MesaShaderStage".to_string());
+        }
+        filled_params.push(format!("caps: &mut {name}"));
+        written.push((true, filled.field.to_string(), filled_params, String::new()));
         methods += 1;
     }
     failures.extend(structures.unmapped.iter().cloned());
@@ -661,6 +671,7 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     let crate_folder = out.join("crates").join("gallium");
     std::fs::create_dir_all(&crate_folder).map_err(|error| error.to_string())?;
     let glue_report = crate::gallium_glue::generate(&header, &structures.written, &values, &crate_folder)?;
+    let recording_report = crate::gallium_recording::generate(&written, &crate_folder)?;
     std::fs::write(crate_folder.join("interface.rs"), &interface).map_err(|error| error.to_string())?;
     std::fs::write(crate_folder.join("values.rs"), crate::gallium_values::rust(&values, HEADER)).map_err(|error| error.to_string())?;
     std::fs::write(
@@ -670,7 +681,7 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     .map_err(|error| error.to_string())?;
     let value_count: usize = values.enumerations.iter().map(|enumeration| enumeration.values.len()).sum::<usize>() + values.loose.len();
     Ok(format!(
-        "GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields; values: {} enumerations, {value_count} values\n{glue_report}",
+        "GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields; values: {} enumerations, {value_count} values\n{glue_report}{recording_report}",
         structures.written.len(),
         kinds.len() + 1,
         FIELDS_LEFT_OUT.len(),

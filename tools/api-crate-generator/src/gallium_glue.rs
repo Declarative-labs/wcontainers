@@ -61,12 +61,12 @@ struct Field {
 }
 
 /// The flat name of a structure: `pipe_draw_info.index` to `wc_flat_pipe_draw_info__index`.
-fn c_flat(name: &str) -> String {
+pub(crate) fn c_flat(name: &str) -> String {
     format!("wc_flat_{}", name.replace('.', "__"))
 }
 
 /// Its Rust mirror: `FlatDrawInfoIndex`.
-fn rust_flat(name: &str) -> String {
+pub(crate) fn rust_flat(name: &str) -> String {
     format!("Flat{}", type_name(name))
 }
 
@@ -408,7 +408,7 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
     }
     write(
         direct.join("flat.h"),
-        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n#endif\n", writer.c_types),
+        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n/* Each structure Mesa passes, flattened (flat.c). */\n{}\n#endif\n", writer.c_types, writer.done.iter().filter(|name| !name.contains('.')).map(|name| format!("struct {name};\nvoid {}_from(const struct {name} *in, struct {} *out);\n", c_flat(name), c_flat(name))).collect::<String>()),
     )?;
     write(
         direct.join("flat.c"),
@@ -423,13 +423,19 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
         &format!("{HEADER_RUST}//! Mesa's structures as the glue's C copies them (flat.h): mirrors with C's layout (no bit-field, no union, each\n//! object its key), the keys and client memory each names, and the trait's owned structure made from each.\n\nuse wcontainers_gallium::Gallium;\n\nuse crate::FieldLayout;\nuse crate::held::{{Held, Keys, ObjectKind, each, flag, within}};\n\n{}/// Each flat form's index in flat.c's `wc_flat_size` and its size in Rust.\npub const SIZES: &[(u32, usize)] = &[\n{size_checks}];\n\n/// Every field of every flat form, in flat.c's `wc_flat_layout` order: its Mesa structure, its name, its offset and size\n/// in the Rust mirror, its width if Mesa declares it a bit-field, and whether its size in Mesa is its size here (a\n/// number, a flag, an object, client memory or a color; not a structure, flattened, nor a bit-field), or at least its\n/// size there (an enumeration, which Mesa may pack).\npub const FIELDS: &[FieldLayout] = &[\n{field_rows}];\n\n/// The fields of Mesa's structures the flat forms do not carry (`FIELDS_LEFT_OUT` of the generator, each with its reason\n/// in interface.rs): with FIELDS, every field of each structure.\npub const LEFT_OUT: &[(&str, &str)] = &[\n{left_rows}];\n\n/// Every declared value of the trait (values.rs) with its C name, in flat.c's `wc_value` order.\npub fn values() -> Vec<(&'static str, i64)> {{\n    vec![\n{}    ]\n}}\n", writer.rust, crate::gallium_values::rust_list(values)),
     )?;
     write(direct.join("implementation.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/implementation.rs")))?;
+    std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
     write(direct.join("held.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/held.rs")))?;
+    write(direct.join("registry.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/registry.rs")))?;
+    let (serve_rust, serve_c, served) = crate::gallium_serve::generate(header)?;
+    write(direct.join("serve.rs"), &serve_rust)?;
+    write(direct.join("serve.c"), &serve_c)?;
+    write(direct.join("caller.c"), &format!("{HEADER_C}{}", include_str!("../templates/gallium/caller.c")))?;
+    write(direct.join("tests").join("served.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/served.rs")))?;
     write(direct.join("build.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/build.rs")))?;
     write(direct.join("Cargo.toml"), include_str!("../templates/gallium/direct.toml"))?;
-    std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
     write(direct.join("tests").join("layouts.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/layouts.rs")))?;
     let counted: Vec<&str> = COUNTED.to_vec();
-    Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function), {field_count} fields; counted kinds {}\n", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
+    Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function), {field_count} fields; counted kinds {}\n{served}", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
 }
 
 /// The C type of a Mesa structure by the generator's name (`pipe_draw_info.index` is reached from `struct pipe_draw_info`).

@@ -40,3 +40,11 @@ fn values_agree() {
     println!("VALUES {checked:?}");
     assert!(checked.is_ok(), "a declared value differs between the trait and C: {checked:?}");
 }
+
+#[cfg(mesa)]
+#[test]
+fn table_agrees() {
+    let (c_size, rust_size) = wcontainers_gallium_direct::table_agrees();
+    println!("TABLE C {c_size} Rust {rust_size}");
+    assert_eq!(c_size, rust_size, "serve.c's table and serve.rs's differ");
+}

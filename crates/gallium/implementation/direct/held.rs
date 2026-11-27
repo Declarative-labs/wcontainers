@@ -64,6 +64,12 @@ pub struct Held<G: Gallium> {
     pub index_bytes: usize,
 }
 
+impl<G: Gallium> Default for Held<G> {
+    fn default() -> Self {
+        Held::new()
+    }
+}
+
 /// One object of a list by key: `Some(None)` for key zero (none), `None` for a key not held (the call is refused).
 fn find<K>(list: &[(usize, Arc<K>)], key: usize) -> Option<Option<&Arc<K>>> {
     if key == 0 {
@@ -73,6 +79,11 @@ fn find<K>(list: &[(usize, Arc<K>)], key: usize) -> Option<Option<&Arc<K>>> {
 }
 
 impl<G: Gallium> Held<G> {
+    /// Nothing held (a call whose plain data names no object and no client memory).
+    pub fn new() -> Held<G> {
+        Held { resources: Vec::new(), stream_output_targets: Vec::new(), sampler_views: Vec::new(), contexts: Vec::new(), memory: Vec::new(), index_bytes: 0 }
+    }
+
     /// A resource by key.
     pub fn resource(&self, key: usize) -> Option<Option<&Arc<G::Resource>>> {
         find(&self.resources, key)
