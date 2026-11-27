@@ -853,19 +853,366 @@ pub fn fuzz_from_the_environment<M: MesaCompiler>(compiler: M) {
     assert!(never.is_empty(), "methods that made nothing in seed {seed}: {never:?}");
 }
 
-/// Runs one hostile case alone, as WCONTAINERS_PROBE names it ("case,seed"; the first case's first seed where it names
-/// none), so that a case that ends the process is found by itself; prints the number of cases first ("x" prints only
-/// that).
+/// Runs one hostile case alone, as WCONTAINERS_PROBE names it ("case,seed"), so that a case that ends the process is
+/// found by itself; prints the number of cases first ("x" prints only that). Where it names none (the suite's own
+/// run), every case with seed 0, one after another: each must be a case, run to its end, and make a call.
 pub fn probe_from_the_environment<M: MesaCompiler>(compiler: M) {
-    let probe = std::env::var("WCONTAINERS_PROBE").unwrap_or_else(|_| "0,0".to_string());
     println!("CASES {CASES}");
+    let Ok(probe) = std::env::var("WCONTAINERS_PROBE") else {
+        for case in 0..CASES {
+            let calls = hostile_case(&compiler, case, 0).map(|calls| calls.0);
+            println!("PROBE {case},0 ended, calls {calls:?}");
+            assert!(calls.is_some_and(|calls| calls > 0), "case {case} ran to its end and made a call");
+        }
+        assert!(hostile_case(&compiler, CASES, 0).is_none(), "no case past the last");
+        return;
+    };
     let parts: Vec<u64> = probe.split(',').filter_map(|part| part.parse().ok()).collect();
     if let [case, seed] = parts[..] {
         let calls = hostile_case(&compiler, usize::try_from(case).unwrap_or(usize::MAX), seed).map(|calls| calls.0);
         println!("PROBE {probe} ended, calls {calls:?}");
+        assert!(calls.is_some(), "WCONTAINERS_PROBE names a case of the {CASES}");
     } else {
         assert_eq!(probe, "x", "WCONTAINERS_PROBE names a case and a seed, or x");
     }
+}
+
+/// A second fragment program of the oldest form (green), so that two fragment sources differ alone.
+const GREEN_FRAGMENT_SOURCE: &str = "#version 110
+void main() { gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }
+";
+
+/// A second compute program, of a wider workgroup.
+const WIDE_COMPUTE_SOURCE: &str = "#version 450
+layout(local_size_x = 8) in;
+layout(std430, binding = 0) buffer Results { uint values[]; };
+void main() {
+    values[gl_LocalInvocationID.x] = 2u * gl_LocalInvocationID.x;
+}
+";
+
+/// The point geometry program making one copy, not two.
+const ONE_POINT_GEOMETRY_SOURCE: &str = "#version 450
+layout(points) in;
+layout(points, max_vertices = 1) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    gl_Position = gl_in[0].gl_Position;
+    gl_PointSize = gl_in[0].gl_PointSize;
+    gl_Layer = 0;
+    shaded = passed[0];
+    EmitVertex();
+}
+";
+
+/// The control program with other levels.
+const OTHER_CONTROL_SOURCE: &str = "#version 450
+layout(vertices = 3) out;
+layout(location = 0) in vec4 passed[];
+layout(location = 0) out vec4 handed[];
+void main() {
+    handed[gl_InvocationID] = passed[gl_InvocationID];
+    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+    gl_TessLevelOuter[0] = 3.0;
+    gl_TessLevelOuter[1] = 3.0;
+    gl_TessLevelOuter[2] = 3.0;
+    gl_TessLevelInner[0] = 3.0;
+}
+";
+
+/// The evaluation program with another point size.
+const OTHER_EVALUATION_SOURCE: &str = "#version 450
+layout(triangles, equal_spacing, ccw) in;
+layout(location = 0) in vec4 handed[];
+layout(location = 0) out vec4 shaded;
+void main() {
+    gl_Position = gl_TessCoord.x * gl_in[0].gl_Position + gl_TessCoord.y * gl_in[1].gl_Position + gl_TessCoord.z * gl_in[2].gl_Position;
+    gl_PointSize = 2.0;
+    shaded = handed[1];
+}
+";
+
+/// A fragment program reading its target's texel (framebuffer fetch), which a draw's variant reads from a texture.
+const FETCHING_FRAGMENT_SOURCE: &str = "#version 450
+#extension GL_EXT_shader_framebuffer_fetch_non_coherent : require
+layout(location = 0, noncoherent) inout vec4 colour;
+void main() {
+    colour = colour * 0.5;
+}
+";
+
+/// A fragment program interpolating at a sample, whose positions a draw's variant needs.
+const SAMPLE_FRAGMENT_SOURCE: &str = "#version 450
+layout(location = 0) in vec2 passed;
+layout(location = 0) out vec4 colour;
+void main() {
+    colour = vec4(interpolateAtSample(passed, 1), 0.0, 1.0);
+}
+";
+
+/// The settings of a plain draw: no transform, unit 0, one sample, set 0, wide ranges.
+fn plain_settings() -> VariantSettings {
+    let none = PositionTransform { flip_y: false, half_z: false, reverse_z: false, fixed_point_size: false };
+    VariantSettings {
+        transform: none.clone(),
+        key_transform: none,
+        fetch_unit: 0,
+        fetch_multisampled: false,
+        single_sampled: false,
+        samples: 4,
+        set: 0,
+        ranges: [0, 1, 2, 3].map(|_| SlotRange { first: 0, slots: 64 }),
+    }
+}
+
+/// What a variant is, as the trait shows it: its result, its key, its bindings, and its flat form.
+type VariantView = (u32, Vec<u8>, Vec<wcontainers_mesa_compiler::Binding>, Option<wcontainers_mesa_compiler::Flat>);
+
+fn variant_view<M: MesaCompiler>(compiler: &M, form: VariantForm<M::Variant>, points_in: u32) -> VariantView {
+    let flat = form.shader.and_then(|variant| compiler.variant_flatten(variant, points_in));
+    (form.result, form.key, form.bindings, flat)
+}
+
+/// Compiles the sources (each must compile).
+fn compiled<M: MesaCompiler>(compiler: &M, sources: Sources<'_>) -> wcontainers_mesa_compiler::GlslProgram<M::ReceivedVertex, M::ReceivedFragment, M::ReceivedCompute, M::ReceivedGeometry, M::ReceivedTessControl, M::ReceivedTessEvaluation> {
+    let owned: Vec<Option<CString>> = sources.iter().map(|source| source.map(|text| CString::new(text).expect("no zero byte"))).collect();
+    let texts: [Option<&CStr>; STAGES] = std::array::from_fn(|at| owned[at].as_deref());
+    compiler.glsl_to_nir(texts).unwrap_or_else(|log| panic!("the program compiles: {}", String::from_utf8_lossy(&log)))
+}
+
+/// What each argument changes, as the arguments-told-apart test found it: for each (method, argument), whether the
+/// two values gave two results the test tells apart.
+struct Told(Vec<(&'static str, &'static str, bool, String)>);
+
+impl Told {
+    /// Records one argument: told apart where the two results differ.
+    fn apart<T: PartialEq + std::fmt::Debug>(&mut self, method: &'static str, argument: &'static str, first: &T, second: &T) {
+        let apart = first != second;
+        let detail = if apart { String::new() } else { format!("both {:?}", first).chars().take(200).collect() };
+        self.0.push((method, argument, apart, detail));
+    }
+}
+
+/// The prepared form of the stage's program in the sources, or None where it has none.
+fn prepared_key<M: MesaCompiler>(compiler: &M, sources: Sources<'_>, stage: u32) -> Option<Vec<u8>> {
+    let owned: Vec<Option<CString>> = sources.iter().map(|source| source.map(|text| CString::new(text).expect("no zero byte"))).collect();
+    let texts: [Option<&CStr>; STAGES] = std::array::from_fn(|at| owned[at].as_deref());
+    let program = compiler.glsl_to_nir(texts).ok()?;
+    match stage {
+        VERTEX => program.vertex.map(|received| compiler.received_vertex_prepare(received).key),
+        FRAGMENT => program.fragment.map(|received| compiler.received_fragment_prepare(received).key),
+        COMPUTE => program.compute.map(|received| compiler.received_compute_prepare(received).key),
+        GEOMETRY => program.geometry.map(|received| compiler.received_geometry_prepare(received).key),
+        TESS_CONTROL => program.tess_control.map(|received| compiler.received_tess_control_prepare(received).key),
+        _ => program.tess_evaluation.map(|received| compiler.received_tess_evaluation_prepare(received).key),
+    }
+}
+
+/// A draw's variant of a prepared program with each settings field, swizzle and sampler changed alone, for the method
+/// `method` (`variant` calls it): every field the bridge reads for the program's stage told apart.
+#[expect(clippy::too_many_arguments, reason = "the method, its call, the program and which fields its stage reads")]
+fn settings_told<M: MesaCompiler, P>(
+    compiler: &M,
+    told: &mut Told,
+    method: &'static str,
+    prepared: &P,
+    variant: fn(&M, &P, VariantSettings, &[TextureSwizzle], &[NearestSampler]) -> VariantForm<M::Variant>,
+    positioned: bool,
+    resources: bool,
+    points_in: u32,
+) {
+    let view = |settings: VariantSettings| variant_view(compiler, variant(compiler, prepared, settings, &[], &[]), points_in);
+    if positioned {
+        // A transform field: the position the program writes changes, so its flat form (the key is compared apart: it
+        // takes the key's own transform too).
+        type Field = fn(&mut PositionTransform);
+        let fields: [(&'static str, &'static str, Field); 4] = [
+            ("settings.transform.flip_y", "settings.key_transform.flip_y", |t| t.flip_y = true),
+            ("settings.transform.half_z", "settings.key_transform.half_z", |t| t.half_z = true),
+            ("settings.transform.reverse_z", "settings.key_transform.reverse_z", |t| t.reverse_z = true),
+            ("settings.transform.fixed_point_size", "settings.key_transform.fixed_point_size", |t| t.fixed_point_size = true),
+        ];
+        for (transform_name, key_name, set) in fields {
+            let mut changed = plain_settings();
+            set(&mut changed.transform);
+            set(&mut changed.key_transform);
+            told.apart(method, transform_name, &view(plain_settings()).3, &view(changed).3);
+            // The key's transform alone: the key changes, the program does not.
+            let mut keyed = plain_settings();
+            set(&mut keyed.key_transform);
+            told.apart(method, key_name, &view(plain_settings()).1, &view(keyed).1);
+        }
+    }
+    if resources {
+        let mut other_set = plain_settings();
+        other_set.set = 5;
+        told.apart(method, "settings.set", &view(plain_settings()), &view(other_set));
+        let mut moved = plain_settings();
+        moved.ranges = [0, 1, 2, 3].map(|_| SlotRange { first: 8, slots: 64 });
+        told.apart(method, "settings.ranges[].first", &view(plain_settings()), &view(moved));
+        let mut narrow = plain_settings();
+        narrow.ranges = [0, 1, 2, 3].map(|_| SlotRange { first: 0, slots: 0 });
+        told.apart(method, "settings.ranges[].slots", &view(plain_settings()).0, &view(narrow).0);
+    }
+}
+
+/// For every argument of every method, two values that give two results the test tells apart (the check of f3af6417f
+/// found three wrong arguments every test passed). Arguments that are a shader of the trait's own (a handle the glue
+/// cannot replace) are told apart by two shaders. Every (method, argument) is printed; the test fails on any not told
+/// apart.
+pub fn every_argument_tells<M: MesaCompiler>(compiler: M) {
+    let compiler = &compiler;
+    let mut told = Told(Vec::new());
+    let [(_, vertex_words), (_, fragment_words), (_, compute_words)] = modules();
+    let key_of = |words: &[u32], stage: u32, alpha: bool| compiler.spirv_read(words, stage, MAIN, alpha).and_then(|read| compiler.spirv_shader_key(&read));
+    // spirv_read.
+    told.apart("spirv_read", "words", &key_of(&vertex_words, VERTEX, false), &key_of(&vertex_words[..0], VERTEX, false));
+    told.apart("spirv_read", "stage", &key_of(&fragment_words, FRAGMENT, false).is_some(), &key_of(&fragment_words, VERTEX, false).is_some());
+    let entry = |name: &CStr| compiler.spirv_read(&vertex_words, VERTEX, name, false).is_some();
+    told.apart("spirv_read", "entry_point", &entry(MAIN), &entry(c"absent"));
+    told.apart("spirv_read", "alpha_to_one", &key_of(&fragment_words, FRAGMENT, false), &key_of(&fragment_words, FRAGMENT, true));
+    // spirv_shader_key: its shader, two shaders.
+    told.apart("spirv_shader_key", "shader", &key_of(&vertex_words, VERTEX, false), &key_of(&compute_words, COMPUTE, false));
+    // spirv_to_common_form and spirv_common_flatten.
+    let wide = [0, 1, 2, 3].map(|_| SlotRange { first: 0, slots: 64 });
+    let common = |words: &[u32], stage: u32, set: u32, ranges: &[SlotRange; 4]| {
+        let read = compiler.spirv_read(words, stage, MAIN, false).expect("the SPIR-V reads");
+        let form = compiler.spirv_to_common_form(read, set, ranges);
+        let flat = form.shader.and_then(|common| compiler.spirv_common_flatten(common));
+        (form.result, form.bindings, flat)
+    };
+    told.apart("spirv_to_common_form", "taken", &common(&vertex_words, VERTEX, 0, &wide), &common(&compute_words, COMPUTE, 0, &wide));
+    told.apart("spirv_to_common_form", "set", &common(&vertex_words, VERTEX, 0, &wide), &common(&vertex_words, VERTEX, 5, &wide));
+    let moved = [0, 1, 2, 3].map(|_| SlotRange { first: 8, slots: 64 });
+    told.apart("spirv_to_common_form", "ranges[].first", &common(&vertex_words, VERTEX, 0, &wide).1, &common(&vertex_words, VERTEX, 0, &moved).1);
+    let none = [0, 1, 2, 3].map(|_| SlotRange { first: 0, slots: 0 });
+    told.apart("spirv_to_common_form", "ranges[].slots", &common(&vertex_words, VERTEX, 0, &wide).0, &common(&vertex_words, VERTEX, 0, &none).0);
+    told.apart("spirv_common_flatten", "taken", &common(&vertex_words, VERTEX, 0, &wide).2, &common(&fragment_words, FRAGMENT, 0, &wide).2);
+    // glsl_to_nir: each stage's source, two sources of that stage alone different; the received program's key told
+    // apart (and so received_*_prepare's `taken`, two programs of its stage).
+    let pairs: [(&'static str, &'static str, u32, Sources<'static>, Sources<'static>); 6] = [
+        ("sources[vertex]", "received_vertex_prepare", VERTEX, [Some(OLD_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None, None, None, None], [Some(STORING_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None, None, None, None]),
+        ("sources[fragment]", "received_fragment_prepare", FRAGMENT, [Some(OLD_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None, None, None, None], [Some(OLD_VERTEX_SOURCE), Some(GREEN_FRAGMENT_SOURCE), None, None, None, None]),
+        ("sources[compute]", "received_compute_prepare", COMPUTE, [None, None, Some(COMPUTE_SOURCE), None, None, None], [None, None, Some(WIDE_COMPUTE_SOURCE), None, None, None]),
+        ("sources[geometry]", "received_geometry_prepare", GEOMETRY, [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, Some(POINT_GEOMETRY_SOURCE), None, None], [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, Some(ONE_POINT_GEOMETRY_SOURCE), None, None]),
+        ("sources[tess_control]", "received_tess_control_prepare", TESS_CONTROL, [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(CONTROL_SOURCE), Some(EVALUATION_SOURCE)], [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(OTHER_CONTROL_SOURCE), Some(EVALUATION_SOURCE)]),
+        ("sources[tess_evaluation]", "received_tess_evaluation_prepare", TESS_EVALUATION, [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(CONTROL_SOURCE), Some(EVALUATION_SOURCE)], [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(CONTROL_SOURCE), Some(OTHER_EVALUATION_SOURCE)]),
+    ];
+    for (argument, prepare, stage, first, second) in pairs {
+        let (one, two) = (prepared_key(compiler, first, stage), prepared_key(compiler, second, stage));
+        told.apart("glsl_to_nir", argument, &one, &two);
+        told.apart(prepare, "taken", &one, &two);
+    }
+    // A draw's variant on each stage: the shader (two programs), every settings field the bridge reads for the stage,
+    // the swizzles and the samplers (fragment), and the flat form's points_in (tessellation).
+    let program = compiled(compiler, [Some(VERTEX_SOURCE), Some(FRAGMENT_SOURCE), None, None, None, None]);
+    let vertex_prepared = compiler.received_vertex_prepare(program.vertex.expect("a vertex stage")).shader.expect("prepared");
+    let fragment_prepared = compiler.received_fragment_prepare(program.fragment.expect("a fragment stage")).shader.expect("prepared");
+    let old = compiled(compiler, [Some(OLD_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None, None, None, None]);
+    let old_vertex = compiler.received_vertex_prepare(old.vertex.expect("a vertex stage")).shader.expect("prepared");
+    let old_fragment = compiler.received_fragment_prepare(old.fragment.expect("a fragment stage")).shader.expect("prepared");
+    let plain = |form: VariantForm<M::Variant>| variant_view(compiler, form, 0);
+    told.apart("prepared_vertex_variant", "shader", &plain(compiler.prepared_vertex_variant(&vertex_prepared, plain_settings(), &[], &[])), &plain(compiler.prepared_vertex_variant(&old_vertex, plain_settings(), &[], &[])));
+    told.apart("prepared_fragment_variant", "shader", &plain(compiler.prepared_fragment_variant(&fragment_prepared, plain_settings(), &[], &[])), &plain(compiler.prepared_fragment_variant(&old_fragment, plain_settings(), &[], &[])));
+    settings_told(compiler, &mut told, "prepared_vertex_variant", &vertex_prepared, M::prepared_vertex_variant, true, true, 0);
+    settings_told(compiler, &mut told, "prepared_fragment_variant", &fragment_prepared, M::prepared_fragment_variant, false, true, 0);
+    // The fragment program's own settings: one sample (its sample mask written or not), the sample count (positions
+    // for interpolating at a sample), the fetched target's unit and form.
+    let fragment_view = |prepared: &M::PreparedFragment, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]| plain(compiler.prepared_fragment_variant(prepared, settings, swizzles, samplers));
+    let mut single = plain_settings();
+    single.single_sampled = true;
+    told.apart("prepared_fragment_variant", "settings.single_sampled", &fragment_view(&fragment_prepared, plain_settings(), &[], &[]), &fragment_view(&fragment_prepared, single, &[], &[]));
+    let sample_program = compiled(compiler, [Some(VERTEX_SOURCE), Some(SAMPLE_FRAGMENT_SOURCE), None, None, None, None]);
+    let sampling = compiler.received_fragment_prepare(sample_program.fragment.expect("a fragment stage")).shader.expect("prepared");
+    let mut eight = plain_settings();
+    eight.samples = 8;
+    told.apart("prepared_fragment_variant", "settings.samples", &fragment_view(&sampling, plain_settings(), &[], &[]), &fragment_view(&sampling, eight, &[], &[]));
+    let fetch_program = compiled(compiler, [Some(OLD_VERTEX_SOURCE), Some(FETCHING_FRAGMENT_SOURCE), None, None, None, None]);
+    let fetching = compiler.received_fragment_prepare(fetch_program.fragment.expect("a fragment stage")).shader.expect("prepared");
+    let mut other_unit = plain_settings();
+    other_unit.fetch_unit = 3;
+    told.apart("prepared_fragment_variant", "settings.fetch_unit", &fragment_view(&fetching, plain_settings(), &[], &[]), &fragment_view(&fetching, other_unit, &[], &[]));
+    let mut multisampled = plain_settings();
+    multisampled.fetch_multisampled = true;
+    told.apart("prepared_fragment_variant", "settings.fetch_multisampled", &fragment_view(&fetching, plain_settings(), &[], &[]), &fragment_view(&fetching, multisampled, &[], &[]));
+    // The swizzles: the picture at unit 0, swizzled or not, at its unit or another.
+    let turned = [constants::SWIZZLE_Z, constants::SWIZZLE_Y, constants::SWIZZLE_X, constants::SWIZZLE_W].map(|value| u8::try_from(value).unwrap_or(0));
+    let same = [constants::SWIZZLE_X, constants::SWIZZLE_Y, constants::SWIZZLE_Z, constants::SWIZZLE_W].map(|value| u8::try_from(value).unwrap_or(0));
+    let swizzled = |unit: u32, swizzle: [u8; 4]| fragment_view(&fragment_prepared, plain_settings(), &[TextureSwizzle { unit, swizzle }], &[]);
+    told.apart("prepared_fragment_variant", "swizzles[].unit", &swizzled(0, turned), &swizzled(7, turned));
+    told.apart("prepared_fragment_variant", "swizzles[].swizzle", &swizzled(0, same), &swizzled(0, turned));
+    // The samplers: the integer texture `counts` at unit 1, sampled nearest.
+    let clamp = u8::try_from(constants::WRAP_CLAMP_TO_EDGE).unwrap_or(0);
+    let repeat = u8::try_from(constants::WRAP_REPEAT).unwrap_or(0);
+    let border = u8::try_from(constants::WRAP_CLAMP_TO_BORDER).unwrap_or(0);
+    let sampler = NearestSampler { unit: 1, wrap: [clamp; 3], mipmapped: true, min_lod: 0.0, max_lod: 4.0, border: [0; 4] };
+    let sampled = |sampler: NearestSampler| fragment_view(&fragment_prepared, plain_settings(), &[], &[sampler]);
+    told.apart("prepared_fragment_variant", "samplers[].unit", &sampled(sampler.clone()), &sampled(NearestSampler { unit: 6, ..sampler.clone() }));
+    told.apart("prepared_fragment_variant", "samplers[].wrap", &sampled(sampler.clone()), &sampled(NearestSampler { wrap: [repeat; 3], ..sampler.clone() }));
+    told.apart("prepared_fragment_variant", "samplers[].mipmapped", &sampled(sampler.clone()), &sampled(NearestSampler { mipmapped: false, ..sampler.clone() }));
+    told.apart("prepared_fragment_variant", "samplers[].min_lod", &sampled(sampler.clone()), &sampled(NearestSampler { min_lod: 2.0, ..sampler.clone() }));
+    told.apart("prepared_fragment_variant", "samplers[].max_lod", &sampled(sampler.clone()), &sampled(NearestSampler { max_lod: 1.0, ..sampler.clone() }));
+    let bordered = NearestSampler { wrap: [border; 3], ..sampler.clone() };
+    told.apart("prepared_fragment_variant", "samplers[].border", &sampled(bordered.clone()), &sampled(NearestSampler { border: [1, 2, 3, 4], ..bordered }));
+    // The other stages' variants.
+    let compute_program = compiled(compiler, [None, None, Some(COMPUTE_SOURCE), None, None, None]);
+    let compute_prepared = compiler.received_compute_prepare(compute_program.compute.expect("a compute stage")).shader.expect("prepared");
+    let wide_program = compiled(compiler, [None, None, Some(WIDE_COMPUTE_SOURCE), None, None, None]);
+    let wide_prepared = compiler.received_compute_prepare(wide_program.compute.expect("a compute stage")).shader.expect("prepared");
+    told.apart("prepared_compute_variant", "shader", &plain(compiler.prepared_compute_variant(&compute_prepared, plain_settings(), &[], &[])), &plain(compiler.prepared_compute_variant(&wide_prepared, plain_settings(), &[], &[])));
+    settings_told(compiler, &mut told, "prepared_compute_variant", &compute_prepared, M::prepared_compute_variant, false, true, 0);
+    let geometry_program = compiled(compiler, [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, Some(POINT_GEOMETRY_SOURCE), None, None]);
+    let geometry_prepared = compiler.received_geometry_prepare(geometry_program.geometry.expect("a geometry stage")).shader.expect("prepared");
+    let one_program = compiled(compiler, [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, Some(ONE_POINT_GEOMETRY_SOURCE), None, None]);
+    let one_prepared = compiler.received_geometry_prepare(one_program.geometry.expect("a geometry stage")).shader.expect("prepared");
+    told.apart("prepared_geometry_variant", "shader", &plain(compiler.prepared_geometry_variant(&geometry_prepared, plain_settings(), &[], &[])), &plain(compiler.prepared_geometry_variant(&one_prepared, plain_settings(), &[], &[])));
+    settings_told(compiler, &mut told, "prepared_geometry_variant", &geometry_prepared, M::prepared_geometry_variant, true, false, 0);
+    let tess = |control: &'static str, evaluation: &'static str| compiled(compiler, [Some(POINT_VERTEX_SOURCE), Some(SHADED_FRAGMENT_SOURCE), None, None, Some(control), Some(evaluation)]);
+    let (first, second) = (tess(CONTROL_SOURCE, EVALUATION_SOURCE), tess(OTHER_CONTROL_SOURCE, OTHER_EVALUATION_SOURCE));
+    let control = compiler.received_tess_control_prepare(first.tess_control.expect("a control stage")).shader.expect("prepared");
+    let other_control = compiler.received_tess_control_prepare(second.tess_control.expect("a control stage")).shader.expect("prepared");
+    let evaluation = compiler.received_tess_evaluation_prepare(first.tess_evaluation.expect("an evaluation stage")).shader.expect("prepared");
+    let other_evaluation = compiler.received_tess_evaluation_prepare(second.tess_evaluation.expect("an evaluation stage")).shader.expect("prepared");
+    let tessellated = |form: VariantForm<M::Variant>| variant_view(compiler, form, CONTROL_POINTS);
+    told.apart("prepared_tess_control_variant", "shader", &tessellated(compiler.prepared_tess_control_variant(&control, plain_settings(), &[], &[])), &tessellated(compiler.prepared_tess_control_variant(&other_control, plain_settings(), &[], &[])));
+    told.apart("prepared_tess_evaluation_variant", "shader", &tessellated(compiler.prepared_tess_evaluation_variant(&evaluation, plain_settings(), &[], &[])), &tessellated(compiler.prepared_tess_evaluation_variant(&other_evaluation, plain_settings(), &[], &[])));
+    settings_told(compiler, &mut told, "prepared_tess_evaluation_variant", &evaluation, M::prepared_tess_evaluation_variant, true, false, CONTROL_POINTS);
+    // variant_flatten: its variant (two programs) and the control points a tessellation program takes.
+    let flattened = |points_in: u32| compiler.prepared_tess_control_variant(&control, plain_settings(), &[], &[]).shader.and_then(|variant| compiler.variant_flatten(variant, points_in));
+    told.apart("variant_flatten", "points_in", &flattened(CONTROL_POINTS), &flattened(CONTROL_POINTS + 1));
+    told.apart("variant_flatten", "taken", &flattened(CONTROL_POINTS), &compiler.prepared_tess_control_variant(&other_control, plain_settings(), &[], &[]).shader.and_then(|variant| compiler.variant_flatten(variant, CONTROL_POINTS)));
+    // Points as squares: the slot and the largest size, the block a geometry program's size is read from; the made
+    // programs told apart by their keys.
+    let square_keys = |squares: Squares<M::Made>| (squares.kind, squares.before.and_then(|made| compiler.made_key(&made)), squares.geometry.and_then(|made| compiler.made_key(&made)));
+    told.apart("prepared_vertex_points_as_squares", "vs", &square_keys(compiler.prepared_vertex_points_as_squares(&vertex_prepared, 1, 64.0)), &square_keys(compiler.prepared_vertex_points_as_squares(&old_vertex, 1, 64.0)));
+    told.apart("prepared_vertex_points_as_squares", "at", &square_keys(compiler.prepared_vertex_points_as_squares(&vertex_prepared, 1, 64.0)), &square_keys(compiler.prepared_vertex_points_as_squares(&vertex_prepared, 2, 64.0)));
+    told.apart("prepared_vertex_points_as_squares", "largest", &square_keys(compiler.prepared_vertex_points_as_squares(&vertex_prepared, 1, 64.0)), &square_keys(compiler.prepared_vertex_points_as_squares(&vertex_prepared, 1, 8.0)));
+    told.apart("prepared_tess_evaluation_points_as_squares", "vs", &square_keys(compiler.prepared_tess_evaluation_points_as_squares(&evaluation, 1, 64.0)), &square_keys(compiler.prepared_tess_evaluation_points_as_squares(&other_evaluation, 1, 64.0)));
+    told.apart("prepared_tess_evaluation_points_as_squares", "at", &square_keys(compiler.prepared_tess_evaluation_points_as_squares(&evaluation, 1, 64.0)), &square_keys(compiler.prepared_tess_evaluation_points_as_squares(&evaluation, 2, 64.0)));
+    told.apart("prepared_tess_evaluation_points_as_squares", "largest", &square_keys(compiler.prepared_tess_evaluation_points_as_squares(&evaluation, 1, 64.0)), &square_keys(compiler.prepared_tess_evaluation_points_as_squares(&evaluation, 1, 8.0)));
+    told.apart("prepared_geometry_points_as_squares", "gs", &square_keys(compiler.prepared_geometry_points_as_squares(&geometry_prepared, 1, 64.0, 0)), &square_keys(compiler.prepared_geometry_points_as_squares(&one_prepared, 1, 64.0, 0)));
+    told.apart("prepared_geometry_points_as_squares", "at", &square_keys(compiler.prepared_geometry_points_as_squares(&geometry_prepared, 1, 64.0, 0)), &square_keys(compiler.prepared_geometry_points_as_squares(&geometry_prepared, 2, 64.0, 0)));
+    told.apart("prepared_geometry_points_as_squares", "largest", &square_keys(compiler.prepared_geometry_points_as_squares(&geometry_prepared, 1, 64.0, 0)), &square_keys(compiler.prepared_geometry_points_as_squares(&geometry_prepared, 1, 8.0, 0)));
+    told.apart("prepared_geometry_points_as_squares", "block", &square_keys(compiler.prepared_geometry_points_as_squares(&geometry_prepared, 1, 64.0, 0)), &square_keys(compiler.prepared_geometry_points_as_squares(&geometry_prepared, 1, 64.0, 1)));
+    // The made programs: the vertex program's squares and the geometry program's (which names a layer).
+    let vertex_squares = compiler.prepared_vertex_points_as_squares(&vertex_prepared, 1, 64.0).geometry.expect("the vertex program's squares");
+    let geometry_squares = compiler.prepared_geometry_points_as_squares(&geometry_prepared, 1, 64.0, 0).geometry.expect("the geometry program's squares");
+    told.apart("made_key", "shader", &compiler.made_key(&vertex_squares), &compiler.made_key(&geometry_squares));
+    told.apart("made_named_layer_location", "shader", &compiler.made_named_layer_location(&vertex_squares), &compiler.made_named_layer_location(&geometry_squares));
+    told.apart("made_variant", "shader", &plain(compiler.made_variant(&vertex_squares, plain_settings(), &[], &[])), &plain(compiler.made_variant(&geometry_squares, plain_settings(), &[], &[])));
+    settings_told(compiler, &mut told, "made_variant", &vertex_squares, M::made_variant, true, true, 0);
+    let mut missed = 0;
+    for (method, argument, apart, detail) in &told.0 {
+        if *apart {
+            println!("ARGUMENT {method} {argument}: told apart");
+        } else {
+            missed += 1;
+            println!("ARGUMENT {method} {argument}: NOT TOLD APART ({detail})");
+        }
+    }
+    println!("ARGUMENTS {} told apart of {}", told.0.len() - missed, told.0.len());
+    assert_eq!(missed, 0, "arguments whose two values gave one result");
 }
 
 #[macro_export]
@@ -884,6 +1231,11 @@ macro_rules! tests {
         #[test]
         fn every_method_is_called() {
             $crate::every_method_is_called($value);
+        }
+
+        #[test]
+        fn every_argument_tells() {
+            $crate::every_argument_tells($value);
         }
 
         #[test]

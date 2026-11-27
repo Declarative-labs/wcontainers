@@ -76,6 +76,10 @@ report_capabilities(struct gl_context *ctx)
    ctx->Extensions.ARB_derivative_control = true;
    ctx->Extensions.ARB_shader_texture_image_samples = true;
    ctx->Extensions.ARB_explicit_uniform_location = true;
+   /* The driver reports fbfetch (graphics-layout crates/opengl/src/screen.rs:378), for which st/mesa offers the
+    * non-coherent framebuffer fetch (st_extensions.c:1654); a draw's variant reads the target from a texture
+    * (wc_nir_fetch_from_texture). */
+   ctx->Extensions.EXT_shader_framebuffer_fetch_non_coherent = true;
    ctx->Const.NativeIntegers = true;
    ctx->Const.UniformBooleanTrue = ~0u;
    ctx->Const.PackedDriverUniformStorage = true;
