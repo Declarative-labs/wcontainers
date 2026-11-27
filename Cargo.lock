@@ -4670,6 +4670,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-in-process"
+version = "0.1.0"
+dependencies = [
+ "rangemap",
+ "rustix",
+ "thiserror",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-executor",
+ "wcontainers-linux-process",
+ "wcontainers-linux-process-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
 name = "wcontainers-executor-simulation"
 version = "0.1.0"
 dependencies = [
