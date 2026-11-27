@@ -785,6 +785,75 @@ unchanged); linter 2,794 -> 1,519 (summary_without_full_stop 1,270 -> 0, functio
 summary_unanswered 35 -> 204 is the model rule set, which has no key on the machine). roxmltree 0.20.0: 1 line
 naming `unsafe`, `#![forbid(unsafe_code)]` (MEASURED, same job).
 
+## AC10 after the check of 1571b4566: every check of the glue removed in turn, the fuzzing, the per-draw cost (2026-11-27)
+
+The check found two weak tests: the colour clear given one value passed `&[0.0]` (a promoted static, which
+AddressSanitizer does not guard), and the fence tests could not tell the glue's refusal from Mesa's. Repaired as a
+class: every hostile test now counts the refusals the implementation made itself (`OpenGlEsContext::refusals`,
+`Library::refusals` for the calling thread, handed to the suite as `Counts`), and every buffer it gives is a heap
+allocation of exactly the length named or a part of a longer one whose rest the call must not reach (a clear given
+one channel followed by 0.75s must clear with 0.25 and zeros; a get into an empty part must leave the values after it;
+a list of names followed by a value the library refuses). The fence test keeps a live fence numbered as the other
+context's. Eleven tests (draws_and_reads_back, refuses_pixels_past_what_was_given, refuses_vertex_reads_without_a_buffer,
+counts_are_the_slices, counts_reach_only_the_slices, rooms_keep_calls_inside, fences_are_the_contexts_own,
+egl_handles_are_the_librarys_own, robust_access_is_forced, extensions_answer_only_when_named, every_method_is_called)
+and two run only when asked (the fuzzing, the measurement).
+
+Defects found by it and fixed in the generator: the end of a destroyed EGL handle was written twice (once for the
+display parameter), so removing one left the other; a library answering a huge extension count kept the glue asking
+for ever (now at most 4096, `MOST_EXTENSIONS`; the fuzzing's lying library answers up to 2^31).
+
+`tools/api-crate-generator/plant-khronos.py` removes each check in turn (a per-site plant for every check a generated
+method makes, a plant for each part of a shared helper) and runs the suite. MEASURED at 4ae8cb6e2 (x86-64 job gac-h,
+log graphics-api-crates/ac10h/claim-4ae8cb6e2.log): **156 CAUGHT, 15 MISSED, 0 BROKEN, 202 LISTED.** The 15 not
+caught, each with its reason:
+
+| Plant | Why no test fails |
+|---|---|
+| extension-named, 10 methods (draw_buffers_indexed's 4, viewport_array's 2, clip_control, polygon_offset_clamp, the two timer queries' 3 less one) | Mesa names their extensions (MEASURED: GL_EXT_clip_control, GL_EXT_disjoint_timer_query, GL_OES_draw_buffers_indexed, GL_OES_viewport_array, GL_EXT_polygon_offset_clamp, GL_EXT_occlusion_query_boolean); the two ANGLE ones Mesa does not name are CAUGHT |
+| extensions-bounded | Mesa answers a few hundred; shown by the fuzzing's lying library instead (a run without the bound does not end) |
+| egl-config-of-this-display, egl-held-of-this-display | EGL gives one default display per library: no test holds two displays of one library |
+| egl-handles-written, egl-handles-null | two checks of one fact (a slot past the count written is also null); the plant removing both is CAUGHT |
+
+LISTED (202): the entry point missing (Mesa gives every one), an i64 not fitting isize (none on 64-bit), a count or a
+text length past 2^31 (no test allocates it), the gate (a race), a library without
+EGL_KHR_client_get_all_proc_addresses, and a destroyed handle that is not current (the check under the gate refuses
+it; without it eglMakeCurrent refuses the destroyed handle and the glue refuses alike).
+
+**Fuzzing (AC2's bar), MEASURED at 4ae8cb6e2, same log**: `tools/api-crate-generator/fuzz-khronos.sh`, the suite's
+`fuzz` as a hostile caller (every OpenGL ES method on two contexts with live, deleted and the other context's
+fences; every EGL method with this library's handles, another library's and destroyed ones; attribute lists with a
+key and no value, no EGL_NONE, empty), under AddressSanitizer:
+
+| Set | Seeds x calls | Reports | Refused by the glue itself (OpenGL ES, EGL) | Seconds each |
+|---|---|---|---|---|
+| hostile caller over Mesa 26.2.4 (llvmpipe) | 7919, 104729, 1299709 x 10M | 0, status 0 each | about 1.18M and 6.4k per run; the rest reached Mesa | 39 to 40 |
+| hostile caller over the lying library | the same | 0, status 0 each | about 1.29M and 32k | 14 |
+
+The lying library (`fakes/opengl-es/fake_egl.c`, generated from the classification and the template
+templates/khronos/fake-egl.c) reads every byte and writes every value each command may (the registry's counts, the
+guards' 64 and 16, the pixel transfer from its own pixel store state, the attribute lists to EGL_NONE, client vertex
+memory for an enabled attribute with no buffer), asking AddressSanitizer for each region
+(`__asan_region_is_poisoned`, found in every run); it lies where the registry leaves the answer to the library (random
+values and handles, null texts and mappings, more configurations found than written, an extension count up to
+2^31). Per run about 1.7M regions read and 24M written. Controls, same log: the clear's room removed, the liar run
+ends at once (AddressSanitizer SEGV at 0x4, the empty slice's address); uniform4fv given one count more, "FAKE: a read
+past what was given by glUniform4fv ..., 4112 bytes", status 134. Over Mesa the same plant is not seen (Mesa is not
+instrumented): the lying library is what makes the fuzzing see reads past.
+
+**The per-draw check's cost**, MEASURED same log (`draw_costs`, 200,000 draws of a triangle, one enabled attribute,
+16 attributes, LP_NUM_THREADS=1, pinned to one core, rounds 1 to 4): 938 to 947 ns per draw with the check, 814 to 823
+ns with the three checks removed: about 124 ns (15%) per draw on llvmpipe, whose draws are queued. INFERRED: the
+check's 17 raw calls (MAX_VERTEX_ATTRIBS, then one or two glGetVertexAttribiv per attribute) cost about 7 ns each
+inside Mesa (the 133 ns of a glGetVertexAttribiv through the trait is mostly the glue's current-context test). A cache
+per vertex array would remove it; not done (no measurement says it matters).
+
+Also at 4ae8cb6e2: generated twice IDENTICAL, SAME AS WRITTEN; check, wasm32 check, clippy `-D warnings` status 0; 13
+of 13 tests default and AddressSanitizer; unsafe lines unchanged (egl direct 95, opengl-es direct 792, every other 0;
+marks 357); linter 2,011 findings on the two crates (magic_literal 1,174 from the tests' literals,
+summary_unanswered 210 and name_unanswered 203 the model rule sets with no key, public_outside_interface 204: the
+two `refusals` and egl direct's `Binding`, the layout question).
+
 ## The destruction notifier, settled by Microsoft's page (2026-11-27)
 
 READ, https://learn.microsoft.com/windows/win32/api/d3dcommon/nn-d3dcommon-id3ddestructionotifier: "To acquire an
