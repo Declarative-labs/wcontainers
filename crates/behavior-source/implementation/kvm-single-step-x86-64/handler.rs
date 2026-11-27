@@ -156,20 +156,30 @@ fn enter_tracking_code(a: &mut CodeAssembler, offset: u64, area: u64, request: u
     a.iretq()
 }
 
-/// AMX TILES: where the slot's tile request names components, writes the slot's IA32_XFD and restores them from the
-/// image at `image`, or saves them there and releases the tiles, so that the guest never holds TILEDATA in use while
-/// a state runs that does not, nor XFD set while TILEDATA is in use; EAX, ECX and EDX are free.
+/// AMX TILES: where the slot's tile request names components, writes the slot's IA32_XFD and IA32_XFD_ERR and
+/// restores them from the image at `image`, or reads IA32_XFD_ERR, saves them there and releases the tiles, so that
+/// the guest never holds TILEDATA in use while a state runs that does not, nor XFD set while TILEDATA is in use; EAX,
+/// ECX and EDX are free.
 fn move_tiles(a: &mut CodeAssembler, image: u64, save: bool) -> Result<(), iced_x86::IcedError> {
     let mut done = a.create_label();
     let request = to_slot(offset_of!(Slot, tile_request));
     a.cmp(qword_ptr(request), 0)?;
     a.je(done)?;
-    a.xor(edx, edx)?;
     if save {
+        let read = to_slot(offset_of!(Slot, feature_disable_error_after));
+        a.mov(ecx, FEATURE_DISABLE_ERROR)?;
+        a.rdmsr()?;
+        a.mov(dword_ptr(read), eax)?;
+        a.mov(dword_ptr(read + 4), edx)?;
+        a.xor(edx, edx)?;
         a.mov(eax, dword_ptr(request))?;
         a.xsave64(ptr(to_kernel(image)))?;
         a.tilerelease()?;
     } else {
+        a.xor(edx, edx)?;
+        a.mov(ecx, FEATURE_DISABLE_ERROR)?;
+        a.mov(eax, dword_ptr(to_slot(offset_of!(Slot, feature_disable_error))))?;
+        a.wrmsr()?;
         a.mov(ecx, FEATURE_DISABLE)?;
         a.mov(eax, dword_ptr(to_slot(offset_of!(Slot, feature_disable))))?;
         a.wrmsr()?;
@@ -182,6 +192,8 @@ fn move_tiles(a: &mut CodeAssembler, image: u64, save: bool) -> Result<(), iced_
 
 /// IA32_XFD.
 const FEATURE_DISABLE: u32 = 0x1C4;
+/// IA32_XFD_ERR.
+const FEATURE_DISABLE_ERROR: u32 = 0x1C5;
 
 /// XRSTOR TRACKING: RFLAGS of the tracking code: the trap flag, IF and the reserved bit.
 const TRACKING_FLAGS: i32 = 1 << 8 | 1 << 9 | 1 << 1;

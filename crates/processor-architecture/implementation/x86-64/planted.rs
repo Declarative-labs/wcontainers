@@ -1429,6 +1429,10 @@ pub enum Bug {
     TransactionFallbackWrapsToSixteenBits,
     /// XBEGIN goes on at the next instruction, as a transaction that began would.
     TransactionBeginFallsThrough,
+    /// The #NM XFD raises for TILEDATA leaves IA32_XFD_ERR as it was.
+    TileFaultKeepsFeatureDisableError,
+    /// A tile form that passes its checks clears IA32_XFD_ERR.
+    TilesClearFeatureDisableError,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -2077,6 +2081,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::TransactionAbortKeepsUpperHalf, "XBEGIN", Family::Forms(&[Instruction::XbeginRelbrz]), Origin::AmxAndTransaction),
     row(Bug::TransactionFallbackWrapsToSixteenBits, "XBEGIN", Family::Forms(&[Instruction::XbeginRelbrz]), Origin::AmxAndTransaction),
     row(Bug::TransactionBeginFallsThrough, "XBEGIN", Family::Forms(&[Instruction::XbeginRelbrz]), Origin::AmxAndTransaction),
+    row(Bug::TileFaultKeepsFeatureDisableError, "the AMX forms that use TILEDATA", Family::Forms(&AMX_DATA), Origin::AmxAndTransaction),
+    row(Bug::TilesClearFeatureDisableError, "the AMX forms", Family::Forms(&AMX), Origin::AmxAndTransaction),
 ];
 
 const FISTTP: &[Instruction] =

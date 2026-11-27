@@ -98,19 +98,32 @@ fn list_named_tiles(form: &AmxForm, decoded: &Decoded) -> [usize; 3] {
     }
 }
 
-/// #NM where XFD disables TILEDATA for a form that uses it, and #UD where the tiles it names are not configured as
-/// it needs them, in the behavior's order.
-fn check_tiles(form: &AmxForm, behavior: AmxBehavior, processor: &Processor, tiles: &[usize; 3]) -> Result<(), Exception> {
+/// #NM where XFD disables TILEDATA for a form that uses it, which loads IA32_XFD_ERR, and #UD where the tiles it
+/// names are not configured as it needs them, in the behavior's order.
+fn check_tiles(form: &AmxForm, behavior: AmxBehavior, processor: &mut Processor, tiles: &[usize; 3]) -> Result<(), Exception> {
     let disabled = form.uses_tile_data()
         && processor.xfd & processor.xcr0 & TILE_DATA_COMPONENT != 0
         && !is_active(Bug::TilesIgnoreFeatureDisable);
-    let device = if disabled { Err(Exception::DeviceNotAvailable) } else { Ok(()) };
-    if behavior.disabled == DisabledDataCheck::BeforeConfiguration {
-        device?;
+    if behavior.disabled == DisabledDataCheck::BeforeConfiguration && disabled {
+        return Err(raise_disabled(processor));
     }
     check_shapes(form, processor, tiles)?;
-    device?;
-    check_start_row(form, processor, tiles[0])
+    if disabled {
+        return Err(raise_disabled(processor));
+    }
+    check_start_row(form, processor, tiles[0])?;
+    if is_active(Bug::TilesClearFeatureDisableError) {
+        processor.xfd_err = 0;
+    }
+    Ok(())
+}
+
+/// The #NM XFD raises for TILEDATA, which loads IA32_XFD_ERR with XFD's TILEDATA bit.
+fn raise_disabled(processor: &mut Processor) -> Exception {
+    if !is_active(Bug::TileFaultKeepsFeatureDisableError) {
+        processor.xfd_err = processor.xfd & TILE_DATA_COMPONENT;
+    }
+    Exception::DeviceNotAvailable
 }
 
 /// #UD where a tile load or store starts at or past its tile's rows.
@@ -143,13 +156,12 @@ fn check_shapes(form: &AmxForm, processor: &Processor, tiles: &[usize; 3]) -> Re
         AmxOperation::LoadTile | AmxOperation::StoreTile if !shapes[0].row_bytes.is_multiple_of(4) => return undefined,
         AmxOperation::DotBytes { .. } | AmxOperation::DotBfloat16 => {
             let [destination, first, second] = shapes;
-            let distinct = tiles[0] != tiles[1] && tiles[1] != tiles[2] && tiles[0] != tiles[2];
             let fits = destination.row_bytes == second.row_bytes
                 && destination.rows == first.rows
                 && first.row_bytes / 4 == second.rows;
             let dwords = shapes.iter().all(|shape| shape.row_bytes.is_multiple_of(4));
-            // A tile named twice does not decode as TDP at all.
-            if !distinct || !(fits || is_active(Bug::TileDotShapesUnchecked)) || !dwords {
+            // A tile named twice does not decode as TDP, so fetching it raises #UD already.
+            if !(fits || is_active(Bug::TileDotShapesUnchecked)) || !dwords {
                 return undefined;
             }
         }
@@ -338,4 +350,50 @@ fn compute_dot_bfloat16(processor: &mut Processor, [destination, first, second]:
         processor.tile_data.write_row(destination, row).fill(0);
     }
     finish_tile_write(processor);
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::borrow::Cow;
+    use alloc::vec;
+
+    use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator};
+
+    use crate::amx::{TILE_COMPONENTS, TILE_DATA_COMPONENT, TILES, TileShape, write_configuration};
+    use crate::{
+        DataAccess, Exception, Instruction, InstructionFetch, PagePermission, PreciseInstruction, Processor, X86_64, ZERO_PROCESSOR,
+    };
+
+    const CODE: u64 = 0x1000;
+    /// TILEZERO tmm0.
+    const TILE_ZERO: [u8; 5] = [0xC4, 0xE2, 0x7B, 0x49, 0xC0];
+
+    #[test]
+    fn every_behavior_of_tilezero_loads_the_error_where_xfd_disables_tiledata() {
+        let whole = TileShape { rows: 16, row_bytes: 64 };
+        let processor = Processor {
+            instruction_pointer: CODE,
+            xcr0: ZERO_PROCESSOR.xcr0 | TILE_COMPONENTS,
+            xfd: TILE_DATA_COMPONENT,
+            tile_configuration: write_configuration([whole; TILES], 0),
+            ..ZERO_PROCESSOR
+        };
+        let executable = PagePermission::Mapped { data_access: DataAccess::ReadOnly, instruction_fetch: InstructionFetch::Allowed };
+        for behavior in X86_64::list_known_behaviors(Instruction::TilezeroTmmu32) {
+            let state = ExecutionState {
+                processor: processor.clone(),
+                memory_mutations: vec![
+                    MemoryDelta::PermissionAssignment { addresses: CODE..CODE + 0x1000, permission: executable },
+                    MemoryDelta::ValueAssignment { start: CODE, bytes: Cow::Borrowed(&TILE_ZERO) },
+                ],
+            };
+            if matches!(behavior, PreciseInstruction::Undefined(_)) {
+                continue;
+            }
+            let Ok(after) = behavior.simulate_state(state);
+            assert_eq!(after.processor.exception, Some(Exception::DeviceNotAvailable), "{behavior:?}");
+            assert_eq!(after.processor.xfd_err, TILE_DATA_COMPONENT, "{behavior:?}");
+            assert_eq!(after.processor.instruction_pointer, CODE, "{behavior:?}");
+        }
+    }
 }
