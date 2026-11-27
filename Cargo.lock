@@ -4056,6 +4056,7 @@ dependencies = [
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
 ]
@@ -4381,7 +4382,6 @@ dependencies = [
  "fuse-abi",
  "libc",
  "linux-raw-sys",
- "memmap2",
  "nix",
  "procfs",
  "proptest",
@@ -4391,7 +4391,6 @@ dependencies = [
  "socket2",
  "stats_alloc",
  "tar",
- "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-behavior-source",
@@ -4420,6 +4419,10 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-unicorn",
+ "wcontainers-unicorn-direct",
+ "wcontainers-unicorn-hostile",
+ "wcontainers-unicorn-recording",
  "wcontainers-volatile-bytes",
  "zerocopy",
 ]
@@ -5517,6 +5520,55 @@ dependencies = [
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
  "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-unicorn"
+version = "0.1.0"
+dependencies = [
+ "unicorn-engine",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-unicorn-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-unicorn",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-unicorn-direct"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+ "unicorn-engine",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-unicorn",
+ "wcontainers-unicorn-conformance",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-pointer",
+]
+
+[[package]]
+name = "wcontainers-unicorn-hostile"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-unicorn",
+ "wcontainers-unicorn-conformance",
+ "wcontainers-unicorn-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-unicorn-recording"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-unicorn",
+ "wcontainers-unicorn-conformance",
+ "wcontainers-unicorn-direct",
 ]
 
 [[package]]

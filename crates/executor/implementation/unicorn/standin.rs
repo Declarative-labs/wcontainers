@@ -11,7 +11,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use unicorn_engine::uc_error;
 use wcontainers_abi::{
     Access, AddressSpace, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
     Resume, SharedId, SystemCallRequest, ThreadId,
@@ -35,6 +34,7 @@ use wcontainers_processor_architecture_arm64::{
     INSTRUCTION_SIZE, Instruction, InstructionFetch, PagePermission, Processor, User,
     WaitInstruction, ZERO_PROCESSOR,
 };
+use wcontainers_unicorn::uc_error;
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::engine::EngineHandle;
@@ -1335,9 +1335,14 @@ impl Machine {
         length: u64,
     ) -> Result<(), CpuError> {
         let block = Rc::clone(self.blocks.get(&shared).ok_or(CpuError::BadAddress)?);
-        if offset
-            .checked_add(length)
-            .is_none_or(|end| end > block.len())
+        // Unicorn maps the block's host memory itself, which it does only from a whole page to whole pages.
+        let whole_pages = [offset, address, length]
+            .iter()
+            .all(|value| value.is_multiple_of(PAGE_SIZE));
+        if !whole_pages
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > block.len())
         {
             return Err(CpuError::BadAddress);
         }
@@ -1393,7 +1398,7 @@ fn check_block(block: &SharedPages, offset: u64, length: usize) -> Result<(), Cp
 
 #[cfg(test)]
 mod tests {
-    use wcontainers_abi::{Cpu, PAGE_SIZE, Permissions};
+    use wcontainers_abi::{Cpu, CpuError, PAGE_SIZE, Permissions};
 
     use super::{Processor, SPACE_32_BIT, StandIn};
 
@@ -1439,6 +1444,28 @@ mod tests {
             .expect("the shown byte read");
         assert_eq!(read, [u8::MAX]);
         assert_eq!(stand_in.take_refused().len(), 1, "the refusals");
+    }
+
+    /// A block is shown only from a whole page to whole pages, which is all unicorn maps; a part of a page is refused.
+    #[test]
+    fn a_block_is_shown_only_as_whole_pages() {
+        let mut stand_in = StandIn::with_space(SPACE_32_BIT);
+        let memory = stand_in.memory_new().expect("a memory");
+        let block = stand_in.shared_new(2 * PAGE_SIZE).expect("a block");
+        for (offset, address, length) in [
+            (1, PAGE_SIZE, PAGE_SIZE),
+            (0, PAGE_SIZE + 1, PAGE_SIZE),
+            (0, PAGE_SIZE, PAGE_SIZE - 1),
+        ] {
+            assert_eq!(
+                stand_in.shared_map(block, offset, memory, address, length),
+                Err(CpuError::BadAddress),
+                "offset {offset}, address {address}, length {length}"
+            );
+        }
+        stand_in
+            .shared_map(block, PAGE_SIZE, memory, PAGE_SIZE, PAGE_SIZE)
+            .expect("the block's second page shown");
     }
 
     /// A read of the virtual counter at EL0 traps to EL1, so the kernel answers it from its own clock.

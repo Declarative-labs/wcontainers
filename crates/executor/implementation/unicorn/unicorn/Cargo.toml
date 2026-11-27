@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-unicorn"
+description = "What unicorn's API leaves unsafe: one safe trait over an engine whose guest memory is host memory lent to it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# unicorn-engine is GPL-2.0, so this crate is test-only, lives inside the stand-in's folder and is never shipped.
+license = "GPL-2.0-only"
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+unicorn-engine = "2.1.5"
+wcontainers-volatile-bytes = { path = "../../../../volatile-bytes" }
+
+[lints]
+workspace = true

@@ -1,7 +1,13 @@
-//! One address space of the stand-in: a unicorn instance holding the pages it maps, and host memory for the rest.
+//! One address space of the stand-in: a unicorn engine whose guest memory is host memory lent to it, under the mapping
+//! rule of the unicorn trait (`unicorn/interface.rs`).
 //!
-//! A page that allows nothing is not mapped. Shared pages live in host memory: unicorn takes those that changed before a
-//! turn and gives back what the guest wrote after it.
+//! THE SPACE'S RULE, which the hostile-guest test below checks: unicorn maps each host memory once, allowing everything,
+//! and the guest reaches a byte only through its TLB, which the TLB hook fills from the page table alone. The space's own
+//! pages are one host memory at the physical addresses equal to theirs; each block of shared pages the space shows is a
+//! host memory of its own, mapped past them at a physical address no other block of the space ever had. A page refusing
+//! an access gets a physical page nothing maps, so the access faults at the address the guest used. Every change of the
+//! page table or of the shared ranges flushes the TLB before the guest next runs, and our side reaches every byte only
+//! through views of the host memories, so the guest and our side see the same bytes and nothing is copied between turns.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -10,19 +16,23 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use memmap2::MmapMut;
-use unicorn_engine::{
-    Arch, Arm64CpuModel, Context, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
-    TlbEntry, TlbType, UcHookId, Unicorn, uc_error,
-};
 use wcontainers_abi::{
     Access, CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock, SYSTEM_CALL_ARGUMENT_COUNT,
     SystemCallNumber, SystemCallRequest,
 };
 use wcontainers_processor_architecture_arm64::encoding::IMM16;
 use wcontainers_processor_architecture_arm64::{INSTRUCTION_SIZE, PREDICATE_REGISTERS};
+use wcontainers_unicorn::{
+    Arch, Arm64CpuModel, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP, Requests,
+    TlbEntry, TlbType, Unicorn, uc_error,
+};
+use wcontainers_unicorn_direct::DirectUnicorn;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::standin::Unsupported;
+
+/// The engine every space of the stand-in runs on.
+pub(crate) type Emulator = DirectUnicorn<Guest>;
 
 // QEMU's exception numbers, as unicorn's interrupt hook reports them.
 /// [EXCP_UDEF](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
@@ -82,11 +92,6 @@ const UPPER_HALF: u64 = 1 << 55;
 /// The bits of a lower-half address below its tag, the top byte TBI0 leaves out of translation.
 pub(crate) const UNTAGGED: u64 = (1 << 56) - 1;
 
-/// The most bytes a space maps in unicorn as one region, a level 2 block of pages.
-///
-/// A change of one page's permissions maps the regions it touches anew, so it costs this much at most.
-const LARGEST_REGION: u64 = PAGE_SIZE * (PAGE_SIZE / size_of::<u64>() as u64);
-
 /// The count of instructions or of microseconds that unicorn takes as no limit.
 const UNICORN_NO_LIMIT: usize = 0;
 const UNICORN_NO_TIMEOUT: u64 = 0;
@@ -99,10 +104,24 @@ const ONE_INSTRUCTION_COUNT: usize = 1;
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
 /// The pages one bit of a touched-page word stands for.
 const PAGES_PER_WORD: u64 = u64::BITS as u64;
+/// The most pages a copy between host memories moves at once.
+const PAGES_PER_COPY: u64 = 16;
 
-/// What stopped the emulator, recorded by its hooks.
+/// Where unicorn maps the first block of shared pages a space shows, past every address of a space.
+const SHARED_BASE: u64 = 1 << 52;
+/// Where the pages that stand for refusing guest pages start, past every block of shared pages.
+const FAULT_PAGES: u64 = 1 << 60;
+
+/// What the engine's hooks read and record: the space's page table, and what stopped the turn.
 #[derive(Default)]
-pub(crate) struct Stopped {
+pub(crate) struct Guest {
+    /// What each page allows, as the kernel last said.
+    pages: Vec<Permissions>,
+    /// The ranges that show shared pages, by their start, each with its end and the physical address of its start.
+    physical: BTreeMap<u64, (u64, u64)>,
+    /// The pages of addresses found refusing an access since the TLB was last flushed, each translated to a page of
+    /// [`FAULT_PAGES`] by its place here, so the fault hook gives back the address the guest used.
+    fault_pages: Vec<u64>,
     exception: Option<u32>,
     fault: Option<(u64, Access)>,
     /// Instructions of the blocks entered, for how long the turn took.
@@ -113,36 +132,93 @@ pub(crate) struct Stopped {
     deadline: Option<coarsetime::Instant>,
     /// Raised from another thread to end the turn at the next block.
     interrupt: Option<Arc<AtomicBool>>,
-    /// The ranges that show shared pages another range of the same space shows, for the store hook to keep alike.
-    views: Vec<View>,
-    /// The pages of addresses a run with translation by hand found refusing their access, each translated to a page of
-    /// [`FAULT_PAGES`] by its place here, so the fault hook gives back the address the guest used.
-    fault_pages: Vec<u64>,
 }
 
-/// Where the pages that stand for refusing guest pages start, past every physical address unicorn maps and every
-/// untagged lower-half address.
-const FAULT_PAGES: u64 = 1 << 60;
+/// What stopped a run, as the hooks recorded it.
+struct Stopped {
+    exception: Option<u32>,
+    fault: Option<(u64, Access)>,
+    instructions: u64,
+}
 
-/// Returns the physical page unicorn's virtual TLB gives a page of addresses: a lower-half address without its tag, as
-/// TBI0 has it, and any other as it is, so an address outside the space reaches no memory and faults whole.
-fn translate(page: u64) -> u64 {
-    if page & UPPER_HALF == 0 {
-        page & UNTAGGED
-    } else {
-        page
+impl Guest {
+    /// Forgets what stopped the last run, for one that ends at the deadline or the interrupt.
+    fn start_run(
+        &mut self,
+        deadline: Option<coarsetime::Instant>,
+        interrupt: Option<Arc<AtomicBool>>,
+    ) {
+        self.exception = None;
+        self.fault = None;
+        self.instructions = u64::MIN;
+        self.deadline = deadline;
+        self.interrupt = interrupt;
+    }
+
+    /// Returns what stopped the run.
+    fn take_stopped(&mut self) -> Stopped {
+        self.deadline = None;
+        self.interrupt = None;
+        Stopped {
+            exception: self.exception.take(),
+            fault: self.fault.take(),
+            instructions: std::mem::take(&mut self.instructions),
+        }
+    }
+
+    /// Returns the TLB entry of a page of addresses for the access: the physical page that holds it with what the page
+    /// allows, or a physical page nothing maps when the page refuses the access.
+    fn translate(&mut self, page: u64, needed: Prot) -> TlbEntry {
+        let address = untag(page);
+        let allowed = usize::try_from(address / PAGE_SIZE)
+            .ok()
+            .and_then(|index| self.pages.get(index))
+            .map_or(Prot::NONE, |permissions| prot(*permissions));
+        if allowed.0 & needed.0 != needed.0 {
+            let place = self
+                .fault_pages
+                .iter()
+                .position(|kept| *kept == page)
+                .unwrap_or_else(|| {
+                    self.fault_pages.push(page);
+                    self.fault_pages.len() - 1
+                });
+            // Only the access asked for, so another kind of access to the page is translated again.
+            return TlbEntry {
+                paddr: FAULT_PAGES + place as u64 * PAGE_SIZE,
+                perms: needed,
+            };
+        }
+        let paddr = match self.physical.range(..=address).next_back() {
+            Some((start, (end, base))) if address < *end => base + (address - start),
+            _ => address,
+        };
+        TlbEntry {
+            paddr,
+            perms: allowed,
+        }
+    }
+
+    /// Returns the address the guest used for the physical address a fault gave, which a page of [`FAULT_PAGES`] stands
+    /// for.
+    fn to_guest_address(&self, address: u64) -> u64 {
+        let place = address
+            .checked_sub(FAULT_PAGES)
+            .map(|offset| offset / PAGE_SIZE);
+        place
+            .and_then(|place| self.fault_pages.get(usize::try_from(place).ok()?))
+            .map_or(address, |page| page | (address % PAGE_SIZE))
     }
 }
 
-/// Returns the address the guest used for the physical address a fault gave, which a page of [`FAULT_PAGES`] stands
-/// for in a run with translation by hand.
-fn to_guest_address(stopped: &Stopped, address: u64) -> u64 {
-    let place = address
-        .checked_sub(FAULT_PAGES)
-        .map(|offset| offset / PAGE_SIZE);
-    place
-        .and_then(|place| stopped.fault_pages.get(usize::try_from(place).ok()?))
-        .map_or(address, |page| page | (address % PAGE_SIZE))
+/// Returns a lower-half address without its tag, as TBI0 has it, and any other as it is, so an address outside the
+/// space reaches no page and faults whole.
+fn untag(address: u64) -> u64 {
+    if address & UPPER_HALF == 0 {
+        address & UNTAGGED
+    } else {
+        address
+    }
 }
 
 /// Returns the permission an access needs.
@@ -151,90 +227,6 @@ fn to_needed(access: MemType) -> Prot {
         MemType::WRITE => Prot::WRITE,
         MemType::FETCH => Prot::EXEC,
         _ => Prot::READ,
-    }
-}
-
-/// Returns whether a region unicorn maps at the physical page allows what the access needs.
-fn allows(unicorn: &Unicorn<'_, Stopped>, physical: u64, needed: Prot) -> bool {
-    unicorn.mem_regions().is_ok_and(|regions| {
-        regions.iter().any(|region| {
-            region.begin <= physical
-                && physical <= region.end
-                && region.perms & needed.0 == needed.0
-        })
-    })
-}
-
-/// A range of a space that shows shared pages another of its ranges shows too, so a store to one is copied to the other.
-#[derive(Clone)]
-struct View {
-    addresses: Range<u64>,
-    /// Where in the shared pages the range's start lies.
-    offset: u64,
-    /// Which shared pages, the same number for every range that shows the same ones.
-    pages: usize,
-    /// Whether the guest may store to the range, so a store hooked there takes place.
-    writable: bool,
-}
-
-/// What a run does after a fault QEMU's translation gave no guest address for.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FaultRun {
-    /// Runs the faulting instruction again, translated by hand, from the registers the fault left.
-    AgainInPlace,
-    /// Says so, for the caller to run the instruction again from its own state.
-    Reported,
-    /// Keeps what the run gave: it was translated by hand already.
-    Kept,
-}
-
-/// The most bytes one guest store moves, which QEMU hands its store hook as one value.
-const LARGEST_STORE: usize = size_of::<u64>();
-
-/// Copies the bytes a guest store is about to write through one view to every other view of the same shared bytes that
-/// the guest may store to.
-///
-/// Unicorn calls its store hook before the store, with the value, and a write through its interface also drops what it
-/// translated from the bytes written, so code run through another view is the code stored. A view the guest may not store
-/// to is left as it is until the turn ends, when the shared pages take the store and the view takes them before the next
-/// turn: unicorn's write to a region that refuses stores makes the region writable and back, which empties its TLB while
-/// the store holds an entry of it (MEASURED: the host process ended with SIGSEGV storing a byte one below the page stored
-/// to), and rebuilds its memory map, too slow to do at each store (MEASURED: a test spent minutes in it).
-fn copy_store_to_other_views(
-    unicorn: &mut Unicorn<'_, Stopped>,
-    address: u64,
-    size: usize,
-    value: i64,
-) {
-    let stored = value.to_le_bytes();
-    let count = size.min(LARGEST_STORE);
-    let store = address..address.saturating_add(count as u64);
-    let mut copies = Vec::new();
-    let views = &unicorn.get_data().views;
-    for source in views.iter().filter(|view| view.writable) {
-        let cut = store.start.max(source.addresses.start)..store.end.min(source.addresses.end);
-        if cut.is_empty() {
-            continue;
-        }
-        let shared = source.offset + (cut.start - source.addresses.start)
-            ..source.offset + (cut.end - source.addresses.start);
-        for target in views.iter().filter(|view| {
-            view.pages == source.pages && view.addresses != source.addresses && view.writable
-        }) {
-            let shown =
-                target.offset..target.offset + (target.addresses.end - target.addresses.start);
-            let both = shared.start.max(shown.start)..shared.end.min(shown.end);
-            if both.is_empty() {
-                continue;
-            }
-            let first = to_index(both.start - shared.start + (cut.start - store.start));
-            let bytes = stored[first..first + to_index(both.end - both.start)].to_vec();
-            copies.push((target.addresses.start + (both.start - target.offset), bytes));
-        }
-    }
-    for (at, bytes) in copies {
-        // A view whose pages allow nothing is not mapped, and takes the bytes when it is mapped again.
-        let _ = unicorn.mem_write(at, &bytes);
     }
 }
 
@@ -265,9 +257,21 @@ impl TouchedPages {
         self.words[to_index(page / PAGES_PER_WORD)] & (1 << (page % PAGES_PER_WORD)) != 0
     }
 
-    /// Returns the touched pages among the pages, in order.
+    /// Returns the touched pages among the pages, in order, passing over words with none.
     fn list(&self, pages: Range<u64>) -> Vec<u64> {
-        pages.filter(|page| self.contains(*page)).collect()
+        let mut listed = Vec::new();
+        let mut page = pages.start;
+        while page < pages.end {
+            if self.words[to_index(page / PAGES_PER_WORD)] == u64::MIN {
+                page = (page / PAGES_PER_WORD + 1) * PAGES_PER_WORD;
+                continue;
+            }
+            if self.contains(page) {
+                listed.push(page);
+            }
+            page += 1;
+        }
+        listed
     }
 
     /// Returns every touched page, in order, and forgets them all.
@@ -285,44 +289,71 @@ impl TouchedPages {
     }
 }
 
-/// Pages that several spaces may show, in host memory that lives while any shows them.
-pub(crate) struct SharedPages {
-    length: u64,
-    bytes: RefCell<MmapMut>,
-    touched: RefCell<TouchedPages>,
-    /// Counts the changes to the bytes, so a space's copy for a turn is taken again only after one.
-    version: Cell<u64>,
-    /// The version each page last changed in, so a space's copy takes again only the pages that changed.
-    changed: RefCell<Vec<u64>>,
+/// Returns the pages as runs of pages that follow each other, none longer than [`PAGES_PER_COPY`].
+fn to_runs(pages: &[u64]) -> Vec<Range<u64>> {
+    let mut runs: Vec<Range<u64>> = Vec::new();
+    for page in pages {
+        match runs.last_mut() {
+            Some(run) if run.end == *page && run.end - run.start < PAGES_PER_COPY => run.end += 1,
+            _ => runs.push(*page..*page + 1),
+        }
+    }
+    runs
 }
 
-impl SharedPages {
+/// Copies the bytes at the offsets of one host memory to the same length from an offset of another.
+fn copy_between<U: Unicorn<Guest>>(
+    from: &U::HostMemory,
+    offsets: Range<u64>,
+    to: &U::HostMemory,
+    at: u64,
+) {
+    let mut bytes = vec![u8::MIN; to_index(offsets.end - offsets.start)];
+    U::host_memory_bytes(from, offsets)
+        .expect("copied bytes lie inside their host memory")
+        .read(&mut bytes);
+    U::host_memory_bytes(to, at..at + bytes.len() as u64)
+        .expect("copied bytes lie inside their host memory")
+        .write(&bytes);
+}
+
+/// Pages that several spaces may show, in host memory that lives while any shows them.
+pub(crate) struct SharedPages<U: Unicorn<Guest> = Emulator> {
+    length: u64,
+    memory: U::HostMemory,
+    touched: RefCell<TouchedPages>,
+    /// Counts the changes of the bytes no space's store hook sees: our side's writes and the turns of guests that may
+    /// write them, so a space drops what it translated from them after one.
+    changes: Cell<u64>,
+}
+
+impl<U: Unicorn<Guest>> SharedPages<U> {
     /// Returns new zeroed pages for the number of bytes.
     pub(crate) fn new(length: u64) -> Result<Self, CpuError> {
-        // A mapping of no bytes is refused, so an empty block holds one page no one reaches.
-        let mapped = usize::try_from(length.max(PAGE_SIZE)).map_err(|_| CpuError::OutOfMemory)?;
-        let bytes = MmapMut::map_anon(mapped).map_err(|_| CpuError::OutOfMemory)?;
+        // A host memory of no bytes is refused, so an empty block holds one page no one reaches.
+        let pages = length.div_ceil(PAGE_SIZE).max(1);
+        let memory = U::new_host_memory(pages * PAGE_SIZE).map_err(|_| CpuError::OutOfMemory)?;
         Ok(Self {
             length,
-            bytes: RefCell::new(bytes),
-            touched: RefCell::new(TouchedPages::new(length.div_ceil(PAGE_SIZE))),
-            version: Cell::new(u64::MIN),
-            changed: RefCell::new(vec![u64::MIN; to_index(length.div_ceil(PAGE_SIZE))]),
+            memory,
+            touched: RefCell::new(TouchedPages::new(pages)),
+            changes: Cell::new(u64::MIN),
         })
     }
 
     /// Returns new pages holding these pages' bytes, which take host memory only for the pages that hold any.
     pub(crate) fn copy(&self) -> Result<Self, CpuError> {
-        let length = self.len();
-        let copy = Self::new(length)?;
-        let touched = self.touched.borrow().list(0..length.div_ceil(PAGE_SIZE));
-        let bytes = self.bytes.borrow();
+        let copy = Self::new(self.length)?;
+        let touched = self
+            .touched
+            .borrow()
+            .list(0..self.length.div_ceil(PAGE_SIZE));
+        for run in to_runs(&touched) {
+            let offsets = run.start * PAGE_SIZE..run.end * PAGE_SIZE;
+            copy_between::<U>(&self.memory, offsets.clone(), &copy.memory, offsets.start);
+        }
         for page in touched {
-            let range = page_bytes(page, length);
-            copy.write(
-                range.start,
-                &bytes[to_index(range.start)..to_index(range.end)],
-            );
+            copy.touched.borrow_mut().touch(page..page + 1);
         }
         Ok(copy)
     }
@@ -331,15 +362,16 @@ impl SharedPages {
         self.length
     }
 
-    /// Returns how many bytes of the page from the offset lie inside the pages.
-    fn count_from(&self, offset: u64) -> usize {
-        to_index(self.length.saturating_sub(offset).min(PAGE_SIZE))
-    }
-
     /// Copies the bytes from the offset into the buffer, which must lie inside the pages.
     pub(crate) fn read(&self, offset: u64, into: &mut [u8]) {
-        let start = to_index(offset);
-        into.copy_from_slice(&self.bytes.borrow()[start..start + into.len()]);
+        U::host_memory_bytes(&self.memory, offset..offset + into.len() as u64)
+            .expect("the bytes read lie inside the pages")
+            .read(into);
+    }
+
+    /// Returns the length of its host memory, whole pages.
+    fn host_length(&self) -> u64 {
+        self.length.div_ceil(PAGE_SIZE).max(1) * PAGE_SIZE
     }
 
     /// Copies the buffer to the offset, which must lie inside the pages.
@@ -347,105 +379,123 @@ impl SharedPages {
         if from.is_empty() {
             return;
         }
-        let start = to_index(offset);
-        self.bytes.borrow_mut()[start..start + from.len()].copy_from_slice(from);
         let end = offset + from.len() as u64;
-        let pages = offset / PAGE_SIZE..end.div_ceil(PAGE_SIZE);
-        self.touched.borrow_mut().touch(pages.clone());
-        let version = self.version.get().wrapping_add(1);
-        self.version.set(version);
-        self.changed.borrow_mut()[to_index(pages.start)..to_index(pages.end)].fill(version);
+        U::host_memory_bytes(&self.memory, offset..end)
+            .expect("the bytes written lie inside the pages")
+            .write(from);
+        self.touched
+            .borrow_mut()
+            .touch(offset / PAGE_SIZE..end.div_ceil(PAGE_SIZE));
+        self.changes.set(self.changes.get().wrapping_add(1));
     }
 
     fn is_touched(&self, page: u64) -> bool {
         self.touched.borrow().contains(page)
     }
-
-    /// Returns whether a page holding some of the bytes at the offsets changed after the version.
-    fn has_changed_since(&self, offsets: Range<u64>, version: u64) -> bool {
-        let pages = to_index(offsets.start / PAGE_SIZE)..to_index(offsets.end.div_ceil(PAGE_SIZE));
-        self.changed.borrow()[pages]
-            .iter()
-            .any(|changed| *changed > version)
-    }
 }
 
 /// A range of a space that shows shared pages.
-#[derive(Clone)]
-pub(crate) struct Shown {
+pub(crate) struct Shown<U: Unicorn<Guest> = Emulator> {
     end: u64,
-    pub(crate) pages: Rc<SharedPages>,
+    pub(crate) pages: Rc<SharedPages<U>>,
     /// Where in the shared pages the range's start lies.
     offset: u64,
     /// Whether the range was mapped from elsewhere, so a copy shows the pages too instead of their bytes.
     pub(crate) mapped: bool,
-    /// The version of the shared pages unicorn's copy holds, none when it holds none.
-    synced: Option<u64>,
+}
+
+impl<U: Unicorn<Guest>> Clone for Shown<U> {
+    fn clone(&self) -> Self {
+        Self {
+            end: self.end,
+            pages: Rc::clone(&self.pages),
+            offset: self.offset,
+            mapped: self.mapped,
+        }
+    }
 }
 
 /// A part of a space: its own pages, or shared pages it shows.
-pub(crate) enum Part {
+pub(crate) enum Part<U: Unicorn<Guest> = Emulator> {
     Own,
     Shown {
-        pages: Rc<SharedPages>,
+        pages: Rc<SharedPages<U>>,
         offset: u64,
         mapped: bool,
     },
 }
 
-pub(crate) struct Memory {
-    unicorn: Unicorn<'static, Stopped>,
+/// A block of shared pages unicorn maps for a space, where, and how many of its changes the space's translations know of.
+struct Base<U: Unicorn<Guest>> {
+    pages: Rc<SharedPages<U>>,
+    address: u64,
+    /// The count of the block's changes unicorn's translations of it know of, none when unknown.
+    seen: Option<u64>,
+}
+
+pub(crate) struct Memory<U: Unicorn<Guest> = Emulator> {
+    unicorn: U,
     /// The CPU state as made, with the exclusive monitor clear, put back before each turn: a return to
     /// a program clears the monitor (`ClearExclusiveLocal` at exception return), and nothing of one
     /// thread's turn may reach another's.
-    fresh: Context,
-    /// The bytes of the space's own pages that unicorn does not map.
-    hidden: MmapMut,
-    /// What each page allows, as the kernel last said.
-    pages: Vec<Permissions>,
-    /// The ranges currently mapped in unicorn: start to (end, permissions).
-    mapped: BTreeMap<u64, (u64, Permissions)>,
+    fresh: U::Context,
+    /// The bytes of the space's own pages, all of its addresses, which unicorn maps at the same physical addresses.
+    own: U::HostMemory,
     /// Ranges that show shared pages, by their start.
-    shared: BTreeMap<u64, Shown>,
+    shared: BTreeMap<u64, Shown<U>>,
+    /// The blocks of shared pages unicorn maps, past the space's own pages.
+    bases: Vec<Base<U>>,
+    /// Where the next block is mapped.
+    next_base: u64,
+    /// Whether the page table or the shared ranges changed since unicorn's TLB and mappings last followed them.
+    stale: bool,
+    /// The blocks the guest may write, as the TLB last followed the pages.
+    writable: Vec<Rc<SharedPages<U>>>,
+    /// The addresses of each block the guest may run, as the TLB last followed the pages.
+    executable: Vec<(Rc<SharedPages<U>>, Range<u64>)>,
     /// Own pages that may hold something other than zeros, so a copy copies only those.
     touched: TouchedPages,
     /// Whether its translated blocks count instructions. Unicorn adds its counting hook without
     /// translating again, so blocks made without it would never stop at a turn's end.
     counting: bool,
+    /// Whether unicorn may hold translations of the space's code, which a write of our side then makes stale.
+    translated: bool,
     /// Where its address space ends.
     end: u64,
-    /// The store hook that keeps several views of the same shared bytes alike, while the space has such views.
-    view_hook: Option<UcHookId>,
 }
 
-impl Memory {
+impl<U: Unicorn<Guest>> Memory<U> {
     pub(crate) fn new(end: u64) -> Result<Self, CpuError> {
-        let mut unicorn = Unicorn::new_with_data(Arch::ARM64, Mode::ARM, Stopped::default())
-            .map_err(|_| CpuError::NotSupported)?;
+        let guest = Guest {
+            pages: vec![Permissions::empty(); to_index(end / PAGE_SIZE)],
+            ..Guest::default()
+        };
+        let mut unicorn =
+            U::new(Arch::ARM64, Mode::ARM, guest).map_err(|_| CpuError::NotSupported)?;
         unicorn
             .ctl_set_cpu_model(Arm64CpuModel::MAX as i32)
             .expect("unicorn has the max ARM64 model");
         unicorn
-            .add_intr_hook(|unicorn, exception| {
-                unicorn.get_data_mut().exception = Some(exception);
-                unicorn.emu_stop().expect("stopping unicorn");
+            .add_intr_hook(|guest: &mut Guest, requests: &mut Requests, exception| {
+                guest.exception = Some(exception);
+                requests.stop = true;
             })
             .expect("adding the interrupt hook");
         unicorn
-            .add_block_hook(1, 0, |unicorn, _, size| {
-                let stopped = unicorn.get_data_mut();
-                stopped.instructions += u64::from(size) / INSTRUCTION_SIZE;
-                if stopped
-                    .deadline
-                    .is_some_and(|deadline| coarsetime::Instant::now() >= deadline)
-                    || stopped
-                        .interrupt
-                        .as_ref()
-                        .is_some_and(|interrupt| interrupt.load(Ordering::Acquire))
-                {
-                    unicorn.emu_stop().expect("stopping unicorn");
-                }
-            })
+            .add_block_hook(
+                1,
+                0,
+                |guest: &mut Guest, requests: &mut Requests, _, size| {
+                    guest.instructions += u64::from(size) / INSTRUCTION_SIZE;
+                    requests.stop = guest
+                        .deadline
+                        .is_some_and(|deadline| coarsetime::Instant::now() >= deadline)
+                        || guest
+                            .interrupt
+                            .as_ref()
+                            .is_some_and(|interrupt| interrupt.load(Ordering::Acquire));
+                },
+            )
             .expect("adding the block hook");
         let invalid = HookType(
             HookType::MEM_READ_UNMAPPED.0
@@ -456,63 +506,57 @@ impl Memory {
                 | HookType::MEM_FETCH_PROT.0,
         );
         unicorn
-            .add_mem_hook(invalid, 1, 0, |unicorn, kind, address, _, _| {
-                let access = match kind {
-                    MemType::WRITE_UNMAPPED | MemType::WRITE_PROT => Access::Write,
-                    MemType::FETCH_UNMAPPED | MemType::FETCH_PROT => Access::Execute,
-                    _ => Access::Read,
-                };
-                // QEMU stores an access that crosses pages one byte at a time and goes on past the first
-                // byte that faults, so the first is the instruction's fault.
-                let stopped = unicorn.get_data_mut();
-                let address = to_guest_address(stopped, address);
-                stopped.fault.get_or_insert((address, access));
-                false
-            })
+            .add_mem_hook(
+                invalid,
+                1,
+                0,
+                |guest: &mut Guest, _: &mut Requests, kind, address, _, _| {
+                    let access = match kind {
+                        MemType::WRITE_UNMAPPED | MemType::WRITE_PROT => Access::Write,
+                        MemType::FETCH_UNMAPPED | MemType::FETCH_PROT => Access::Execute,
+                        _ => Access::Read,
+                    };
+                    // QEMU stores an access that crosses pages one byte at a time and goes on past the first
+                    // byte that faults, so the first is the instruction's fault.
+                    let address = guest.to_guest_address(address);
+                    guest.fault.get_or_insert((address, access));
+                    false
+                },
+            )
             .expect("adding the fault hook");
-        // Translation by hand, used only to run a faulting instruction again (`find_guest_fault`): QEMU's own with the
-        // MMU off raises an address beyond its physical addresses as an abort with no address and drops a tag from a
-        // fault's address, and unicorn's virtual TLB costs too much to run every instruction on.
+        // Every address is translated by the page table: QEMU's own translation with the MMU off would reach every
+        // byte unicorn maps, raise an address beyond its physical addresses as an abort with no address, and drop a
+        // tag from a fault's address.
         unicorn
-            .add_tlb_hook(1, 0, |unicorn, page, access| {
-                let mut physical = translate(page);
-                let needed = to_needed(access);
-                // A page refusing the access becomes a page of its own that nothing maps, so the fault hook names it.
-                if !allows(unicorn, physical, needed) {
-                    let pages = &mut unicorn.get_data_mut().fault_pages;
-                    let place = pages
-                        .iter()
-                        .position(|kept| *kept == page)
-                        .unwrap_or_else(|| {
-                            pages.push(page);
-                            pages.len() - 1
-                        });
-                    physical = FAULT_PAGES + place as u64 * PAGE_SIZE;
-                }
-                // Only the access asked for, so another kind of access to the page is translated again.
-                Some(TlbEntry {
-                    paddr: physical,
-                    perms: needed,
-                })
+            .add_tlb_hook(1, 0, |guest: &mut Guest, _: &mut Requests, page, access| {
+                Some(guest.translate(page, to_needed(access)))
             })
             .expect("adding the TLB hook");
+        unicorn
+            .ctl_set_tlb_type(TlbType::VIRTUAL)
+            .expect("setting unicorn's TLB");
         enter_user_level(&mut unicorn);
         let fresh = unicorn
             .context_init()
             .expect("saving unicorn's fresh CPU state");
-        let hidden = MmapMut::map_anon(usize::try_from(end).map_err(|_| CpuError::OutOfMemory)?)
-            .map_err(|_| CpuError::OutOfMemory)?;
+        let own = U::new_host_memory(end).map_err(|_| CpuError::OutOfMemory)?;
+        unicorn
+            .mem_map_host_memory(u64::MIN, end, Prot::ALL, &own, u64::MIN)
+            .expect("mapping a space's own pages in unicorn");
         Ok(Self {
             unicorn,
             fresh,
-            hidden,
-            pages: vec![Permissions::empty(); to_index(end / PAGE_SIZE)],
-            mapped: BTreeMap::new(),
+            own,
             shared: BTreeMap::new(),
+            bases: Vec::new(),
+            next_base: SHARED_BASE,
+            stale: true,
+            writable: Vec::new(),
+            executable: Vec::new(),
             touched: TouchedPages::new(end / PAGE_SIZE),
             counting: false,
+            translated: false,
             end,
-            view_hook: None,
         })
     }
 
@@ -522,27 +566,35 @@ impl Memory {
 
     /// Makes the space all zeros allowing nothing again, with nothing translated, as a new space is.
     pub(crate) fn clear(&mut self) {
-        for (start, (end, _)) in std::mem::take(&mut self.mapped) {
-            self.unicorn
-                .mem_unmap(start, end - start)
-                .expect("unmapping a region unicorn has");
-        }
+        let zeros = [u8::MIN; PAGE_BYTES];
         for page in self.touched.take_all() {
-            let bytes = page_bytes(page, self.end);
-            self.hidden[to_index(bytes.start)..to_index(bytes.end)].fill(u8::MIN);
+            self.own_bytes(page_bytes(page, self.end)).write(&zeros);
         }
         self.shared.clear();
-        self.pages.fill(Permissions::empty());
+        self.unicorn.get_data_mut().pages.fill(Permissions::empty());
         self.unicorn
             .ctl_flush_tb()
             .expect("flushing unicorn's translated blocks");
+        self.translated = false;
+        self.stale = true;
+    }
+
+    /// Returns what each page allows.
+    fn pages(&self) -> &[Permissions] {
+        &self.unicorn.get_data().pages
+    }
+
+    /// Returns a view of the space's own bytes at the addresses.
+    fn own_bytes(&self, addresses: Range<u64>) -> U::Bytes {
+        U::host_memory_bytes(&self.own, addresses)
+            .expect("a space's addresses lie inside its own memory")
     }
 
     /// Returns what the page at the address allows, nothing past the end of the space.
     pub(crate) fn read_permissions(&self, address: u64) -> Permissions {
         usize::try_from(address / PAGE_SIZE)
             .ok()
-            .and_then(|page| self.pages.get(page).copied())
+            .and_then(|page| self.pages().get(page).copied())
             .unwrap_or_else(Permissions::empty)
     }
 
@@ -556,7 +608,7 @@ impl Memory {
     }
 
     /// Returns the shared range holding the address, with its start.
-    fn find_shown(&self, address: u64) -> Option<(u64, &Shown)> {
+    fn find_shown(&self, address: u64) -> Option<(u64, &Shown<U>)> {
         self.shared
             .range(..=address)
             .next_back()
@@ -564,18 +616,16 @@ impl Memory {
             .map(|(start, shown)| (*start, shown))
     }
 
-    /// Returns how many bytes from the address lie in one page and one part of the space.
-    fn piece_length(&self, address: u64, left: u64) -> u64 {
-        let page_end = (address / PAGE_SIZE + 1) * PAGE_SIZE;
-        let part_end = match self.find_shown(address) {
+    /// Returns where the part of the space holding the address ends: its shared range's end, or the next one's start.
+    fn part_end(&self, address: u64) -> u64 {
+        match self.find_shown(address) {
             Some((_, shown)) => shown.end,
             None => self
                 .shared
                 .range(address..)
                 .next()
                 .map_or(self.end, |(start, _)| *start),
-        };
-        left.min(page_end - address).min(part_end - address)
+        }
     }
 
     /// Copies the bytes at the address into the buffer, whatever the pages allow.
@@ -584,15 +634,13 @@ impl Memory {
         let mut done = usize::MIN;
         while done < into.len() {
             let at = address + done as u64;
-            let count = to_index(self.piece_length(at, (into.len() - done) as u64));
+            let count = to_index((self.part_end(at) - at).min((into.len() - done) as u64));
             let piece = &mut into[done..done + count];
             match self.find_shown(at) {
                 Some((start, shown)) => shown.pages.read(shown.offset + (at - start), piece),
-                None if self.is_mapped(at / PAGE_SIZE) => self
-                    .unicorn
-                    .mem_read(at, piece)
-                    .expect("unicorn maps the pages that allow something"),
-                None => piece.copy_from_slice(&self.hidden[to_index(at)..to_index(at) + count]),
+                None => {
+                    self.own_bytes(at..at + count as u64).read(piece);
+                }
             }
             done += count;
         }
@@ -602,26 +650,22 @@ impl Memory {
     /// Copies the buffer to the address, whatever the pages allow.
     pub(crate) fn write(&mut self, address: u64, from: &[u8]) -> Result<(), CpuError> {
         self.range(address, from.len() as u64)?;
-        let mut pieces = Vec::new();
         let mut done = usize::MIN;
         while done < from.len() {
             let at = address + done as u64;
-            let count = to_index(self.piece_length(at, (from.len() - done) as u64));
+            let count = to_index((self.part_end(at) - at).min((from.len() - done) as u64));
             let piece = &from[done..done + count];
+            let end = at + count as u64;
             match self.find_shown(at) {
                 Some((start, shown)) => shown.pages.write(shown.offset + (at - start), piece),
                 None => {
-                    if self.is_mapped(at / PAGE_SIZE) {
-                        pieces.push((at, piece.to_vec()));
-                    } else {
-                        self.hidden[to_index(at)..to_index(at) + count].copy_from_slice(piece);
-                    }
-                    self.touched.touch(at / PAGE_SIZE..at / PAGE_SIZE + 1);
+                    self.own_bytes(at..end).write(piece);
+                    self.touched.touch(at / PAGE_SIZE..end.div_ceil(PAGE_SIZE));
+                    self.forget_code(at..end);
                 }
             }
             done += count;
         }
-        self.write_unicorn(&pieces);
         Ok(())
     }
 
@@ -641,73 +685,113 @@ impl Memory {
             }
             page += 1;
         }
-        self.remap(addresses);
         Ok(())
     }
 
-    /// Makes an own page read as zeros once the regions over it are mapped again.
+    /// Makes an own page read as zeros.
     fn forget_page(&mut self, page: u64) {
         if self.touched.contains(page) {
             let bytes = page_bytes(page, self.end);
-            self.hidden[to_index(bytes.start)..to_index(bytes.end)].fill(u8::MIN);
+            self.own_bytes(bytes.clone())
+                .write(&[u8::MIN; PAGE_BYTES][..to_index(bytes.end - bytes.start)]);
             self.touched.forget(page);
+            self.forget_code(bytes);
         }
     }
 
+    /// Sets what the pages over the addresses allow, dropping first what unicorn translated from pages that no longer
+    /// allow running, while its TLB still reaches them: the next translation of a page made executable again then reads
+    /// the bytes it holds by then.
     pub(crate) fn set_permissions(&mut self, addresses: Range<u64>, allowed: Permissions) {
+        if !allowed.contains(Permissions::EXECUTE) {
+            self.forget_code(addresses.clone());
+        }
         let pages = to_index(addresses.start / PAGE_SIZE)..to_index(addresses.end / PAGE_SIZE);
-        self.pages[pages].fill(allowed);
+        self.unicorn.get_data_mut().pages[pages].fill(allowed);
         self.remap(addresses);
     }
 
     /// Returns what the pages over the addresses allow, one entry a page.
     pub(crate) fn list_permissions(&self, addresses: Range<u64>) -> Vec<Permissions> {
-        self.pages[to_index(addresses.start / PAGE_SIZE)..to_index(addresses.end / PAGE_SIZE)]
+        self.pages()[to_index(addresses.start / PAGE_SIZE)..to_index(addresses.end / PAGE_SIZE)]
             .to_vec()
     }
 
-    /// Sets what the pages from the address allow, one entry a page, without mapping them anew.
+    /// Sets what the pages from the address allow, one entry a page; the caller remaps them.
     pub(crate) fn copy_permissions(&mut self, start: u64, permissions: &[Permissions]) {
+        let end = start + permissions.len() as u64 * PAGE_SIZE;
+        if permissions
+            .iter()
+            .any(|allowed| !allowed.contains(Permissions::EXECUTE))
+        {
+            self.forget_code(start..end);
+        }
         let first = to_index(start / PAGE_SIZE);
-        self.pages[first..first + permissions.len()].copy_from_slice(permissions);
+        self.unicorn.get_data_mut().pages[first..first + permissions.len()]
+            .copy_from_slice(permissions);
     }
 
-    /// Drops unicorn's translations of the addresses, after their code changed.
+    /// Drops what unicorn translated from the executable pages over the addresses, after their code changed.
     pub(crate) fn forget_code(&mut self, addresses: Range<u64>) {
-        self.unicorn
-            .ctl_remove_cache(addresses.start, addresses.end)
-            .expect("dropping unicorn's translations");
+        if !self.translated {
+            return;
+        }
+        let runs = self.list_executable(addresses);
+        if runs.is_empty() {
+            return;
+        }
+        self.sync();
+        for run in runs {
+            // Unicorn translates the run's first address and drops as many bytes from its physical page on, so a run
+            // stops at the end of the part of the space it starts in.
+            let mut at = run.start;
+            while at < run.end {
+                let end = self.part_end(at).min(run.end);
+                self.unicorn
+                    .ctl_remove_cache(at, end)
+                    .expect("dropping unicorn's translations");
+                at = end;
+            }
+        }
+    }
+
+    /// Returns the runs of executable pages over the addresses, each cut to them.
+    fn list_executable(&self, addresses: Range<u64>) -> Vec<Range<u64>> {
+        let mut runs: Vec<Range<u64>> = Vec::new();
+        let first = addresses.start / PAGE_SIZE;
+        let last = addresses.end.div_ceil(PAGE_SIZE);
+        for (page, allowed) in (first..last).zip(&self.pages()[to_index(first)..to_index(last)]) {
+            if !allowed.contains(Permissions::EXECUTE) {
+                continue;
+            }
+            let start = (page * PAGE_SIZE).max(addresses.start);
+            let end = ((page + 1) * PAGE_SIZE).min(addresses.end);
+            match runs.last_mut() {
+                Some(run) if run.end == start => run.end = end,
+                _ => runs.push(start..end),
+            }
+        }
+        runs
     }
 
     /// Returns the parts of the space over the addresses, each cut to them, with its start and end.
-    pub(crate) fn list_parts(&self, addresses: Range<u64>) -> Vec<(Range<u64>, Part)> {
+    pub(crate) fn list_parts(&self, addresses: Range<u64>) -> Vec<(Range<u64>, Part<U>)> {
         let mut parts = Vec::new();
         let mut at = addresses.start;
         while at < addresses.end {
+            let end = self.part_end(at).min(addresses.end);
             match self.find_shown(at) {
-                Some((start, shown)) => {
-                    let end = shown.end.min(addresses.end);
-                    parts.push((
-                        at..end,
-                        Part::Shown {
-                            pages: Rc::clone(&shown.pages),
-                            offset: shown.offset + (at - start),
-                            mapped: shown.mapped,
-                        },
-                    ));
-                    at = end;
-                }
-                None => {
-                    let end = self
-                        .shared
-                        .range(at..)
-                        .next()
-                        .map_or(addresses.end, |(start, _)| *start)
-                        .min(addresses.end);
-                    parts.push((at..end, Part::Own));
-                    at = end;
-                }
+                Some((start, shown)) => parts.push((
+                    at..end,
+                    Part::Shown {
+                        pages: Rc::clone(&shown.pages),
+                        offset: shown.offset + (at - start),
+                        mapped: shown.mapped,
+                    },
+                )),
+                None => parts.push((at..end, Part::Own)),
             }
+            at = end;
         }
         parts
     }
@@ -729,8 +813,8 @@ impl Memory {
 
     /// Takes the addresses out of the shared ranges, splitting those at its ends, and returns the parts taken.
     ///
-    /// The addresses taken read as whatever the space's own pages last held there; unicorn's copy stays until a remap.
-    pub(crate) fn unshare(&mut self, addresses: Range<u64>) -> Vec<(Range<u64>, Shown)> {
+    /// The addresses taken read as whatever the space's own pages last held there.
+    pub(crate) fn unshare(&mut self, addresses: Range<u64>) -> Vec<(Range<u64>, Shown<U>)> {
         let overlapping: Vec<u64> = self
             .shared
             .range(..addresses.end)
@@ -770,14 +854,17 @@ impl Memory {
                 },
             ));
         }
+        if !taken.is_empty() {
+            self.remap(addresses);
+        }
         taken
     }
 
-    /// Makes the addresses show the shared pages from the offset, without mapping them anew in unicorn.
+    /// Makes the addresses show the shared pages from the offset.
     pub(crate) fn show_unmapped(
         &mut self,
         addresses: Range<u64>,
-        pages: Rc<SharedPages>,
+        pages: Rc<SharedPages<U>>,
         offset: u64,
         mapped: bool,
     ) {
@@ -789,38 +876,36 @@ impl Memory {
                 pages,
                 offset,
                 mapped,
-                synced: None,
             },
         );
+        self.remap(addresses);
     }
 
     /// Makes the addresses show the shared pages from the offset.
     pub(crate) fn show(
         &mut self,
         addresses: Range<u64>,
-        pages: Rc<SharedPages>,
+        pages: Rc<SharedPages<U>>,
         offset: u64,
         mapped: bool,
     ) {
-        self.show_unmapped(addresses.clone(), pages, offset, mapped);
-        self.remap(addresses);
+        self.show_unmapped(addresses, pages, offset, mapped);
     }
 
     /// Ends the sharing over the addresses, the space keeping as its own what the shared pages held.
     pub(crate) fn keep_shared_bytes(&mut self, addresses: Range<u64>) {
-        for (taken, shown) in self.unshare(addresses.clone()) {
+        for (taken, shown) in self.unshare(addresses) {
             let mut bytes = vec![u8::MIN; to_index(taken.end - taken.start)];
             shown.pages.read(shown.offset, &mut bytes);
             self.write(taken.start, &bytes)
                 .expect("a shared range lies inside the space");
         }
-        self.remap(addresses);
     }
 
     /// Ends the sharing over the addresses where they were mapped from elsewhere, those parts reading as zeros.
     pub(crate) fn drop_mappings(&mut self, addresses: Range<u64>) {
         let mapped: Vec<Range<u64>> = self
-            .list_parts(addresses.clone())
+            .list_parts(addresses)
             .into_iter()
             .filter_map(|(range, part)| match part {
                 Part::Shown { mapped: true, .. } => Some(range),
@@ -833,38 +918,40 @@ impl Memory {
                 self.forget_page(page);
             }
         }
-        self.remap(addresses);
     }
 
     /// Makes the space's own pages over the addresses shared pages it shows, and returns every part as shared pages.
     pub(crate) fn share_out(
         &mut self,
         addresses: Range<u64>,
-    ) -> Result<Vec<(Range<u64>, Rc<SharedPages>, u64)>, CpuError> {
+    ) -> Result<Vec<(Range<u64>, Rc<SharedPages<U>>, u64)>, CpuError> {
         let mut shared = Vec::new();
-        let mut converted = false;
-        for (range, part) in self.list_parts(addresses.clone()) {
+        for (range, part) in self.list_parts(addresses) {
             match part {
                 Part::Shown { pages, offset, .. } => shared.push((range, pages, offset)),
                 Part::Own => {
                     let pages = Rc::new(SharedPages::new(range.end - range.start)?);
-                    let mut bytes = [u8::MIN; PAGE_BYTES];
-                    for page in self
-                        .touched
-                        .list(range.start / PAGE_SIZE..range.end / PAGE_SIZE)
-                    {
-                        let at = page * PAGE_SIZE;
-                        self.read(at, &mut bytes)?;
-                        pages.write(at - range.start, &bytes);
+                    let first = range.start / PAGE_SIZE;
+                    let touched = self.touched.list(first..range.end / PAGE_SIZE);
+                    for run in to_runs(&touched) {
+                        let at = run.start * PAGE_SIZE;
+                        copy_between::<U>(
+                            &self.own,
+                            at..run.end * PAGE_SIZE,
+                            &pages.memory,
+                            at - range.start,
+                        );
+                    }
+                    for page in touched {
+                        pages
+                            .touched
+                            .borrow_mut()
+                            .touch(page - first..page - first + 1);
                     }
                     self.show_unmapped(range.clone(), Rc::clone(&pages), u64::MIN, false);
                     shared.push((range, pages, u64::MIN));
-                    converted = true;
                 }
             }
-        }
-        if converted {
-            self.remap(addresses);
         }
         Ok(shared)
     }
@@ -872,11 +959,10 @@ impl Memory {
     /// Points every shared range at the pages `to_copy` gives for its pages.
     pub(crate) fn retarget(
         &mut self,
-        mut to_copy: impl FnMut(&Rc<SharedPages>) -> Rc<SharedPages>,
+        mut to_copy: impl FnMut(&Rc<SharedPages<U>>) -> Rc<SharedPages<U>>,
     ) {
         for shown in self.shared.values_mut() {
             shown.pages = to_copy(&shown.pages);
-            shown.synced = None;
         }
         self.remap(0..self.end);
     }
@@ -886,40 +972,25 @@ impl Memory {
         self.find_shown(page * PAGE_SIZE).is_some()
     }
 
-    fn is_mapped(&self, page: u64) -> bool {
-        self.pages
-            .get(to_index(page))
-            .is_some_and(|permissions| !permissions.is_empty())
-    }
-
-    /// A copy with the same bytes, permissions and shared ranges, on a new unicorn instance.
+    /// A copy with the same bytes, permissions and shared ranges, on a new unicorn engine.
     pub(crate) fn duplicate(&self) -> Result<Self, CpuError> {
         let mut copy = Self::new(self.end)?;
-        let mut bytes = [u8::MIN; PAGE_BYTES];
-        for page in self.touched.list(0..self.end / PAGE_SIZE) {
-            if self.is_shared(page) {
-                continue;
-            }
-            let at = page * PAGE_SIZE;
-            self.read(at, &mut bytes)?;
-            copy.hidden[to_index(at)..to_index(at) + PAGE_BYTES].copy_from_slice(&bytes);
+        let own: Vec<u64> = self
+            .touched
+            .list(0..self.end / PAGE_SIZE)
+            .into_iter()
+            .filter(|page| !self.is_shared(*page))
+            .collect();
+        for run in to_runs(&own) {
+            let at = run.start * PAGE_SIZE;
+            copy_between::<U>(&self.own, at..run.end * PAGE_SIZE, &copy.own, at);
         }
         copy.touched.clone_from(&self.touched);
-        copy.pages.clone_from(&self.pages);
-        copy.shared = self
-            .shared
-            .iter()
-            .map(|(start, shown)| {
-                (
-                    *start,
-                    Shown {
-                        synced: None,
-                        ..shown.clone()
-                    },
-                )
-            })
-            .collect();
-        copy.remap(0..self.end);
+        copy.unicorn
+            .get_data_mut()
+            .pages
+            .clone_from(&self.unicorn.get_data().pages);
+        copy.shared = self.shared.clone();
         Ok(copy)
     }
 
@@ -937,312 +1008,159 @@ impl Memory {
         pages.into_iter().collect()
     }
 
-    /// Makes unicorn's mappings over the addresses match the pages' permissions again.
+    /// Makes unicorn follow the page table and the shared ranges over the addresses before the guest next runs, and
+    /// records that the guest may write the pages there that allow it.
     pub(crate) fn remap(&mut self, addresses: Range<u64>) {
-        let mut low = addresses.start - addresses.start % PAGE_SIZE;
-        let mut high = addresses.end.div_ceil(PAGE_SIZE) * PAGE_SIZE;
-        let overlapping: Vec<u64> = self
-            .mapped
-            .range(..high)
-            .filter(|(_, (region_end, _))| *region_end > low)
-            .map(|(region_start, _)| *region_start)
-            .collect();
-        for region_start in overlapping {
-            let (region_end, _) = self.mapped.remove(&region_start).expect("a region");
-            self.save_own_pages(region_start..region_end);
-            self.unicorn
-                .mem_unmap(region_start, region_end - region_start)
-                .expect("unmapping a region unicorn has");
-            low = low.min(region_start);
-            high = high.max(region_end);
-        }
-        let last = high / PAGE_SIZE;
-        let mut page = low / PAGE_SIZE;
-        while page < last {
-            let permissions = self.pages[to_index(page)];
-            let run_start = page;
-            let run_last = last.min(page + LARGEST_REGION / PAGE_SIZE);
-            while page < run_last && self.pages[to_index(page)] == permissions {
-                page += 1;
-            }
-            if permissions.is_empty() {
-                continue;
-            }
-            let region = run_start * PAGE_SIZE..page * PAGE_SIZE;
-            let mut held = Vec::new();
-            self.list_held_bytes(region.clone(), &mut held);
-            // A region that refuses stores is mapped writable while its bytes are written, then closed: one rebuild of
-            // unicorn's memory map fewer than opening it after.
-            let opened = !held.is_empty() && !permissions.contains(Permissions::WRITE);
-            let mapped_as = if opened {
-                permissions | Permissions::WRITE
-            } else {
-                permissions
-            };
-            self.unicorn
-                .mem_map(region.start, region.end - region.start, prot(mapped_as))
-                .expect("mapping a region in unicorn");
-            self.mapped.insert(region.start, (region.end, mapped_as));
-            self.write_unicorn(&held);
-            if opened {
-                self.unicorn
-                    .mem_protect(region.start, region.end - region.start, prot(permissions))
-                    .expect("closing a region unicorn has to writes");
-                self.mapped.insert(region.start, (region.end, permissions));
-            }
-            // Its guest may write the pages while it runs, which no touched bit would record.
-            if permissions.contains(Permissions::WRITE) {
-                self.touched.touch(run_start..page);
-            }
-        }
-    }
-
-    /// Copies the own pages unicorn maps over the region into host memory, before the region goes.
-    fn save_own_pages(&mut self, region: Range<u64>) {
-        for page in self
-            .touched
-            .list(region.start / PAGE_SIZE..region.end / PAGE_SIZE)
+        self.stale = true;
+        let pages =
+            to_index(addresses.start / PAGE_SIZE)..to_index(addresses.end.div_ceil(PAGE_SIZE));
+        if !self.pages()[pages.clone()]
+            .iter()
+            .any(|allowed| allowed.contains(Permissions::WRITE))
         {
-            if self.is_shared(page) {
-                continue;
-            }
-            let bytes = page_bytes(page, self.end);
-            self.unicorn
-                .mem_read(
-                    bytes.start,
-                    &mut self.hidden[to_index(bytes.start)..to_index(bytes.end)],
-                )
-                .expect("the region is mapped in unicorn");
-        }
-    }
-
-    /// Adds to the pieces what host memory holds for the pages of a region just mapped, shared or the space's own.
-    fn list_held_bytes(&self, region: Range<u64>, pieces: &mut Vec<(u64, Vec<u8>)>) {
-        for page in region.start / PAGE_SIZE..region.end / PAGE_SIZE {
-            let at = page * PAGE_SIZE;
-            match self.find_shown(at) {
-                Some((start, shown)) => {
-                    let offset = shown.offset + (at - start);
-                    let count = shown.pages.count_from(offset);
-                    if count == usize::MIN || !shown.pages.is_touched(offset / PAGE_SIZE) {
-                        continue;
-                    }
-                    let mut bytes = vec![u8::MIN; count];
-                    shown.pages.read(offset, &mut bytes);
-                    pieces.push((at, bytes));
-                }
-                None if self.touched.contains(page) => {
-                    let bytes = page_bytes(page, self.end);
-                    pieces.push((
-                        at,
-                        self.hidden[to_index(bytes.start)..to_index(bytes.end)].to_vec(),
-                    ));
-                }
-                None => {}
-            }
-        }
-    }
-
-    /// Writes each piece, which lies in one page, into unicorn's mapped pages and drops what unicorn translated from them.
-    ///
-    /// Unicorn's write to a region that refuses stores makes it writable and back, each change rebuilding its memory map
-    /// (MEASURED by the kernel track: 93% of a node start-up), so such a region is made writable once for all pieces.
-    fn write_unicorn(&mut self, pieces: &[(u64, Vec<u8>)]) {
-        let mut refusing = BTreeMap::new();
-        for (address, _) in pieces {
-            if let Some((start, (end, permissions))) = self.mapped.range(..=*address).next_back()
-                && *address < *end
-                && !permissions.contains(Permissions::WRITE)
-            {
-                refusing.insert(*start, (*end, *permissions));
-            }
-        }
-        for (start, (end, permissions)) in &refusing {
-            self.unicorn
-                .mem_protect(*start, end - start, prot(*permissions | Permissions::WRITE))
-                .expect("opening a region unicorn has to writes");
-        }
-        for (address, bytes) in pieces {
-            self.unicorn
-                .mem_write(*address, bytes)
-                .expect("unicorn maps the pages that allow something");
-            self.forget_code(*address..*address + bytes.len() as u64);
-        }
-        for (start, (end, permissions)) in refusing {
-            self.unicorn
-                .mem_protect(start, end - start, prot(permissions))
-                .expect("closing a region unicorn has to writes");
-        }
-    }
-
-    /// Gives unicorn the pages of every shared range it maps that changed since its copy of them was taken.
-    fn copy_shared_in(&mut self) {
-        let mut pieces = Vec::new();
-        let mut taken = Vec::new();
-        for (start, shown) in &self.shared {
-            let version = shown.pages.version.get();
-            if shown.synced == Some(version) {
-                continue;
-            }
-            for page in start / PAGE_SIZE..shown.end / PAGE_SIZE {
-                let at = page * PAGE_SIZE;
-                let offset = shown.offset + (at - start);
-                let count = shown.pages.count_from(offset);
-                if count == usize::MIN
-                    || !self.is_mapped(page)
-                    || !shown.pages.is_touched(offset / PAGE_SIZE)
-                    || shown.synced.is_some_and(|synced| {
-                        !shown
-                            .pages
-                            .has_changed_since(offset..offset + count as u64, synced)
-                    })
-                {
-                    continue;
-                }
-                let mut bytes = vec![u8::MIN; count];
-                shown.pages.read(offset, &mut bytes);
-                pieces.push((at, bytes));
-            }
-            taken.push((*start, version));
-        }
-        self.write_unicorn(&pieces);
-        for (start, version) in taken {
-            if let Some(kept) = self.shared.get_mut(&start) {
-                kept.synced = Some(version);
-            }
-        }
-    }
-
-    /// Gives the shared pages back the bytes the guest wrote to unicorn's copy of them.
-    ///
-    /// Every writable page is compared with the shared pages before any is given back, so a range that shows the same
-    /// pages as another and was not written leaves what the other wrote.
-    fn copy_shared_out(&mut self) {
-        let mut written = Vec::new();
-        let mut copied = [u8::MIN; PAGE_BYTES];
-        let mut held = [u8::MIN; PAGE_BYTES];
-        for (start, shown) in &self.shared {
-            for page in start / PAGE_SIZE..shown.end / PAGE_SIZE {
-                if !self.pages[to_index(page)].contains(Permissions::WRITE) {
-                    continue;
-                }
-                let at = page * PAGE_SIZE;
-                let offset = shown.offset + (at - start);
-                let count = shown.pages.count_from(offset);
-                self.unicorn
-                    .mem_read(at, &mut copied[..count])
-                    .expect("unicorn maps the pages that allow something");
-                shown.pages.read(offset, &mut held[..count]);
-                if copied[..count] != held[..count] {
-                    for (bytes, place) in changed_runs(&held[..count], &copied[..count]) {
-                        written.push((Rc::clone(&shown.pages), offset + place, bytes));
-                    }
-                }
-            }
-        }
-        // Unicorn's copy of a range another range shows too may lack a store the hook did not see, such as DC ZVA's,
-        // so it is taken again before the next turn.
-        let overlapping = self.list_overlapping();
-        let stale: Vec<u64> = overlapping
-            .into_iter()
-            .filter(|start| {
-                written
-                    .iter()
-                    .any(|(pages, _, _)| Rc::ptr_eq(pages, &self.shared[start].pages))
-            })
-            .collect();
-        for (pages, offset, bytes) in written {
-            pages.write(offset, &bytes);
-        }
-        for (start, shown) in &mut self.shared {
-            shown.synced = (!stale.contains(start)).then(|| shown.pages.version.get());
-        }
-    }
-
-    /// Returns the starts of the shared ranges whose shared bytes another shared range of the space shows too.
-    fn list_overlapping(&self) -> Vec<u64> {
-        let ranges: Vec<(u64, &Shown)> = self
-            .shared
-            .iter()
-            .map(|(start, shown)| (*start, shown))
-            .collect();
-        ranges
-            .iter()
-            .filter(|range| ranges.iter().any(|other| shows_same_bytes(range, other)))
-            .map(|(start, _)| *start)
-            .collect()
-    }
-
-    /// Returns the views the store hook keeps alike: the shared ranges that show bytes another shows, cut where the
-    /// pages' permission to store changes.
-    fn list_views(&self) -> Vec<View> {
-        let overlapping = self.list_overlapping();
-        let mut groups: Vec<Rc<SharedPages>> = Vec::new();
-        let mut views = Vec::new();
-        for start in overlapping {
-            let shown = &self.shared[&start];
-            let pages = match groups
-                .iter()
-                .position(|group| Rc::ptr_eq(group, &shown.pages))
-            {
-                Some(group) => group,
-                None => {
-                    groups.push(Rc::clone(&shown.pages));
-                    groups.len() - 1
-                }
-            };
-            let mut at = start;
-            while at < shown.end {
-                let writable = self.read_permissions(at).contains(Permissions::WRITE);
-                let mut end = (at / PAGE_SIZE + 1) * PAGE_SIZE;
-                while end < shown.end
-                    && self.read_permissions(end).contains(Permissions::WRITE) == writable
-                {
-                    end += PAGE_SIZE;
-                }
-                let end = end.min(shown.end);
-                views.push(View {
-                    addresses: at..end,
-                    offset: shown.offset + (at - start),
-                    pages,
-                    writable,
-                });
-                at = end;
-            }
-        }
-        views
-    }
-
-    /// Adds the store hook that copies stores between views, or removes it, and drops what unicorn translated: its
-    /// translations call the hook only if it was there as they were made, and a store with no hook is faster.
-    fn hook_views(&mut self, hooked: bool) {
-        if hooked == self.view_hook.is_some() {
             return;
         }
-        match self.view_hook.take() {
-            Some(hook) => self
-                .unicorn
-                .remove_hook(hook)
-                .expect("removing the store hook"),
-            None => {
-                let hook = self
-                    .unicorn
-                    .add_mem_hook(
-                        HookType::MEM_WRITE,
-                        1,
-                        0,
-                        |unicorn, _, address, size, value| {
-                            copy_store_to_other_views(unicorn, address, size, value);
-                            true
-                        },
-                    )
-                    .expect("adding the store hook");
-                self.view_hook = Some(hook);
+        for (range, part) in self.list_parts(addresses) {
+            for page in range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE) {
+                if !self.pages()[to_index(page)].contains(Permissions::WRITE) {
+                    continue;
+                }
+                match &part {
+                    Part::Own => self.touched.touch(page..page + 1),
+                    Part::Shown { pages, offset, .. } => {
+                        let at = (offset + (page * PAGE_SIZE - range.start)) / PAGE_SIZE;
+                        pages.touched.borrow_mut().touch(at..at + 1);
+                    }
+                }
             }
         }
+    }
+
+    /// Makes unicorn's mappings and TLB follow the shared ranges and the page table, if either changed.
+    fn sync(&mut self) {
+        if !self.stale {
+            return;
+        }
+        self.stale = false;
+        let shown: Vec<Rc<SharedPages<U>>> = self
+            .shared
+            .values()
+            .map(|shown| Rc::clone(&shown.pages))
+            .collect();
+        for pages in &shown {
+            if self.bases.iter().any(|base| Rc::ptr_eq(&base.pages, pages)) {
+                continue;
+            }
+            let address = self.next_base;
+            let length = pages.host_length();
+            self.unicorn
+                .mem_map_host_memory(address, length, Prot::ALL, &pages.memory, u64::MIN)
+                .expect("mapping a block of shared pages in unicorn");
+            self.next_base = address + length + PAGE_SIZE;
+            self.bases.push(Base {
+                pages: Rc::clone(pages),
+                address,
+                seen: None,
+            });
+        }
+        let unused: Vec<(u64, u64)> = self
+            .bases
+            .iter()
+            .filter(|base| !shown.iter().any(|pages| Rc::ptr_eq(&base.pages, pages)))
+            .map(|base| (base.address, base.pages.host_length()))
+            .collect();
+        for (address, length) in unused {
+            self.unicorn
+                .mem_unmap(address, length)
+                .expect("unmapping a block of shared pages unicorn has");
+            self.bases.retain(|base| base.address != address);
+        }
+        let physical = self
+            .shared
+            .iter()
+            .map(|(start, shown)| {
+                let base = self
+                    .bases
+                    .iter()
+                    .find(|base| Rc::ptr_eq(&base.pages, &shown.pages))
+                    .expect("a block shown is mapped");
+                (*start, (shown.end, base.address + shown.offset))
+            })
+            .collect();
+        self.writable.clear();
+        self.executable.clear();
+        for (start, shown) in &self.shared {
+            let pages = &self.unicorn.get_data().pages
+                [to_index(start / PAGE_SIZE)..to_index(shown.end.div_ceil(PAGE_SIZE))];
+            if pages
+                .iter()
+                .any(|allowed| allowed.contains(Permissions::WRITE))
+                && !self
+                    .writable
+                    .iter()
+                    .any(|block| Rc::ptr_eq(block, &shown.pages))
+            {
+                self.writable.push(Rc::clone(&shown.pages));
+            }
+            for (page, allowed) in (*start / PAGE_SIZE..).zip(pages) {
+                let at = page * PAGE_SIZE;
+                if !allowed.contains(Permissions::EXECUTE) {
+                    continue;
+                }
+                match self.executable.last_mut() {
+                    Some((block, run)) if Rc::ptr_eq(block, &shown.pages) && run.end == at => {
+                        run.end = at + PAGE_SIZE;
+                    }
+                    _ => self
+                        .executable
+                        .push((Rc::clone(&shown.pages), at..at + PAGE_SIZE)),
+                }
+            }
+        }
+        let guest = self.unicorn.get_data_mut();
+        guest.physical = physical;
+        guest.fault_pages.clear();
         self.unicorn
-            .ctl_flush_tb()
-            .expect("flushing unicorn's translated blocks");
+            .ctl_flush_tlb()
+            .expect("flushing unicorn's TLB");
+    }
+
+    /// Drops what unicorn translated from every executable block whose pages changed since its translations were made.
+    fn refresh_shared_code(&mut self) {
+        let mut stale = Vec::new();
+        for base in &mut self.bases {
+            let changes = base.pages.changes.get();
+            if base.seen == Some(changes) {
+                continue;
+            }
+            base.seen = Some(changes);
+            stale.extend(
+                self.executable
+                    .iter()
+                    .filter(|(pages, _)| Rc::ptr_eq(pages, &base.pages))
+                    .map(|(_, addresses)| addresses.clone()),
+            );
+        }
+        for addresses in stale {
+            self.forget_code(addresses);
+        }
+    }
+
+    /// Counts a change of every block the guest could write in the turn just run, which this space's own translations
+    /// of it already know of, since unicorn drops a translation itself at a guest's store to its physical page.
+    fn count_guest_writes(&mut self) {
+        for pages in &self.writable {
+            pages.changes.set(pages.changes.get().wrapping_add(1));
+        }
+        for base in &mut self.bases {
+            if self
+                .writable
+                .iter()
+                .any(|pages| Rc::ptr_eq(pages, &base.pages))
+            {
+                base.seen = Some(base.pages.changes.get());
+            }
+        }
     }
 
     /// Writes the registers into unicorn over whatever else its CPU holds.
@@ -1251,18 +1169,18 @@ impl Memory {
         for (index, value) in registers.x.iter().enumerate() {
             unicorn.reg_write(x_register(index), *value)?;
         }
-        unicorn.reg_write(RegisterARM64::SP, registers.sp)?;
-        unicorn.reg_write(RegisterARM64::PC, registers.pc)?;
-        unicorn.reg_write(RegisterARM64::NZCV, registers.pstate)?;
+        unicorn.reg_write(RegisterARM64::SP as i32, registers.sp)?;
+        unicorn.reg_write(RegisterARM64::PC as i32, registers.pc)?;
+        unicorn.reg_write(RegisterARM64::NZCV as i32, registers.pstate)?;
         for (index, value) in registers.v.iter().enumerate() {
             let mut bytes = [0u8; 16];
             bytes[..8].copy_from_slice(&value[0].to_le_bytes());
             bytes[8..].copy_from_slice(&value[1].to_le_bytes());
             unicorn.reg_write_long(q_register(index), &bytes)?;
         }
-        unicorn.reg_write(RegisterARM64::FPSR, u64::from(registers.fpsr))?;
-        unicorn.reg_write(RegisterARM64::FPCR, u64::from(registers.fpcr))?;
-        unicorn.reg_write(RegisterARM64::TPIDR_EL0, registers.tpidr_el0)?;
+        unicorn.reg_write(RegisterARM64::FPSR as i32, u64::from(registers.fpsr))?;
+        unicorn.reg_write(RegisterARM64::FPCR as i32, u64::from(registers.fpcr))?;
+        unicorn.reg_write(RegisterARM64::TPIDR_EL0 as i32, registers.tpidr_el0)?;
         Ok(())
     }
 
@@ -1271,17 +1189,18 @@ impl Memory {
         for (index, value) in registers.x.iter_mut().enumerate() {
             *value = unicorn.reg_read(x_register(index))?;
         }
-        registers.sp = unicorn.reg_read(RegisterARM64::SP)?;
-        registers.pc = unicorn.reg_read(RegisterARM64::PC)?;
-        registers.pstate = unicorn.reg_read(RegisterARM64::NZCV)? & wcontainers_abi::pstate::NZCV;
+        registers.sp = unicorn.reg_read(RegisterARM64::SP as i32)?;
+        registers.pc = unicorn.reg_read(RegisterARM64::PC as i32)?;
+        registers.pstate =
+            unicorn.reg_read(RegisterARM64::NZCV as i32)? & wcontainers_abi::pstate::NZCV;
         for (index, value) in registers.v.iter_mut().enumerate() {
             let bytes = unicorn.reg_read_long(q_register(index))?;
             value[0] = u64::from_le_bytes(bytes[..8].try_into().expect("16 bytes"));
             value[1] = u64::from_le_bytes(bytes[8..16].try_into().expect("16 bytes"));
         }
-        registers.fpsr = unicorn.reg_read(RegisterARM64::FPSR)? as u32;
-        registers.fpcr = unicorn.reg_read(RegisterARM64::FPCR)? as u32;
-        registers.tpidr_el0 = unicorn.reg_read(RegisterARM64::TPIDR_EL0)?;
+        registers.fpsr = unicorn.reg_read(RegisterARM64::FPSR as i32)? as u32;
+        registers.fpcr = unicorn.reg_read(RegisterARM64::FPCR as i32)? as u32;
+        registers.tpidr_el0 = unicorn.reg_read(RegisterARM64::TPIDR_EL0 as i32)?;
         Ok(())
     }
 
@@ -1299,45 +1218,30 @@ impl Memory {
         self.unicorn
             .context_restore(&self.fresh)
             .expect("restoring unicorn's fresh CPU state");
-        let (exit, instructions, _) = self.run_loaded(
-            registers,
-            slice_nanoseconds,
-            deadline,
-            interrupt,
-            FaultRun::AgainInPlace,
-        );
-        (exit, instructions)
+        self.run_loaded(registers, slice_nanoseconds, deadline, interrupt)
     }
 
-    /// Runs as [`Memory::run_turn`] does, on what unicorn's CPU holds besides the registers, and returns besides whether
-    /// a fault stopped it that only a run with translation by hand gives the guest's address of.
+    /// Runs as [`Memory::run_turn`] does, on what unicorn's CPU holds besides the registers.
     fn run_loaded(
         &mut self,
         registers: &mut RegisterBlock,
         slice_nanoseconds: Option<u64>,
         deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
-        fault_run: FaultRun,
-    ) -> (Result<Exit, Unsupported>, u64, bool) {
-        self.copy_shared_in();
+    ) -> (Result<Exit, Unsupported>, u64) {
+        self.sync();
+        self.refresh_shared_code();
         self.load_registers(registers)
             .expect("loading registers into unicorn");
-        let views = self.list_views();
-        self.hook_views(!views.is_empty());
-        *self.unicorn.get_data_mut() = Stopped {
-            deadline,
-            interrupt,
-            views,
-            ..Stopped::default()
-        };
+        self.unicorn.get_data_mut().start_run(deadline, interrupt);
         let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
             usize::try_from(nanoseconds.max(ONE_INSTRUCTION_NANOSECONDS)).unwrap_or(usize::MAX)
         });
-        let mut result = self.start(registers.pc, count);
-        let mut stopped = std::mem::take(self.unicorn.get_data_mut());
+        let result = self.start(registers.pc, count);
+        let mut stopped = self.unicorn.get_data_mut().take_stopped();
         let pc = self
             .unicorn
-            .reg_read(RegisterARM64::PC)
+            .reg_read(RegisterARM64::PC as i32)
             .expect("reading the program counter");
         // A branch to a misaligned upper-half address faults on the program counter's alignment before translation,
         // where QEMU raised the address's size.
@@ -1346,57 +1250,19 @@ impl Memory {
         {
             stopped.exception = Some(EXCEPTION_UNDEFINED);
         }
-        let faulted = stopped.fault.is_some()
-            || matches!(
-                stopped.exception,
-                Some(EXCEPTION_PREFETCH_ABORT | EXCEPTION_DATA_ABORT)
-            );
-        if faulted && fault_run == FaultRun::AgainInPlace {
-            let instructions = stopped.instructions;
-            (result, stopped) = self.find_guest_fault(pc);
-            stopped.instructions = instructions;
-        }
         self.save_registers(registers)
             .expect("reading registers from unicorn");
-        self.copy_shared_out();
+        self.count_guest_writes();
         (
             self.to_exit(result, &stopped, registers),
             stopped.instructions,
-            faulted && fault_run == FaultRun::Reported,
         )
     }
 
-    /// Sets how unicorn translates addresses: by hand, through the TLB hook, or as QEMU does with the MMU off.
-    fn translate_by_hand(&mut self, by_hand: bool) {
-        let kind = if by_hand {
-            TlbType::VIRTUAL
-        } else {
-            TlbType::CPU
-        };
-        self.unicorn
-            .ctl_set_tlb_type(kind)
-            .expect("setting unicorn's TLB");
-        self.unicorn
-            .ctl_flush_tlb()
-            .expect("flushing unicorn's TLB");
-    }
-
-    /// Runs the instruction a fault stopped at once more with addresses translated by hand, which gives a fault the
-    /// address the guest used, tag and all, and an address past the physical ones the fault hook; an alignment fault
-    /// comes before translation and stays one.
-    ///
-    /// The registers are as the fault left them, which may hold part of what the instruction loaded.
-    fn find_guest_fault(&mut self, pc: u64) -> (Result<(), uc_error>, Stopped) {
-        self.translate_by_hand(true);
-        *self.unicorn.get_data_mut() = Stopped::default();
-        let result = self.start(pc, ONE_INSTRUCTION_COUNT);
-        let stopped = std::mem::take(self.unicorn.get_data_mut());
-        self.translate_by_hand(false);
-        (result, stopped)
-    }
-
-    /// Starts unicorn at the address for the count of instructions, none for no limit.
+    /// Starts unicorn at the address for the count of instructions, none for no limit, with its TLB following the
+    /// page table.
     fn start(&mut self, address: u64, count: usize) -> Result<(), uc_error> {
+        self.sync();
         if count > UNICORN_NO_LIMIT && !self.counting {
             self.unicorn
                 .ctl_flush_tb()
@@ -1404,6 +1270,7 @@ impl Memory {
         }
         // Unicorn drops its blocks itself when counting stops.
         self.counting = count > UNICORN_NO_LIMIT;
+        self.translated = true;
         self.unicorn
             .emu_start(address, u64::MAX, UNICORN_NO_TIMEOUT, count)
     }
@@ -1418,29 +1285,6 @@ impl Memory {
         predicates: &mut Predicates,
         scratch: u64,
     ) -> (Result<Exit, Unsupported>, u64) {
-        let (before, predicates_before) = (*registers, *predicates);
-        let (exit, instructions, faulted) =
-            self.run_instruction_once(registers, predicates, scratch, FaultRun::Reported);
-        if !faulted {
-            return (exit, instructions);
-        }
-        // The whole instruction again from its state, translated by hand: a fault may have left part of a load.
-        (*registers, *predicates) = (before, predicates_before);
-        self.translate_by_hand(true);
-        let (exit, instructions, _) =
-            self.run_instruction_once(registers, predicates, scratch, FaultRun::Kept);
-        self.translate_by_hand(false);
-        (exit, instructions)
-    }
-
-    /// Runs one instruction as [`Memory::run_instruction`] does, once, with the fault run asked for.
-    fn run_instruction_once(
-        &mut self,
-        registers: &mut RegisterBlock,
-        predicates: &mut Predicates,
-        scratch: u64,
-        fault_run: FaultRun,
-    ) -> (Result<Exit, Unsupported>, u64, bool) {
         let page = scratch..scratch + PAGE_SIZE;
         let data = scratch + PREDICATE_DATA;
         self.set_permissions(page.clone(), Permissions::all());
@@ -1455,13 +1299,7 @@ impl Memory {
             .expect("restoring unicorn's fresh CPU state");
         self.run_helper(scratch, data, PREDICATE_LOADER.len());
         self.set_permissions(page.clone(), Permissions::empty());
-        let ran = self.run_loaded(
-            registers,
-            Some(ONE_INSTRUCTION_NANOSECONDS),
-            None,
-            None,
-            fault_run,
-        );
+        let ran = self.run_loaded(registers, Some(ONE_INSTRUCTION_NANOSECONDS), None, None);
         self.set_permissions(page.clone(), Permissions::all());
         self.run_helper(scratch + PREDICATE_SAVER, data, PREDICATE_SAVER_CODE.len());
         let mut bytes = [u8::MIN; PREDICATE_BYTES];
@@ -1477,9 +1315,9 @@ impl Memory {
         self.unicorn
             .reg_write(x_register(PREDICATE_BASE), data)
             .expect("writing X0");
-        *self.unicorn.get_data_mut() = Stopped::default();
+        self.unicorn.get_data_mut().start_run(None, None);
         let result = self.start(code, count);
-        let stopped = std::mem::take(self.unicorn.get_data_mut());
+        let stopped = self.unicorn.get_data_mut().take_stopped();
         assert!(
             result.is_ok() && stopped.exception.is_none() && stopped.fault.is_none(),
             "the predicate helper code ran: {result:?}, exception {:?}, fault {:?}",
@@ -1543,32 +1381,6 @@ impl Memory {
     }
 }
 
-/// Returns whether two shared ranges of a space, each with its start, show some of the same shared bytes.
-fn shows_same_bytes((start, shown): &(u64, &Shown), (other_start, other): &(u64, &Shown)) -> bool {
-    start != other_start
-        && Rc::ptr_eq(&shown.pages, &other.pages)
-        && shown.offset < other.offset + (other.end - other_start)
-        && other.offset < shown.offset + (shown.end - start)
-}
-
-/// Returns each run of bytes that differs between two copies of a page, with its place in the page.
-fn changed_runs(before: &[u8], after: &[u8]) -> Vec<(Vec<u8>, u64)> {
-    let mut runs = Vec::new();
-    let mut place = usize::MIN;
-    while place < after.len() {
-        if before[place] == after[place] {
-            place += 1;
-            continue;
-        }
-        let start = place;
-        while place < after.len() && before[place] != after[place] {
-            place += 1;
-        }
-        runs.push((after[start..place].to_vec(), start as u64));
-    }
-    runs
-}
-
 fn prot(permissions: Permissions) -> Prot {
     let mut prot = Prot::NONE.0;
     if permissions.contains(Permissions::READ) {
@@ -1614,7 +1426,7 @@ fn to_index(number: u64) -> usize {
 ///
 /// A write of a system register through `CP_REG` is what makes unicorn rebuild the flags its translations read, so the
 /// level is changed before it.
-fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
+fn enter_user_level<U: Unicorn<Guest>>(unicorn: &mut U) {
     let mut monitor = MONITOR_CONTROL;
     unicorn
         .reg_read_arm64_coproc(&mut monitor)
@@ -1623,7 +1435,7 @@ fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
         .reg_write_arm64_coproc(&MONITOR_CONTROL.val(monitor.val | LOWER_LEVELS_AARCH64))
         .expect("writing SCR_EL3");
     unicorn
-        .reg_write(RegisterARM64::CPACR_EL1, USER_FEATURE_ACCESS)
+        .reg_write(RegisterARM64::CPACR_EL1 as i32, USER_FEATURE_ACCESS)
         .expect("writing CPACR_EL1");
     unicorn
         .reg_write_arm64_coproc(&MONITOR_FEATURE_TRAPS.val(MONITOR_TRAPS_NONE))
@@ -1635,7 +1447,7 @@ fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
         .reg_write_arm64_coproc(&COUNTER_CONTROL.val(USER_COUNTERS_TRAPPED))
         .expect("writing CNTKCTL_EL1");
     unicorn
-        .reg_write(RegisterARM64::PSTATE, USER_PSTATE)
+        .reg_write(RegisterARM64::PSTATE as i32, USER_PSTATE)
         .expect("writing PSTATE");
     let mut control = SYSTEM_CONTROL;
     unicorn
@@ -1746,9 +1558,324 @@ impl Predicates {
 
 #[cfg(test)]
 mod tests {
-    use unicorn_engine::RegisterARM64;
+    use std::rc::Rc;
 
-    use super::{changed_runs, q_register, x_register};
+    use wcontainers_abi::{Access, Exit, PAGE_SIZE, Permissions, RegisterBlock};
+    use wcontainers_unicorn::{Prot, RegisterARM64, Unicorn};
+    use wcontainers_unicorn_direct::DirectUnicorn;
+    use wcontainers_unicorn_recording::{Call, RecordingUnicorn};
+
+    use super::{
+        FAULT_PAGES, Guest, Memory, SHARED_BASE, SharedPages, TouchedPages, q_register, to_runs,
+        x_register,
+    };
+
+    /// Where the tests' spaces end: 16 pages.
+    const END: u64 = 16 * PAGE_SIZE;
+    /// Where the tests' code starts, the second page.
+    const CODE: u64 = PAGE_SIZE;
+    /// [SVC](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SVC--Supervisor-call-) #0.
+    const SYSTEM_CALL: u32 = 0xD400_0001;
+    /// [STR (immediate)](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--)
+    /// of X1 to the address in X0, unsigned offset 0.
+    const STORE_X1_AT_X0: u32 = 0xF900_0001;
+    /// The same of W1, the low 32 bits of X1.
+    const STORE_W1_AT_X0: u32 = 0xB900_0001;
+    /// The slice of the tests' turns, in instructions.
+    const SLICE: u64 = 1000;
+    /// A value the tests store.
+    const WORD: u64 = 0x1122_3344_5566_7788;
+    /// A tag in an address's top byte, which TBI0 leaves out of translation.
+    const TAG: u64 = 0x5A << 56;
+    /// Bit 55, which puts an address in the upper half.
+    const UPPER: u64 = 1 << 55;
+
+    type Direct = DirectUnicorn<Guest>;
+    type Recording = RecordingUnicorn<DirectUnicorn<Guest>>;
+
+    /// [MOVZ](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero-) of the
+    /// 16-bit value into X1.
+    const fn move_into_x1(value: u16) -> u32 {
+        0xD280_0001 | (value as u32) << 5
+    }
+
+    fn read_write() -> Permissions {
+        Permissions::READ | Permissions::WRITE
+    }
+
+    fn read_execute() -> Permissions {
+        Permissions::READ | Permissions::EXECUTE
+    }
+
+    fn to_code(words: &[u32]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    /// Returns a space with the code at [`CODE`], which allows reading and running it.
+    fn with_code<U: Unicorn<Guest>>(code: &[u32]) -> Memory<U> {
+        let mut memory = Memory::<U>::new(END).expect("a space");
+        memory
+            .write(CODE, &to_code(code))
+            .expect("the code written");
+        memory.set_permissions(CODE..CODE + PAGE_SIZE, read_execute());
+        memory
+    }
+
+    /// Runs from the address with X0 and X1 holding the values, for a slice of the count of instructions, and returns
+    /// how it ended and the registers it left.
+    fn run<U: Unicorn<Guest>>(
+        memory: &mut Memory<U>,
+        from: u64,
+        x0: u64,
+        x1: u64,
+        count: u64,
+    ) -> (Exit, RegisterBlock) {
+        let mut registers = RegisterBlock::ZERO;
+        registers.pc = from;
+        registers.x[0] = x0;
+        registers.x[1] = x1;
+        let exit = memory
+            .run_turn(&mut registers, Some(count), None, None)
+            .0
+            .expect("a turn the stand-in supports");
+        (exit, registers)
+    }
+
+    fn read_page<U: Unicorn<Guest>>(memory: &Memory<U>, address: u64) -> Vec<u8> {
+        let mut bytes = vec![0; PAGE_SIZE as usize];
+        memory
+            .read(address, &mut bytes)
+            .expect("a page of the space");
+        bytes
+    }
+
+    fn read_word<U: Unicorn<Guest>>(memory: &Memory<U>, address: u64) -> u64 {
+        let mut bytes = [0; 8];
+        memory
+            .read(address, &mut bytes)
+            .expect("a word of the space");
+        u64::from_le_bytes(bytes)
+    }
+
+    /// THE STAND-IN'S HOSTILE-GUEST TEST OF ITS RULE: a guest that stores to every address it can name, tagged, in the
+    /// upper half, past the space's end and at the physical addresses unicorn maps its blocks and fault pages at, changes
+    /// only bytes of pages the page table lets it write, through every view of them, and faults at the address it used.
+    #[test]
+    fn a_hostile_guest_writes_only_what_the_page_table_lets_it() {
+        let mut memory = with_code::<Direct>(&[STORE_X1_AT_X0]);
+        let mut other = with_code::<Direct>(&[STORE_X1_AT_X0]);
+        let block: Rc<SharedPages<Direct>> = Rc::new(SharedPages::new(PAGE_SIZE).expect("a block"));
+        let kept: Vec<u8> = (0..PAGE_SIZE).map(|index| (index % 251) as u8).collect();
+        let page = |index: u64| index * PAGE_SIZE;
+        memory.set_permissions(page(2)..page(3), read_write());
+        memory
+            .write(page(3), &kept)
+            .expect("the read-only page's bytes");
+        memory.set_permissions(page(3)..page(4), Permissions::READ);
+        memory
+            .write(page(4), &kept)
+            .expect("the bytes of a page that allows nothing");
+        memory.show(page(5)..page(6), Rc::clone(&block), 0, true);
+        memory.set_permissions(page(5)..page(6), read_write());
+        memory.show(page(6)..page(7), Rc::clone(&block), 0, true);
+        memory.set_permissions(page(6)..page(7), Permissions::READ);
+        other.show(page(5)..page(6), Rc::clone(&block), 0, true);
+        other.set_permissions(page(5)..page(6), Permissions::READ);
+        let code = read_page(&memory, CODE);
+        let refused = [
+            CODE,
+            page(3),
+            page(4) + 8,
+            page(6),
+            page(3) | TAG,
+            page(2) | UPPER,
+            END,
+            END - 4,
+            SHARED_BASE,
+            FAULT_PAGES,
+            u64::MAX - 7,
+        ];
+        for address in refused {
+            assert_eq!(
+                run(&mut memory, CODE, address, WORD, 1).0,
+                Exit::MemoryFault {
+                    address,
+                    access: Access::Write,
+                },
+                "a store at {address:#x}"
+            );
+        }
+        assert_eq!(
+            run(&mut other, CODE, page(5), WORD, 1).0,
+            Exit::MemoryFault {
+                address: page(5),
+                access: Access::Write,
+            },
+            "a store to the block through another space's read-only view"
+        );
+        assert_eq!(read_page(&memory, CODE), code);
+        assert_eq!(read_page(&memory, page(3)), kept);
+        assert_eq!(read_page(&memory, page(4)), kept);
+        assert_eq!(read_page(&memory, page(6)), vec![0; PAGE_SIZE as usize]);
+        // The stores the page table allows, a tagged one among them, reach the page and every view of the block.
+        for address in [page(2), page(2) + 8 | TAG, page(5) + 16] {
+            assert_eq!(
+                run(&mut memory, CODE, address, WORD, 1).0,
+                Exit::Stop,
+                "a store at {address:#x}"
+            );
+        }
+        assert_eq!(read_word(&memory, page(2)), WORD);
+        assert_eq!(read_word(&memory, page(2) + 8), WORD);
+        assert_eq!(read_word(&memory, page(6) + 16), WORD);
+        assert_eq!(read_word(&other, page(5) + 16), WORD);
+    }
+
+    /// Code changed after unicorn translated it runs as changed: written by our side, written by a guest through
+    /// another view of the same block in the same space or in another space, and rewritten while not executable.
+    #[test]
+    fn changed_code_runs_as_changed() {
+        let page = |index: u64| index * PAGE_SIZE;
+        let ran = |memory: &mut Memory<Direct>, from: u64| {
+            let (exit, registers) = run(memory, from, 0, 0, SLICE);
+            assert!(
+                matches!(exit, Exit::Syscall(_)),
+                "the code ran to its system call: {exit:?}"
+            );
+            registers.x[1]
+        };
+        let mut storing = with_code::<Direct>(&[STORE_W1_AT_X0, SYSTEM_CALL]);
+        let mut running = Memory::<Direct>::new(END).expect("a space");
+        let block: Rc<SharedPages<Direct>> = Rc::new(SharedPages::new(PAGE_SIZE).expect("a block"));
+        block.write(0, &to_code(&[move_into_x1(1), SYSTEM_CALL]));
+        storing.show(page(5)..page(6), Rc::clone(&block), 0, true);
+        storing.set_permissions(page(5)..page(6), read_write());
+        storing.show(page(6)..page(7), Rc::clone(&block), 0, true);
+        storing.set_permissions(page(6)..page(7), read_execute());
+        running.show(page(8)..page(9), Rc::clone(&block), 0, true);
+        running.set_permissions(page(8)..page(9), read_execute());
+        assert_eq!(ran(&mut running, page(8)), 1);
+        assert_eq!(ran(&mut storing, page(6)), 1);
+        // Our side writes the block.
+        block.write(0, &move_into_x1(2).to_le_bytes());
+        assert_eq!(ran(&mut running, page(8)), 2);
+        assert_eq!(ran(&mut storing, page(6)), 2);
+        // The storing space's guest writes it through its writable view.
+        let (exit, _) = run(&mut storing, CODE, page(5), u64::from(move_into_x1(3)), 1);
+        assert_eq!(exit, Exit::Stop);
+        assert_eq!(ran(&mut storing, page(6)), 3);
+        assert_eq!(ran(&mut running, page(8)), 3);
+        // Our side rewrites the running space's own code while it may not run, then lets it run again.
+        let mut own = with_code::<Direct>(&[move_into_x1(4), SYSTEM_CALL]);
+        assert_eq!(ran(&mut own, CODE), 4);
+        own.set_permissions(CODE..CODE + PAGE_SIZE, read_write());
+        own.write(CODE, &move_into_x1(5).to_le_bytes())
+            .expect("the code rewritten");
+        own.set_permissions(CODE..CODE + PAGE_SIZE, read_execute());
+        assert_eq!(ran(&mut own, CODE), 5);
+        // And while it may run.
+        own.write(CODE, &move_into_x1(6).to_le_bytes())
+            .expect("the code rewritten");
+        assert_eq!(ran(&mut own, CODE), 6);
+    }
+
+    /// Unicorn maps the space's own memory once, and a block once from the first turn after a space shows it until the
+    /// first after none of its ranges does; a change of permissions maps nothing, and code is dropped only where it ran.
+    #[test]
+    fn mappings_are_made_once_and_code_is_dropped_where_it_changed() {
+        let page = |index: u64| index * PAGE_SIZE;
+        let mut memory = Memory::<Recording>::new(END).expect("a space");
+        let all = Prot::ALL.0;
+        assert_eq!(
+            memory.unicorn.take_calls(),
+            vec![Call::MemMapHostMemory {
+                address: 0,
+                size: END,
+                perms: all,
+                offset: 0,
+            }]
+        );
+        memory.set_permissions(CODE..CODE + PAGE_SIZE, read_execute());
+        memory.set_permissions(page(2)..page(4), read_write());
+        memory.set_permissions(page(3)..page(4), Permissions::READ);
+        memory
+            .write(CODE, &SYSTEM_CALL.to_le_bytes())
+            .expect("the code written");
+        assert_eq!(memory.unicorn.take_calls(), Vec::new());
+        assert!(matches!(
+            run(&mut memory, CODE, 0, 0, SLICE).0,
+            Exit::Syscall(_)
+        ));
+        let start = Call::EmuStart {
+            begin: CODE,
+            count: SLICE as usize,
+        };
+        assert_eq!(
+            memory.unicorn.take_calls(),
+            vec![Call::CtlFlushTb, start.clone()]
+        );
+        memory
+            .write(CODE, &SYSTEM_CALL.to_le_bytes())
+            .expect("the code written again");
+        memory.write(page(2), &[1]).expect("a byte of data written");
+        memory.set_permissions(CODE..CODE + PAGE_SIZE, read_write());
+        memory.set_permissions(CODE..CODE + PAGE_SIZE, read_execute());
+        let block: Rc<SharedPages<Recording>> =
+            Rc::new(SharedPages::new(PAGE_SIZE).expect("a block"));
+        memory.show(page(5)..page(6), Rc::clone(&block), 0, true);
+        memory.set_permissions(page(5)..page(6), read_write());
+        assert!(matches!(
+            run(&mut memory, CODE, 0, 0, SLICE).0,
+            Exit::Syscall(_)
+        ));
+        assert_eq!(
+            memory.unicorn.take_calls(),
+            vec![
+                Call::CtlRemoveCache {
+                    address: CODE,
+                    end: CODE + 4,
+                },
+                Call::CtlRemoveCache {
+                    address: CODE,
+                    end: CODE + PAGE_SIZE,
+                },
+                Call::MemMapHostMemory {
+                    address: SHARED_BASE,
+                    size: PAGE_SIZE,
+                    perms: all,
+                    offset: 0,
+                },
+                start.clone(),
+            ]
+        );
+        memory.drop_mappings(page(5)..page(6));
+        assert!(matches!(
+            run(&mut memory, CODE, 0, 0, SLICE).0,
+            Exit::Syscall(_)
+        ));
+        assert_eq!(
+            memory.unicorn.take_calls(),
+            vec![
+                Call::MemUnmap {
+                    address: SHARED_BASE,
+                    size: PAGE_SIZE,
+                },
+                start,
+            ]
+        );
+    }
+
+    #[test]
+    fn touched_pages_are_listed_in_order_and_runs_are_cut() {
+        let mut touched = TouchedPages::new(300);
+        touched.touch(3..5);
+        touched.touch(130..131);
+        touched.touch(299..300);
+        assert_eq!(touched.list(0..300), vec![3, 4, 130, 299]);
+        assert_eq!(touched.list(4..299), vec![4, 130]);
+        let pages: Vec<u64> = (10..30).chain([40, 41]).collect();
+        assert_eq!(to_runs(&pages), vec![10..26, 26..30, 40..42]);
+    }
 
     #[test]
     fn register_numbers_end_where_unicorn_numbers_them() {
@@ -1771,15 +1898,5 @@ mod tests {
     #[should_panic(expected = "no vector register Q32")]
     fn a_vector_register_past_q31_is_refused() {
         q_register(32);
-    }
-
-    #[test]
-    fn changed_runs_are_the_bytes_that_differ() {
-        let before = [0, 1, 2, 3, 4, 5];
-        let after = [0, 9, 9, 3, 4, 8];
-        assert_eq!(
-            changed_runs(&before, &after),
-            vec![(vec![9, 9], 1), (vec![8], 5)]
-        );
     }
 }

@@ -1,0 +1,26 @@
+[package]
+name = "wcontainers-unicorn-recording"
+description = "An engine that records each call changing its memory, its translations or running it, and passes every call on."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-2.0-only"
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-unicorn = { path = "../.." }
+
+[dev-dependencies]
+wcontainers-unicorn-conformance = { path = "../../conformance" }
+wcontainers-unicorn-direct = { path = "../direct" }
+
+[lints]
+workspace = true

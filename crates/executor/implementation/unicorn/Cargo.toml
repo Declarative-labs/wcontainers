@@ -32,8 +32,9 @@ wcontainers-byte-sink = { path = "../../../byte-sink" }
 wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
-unicorn-engine = "2.1.5"
-memmap2 = "0.9.12"
+# Unicorn's engine with host memory lent to it, the one place its unsafe calls are made.
+wcontainers-unicorn = { path = "unicorn" }
+wcontainers-unicorn-direct = { path = "unicorn/implementation/direct" }
 coarsetime = "0.1.38"
 # The kernel test harness, from here on.
 wcontainers-kernel = { path = "../../../kernel", optional = true }
@@ -78,6 +79,10 @@ procfs = { version = "0.18.0", default-features = false }
 # The heap allocations a test process makes, counted without a global allocator of our own.
 stats_alloc = "0.1.10"
 wcontainers-executor-conformance = { path = "../../conformance" }
+# An engine that records the calls a space makes, for the space's own tests.
+wcontainers-unicorn-recording = { path = "unicorn/implementation/recording" }
+# The engine whose guest writes everything it may write, kept in the workspace so that its tests run with the rest.
+wcontainers-unicorn-hostile = { path = "unicorn/implementation/hostile" }
 # The behaviors the suite's stand-in is checked against: the first known behavior of each instruction.
 wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
 wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }

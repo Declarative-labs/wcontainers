@@ -1077,6 +1077,34 @@ where
     );
 }
 
+/// Checks that a copy over pages this space wrote leaves the source's bytes there, zeros where the source has none.
+pub fn copy_from_over_written_pages_leaves_the_source_bytes<Chip: Executor>(executor: Chip) {
+    let (source, source_table) = create_memory(&executor);
+    let (copy, mut copy_table) = create_memory(&executor);
+    let written = pattern(FIRST_PATTERN, length(&page(CODE)));
+    write_bytes(&source, CODE, &written);
+    write_bytes(&copy, CODE, &pattern(SECOND_PATTERN, length(&page(CODE))));
+    write_bytes(&copy, DATA, &pattern(THIRD_PATTERN, length(&page(DATA))));
+    assert_eq!(
+        copy_table.copy_from(page(CODE), &source_table, CODE),
+        Ok(())
+    );
+    assert_eq!(
+        copy_table.copy_from(page(DATA), &source_table, DATA),
+        Ok(())
+    );
+    assert_eq!(
+        read_bytes(&copy, page(CODE)),
+        written,
+        "the bytes copied over a written page"
+    );
+    assert_eq!(
+        read_bytes(&copy, page(DATA)),
+        zeros(page(DATA)),
+        "the bytes copied over a written page from a page the source never wrote"
+    );
+}
+
 /// Checks that borrowed bytes have the length of their addresses.
 pub fn borrowed_bytes_have_the_length_of_their_addresses<Chip: Executor>(executor: Chip) {
     let (memory, _table) = create_memory(&executor);
@@ -1626,6 +1654,11 @@ macro_rules! tests {
         #[test]
         fn copy_from_carries_bytes_permissions_and_mappings() {
             $crate::copy_from_carries_bytes_permissions_and_mappings($executor);
+        }
+
+        #[test]
+        fn copy_from_over_written_pages_leaves_the_source_bytes() {
+            $crate::copy_from_over_written_pages_leaves_the_source_bytes($executor);
         }
 
         #[test]

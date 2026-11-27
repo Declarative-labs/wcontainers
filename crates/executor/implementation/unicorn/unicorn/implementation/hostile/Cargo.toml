@@ -1,0 +1,27 @@
+[package]
+name = "wcontainers-unicorn-hostile"
+description = "An engine whose guest writes bytes of its own choosing over every byte it may write before each run."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-2.0-only"
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-unicorn = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../../../../volatile-bytes" }
+
+[dev-dependencies]
+wcontainers-unicorn-conformance = { path = "../../conformance" }
+wcontainers-unicorn-direct = { path = "../direct" }
+
+[lints]
+workspace = true

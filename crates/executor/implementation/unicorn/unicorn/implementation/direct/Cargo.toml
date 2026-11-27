@@ -1,0 +1,35 @@
+[package]
+name = "wcontainers-unicorn-direct"
+description = "Unicorn's own engine with host memory lent to it behind the unicorn trait, each use of unsafe one marked line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-2.0-only"
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-unicorn = { path = "../.." }
+unicorn-engine = "2.1.5"
+# The anonymous mapping each host memory is, made and unmapped safely.
+memmap2 = "0.9.12"
+wcontainers-volatile-bytes = { path = "../../../../../../volatile-bytes" }
+# The one place a pointer's promise is made, and every copy of the bytes.
+wcontainers-volatile-bytes-pointer = { path = "../../../../../../volatile-bytes/implementation/pointer" }
+wcontainers-byte-sink = { path = "../../../../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../../../../byte-source" }
+
+[dev-dependencies]
+wcontainers-unicorn-conformance = { path = "../../conformance" }
+
+# The bindings of an outside API: it denies unsafe code, so that each of its uses is marked.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
