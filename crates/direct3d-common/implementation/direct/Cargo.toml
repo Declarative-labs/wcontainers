@@ -1,0 +1,23 @@
+[package]
+name = "wcontainers-direct3d-common-direct"
+description = "The part of Direct3D that versions 10, 11 and 12 share, from d3dcommon.h through its C ABI: both glues, and every unsafe of the API, each marked."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-direct3d-common = { path = "../.." }
+wcontainers-component-object-model = { path = "../../../component-object-model" }
+wcontainers-component-object-model-direct = { path = "../../../component-object-model/implementation/direct" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+
+# A C boundary: it denies unsafe code, so that each use is marked with its reason.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+type_complexity = "allow"

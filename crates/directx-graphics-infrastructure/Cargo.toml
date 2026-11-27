@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-directx-graphics-infrastructure"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-component-object-model = { path = "../component-object-model" }
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true
