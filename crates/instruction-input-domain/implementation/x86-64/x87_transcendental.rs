@@ -18,6 +18,7 @@ const NEGATIVE: u128 = 1 << 79;
 const SMALLEST_NORMAL: u128 = 0x0001_8000_0000_0000_0000;
 const DENORMAL: u128 = 0x0000_4000_0000_0000_0001;
 const LARGEST: u128 = 0x7FFE_FFFF_FFFF_FFFF_FFFF;
+const INFINITY: u128 = 0x7FFF_8000_0000_0000_0000;
 /// FNINIT's FCW.
 const INITIAL_CONTROL: u16 = 0x037F;
 /// Every exception unmasked.
@@ -97,6 +98,15 @@ fn list_binary_edges(function: Function) -> Vec<(u128, u128)> {
             (0x4000_8000_0000_0000_0000, negate(0x4000_C000_0000_0000_0000)),
             (LARGEST, power(-100)),
             (0x3FFB_CCCC_CCCC_CCCC_CCCD, negate(ONE)),
+            // Each multiple of π the table gives for zeros and infinities, so that every rounding control meets it.
+            (0, ONE),
+            (negate(0), 0),
+            (negate(0), negate(0)),
+            (negate(INFINITY), INFINITY),
+            (INFINITY, negate(INFINITY)),
+            (negate(INFINITY), negate(INFINITY)),
+            (negate(INFINITY), ONE),
+            (ONE, negate(INFINITY)),
         ],
         Function::YLogX => vec![
             (ONE, 0x4000_C000_0000_0000_0000),

@@ -62,6 +62,8 @@ pub enum Origin {
     StateAndXsave,
     /// The family of the x87 transcendental forms, JCXZ and the forms the chip source refused.
     X87AndRefused,
+    /// The family of the check's findings: FPATAN's multiples of π, UMONITOR's faults and ENQCMD's PASID.
+    CheckFindings,
 }
 
 /// The forms a bug shows on.
@@ -1360,6 +1362,11 @@ pub enum Bug {
     SixteenBitJumpTargetWhole,
     /// A step in compatibility mode keeps RSP's upper half.
     CompatibilityStepKeepsStackUpperHalf,
+    // The check's findings.
+    /// FPATAN rounds its multiples of π toward zero whatever FCW's rounding control.
+    ArcTangentConstantTruncated,
+    /// FPATAN of ±∞ over -∞ gives ±π/4, not ±3π/4.
+    ArcTangentInfinitiesGiveQuarter,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1989,6 +1996,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CountJumpTestsDoubleword, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
     row(Bug::SixteenBitJumpTargetWhole, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
     row(Bug::CompatibilityStepKeepsStackUpperHalf, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
+    row(Bug::ArcTangentConstantTruncated, "FPATAN", Family::Forms(&[Instruction::Fpatan]), Origin::CheckFindings),
+    row(Bug::ArcTangentInfinitiesGiveQuarter, "FPATAN", Family::Forms(&[Instruction::Fpatan]), Origin::CheckFindings),
 ];
 
 const FISTTP: &[Instruction] =
