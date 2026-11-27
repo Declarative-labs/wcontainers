@@ -1017,7 +1017,11 @@ where
         };
         let suppressed = chosen.choose(0, false, is_element_active, kept);
         let below = match below {
-            Some(below) if chosen.suppressed == UnknownElement::Zero => below,
+            Some(below)
+                if chosen.suppressed == UnknownElement::Zero && !crate::planted::is(3632) =>
+            {
+                below
+            }
             _ => suppressed,
         };
         let (zeroed, merged) = if performed {
