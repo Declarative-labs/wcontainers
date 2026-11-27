@@ -2383,7 +2383,11 @@ fn own_depth_draw_into<O: OpenGlEs>(gpu: &mut Gl<O>, target: u32, rect: [i32; 4]
 }
 
 /// As [`own_draw_into`], for the comparison pass ([`depth::EQUAL`]): the depth test EQUAL against
-/// the depth attachment of `target`, which it does not write, in the full depth range.
+/// the depth attachment of `target`, which it does not write. The depth range stays as the guest's
+/// last draw left it: the pass runs only on a device sampling stored words by the product (where some
+/// collide), and such a device (llvmpipe) clamps `gl_FragDepth` to 0 and 1, as GLES says, not to the
+/// range; a device sampling each word as its nearest float (Direct3D's rule, so ANGLE over
+/// Direct3D 11, which clamps to the range) has no colliding word and never draws it.
 fn own_equal_draw_into<O: OpenGlEs>(gpu: &mut Gl<O>, target: u32, rect: [i32; 4]) {
     gpu.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, target);
     gpu.applied.draw_framebuffer = Some(target);
@@ -2399,10 +2403,6 @@ fn own_equal_draw_into<O: OpenGlEs>(gpu: &mut Gl<O>, target: u32, rect: [i32; 4]
     }
     gl.depth_mask(false);
     v.depth_mask = false;
-    if v.depth_range != [0.0, 1.0] {
-        gl.depth_rangef(0.0, 1.0);
-        v.depth_range = [0.0, 1.0];
-    }
     own_draw(gpu);
 }
 
