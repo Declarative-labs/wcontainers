@@ -778,6 +778,47 @@ machines; the suite runs on Mesa, which the needs file names for the GLES list);
 INFERRED a few microseconds; a cache per vertex array is the way down if it matters); a hostile caller of the C
 side is not needed (no serving glue: these crates only call the library).
 
+**Rerun at 1571b4566** (docs only changed in the output: each value's line ends in a full stop, each method's says
+what it calls; job gac-k, log ac10/tip-1571b4566.log): every bar above the same (IDENTICAL, SAME AS WRITTEN, check,
+wasm32 check, clippy, 4 of 4 tests default and AddressSanitizer, both controls status 101, unsafe lines and marks
+unchanged); linter 2,794 -> 1,519 (summary_without_full_stop 1,270 -> 0, function_summary_not_third_person 191 -> 22;
+summary_unanswered 35 -> 204 is the model rule set, which has no key on the machine). roxmltree 0.20.0: 1 line
+naming `unsafe`, `#![forbid(unsafe_code)]` (MEASURED, same job).
+
+## The destruction notifier, settled by Microsoft's page (2026-11-27)
+
+READ, https://learn.microsoft.com/windows/win32/api/d3dcommon/nn-d3dcommon-id3ddestructionotifier: "To acquire an
+instance of this interface, call QueryInterface on a Direct3D object with the IID of ID3DDestructionNotifier." The page
+names no narrower set, so every Direct3D object answers it, not only buffers and textures (the earlier inference).
+Followed: src/api.rs `every_kind` (every object kind of Direct3D 11 answers ID3DDestructionNotifier), read through
+`Api::faces_of` by all seven places that read faces; the spike's slice keeps the spike's faces (`every_kind: &[]`).
+A program-visible change: every Direct3D 11 object of ours now answers that id, as Windows' do by the page.
+MEASURED at 3aa80a955 (x86-64 job gack7, `.gack/ac3/verify.sh`, log ac3x/verify-3aa80a955.log): the three sets written
+twice IDENTICAL, check and clippy (and --all-targets) status 0; the whole set's 47 hostile tests and 30 probes default
+and ASan status 0 (28 held, 15 and 16 through by rule, as before); slice harness 75 of 75; the hostile set's lie tests
+44 of 44 (both sets, default and ASan); C caller honest (default, ASan) and one fuzzing seed of 10M under ASan, each set
+status 0, 0 reports, 0 objects left: whole set "cases 633 of 635, exports 8 of 8; never reached 2 = unreachable listed 2
+(ID3DBlob's two)", slice 185 of 192 as before; conformance on and through both glues status 0, 0 ASan reports, Direct3D
+11 65 kinds, 945 calls (855 before: the notifier's two methods on 45 more kinds), 941 made, 0 panics.
+
+## AC11, started: the C-header front end and the bridge's census (2026-11-27)
+
+`src/cheader.rs`, command `c-header`: reads the C the bridge is written in (functions, structures, enumerations,
+defines) and gives every parameter and return of every function one row of the Mesa compiler's mapping rule, or lists
+it unmapped. Input: crates/nir/bridge/bridge.h and flat.h as graphics-implementations has them at d19c23829 (where GI8
+part B builds). MEASURED at 1571b4566 (job gac-k, ac10/tip-1571b4566.log): 47 functions (bridge.h's 45 and flat.h's
+wc_nir_flatten, wc_flat_free), 20 structures, 25 enumerations, 12 defines; UNMAPPED 0. Rows (census in
+ac11/census.log): shader changed 24, read 11, made 4 (owned, freed by wc_nir_free on drop), given back 1, shaders made
+into an array 1; numbers 40; declared values 2 (the returned wc_bind_result read as a number and checked: the open
+SECURITY finding); the bridge's memory copied out whole then given back 5 (+5 frees inside); plain data in by value,
+by slice and by fixed array 4, out with a capacity 1; text in 1, texts by stage 1; words in 1, out 1; the compiler's
+options 1 (to AC8's Gallium trait, as NEEDED B1 says).
+Left of AC11: the trait (`crates/mesa-compiler/interface.rs`, the shader type owning one `nir_shader`) and its direct
+crate written from these rows; the bridge's build moved into the direct crate (or linked from nir's); the suite on Mesa.
+
+Not reached in this run: AC8's Gallium trait (after AC11, by NEEDED's order) and the 57 Direct3D 11 methods not glued
+(item 2 of the orchestrator's order); neither waits on another track.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
