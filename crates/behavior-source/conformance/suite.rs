@@ -2,9 +2,11 @@
 
 use std::convert::Infallible;
 
-use wcontainers_behavior_source::BehaviorSource;
+use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
-use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture::{
+    ExecutionState, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator,
+};
 
 /// The provided `execute_single_instruction` gives what `execute_single_instruction_in_place` does: its processor,
 /// and its memory mutations appended, but in what a known behavior leaves undecided.
@@ -78,7 +80,7 @@ where
 ///
 /// Measuring every instruction at once gives each the behavior measuring it alone gives, in the order they are listed.
 pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
-    mut source: Source,
+    source: Source,
     generator: Generator,
 ) where
     Source: BehaviorSource,
@@ -86,17 +88,52 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
         Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
-    let Ok(measurements) = source.measure_instructions(&generator) else {
+    check_measurements(source, &generator, &[]);
+}
+
+/// The behavior measured for each instruction agrees with the source on every generated state, but for the
+/// instructions set aside, for which the source shows no one known behavior.
+///
+/// Each instruction set aside measures as its first known behavior, so measuring every instruction at once still gives
+/// each the behavior measuring it alone gives, in the order they are listed, and one for every instruction.
+pub fn measured_behavior_agrees_with_the_source_but_set_aside<Source, Generator>(
+    source: Source,
+    generator: Generator,
+    set_aside: &[<Source::Architecture as ProcessorArchitecture>::Instruction],
+) where
+    Source: BehaviorSource,
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
+    Generator: DistinguishingStateGenerator<Source::Architecture>,
+{
+    check_measurements(SettingAside { source, set_aside }, &generator, set_aside);
+}
+
+/// Checks the measurements of the source as the two tests above say, the states of the instructions set aside left out.
+fn check_measurements<Source, Generator>(
+    mut source: Source,
+    generator: &Generator,
+    set_aside: &[<Source::Architecture as ProcessorArchitecture>::Instruction],
+) where
+    Source: BehaviorSource,
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
+    Generator: DistinguishingStateGenerator<Source::Architecture>,
+{
+    let Ok(measurements) = source.measure_instructions(generator) else {
         panic!("an instruction shows no one known behavior");
     };
     for (index, instruction) in Source::Architecture::list_instructions().enumerate() {
-        let Ok(precise) = source.measure_instruction(instruction, &generator) else {
+        let Ok(precise) = source.measure_instruction(instruction, generator) else {
             panic!("instruction {index} shows no one known behavior");
         };
         assert!(
             measurements.get(index) == Some(&(instruction, precise)),
             "measuring every instruction gives instruction {index} another behavior than measuring it alone"
         );
+        if set_aside.contains(&instruction) {
+            continue;
+        }
         for before in generator.generate_states(instruction) {
             let Ok(simulated) = precise.simulate_state(before.clone());
             let Ok(executed) = source.execute_single_instruction(before) else {
@@ -114,6 +151,47 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
         measurements.len() == Source::Architecture::list_instructions().count(),
         "measuring every instruction gives another number of behaviors than there are instructions"
     );
+}
+
+/// A source that measures each instruction set aside as its first known behavior without running it.
+struct SettingAside<'list, Source: BehaviorSource> {
+    source: Source,
+    set_aside: &'list [<Source::Architecture as ProcessorArchitecture>::Instruction],
+}
+
+impl<Source: BehaviorSource> BehaviorSource for SettingAside<'_, Source> {
+    type Architecture = Source::Architecture;
+    type Error = Source::Error;
+
+    fn execute_single_instruction_in_place(
+        &mut self,
+        processor: &mut <Self::Architecture as ProcessorArchitecture>::ProcessorState,
+        memory: MemorySnapshot<'_, '_, Self::Architecture>,
+        mutation_hook: &mut impl MemorySink<Self::Architecture>,
+    ) -> Result<(), Self::Error> {
+        self.source
+            .execute_single_instruction_in_place(processor, memory, mutation_hook)
+    }
+
+    fn measure_instruction(
+        &mut self,
+        instruction: <Self::Architecture as ProcessorArchitecture>::Instruction,
+        generator: &impl DistinguishingStateGenerator<Self::Architecture>,
+    ) -> Result<
+        <Self::Architecture as ProcessorArchitecture>::PreciseInstruction,
+        MeasureInstructionError<Self::Architecture, Self::Error>,
+    >
+    where
+        <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
+            Simulator<Self::Architecture, Error = Infallible>,
+    {
+        if !self.set_aside.contains(&instruction) {
+            return self.source.measure_instruction(instruction, generator);
+        }
+        Self::Architecture::list_known_behaviors(instruction)
+            .next()
+            .ok_or(MeasureInstructionError::NoKnownBehavior { instruction })
+    }
 }
 
 /// Checks that the states after an error execute as on a source that met no error.

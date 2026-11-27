@@ -25,7 +25,7 @@ use wcontainers_processor_architecture_arm64::encoding::FixedBits;
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, Exception, PreciseInstruction, Processor,
-    ProcessorExpectation, RegisterValueExpectation, User,
+    ProcessorExpectation, User,
 };
 use wcontainers_random_source::RandomSource;
 
@@ -103,25 +103,31 @@ impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Simulation<S
         self
     }
 
-    /// Returns the processor the expectation holds, each register it leaves undecided read from the random source.
+    /// Returns the processor the expectation holds, each bit it leaves uncompared read from the random source.
+    ///
+    /// A load that may suppress an access is taken as suppressing none, which the expectation always allows.
     fn choose_processor(
         &self,
         expectation: ProcessorExpectation<()>,
     ) -> Result<Processor<()>, SimulationError> {
         let mut processor = expectation.processor;
-        for (value, expected) in processor
+        let uncompared = expectation.uncompared;
+        for (value, bits) in processor
             .general_purpose_registers
             .iter_mut()
-            .zip(expectation.general_purpose_registers)
+            .zip(uncompared.general_purpose_registers)
         {
-            if expected == RegisterValueExpectation::NonDeterministic {
-                *value = self.read_random_word()?;
+            if bits != 0 {
+                *value = (*value & !bits) | (self.read_random_word()? & bits);
             }
         }
-        if expectation.condition_flags == RegisterValueExpectation::NonDeterministic {
+        if !uncompared.condition_flags.is_empty() {
             let [_, _, _, _, high @ ..] = self.read_random_word()?.to_le_bytes();
-            processor.condition_flags =
-                ConditionFlags::from_bits_truncate(u32::from_le_bytes(high));
+            let chosen = ConditionFlags::from_bits_truncate(u32::from_le_bytes(high));
+            processor.condition_flags = processor
+                .condition_flags
+                .difference(uncompared.condition_flags)
+                .union(chosen.intersection(uncompared.condition_flags));
         }
         Ok(processor)
     }

@@ -415,3 +415,198 @@ SECURITY: lines with `unsafe` (`git grep -n unsafe`, raw word) before (`9aaaf77a
 wasmtime 62 to 62 (untouched, X2 is another agent's), simulation 0, conformance 0. No marked exception added, no
 UNSOUND mark, no lint lowered, every crate keeps `[lints] workspace = true`. No dependency added. The hostile-guest
 suite was not run (none exists; the thread-test design review is owed to the owner first).
+
+## X3 repair, the two rulings, and the kernel track's stand-in failures (2026-11-26, evening)
+
+His main is still `ac696ea19` (MEASURED: `git fetch` of his checkout, FETCH_HEAD an ancestor of the branch). After the
+merge below, all 100 files at the top of his 30 interface folders are byte-identical to his main (MEASURED,
+`git diff --quiet ac696ea19` on each). The two `interface.rs` not on his main (`crates/kvm`, `crates/linux-socket-options`)
+are other tracks'.
+
+Which commit carries which (all pushed to `origin/executor-restart`):
+
+| Item | Commit |
+|---|---|
+| `StandIn::refused_in_a_copy` put back (origin's `kernel-port` driver.rs:1717 calls it; `dd61eb7cb` was wrong) | `914b4e9d1` |
+| merge of `origin/kernel-port` `406fba566` (normal, no conflict) | `1d777839b` |
+| time slice: the stand-in and the simulation end an execution's slice with `handle_interrupt`; suite test | `30ca724a8` |
+| the guest's counter read traps on the stand-in (CNTKCTL_EL1 = 0); a trapped MRS/MSR ends the run as the list names it | `c4113f822` |
+| code the kernel wrote over is what runs next (runners codewrite) | `af5897634` |
+| view stores no longer written into views the guest may not store to (host SIGSEGV in privatemap) | `20d552cdf` |
+
+MEASURED: with `1d777839b`, `cargo test --no-run -p wcontainers-executor-unicorn --lib --bins --tests` (the kernel's
+harness, default features) exits 0 on ARM64: the branch merged with `kernel-port` builds again.
+
+### Time slice (ruling: no interface change)
+
+- `StandInConfig { slice_instructions }` and `SimulationConfig { slice_instructions }`, set as the executor is built
+  (`StandIn::configured`, `Simulation::configured`), default `DEFAULT_SLICE_INSTRUCTIONS` = 1,000,000. Not
+  `TranslatorConfig`: the kernel's `ExecutionConfig { translator: () }` is written in the harness (driver.rs:1416,
+  the kernel track's file) and nothing hands it to an executor, so it stays `()`.
+- The stand-in passes what is left of the slice to unicorn's exact instruction count; a stop with no interrupt raised is
+  the slice's end and calls `handle_interrupt`, as an interrupt from outside does. The simulation counts each instruction.
+- Suite: `a_guest_that_loops_forever_is_interrupted_by_its_slice` (a count-down from `u64::MAX`, no interrupter called;
+  fails if the handler is not asked within `SLICE_BOUND_INSTRUCTIONS` = 2^26, or not within 600 s). Every executor runs it
+  through `tests!`; the wasmtime executor (`executor-wasmtime`) must pass it too. `interrupt_after_the_end_does_nothing`
+  now asks that both executions get the same number of interrupts (their own slices), not zero.
+- MEASURED (ARM64, release): stand-in unit 8 of 8, suite 24 of 24 without the agreement and behavior source modules;
+  simulation unit 9 of 9, suite 24 of 24; rustfmt and clippy `-D warnings` clean (stand-in lib and suite, the whole
+  harness with all targets, simulation and suite all targets).
+- The default, by the kernel suite's bounded targets (MEASURED, two full copies, slice 1,000,000 and 100,000, three
+  targets at a time, 2,400 s each): cpulimit, cputime and deadlines reach the bound at BOTH slices (exit 124 after
+  2,400 s, 100% CPU). Cause (READ): the kernel's runner goes on to the next turn after a slice's end without returning
+  (executing.rs:585-586, "one for a slice's end goes on to the next turn"), and the harness's repeatable clock moves only
+  when the runner returns (driver.rs:1762-1766, `arrived_live`), so no deadline or CPU limit ever comes. That is the
+  kernel track's: either the runner returns `Interrupted` at a slice's end, or the clock moves by the slice. The other
+  targets: see the table below. 1,000,000 stays the default: no measurement told the two apart.
+
+### The guest's counter (ruling: no interface change)
+
+- The stand-in writes CNTKCTL_EL1 = 0 (EL0PCTEN and EL0VCTEN clear), so QEMU traps a read of CNTVCT_EL0, CNTPCT_EL0 or
+  CNTFRQ_EL0 at EL0. Unicorn gives no syndrome, so an MRS or MSR (register) QEMU raises as undefined is classified by the
+  arm64 list's own `simulate_system_register_move`: `SystemAccessTrapped { op0 3, op1 3, crn 14, crm 0, op2 2, rt, Read }`
+  for the virtual counter, `UndefinedInstruction` where the list says undefined, a refusal where the list lets it complete.
+- The list already lists CNTFRQ/CNTPCT/CNTVCT_EL0 as `ReadTrapped` (READ: system_register.rs:163-166), so nothing in the
+  instruction list changes.
+- New unit test `a_counter_read_traps` (MEASURED: passes).
+- FOR THE KERNEL TRACK: counterclock still fails (MEASURED: 0 of 2), now in the kernel: running.rs:172 panics,
+  "an execution ended on an exception no exit names: SystemAccessTrapped(..)". The kernel must answer that exception
+  by emulating the read from its clock (write Xt, step the program counter) as the ruling says.
+
+### Code written over (runners codewrite)
+
+Unicorn's `mem_write` keeps the blocks it translated from the bytes written. Every write into unicorn's pages
+(the kernel's writes, own pages copied back on remapping, shared pages copied in) now drops those translations
+(`ctl_remove_cache`). MEASURED: runners 4 of 4 (was 3 of 4).
+
+### Views (privatemap's host SIGSEGV, found on the way)
+
+MEASURED: the privatemap test process died with SIGSEGV in unicorn's `store_memop`, writing one byte below the page
+stored to (gdb). Also at `1d777839b`, so older than today's work. Cause: the store hook copied a store into another view
+with `mem_write`; to a region that refuses stores unicorn makes the region writable and back, which rebuilds its memory map
+and empties the TLB while the store still holds an entry. A version that stopped unicorn after the store to copy outside
+the hook spent minutes rebuilding the memory map at each store (MEASURED, gdb: `flatview_update`). Now the hook copies only
+into views the guest may store to; a read-only view takes the bytes before the next turn, as `copy_shared_out` already
+marks it stale. MEASURED: privatemap 1 of 1, sharedviews 3 of 3, suite `two_views_of_one_page_show_each_store` passes.
+INFERRED limit: a read through a read-only view of bytes stored through a writable view of the same process in the same
+turn, with no trap between, sees the old bytes.
+
+### LTP's hangs and the python SIGSEGVs: the cause is the kernel's (FOR THE KERNEL TRACK)
+
+Found with getrandom01 on `kernel-port`'s harness (a throwaway trace in a scratch copy, not committed): after its TPASS
+lines the test's child waits on a private futex at 0xf7a122a8 with value 2 (glibc's lock), and later its parent waits on
+the same word. The stand-in showed that page in BOTH processes as the same shared block, libc's file at offset 0x1b2000,
+readable and writable. ld.so maps libc's text from the file (0xf7860000, 0x1be010 bytes), then its bss over the text's tail
+with `mmap(0xf7a12000, .., MAP_FIXED | MAP_ANONYMOUS)`. The kernel's `AddressMap::insert` (memory.rs:1479-1486) removes the
+old file mapping but never calls `unmap_shared` for it, as `unmap` does (memory.rs:1513); `clear_used` then calls
+`MemorySpace::zero`, which by the interface only writes zeros (through the mapping, into libc's page cache), and the bss
+page stays a view of libc's file. So every process's bss page there is one page: locks, malloc state and libc's file
+content are shared across processes (INFERRED: also the python SIGSEGVs). The old `Cpu::zero` ended sharing; the
+interface's `zero` does not.
+
+The fix, for the kernel track (scratch `executor-restart/x3-ltp/kernel-insert-unmaps-file-pages.patch`, 6 lines): in
+`insert`, call `cpu.unmap_shared(memory, old.start, old.end - old.start)` for each removed `Backing::File` mapping
+before `clear_used`. MEASURED with it applied in a scratch copy of this branch:
+
+| Run | Without (kernel-port's own run) | With the 6 lines |
+|---|---|---|
+| LTP, the kernel track's 30 | 6 match, 24 hang | 30 of 30 verdicts match the reference |
+| sharedmap | 1 of 2 | 2 of 2 |
+| python, one seed (`SCHEDULE_SEEDS=1`) | 0 of 3 (exit 139 at seed 1 of each, MEASURED on `c4113f822` with the code-write fix, three seeds asked) | system program and language test modules pass; system test modules did not end in 5,400 s |
+| LTP, all 4,226 (`LTP_JOBS=12`, limit 600 s) | not run (the 30 above hang already) | 4,144 verdicts match, 82 differ: 25 hang, 8 slower than the limit, 32 wrong answers, 17 parts not built |
+
+The 82 (scratch `executor-restart/x3-ltp/ltpall/compare.txt`): hangs include sched starvation and hackbench01/02,
+msgstress01, dirtyc0w, inotify09, timerfd_settime02 and DIT000-002; wrong answers are mostly sysfs entries skipped (13)
+and a few syscalls (clock_gettime04, mlock201, mincore03, creat05, vma01). None was looked at further.
+
+### The bounded targets (MEASURED, at `c4113f822`, without the kernel fix above; two copies, slice 1,000,000 and 100,000)
+
+| Target | slice 1,000,000 | slice 100,000 |
+|---|---|---|
+| cpulimit, cputime, deadlines, edges, processes, repeats, threads, timers, turns | 2,400 s bound (exit 124), each | the same |
+| counterclock | 0 of 2: kernel panic, `SystemAccessTrapped` (running.rs:172) | the same |
+
+### The stand-in's whole suite at `20d552cdf` (MEASURED, release, 4,407 s job)
+
+| Run | Result |
+|---|---|
+| stand-in unit tests | 8 of 8 |
+| executor suite without the behavior source module | 25 of 25, the agreement test among them |
+| agreement test | 32,748,140 states executed; 576,458 refused, of 39 instructions (798,029 before); 353 set aside; 0 instructions disagree |
+| refusals of MRS / MSR (register) | 720 of 130,377 / 1,800 of 117,357 (124,014 / 100,077 before: the trapped ones now compare as `SystemAccessTrapped`) |
+| simulation unit / suite without the behavior source module | 9 of 9 / 25 of 25 |
+
+### Milestones
+
+- X3's executor part holds by the measurements above (suite 25 of 25, agreement 0 disagree, 0 `unsafe` in the stand-in's
+  files).
+- X3 IS NOT REACHED: the LTP bar (4,169 of 4,226 at line 1444) is 4,144 even with the kernel fix, and 6 of 30 without it
+  on the harness as `kernel-port` has it. Next: X3's LTP part again, waiting on the kernel track (1) taking the 6-line
+  `insert` fix, (2) emulating the trapped counter read, (3) a runner that returns, or a clock that moves, at a slice's end.
+- The wasmtime executor (another agent's) must pass `a_guest_that_loops_forever_is_interrupted_by_its_slice`.
+
+SECURITY: lines with `unsafe` (`git grep -n unsafe`, raw word) before (`1070da05d`) and after (`20d552cdf`): unicorn 29 to
+13 (the merge of `kernel-port` removed the harness's `libc::fork`; the 13 are the harness's: backend/Cargo.toml 3,
+backend/src/main.rs 2, generate.rs 8, all the kernel track's; the stand-in's files 0 to 0), wasmtime 62 to 62 (another
+agent's), simulation 0 to 0, conformance 0 to 0. No marked exception added, no UNSOUND mark, no lint lowered, every crate
+keeps `[lints] workspace = true`. No dependency added. The hostile-guest suite was not run (none exists; the thread-test
+design review is owed to the owner first).
+
+## X3 check repair: the counter read, the whole behavior source suite, LTP on kernel-port's harness (2026-11-27)
+
+### What the check found and the repair (READ: arm64 list `system_register.rs:148-149` on `origin/arm64-instructions`)
+
+- The list names `("DAIF", at(3, 3, 4, 2, 1), A::Trapped)` (SCTLR_EL1.UMA clear): at EL0, MRS X0, DAIF traps to EL1. Since
+  `c4113f822` the stand-in executes it as that trap (`SystemAccessTrapped`), so it is no state the stand-in cannot execute.
+  Repair `5923767b8`: the unexecutable list names WFET X1 (`0xD5031001`) instead, which unicorn stops on as undefined with
+  no syndrome to tell a trap from an undefined instruction.
+- Why the behavior source module did not finish in 1,500 s: each of its tests runs every generated state (33 million at
+  0.68 ms each, about six hours a pass, MEASURED) on one thread. The cut generator is the cause; `5923767b8` gives the
+  module a `Sampled` generator (at most 256 states of each instruction, 596,536 states, MEASURED 34 s for a measuring
+  pass) and does not run `measured_behavior_agrees_with_the_source` on an executor with instructions set aside (its
+  agreement already checks every other instruction).
+- Found on the way, mine: the merge of the arm64 list broke the simulation (`RegisterValueExpectation` became
+  `UncomparedBits`; HINT, MSR immediate gained feature-set behaviors, so the first behavior of HINT is a chip's without
+  FEAT_PAuth and disagreed with XPACLRI's on hint 7). `310aa6eb3`: the simulation draws uncompared bits from its random
+  source; its tests take for each instruction the first behavior that agrees with the more specific encodings' first
+  behaviors. The stand-in reported SSBS, DIT and TCO clear whatever the state held (96 MSR immediate states disagreed):
+  `b828bde70` carries them through (TODO kept: an MSR immediate write of them is not seen), and HINT, which now agrees,
+  leaves the set-aside list (353 to 352).
+
+### MEASURED (Graviton4, release, `-j 12`; job x3b/20261127-075340, synced at the tree of `b828bde70`, pushed)
+
+| Run | Result |
+|---|---|
+| fmt; clippy `-D warnings` (stand-in `--lib --test conformance`, simulation, conformance) | 0; 0; 0 |
+| behavior source, each test alone | next_state 95 s ok; execute_agrees 358 s ok; deterministic 360 s ok; measured 51 s FAILED as expected (`--include-ignored`: set-aside instructions show no one known behavior) |
+| stand-in unit + whole executor suite | 8 of 8; 28 passed, 1 ignored (the measured test), 0 failed, 4,478 s |
+| simulation unit + suite | 9 of 9; 29 of 29 |
+
+Logs: scratch `executor-restart/x3-bsrc/run-b82/`.
+
+### LTP on kernel-port's harness (MEASURED, job x3ltp/20261127-061003 at `ef8ca97de` = kernel-port `353987bad` merged; LTP_JOBS 8, LTP_LIMIT 900 as for the 4,169 runs; load 45 to 156)
+
+- The kernel track took the AddressMap fix (`517923bf4`, `unmap_shared` in `insert`) and the counter emulation (READ).
+  The 30: 30 of 30 verdicts match (was 6 match, 24 hang). The 24 hangs' cause was the kernel's `insert` (found here
+  yesterday, applied by the kernel track); none hangs now.
+- All 4,226: 4,168 match, 58 differ. THE BAR (4,169) IS MISSED BY ONE.
+- Against the 4,169 run `ours-20260930-a9f8631e.tsv`: 4 now pass that timed out (ADSP037, 038, 073, 074); 5 now differ that
+  matched: clock_gettime04 (`CLOCK_REALTIME(gettimeofday)` readings 15 to 17 ms apart), futex_wait05 ("slept for too
+  long"), mtest05, shm_test01, hackbench01 (900 s limit).
+- Rerun of those 5 alone (load 42 to 58): futex_wait05 passes; the other 4 fail the same. A probe with the stand-in's
+  translation drop on writes removed (`af5897634`) gives the same 4: not that. INFERRED: the kernel's new time model or the
+  trapped counter read (each vDSO clock read is now a trap); for the kernel track.
+
+### Milestones
+
+- X3's executor part HOLDS (above): suite 28 + 1 ignored, behavior source three of three that run, 0 `unsafe` in the
+  stand-in's files.
+- X3 IS NOT REACHED: LTP 4,168 of 4,226 (bar 4,169). Next: the kernel track finds why clock_gettime04, mtest05,
+  shm_test01 and hackbench01 slowed since `a9f8631e`; then a full LTP run on a pushed tip.
+
+SECURITY: lines with `unsafe` (`git grep -w unsafe`) before (`922f20713`) and after (`b828bde70`): unicorn 6 to 6 (all in
+the kernel track's harness files), the stand-in's files 0 to 0, simulation 0 to 0, conformance 0 to 0. No marked exception,
+no lint lowered, every crate keeps `[lints] workspace = true`. No dependency added by this track (the lock's changes come
+from the kernel-port merge). All owner interface files byte-identical to his main `ac696ea19` (3 interface files added by
+other tracks exist only here). The hostile-guest suite was not run (none exists; the thread-test design review is owed
+to the owner first).

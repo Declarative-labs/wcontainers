@@ -592,7 +592,12 @@ fn execute_in_place(
     if exception.is_some_and(|exception| !exception.is_taken_after_instruction()) {
         registers.pc = pc;
     }
-    *processor = to_processor(&registers, predicates, exception);
+    *processor = to_processor(
+        &registers,
+        predicates,
+        processor.process_state_controls,
+        exception,
+    );
     let changed = writable
         .into_iter()
         .zip(before)
@@ -672,6 +677,7 @@ impl Executor for StandIn {
                 registers: processor.predicate_registers,
                 first_fault: processor.first_fault_register,
             },
+            process_state_controls: processor.process_state_controls,
             memory,
             raised,
         };
@@ -698,6 +704,9 @@ pub struct StandInExecution<'execution> {
     /// The predicate registers and FFR as the execution started: unicorn's interface reaches neither, and a guest's
     /// whole run has no page to pass them through, so the execution ends with them as they were.
     predicates: Predicates,
+    /// SSBS, DIT and TCO as the execution started, which unicorn's interface does not reach, so the execution ends
+    /// with them as they were.
+    process_state_controls: u64,
     memory: &'execution UnicornSpace,
     raised: Arc<AtomicBool>,
     /// The instructions of a slice, and how many of the current slice the guest has yet to retire.
@@ -762,7 +771,12 @@ impl Execution for StandInExecution<'_> {
                 Stop::Final(exception) => break Some(exception),
             }
         };
-        ExecutionStop::Terminated(to_processor(&self.registers, self.predicates, exception))
+        ExecutionStop::Terminated(to_processor(
+            &self.registers,
+            self.predicates,
+            self.process_state_controls,
+            exception,
+        ))
     }
 }
 
@@ -910,9 +924,11 @@ fn to_register_block(processor: &Processor<()>) -> RegisterBlock {
     }
 }
 
+/// The processor unicorn's registers give, with the predicates and SSBS, DIT and TCO the stand-in carries itself.
 fn to_processor(
     registers: &RegisterBlock,
     predicates: Predicates,
+    process_state_controls: u64,
     exception: Option<Exception>,
 ) -> Processor<()> {
     Processor {
@@ -925,8 +941,8 @@ fn to_processor(
             .map(|[low, high]| u128::from(low) | u128::from(high) << u64::BITS),
         predicate_registers: predicates.registers,
         first_fault_register: predicates.first_fault,
-        // TODO: temporary placeholder until the stand-in carries SSBS, DIT and TCO: it reports them clear.
-        process_state_controls: u64::MIN,
+        // TODO: an MSR (immediate) that writes SSBS, DIT or TCO is not seen, since unicorn's interface reaches none.
+        process_state_controls,
         floating_point_control: u64::from(registers.fpcr),
         floating_point_status: u64::from(registers.fpsr),
         software_thread_id: registers.tpidr_el0,
