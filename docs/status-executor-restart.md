@@ -610,3 +610,52 @@ no lint lowered, every crate keeps `[lints] workspace = true`. No dependency add
 from the kernel-port merge). All owner interface files byte-identical to his main `ac696ea19` (3 interface files added by
 other tracks exist only here). The hostile-guest suite was not run (none exists; the thread-test design review is owed
 to the owner first).
+
+## X3 run 28: no test switched off, node's stall, the LTP set of verdicts, the linter (2026-11-27)
+
+Commits (pushed): `5bc2ee60f`, `db4051178`, `a0f622a9c`, `cf2140cdc`, `432fff607`, `d567c1a91`. His main `ac696ea19` was
+already merged; every owner `interface.rs` is byte-identical to it.
+
+- No test switched off. `measured_behavior_agrees_with_the_source_but_set_aside` (behavior-source conformance) takes the
+  set-aside list: each instruction set aside measures as its first known behavior and is not checked, so the two
+  consistency checks (everything at once against one at a time, the count) still run over every instruction. A state the
+  source refuses is left out and counted; where only refused states tell behaviors apart (Ldff1wGatherExtendedOffset),
+  the first that agrees is taken. `Sampled` keeps, besides its spread, the first state that tells each two behaviors
+  apart (instruction 2295 was indistinguishable on the plain spread). The old function is unchanged for other callers.
+- Node's stall: unicorn's write to a region that refuses stores makes it writable and back, each change rebuilding its
+  memory map. The stand-in now takes into unicorn only the shared pages changed since its copy (a change version per
+  page), opens such a region once for all its writes, maps a region writable while its bytes go in, and restores a
+  remapped region's shared bytes from host memory instead of recopying whole ranges. `copy_from` looks up shared ranges
+  only for pages that show them.
+
+### MEASURED (Graviton4)
+
+| Run | Result |
+|---|---|
+| node `start_up_matches_reference` (debug, harness) | 43 s at `db4051178`, 22 s and 25 s after `432fff607` (was over 600 s) |
+| behavior source group, the kernel check's command (`timeout 1500 ... behavior_source -- --test-threads 4`) | 4 of 4 in 578 s at `cf2140cdc`; `execution_is_deterministic` included |
+| measured test planted: set-aside branch taken by every multi-behavior instruction (first, last behavior) | fails at instruction 43 and at instruction 0 ("disagrees with the source") |
+| whole executor suite at `432fff607` (release) | stand-in 8 of 8; 29 passed, 0 failed, 0 ignored, 6,909 s; simulation 9 of 9, 29 of 29 |
+| harness memory tests at `432fff607` | sharedmap, sharedviews, privatemap, memory, processvm, memfd, faults, standin, hello, zombie, orphans pass; mapflags, sysvshm, threads, busybox `system` fail as in fails16; processes `killed_children_end...` failed once under load, 6 of 6 alone |
+| fmt; clippy `-D warnings` | 0; 0 |
+
+### LTP (job x3n-ltp/20261127-141608 at `432fff607`, LTP_JOBS 8, LTP_LIMIT 900, load 115 to 180)
+
+- 4,226 compared: 4,166 match, 60 differ (bar 4,169).
+- Against `ours-20260930-a9f8631e.tsv`: gained ADSP037, 038, 073, 074; lost mtest05, shm_test01, hackbench01 (900 s
+  timeouts) and six timer tests ("slept for too long": epoll_pwait03, futex_wait05, nanosleep01, poll02, pselect01_64,
+  select02). The six pass alone (load 31 to 58, 42 to 49 s each): load, not code. clock_gettime04 now passes (4.7 to
+  10.7 s alone; it failed at 27.6 s before the memory change).
+- Executor speed, not kernel behavior, for the three (perf, 200 s each): mtest05 95% in `set_permissions` -> `remap`
+  -> unicorn map and unmap (phys_page_set_level 55%, phys_page_compact 16%); shm_test01 memcpy 41% and memcmp 15% in
+  `run_loaded`'s copy of shared pages out and in; hackbench01 28% in the kernel's `ppoll`, 24% in the stand-in's
+  `copy_from` per fork with shared-range lookups. All three passed at `a9f8631e`, before `ccd4db9da` gave unicorn the
+  bytes (no `mem_map_ptr`, no unsafe). Their times alone with a 3,600 s limit: see the report.
+
+### Linter (installed `59ad72ce`, built on the machine; no key there, so `*_unanswered` cannot be answered)
+
+My files' findings: 753 at `922f20713`, 766 at `aabf8dc2e`, 764 at `d567c1a91`. Worked off: every finding the last run
+and this one added except the unanswered ones and these, which need a decision: `Sampled` implements another crate's
+trait with pub fields (`implementation_folder`, 3 `public_outside_interface`; a named generator implementation would
+have to pass the generator suite); `conformance_not_run` for the new suite function and for the suite's arm 3 (the
+fixed `tests!` shape wants every suite function to take one value; its other functions already do not).
