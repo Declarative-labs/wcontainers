@@ -1,6 +1,7 @@
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 /// The collector of what each kind of core of a machine shows for every instruction.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ObservationCollector {
     type Architecture: ProcessorArchitecture;
     /// What a core says it is, read from the core itself.

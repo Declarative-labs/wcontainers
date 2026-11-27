@@ -4,6 +4,7 @@
 use bitflags::bitflags;
 use wcontainers_abi::HostError;
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Readiness<Handle> {
     /// Waits until the handle is ready for one of the things asked for or has an unconditional event, and returns both.
     async fn wait_until_ready(

@@ -2,6 +2,7 @@
 
 use wcontainers_abi::HostError;
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait NegativeRouteAdvisable<Socket> {
     /// Tells the socket its route is failing, so that it takes a new flow hash where it may rehash and drops its cached route.
     ///
