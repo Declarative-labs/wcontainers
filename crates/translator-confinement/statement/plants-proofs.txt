@@ -1,0 +1,20 @@
+# The plant list of the proofs: each line makes one wrong translator, drops one hypothesis's weight or claims more
+# (file @@ name @@ exact text @@ replacement; \n is a line break). With any one applied, the proofs must fail to verify.
+access.rs @@ byte-access-uncut @@ |m: Machine| (m.x[24] + (m.x[n as int] & 0xffff_ffffu64)) % two_to_64(), 1) @@ |m: Machine| (m.x[24] + m.x[n as int]) % two_to_64(), 1)
+access.rs @@ wide-cut-uncut @@ |m: Machine| ((m.x[24] + (m.x[n as int] & 0xffff_ffffu64)) % two_to_64()) as u64) @@ |m: Machine| ((m.x[24] + m.x[n as int]) % two_to_64()) as u64)
+access.rs @@ mark-past-slot @@ |m: Machine| (m.x[15] + 4095) % two_to_64(), 1) @@ |m: Machine| (m.x[15] + 0x1_0000_0000) % two_to_64(), 1)
+access.rs @@ load-probe-past-slot @@ |m: Machine| (m.x[15] + 7) % two_to_64(), 1) @@ |m: Machine| (m.x[15] + 0x1_0000_0000) % two_to_64(), 1)
+access.rs @@ store-probe-step-past-slot @@ |m: Machine| ((m.x[15] + 7) % two_to_64()) as u64) @@ |m: Machine| ((m.x[15] + 0x1_0000_0000) % two_to_64()) as u64)
+access.rs @@ load-writes-base @@ store || (t != 24 && t != 28) @@ store || t != 28
+access.rs @@ slow-tail-leaves-piece @@ branches(step, B_BACK_44, -44) @@ branches(step, B_BACK_44, 40)
+access.rs @@ byte-claims-false @@         a.length == 40,\n    ensures\n @@         a.length == 40,\n    ensures\n        false,\n
+access.rs @@ wide-claims-false @@         a.length == if store { 92int } else { 88int },\n    ensures\n @@         a.length == if store { 92int } else { 88int },\n    ensures\n        false,\n
+copy.rs @@ below-unbounded @@     &&& 0 <= a.below <= 0x1_0000\n @@     &&& 0 <= a.below\n
+copy.rs @@ exit-to-next-window @@     slot_table(a) + guest * 4\n @@     slot_table(a) + guest * 4 + 0x8_0000_0000 * 4\n
+copy.rs @@ integer-writes-frame @@     &&& 0 <= rd < 31 && rd != frame_register()\n @@     &&& 0 <= rd < 31\n
+copy.rs @@ integer-claims-false @@         a.length == 20,\n    ensures\n @@         a.length == 20,\n    ensures\n        false,\n
+meaning.rs @@ rule-without-keeping @@         &&& runs(a, s.after) ==> inv(s.after)\n @@         &&& true\n
+indexed.rs @@ indexed-without-below @@         a.below >= 256,\n @@         a.below >= 0,\n
+indexed.rs @@ indexed-access-past-slot @@ |m: Machine| (m.x[23] + off) % two_to_64(), 8) @@ |m: Machine| (m.x[23] + off + 0x1_0000_0000) % two_to_64(), 8)
+indexed.rs @@ indexed-base-moved-to-frame @@         registers(n, t, store) && n != 24 && n != 28,\n @@         registers(n, t, store) && n != 24,\n
+indexed.rs @@ indexed-claims-false @@         a.length == if store { 100int } else { 96int },\n    ensures\n @@         a.length == if store { 100int } else { 96int },\n    ensures\n        false,\n

@@ -226,7 +226,7 @@ fn a_stack_access_reaches_below_the_window_unless_that_is_reserved() {
     let push = [stp_pre(0, 1, SP, -16)];
     assert_eq!(breaches(&push), vec![(0, Breach::AccessOutside)]);
     let reserved = Place {
-        below: 1 << 32,
+        below: 1 << 16,
         ..PLACE
     };
     assert_eq!(breaches_at(&reserved, &push), vec![]);
@@ -238,10 +238,38 @@ fn a_stack_step_s_probe_reaches_below_the_window_unless_that_is_reserved() {
     assert_eq!(breaches(&step), vec![(4, Breach::AccessOutside)]);
     // Reserved, the probe that did not fault puts the stack pointer back in the window.
     let reserved = Place {
-        below: 1 << 32,
+        below: 1 << 16,
         ..PLACE
     };
     assert_eq!(breaches_at(&reserved, &step), vec![]);
+}
+
+#[test]
+fn a_slot_reserved_from_below_its_window_ends_as_far_below_its_top() {
+    // x23 = the slot's last doubleword: base + 2^33 - 8 (slot 3: 0x7_ffff_fff8).
+    let last = [
+        movz(X23, 0xfff8, 0),
+        movk(X23, 0xffff, 1),
+        movk(X23, 0x7, 2),
+        ldr(0, X23, 0),
+    ];
+    assert_eq!(breaches(&last), vec![]);
+    let reserved = Place {
+        below: 1 << 16,
+        ..PLACE
+    };
+    assert_eq!(
+        breaches_at(&reserved, &last),
+        vec![(12, Breach::AccessOutside)]
+    );
+    // The last doubleword of that reservation is inside.
+    let lower = [
+        movz(X23, 0xfff8, 0),
+        movk(X23, 0xfffe, 1),
+        movk(X23, 0x7, 2),
+        ldr(0, X23, 0),
+    ];
+    assert_eq!(breaches_at(&reserved, &lower), vec![]);
 }
 
 #[test]

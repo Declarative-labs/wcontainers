@@ -20,5 +20,9 @@ fastrand = "2.5.0"
 # The test programs' text, read from their ELF files.
 object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }
 
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
+# Where the in-process pool puts a memory's slot, which the reservation test checks against what the pieces reach.
+wcontainers-executor-in-process = { path = "../executor/implementation/in-process" }
+
 [lints]
 workspace = true

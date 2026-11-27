@@ -36,8 +36,8 @@ pub struct Place {
     pub base: u64,
     pub frame: u64,
     pub code: u64,
-    /// The never mapped bytes just below the window that are reserved too (none today: the slot below may be no
-    /// memory's).
+    /// How far below the window's base its slot's reservation starts: the slot reserves [`SLOT_BYTES`] from there
+    /// (form I's pool reserves 64 KiB below each window; none would leave the bytes below a window to anyone).
     pub below: u64,
     /// Whether the code is the displaced code, whose stack pointer is the guest's own.
     pub displaced: bool,
@@ -264,10 +264,9 @@ fn evaluate(made: Made, state: &State, place: &Place, at: usize) -> Value {
 /// its own instructions.
 fn allowed(lo: u64, hi: u64, place: &Place, length: usize) -> bool {
     let inside = |start: u64, end: u64| start <= lo && hi < end;
-    inside(
-        place.base.saturating_sub(place.below),
-        place.base + SLOT_BYTES,
-    ) || inside(place.frame, place.frame + FRAME_BYTES)
+    let reserved = place.base.saturating_sub(place.below);
+    inside(reserved, reserved + SLOT_BYTES)
+        || inside(place.frame, place.frame + FRAME_BYTES)
         || inside(place.code, place.code + length as u64)
 }
 

@@ -1,12 +1,15 @@
 //! The second proof statement of the native in-process form: a run of the translator's instructions stays inside its
-//! own memory and makes no system call. Stated over the model's processor (`Processor`, seen through
-//! [`machine_of`]); one step is given as `step`, the model's semantics of one word, which the model does not yet give
-//! as one specification for every word (its decode tables are outside `verus!`).
+//! own memory and makes no system call.
+//!
+//! What one instruction does is `step`, a FREE parameter of [`is_confined`]: nothing in the statement comes from the
+//! instruction-proof model. Each proof states, as a hypothesis on `step`, what the words of its piece do (the Arm ARM's
+//! meaning, written out by hand), so a proof here holds for every `step` meeting those hypotheses, the model's one
+//! included only once it is shown to meet them. Binding `step` to the model waits on its decode tables
+//! (`to_integer_operation`, `to_load_store_operation`) moving inside `verus!`.
 
 #![no_std]
 
 use vstd::prelude::*;
-use wcontainers_processor_architecture_arm64::Processor;
 
 verus! {
 
@@ -29,26 +32,15 @@ pub open spec fn base_register() -> int {
     24
 }
 
-/// What a step needs of the processor: x0 to x30, the stack pointer, the program counter, the registers user space can
-/// write that `run_code` does not list (PSTATE's SSBS, DIT and TCO; SVE's predicates and FFR), and whether an exception
-/// ended the run.
+/// What a step needs of the processor (the model's `Processor` has these, but nothing here is tied to it): x0 to
+/// x30, the stack pointer, the program counter, the registers user space can write that `run_code` does not list
+/// (PSTATE's SSBS, DIT and TCO; SVE's predicates and FFR), and whether an exception ended the run.
 pub struct Machine {
     pub x: Seq<u64>,
     pub sp: u64,
     pub pc: u64,
     pub unlisted: (u64, Seq<u16>, u16),
     pub ended: bool,
-}
-
-/// The model's processor as a [`Machine`].
-pub open spec fn machine_of<L>(p: Processor<L>) -> Machine {
-    Machine {
-        x: p.general_purpose_registers@,
-        sp: p.stack_pointer,
-        pc: p.program_counter,
-        unlisted: (p.process_state_controls, p.predicate_registers@, p.first_fault_register),
-        ended: p.exception is Some,
-    }
 }
 
 /// One step: the machine after it, the bytes it touched (first byte, length), and whether it was a system call.
@@ -58,8 +50,9 @@ pub struct Stepped {
     pub system_call: bool,
 }
 
-/// Where a run is: its window's base, the never mapped bytes below the window that are reserved too, its frame, its
-/// instructions' first byte and length, and whether its stack pointer is the guest's own (displaced).
+/// Where a run is: its window's base, how far below the base its slot's reservation starts (the slot reserves
+/// `SLOT_BYTES` from there), its frame, its instructions' first byte and length, and whether its stack pointer is the
+/// guest's own (displaced).
 pub struct Allowed {
     pub base: int,
     pub below: int,
@@ -71,7 +64,7 @@ pub struct Allowed {
 
 /// Every byte of the access is in its slot's reservation, its frame's words or its own instructions.
 pub open spec fn touches_allowed(a: Allowed, first: int, bytes: nat) -> bool {
-    ||| a.base - a.below <= first && first + bytes <= a.base + SLOT_BYTES as int
+    ||| a.base - a.below <= first && first + bytes <= a.base - a.below + SLOT_BYTES as int
     ||| a.frame <= first && first + bytes <= a.frame + FRAME_BYTES as int
     ||| a.code <= first && first + bytes <= a.code + a.length
 }
@@ -153,6 +146,12 @@ pub open spec fn is_confined(step: spec_fn(Machine, u32) -> Stepped, instruction
 } // verus!
 
 #[cfg(verus_keep_ghost)]
+mod meaning;
+#[cfg(verus_keep_ghost)]
 mod copy;
+#[cfg(verus_keep_ghost)]
+mod access;
+#[cfg(verus_keep_ghost)]
+mod indexed;
 #[cfg(verus_keep_ghost)]
 mod plants;

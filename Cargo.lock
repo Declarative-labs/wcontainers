@@ -5827,6 +5827,7 @@ dependencies = [
  "fastrand",
  "object 0.40.0",
  "wcontainers-arm64",
+ "wcontainers-executor-in-process",
  "wcontainers-guest-cpu",
  "wcontainers-translator",
 ]
