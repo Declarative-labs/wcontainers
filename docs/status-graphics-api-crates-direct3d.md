@@ -131,3 +131,91 @@ array of `D3D_SHADER_MACRO`, structures holding two texts: the array-in form ite
 holds the reference, so the trait's blob gives `Vec<u8>`; and an out-parameter that holds an answer on failure (the
 error blob), so the trait method returns `Result<Vec<u8>, (HResult, Vec<u8>)>` as the needs file asks. The calling glue
 would load d3dcompiler_47.dll as the others load theirs. Nothing of it is built in this run.
+
+## 5. D3: Direct3D 12's API crate, started (ae9cee9a6 generator, abbb499c9 front moved, a2f3a88d0 crates)
+
+- **One set for every Direct3D API.** `direct3d-glue` (src/api.rs) writes COM, d3dcommon, DXGI, Direct3D 11 and Direct3D
+  12 in one generation, so one COM crate holds the plain data all of them name (a second generation for Direct3D 12 alone
+  would write a different COM crate into the same folder). The Direct3D 11, DXGI and COM crates it writes keep every bar
+  of section 2 (below). `direct3d-11-glue` and `direct3d-11-slice` stay as they were.
+- **Direct3D 12 cut to what its users call** (`DIRECT3D_12_SUBSET`): D3's 33 names (its "30 methods" with Map, Unmap
+  and GetDesc) and the 18 that make the device, queue, allocator, list, heap, root signature, committed resource and
+  fence and run the list: 14 interfaces, 51 methods, 10 kinds; the C tables keep every slot of each interface, the rest
+  refusing. 34 enumerations, 2 masks and 8 interfaces judged (READ, src/api.rs `DIRECT3D_12_JUDGED`, `_EFFECTS`).
+- **Generator changes** it needed: a structure a COM method returns crosses through a pointer the caller passes after
+  `this`, which the method returns (d3d12.h's C form, `RetVal`), in every refusing entry and the C caller; an `IUnknown`
+  field makes its structure generic over the API; the spike's slice is Direct3D 11 cut down, not any API with a cut;
+  the C caller serves Direct3D 12's export by its own hostile library; its sweeps call an export that takes no interface
+  id (D3D11CreateDevice) eight times a pass, so that the objects it makes are held by the sweeps however many cases the
+  set has (with Direct3D 12's 120 cases added, the honest run had reached only 469 of 755 cases; now 753 of 755).
+- **The front moved** to `crates/direct3d-12/implementation/translated` (`wcontainers-direct3d-12-translated`), its
+  paths to the shared test files and shaders two levels deeper.
+- **Glued: 38 of the 51.** Not glued, each with its reason in the report (READ, d3d/d3/report.txt), and what each needs:
+
+| Method | Why not | Needs (next run) |
+|---|---|---|
+| CreateRenderTargetView, CreateShaderResourceView, ClearRenderTargetView, OMSetRenderTargets | `D3D12_CPU_DESCRIPTOR_HANDLE.ptr`, a pointer-width integer the system writes descriptors at: refused by kind | an exception line: a handle is (heap, index), the glue bounds the index by the heap's recorded description and computes the address from the heap's start and the device's increment |
+| GetCPUDescriptorHandleForHeapStart, GetGPUDescriptorHandleForHeapStart, ID3D12Resource::GetDesc, ID3D12DescriptorHeap::GetDesc | a structure returned by value (refusing entries carry the convention; the glued form does not yet) | the `RetVal` form in both glues (the calling glue's own heap start feeds the handle line above) |
+| SetGraphicsRootDescriptorTable | `D3D12_GPU_DESCRIPTOR_HANDLE` by value (a structure of one UINT64) | glue for a one-integer structure by value, and the same (heap, index) line for GPU handles |
+| CreateGraphicsPipelineState, CreateComputePipelineState | descriptions holding shader bytecode pointers, the input layout, stream output and the root signature's object | the description's pointers as slices of the trait (bytes and structures in, copied once), its root signature an object |
+| CopyTextureRegion, ResourceBarrier | structures holding a resource's object inside a union | a union whose member the selector field picks (the type of copy location, of barrier) |
+| ExecuteCommandLists | an array of command lists of several kinds | the array form of section 2's "several kinds" |
+| Map (and Unmap's range) | memory lent until Unmap, `void**`, and `D3D12_RANGE` of pointer-width integers | the `Lent` line of Direct3D 11's Map, with the range as numbers checked against the resource's recorded size |
+
+  GPU virtual addresses (`D3D12_GPU_VIRTUAL_ADDRESS`, a UINT64 in SetGraphicsRootConstantBufferView,
+  SetComputeRootConstantBufferView, SetComputeRootUnorderedAccessView, IASetVertexBuffers, IASetIndexBuffer, SOSetTargets)
+  pass today as numbers, by their type. INFERRED: such an address reaches only the GPU's memory of this device, which the
+  CPU reaches only through Map's lent bytes (`VolatileBytes`), so a wrong one is the GPU's fault, not memory unsafety of
+  ours; the default-deny rule cannot tell an address from a number by type here. To settle: either an exception line that
+  makes each a (resource, offset) bounded by the resource's size, or a ruling that they are numbers.
+
+MEASURED at a2f3a88d0 (job gacd/20261127-103754-942542, log d3d/d3/claim-a2f3a88d0.log):
+
+| Bar | Result |
+|---|---|
+| Generator build, written twice, equal to the tree | 0; IDENTICAL; SAME AS WRITTEN (all five API crates) |
+| GLUED / NOT GLUED over the set | 629 / 135 (Direct3D 11's 591 and 52 unchanged; Direct3D 12's 38 glued, 13 of its 51 refused with their reasons, the rest of its slots outside the cut) |
+| check, clippy -D warnings (all targets, the 22 packages); windows-gnu and -msvc type-check | 0, 0; 0, 0 |
+| Tests, default and AddressSanitizer (Direct3D 12's conformance on its recorder and hostile implementation, directly and through both glues, among them) | status 0; 0 reports |
+| C caller honest, default and AddressSanitizer | 0, 0; cases 753 of 755, exports 9 of 9, never reached 2 = listed 2 |
+| Fuzzing under AddressSanitizer, 3 seeds x 10M: Direct3D 11's hostile set; the C caller over every table of the five APIs | 3 of 3, 3 of 3; 0 reports |
+| The slice and its harness (each test alone, three builds) | IDENTICAL, check 0, clippy 0, tests 0; 75 of 75 |
+| The five plants of section 2 at this commit | each caught again (status 101; the two upload plants an AddressSanitizer READ past the region) |
+| The fronts with every lint capped at a warning (a measuring device: shaders' unsafe is the implementations track's) | check --all-targets of the Direct3D 11 and 12 fronts and directx 0; the Direct3D 11 front's tests 0 |
+| Lines naming `unsafe` | Direct3D 12 direct 826 (new), its interface, recorder, hostile, conformance 0; Direct3D 11 direct 7,081; DXGI direct 2,548; COM direct 95; d3dcommon direct 63; the Direct3D 12 front 503 (moved, unchanged) |
+| Linter on the five API crates (the translated fronts apart) | 27,104 findings: public_outside_interface 4,292, magic_literal 4,272, name_unanswered 3,236 and summary_unanswered 2,745 (the model rule sets, no key on the machine), function_summary_not_third_person 3,032, the rest below 500 each; 1 crate_not_member (the C caller, below) |
+
+Not run on Direct3D 12 yet: a hostile set's lie tests and fuzzing of its own (Direct3D 11's lies.rs and effects.rs are
+written for Direct3D 11 alone), and hostile tests of its rows (it has none: no row is needed by the 38 glued).
+
+## 6. A6 and A7 (desktop OpenGL with EGL, Vulkan): not started
+
+READ (the needs file's A6, A7): A6 is desktop OpenGL 4.5, compatibility profile, through Mesa's EGL; the Khronos front
+end already reads gl.xml, so it is a new set of the `khronos` command for the `gl` API (A4's calls plus the 14 and the 16
+entry points listed), and EGL's device enumeration (`eglQueryDevicesEXT`, `eglQueryDeviceStringEXT`,
+`eglGetPlatformDisplay`) added to the EGL crate; its folder cannot be `crates/opengl`, which is the Gallium driver. A7
+is the Vulkan API from vk.xml (Apache-2.0), a front end of its own: handles, structures chained by `pNext` (a raw pointer
+the default-deny rule refuses unless a line names each chain), and `map_memory` lent until `unmap_memory`. Waits on
+nothing but this track's time.
+
+## Questions for the orchestrator
+
+1. LAYOUT: the hostile C caller (test scaffolding with its own deny table, under `crates/direct3d-11/implementation/
+   direct/c-caller`) is a workspace of its own, because the root manifest's members reach one level below
+   `implementation/` and the root manifest is his. The linter reports it once (`crate_not_member`, "Every crate must be a
+   member of the workspace, and nothing below crates/ may be excluded"). Ways out: his root manifest adds
+   `"crates/*/implementation/*/c-caller"`, or the C caller becomes the direct crate's own integration test (its build
+   script then compiles the C for every build of the direct crate). Nothing waits on it; its tests run from its folder.
+2. Whether GPU virtual addresses are numbers or (resource, offset) (section 5).
+
+## Security
+
+Lines naming `unsafe` (the root manifest's count), f3af6417f -> a2f3a88d0: COM direct 0 -> 95, d3dcommon direct 0 -> 63,
+DXGI direct 0 -> 2,548, Direct3D 11 direct 0 -> 7,081 (and its C caller 0 -> 4), Direct3D 12 direct 0 -> 826; these were
+generator output in job folders before and are now in crates/, each line an `#[expect(unsafe_code)]`-marked single
+operation in an `implementation/direct` crate with its own deny table (or the C caller's, under the direct crate's
+folder). Every interface, recorder, hostile and conformance crate: 0, under the workspace's `forbid`. The fronts moved
+unchanged: Direct3D 11 front 10, Direct3D 12 front 503, directx 1,077 (not touched). No new dependency: the direct
+crates use libc, already in the lock; the C caller's `cc` is already in the lock. The hostile suites (the C caller over
+every table of the five APIs, Direct3D 11's hostile set's lies and fuzzing, the probes) ran under AddressSanitizer at
+a2f3a88d0 with 0 reports; the repository's hostile-guest suite is not this track's and was not run.
