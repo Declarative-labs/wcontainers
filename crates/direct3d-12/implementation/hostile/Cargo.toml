@@ -1,0 +1,39 @@
+[package]
+name = "wcontainers-direct3d-12-hostile"
+description = "A hostile implementation of direct3d-12's traits and a driver of every method through both glues, for tests only."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "hostile.rs"
+
+[[test]]
+name = "conformance_run"
+path = "conformance_run.rs"
+
+[[test]]
+name = "conformance_through_glues"
+path = "conformance_through_glues.rs"
+
+[dependencies]
+wcontainers-component-object-model = { path = "../../../component-object-model" }
+wcontainers-component-object-model-direct = { path = "../../../component-object-model/implementation/direct" }
+wcontainers-direct3d-common = { path = "../../../direct3d-common" }
+wcontainers-direct3d-common-direct = { path = "../../../direct3d-common/implementation/direct" }
+wcontainers-direct3d-common-hostile = { path = "../../../direct3d-common/implementation/hostile" }
+wcontainers-directx-graphics-infrastructure = { path = "../../../directx-graphics-infrastructure" }
+wcontainers-directx-graphics-infrastructure-direct = { path = "../../../directx-graphics-infrastructure/implementation/direct" }
+wcontainers-direct3d-11 = { path = "../../../direct3d-11" }
+wcontainers-direct3d-11-direct = { path = "../../../direct3d-11/implementation/direct" }
+wcontainers-direct3d-12 = { path = "../../../direct3d-12" }
+wcontainers-direct3d-12-direct = { path = "../../../direct3d-12/implementation/direct" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+
+[dev-dependencies]
+wcontainers-direct3d-12-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true

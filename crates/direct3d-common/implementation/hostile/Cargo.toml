@@ -21,6 +21,8 @@ wcontainers-directx-graphics-infrastructure = { path = "../../../directx-graphic
 wcontainers-directx-graphics-infrastructure-direct = { path = "../../../directx-graphics-infrastructure/implementation/direct" }
 wcontainers-direct3d-11 = { path = "../../../direct3d-11" }
 wcontainers-direct3d-11-direct = { path = "../../../direct3d-11/implementation/direct" }
+wcontainers-direct3d-12 = { path = "../../../direct3d-12" }
+wcontainers-direct3d-12-direct = { path = "../../../direct3d-12/implementation/direct" }
 wcontainers-byte-sink = { path = "../../../byte-sink" }
 wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }

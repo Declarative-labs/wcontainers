@@ -5,6 +5,7 @@
 
 use wcontainers_direct3d_11_direct as direct3d_11_direct;
 use wcontainers_direct3d_11_hostile::HostileLibrary;
+use wcontainers_direct3d_12_direct as direct3d_12_direct;
 use wcontainers_directx_graphics_infrastructure_direct as directx_graphics_infrastructure_direct;
 
 /// What one run counts, in the order the C writes them.
@@ -31,13 +32,13 @@ pub const COUNTED: [&str; 19] = [
 ];
 
 /// How many exports the C takes.
-pub const EXPORTS: usize = 8;
+pub const EXPORTS: usize = 9;
 
 /// How many table entries and exports the C calls.
-pub const CALLED: usize = 643;
+pub const CALLED: usize = 764;
 
 /// Each case of the C, by its place: the table entry it calls, as `Interface::Method`.
-pub const CASES: [&str; 635] = [
+pub const CASES: [&str; 755] = [
     "ID3DBlob::GetBufferPointer",
     "ID3DBlob::GetBufferSize",
     "ID3DDestructionNotifier::RegisterDestructionCallback",
@@ -482,6 +483,126 @@ pub const CASES: [&str; 635] = [
     "ID3DUserDefinedAnnotation::EndEvent",
     "ID3DUserDefinedAnnotation::SetMarker",
     "ID3DUserDefinedAnnotation::GetStatus",
+    "ID3D12CommandAllocator::Reset",
+    "ID3D12CommandList::GetType",
+    "ID3D12CommandQueue::UpdateTileMappings",
+    "ID3D12CommandQueue::CopyTileMappings",
+    "ID3D12CommandQueue::ExecuteCommandLists",
+    "ID3D12CommandQueue::SetMarker",
+    "ID3D12CommandQueue::BeginEvent",
+    "ID3D12CommandQueue::EndEvent",
+    "ID3D12CommandQueue::Signal",
+    "ID3D12CommandQueue::Wait",
+    "ID3D12CommandQueue::GetTimestampFrequency",
+    "ID3D12CommandQueue::GetClockCalibration",
+    "ID3D12CommandQueue::GetDesc",
+    "ID3D12DescriptorHeap::GetDesc",
+    "ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart",
+    "ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart",
+    "ID3D12Device::GetNodeCount",
+    "ID3D12Device::CreateCommandQueue",
+    "ID3D12Device::CreateCommandAllocator",
+    "ID3D12Device::CreateGraphicsPipelineState",
+    "ID3D12Device::CreateComputePipelineState",
+    "ID3D12Device::CreateCommandList",
+    "ID3D12Device::CheckFeatureSupport",
+    "ID3D12Device::CreateDescriptorHeap",
+    "ID3D12Device::GetDescriptorHandleIncrementSize",
+    "ID3D12Device::CreateRootSignature",
+    "ID3D12Device::CreateConstantBufferView",
+    "ID3D12Device::CreateShaderResourceView",
+    "ID3D12Device::CreateUnorderedAccessView",
+    "ID3D12Device::CreateRenderTargetView",
+    "ID3D12Device::CreateDepthStencilView",
+    "ID3D12Device::CreateSampler",
+    "ID3D12Device::CopyDescriptors",
+    "ID3D12Device::CopyDescriptorsSimple",
+    "ID3D12Device::GetResourceAllocationInfo",
+    "ID3D12Device::GetCustomHeapProperties",
+    "ID3D12Device::CreateCommittedResource",
+    "ID3D12Device::CreateHeap",
+    "ID3D12Device::CreatePlacedResource",
+    "ID3D12Device::CreateReservedResource",
+    "ID3D12Device::CreateSharedHandle",
+    "ID3D12Device::OpenSharedHandle",
+    "ID3D12Device::OpenSharedHandleByName",
+    "ID3D12Device::MakeResident",
+    "ID3D12Device::Evict",
+    "ID3D12Device::CreateFence",
+    "ID3D12Device::GetDeviceRemovedReason",
+    "ID3D12Device::GetCopyableFootprints",
+    "ID3D12Device::CreateQueryHeap",
+    "ID3D12Device::SetStablePowerState",
+    "ID3D12Device::CreateCommandSignature",
+    "ID3D12Device::GetResourceTiling",
+    "ID3D12Device::GetAdapterLuid",
+    "ID3D12DeviceChild::GetDevice",
+    "ID3D12Fence::GetCompletedValue",
+    "ID3D12Fence::SetEventOnCompletion",
+    "ID3D12Fence::Signal",
+    "ID3D12GraphicsCommandList::Close",
+    "ID3D12GraphicsCommandList::Reset",
+    "ID3D12GraphicsCommandList::ClearState",
+    "ID3D12GraphicsCommandList::DrawInstanced",
+    "ID3D12GraphicsCommandList::DrawIndexedInstanced",
+    "ID3D12GraphicsCommandList::Dispatch",
+    "ID3D12GraphicsCommandList::CopyBufferRegion",
+    "ID3D12GraphicsCommandList::CopyTextureRegion",
+    "ID3D12GraphicsCommandList::CopyResource",
+    "ID3D12GraphicsCommandList::CopyTiles",
+    "ID3D12GraphicsCommandList::ResolveSubresource",
+    "ID3D12GraphicsCommandList::IASetPrimitiveTopology",
+    "ID3D12GraphicsCommandList::RSSetViewports",
+    "ID3D12GraphicsCommandList::RSSetScissorRects",
+    "ID3D12GraphicsCommandList::OMSetBlendFactor",
+    "ID3D12GraphicsCommandList::OMSetStencilRef",
+    "ID3D12GraphicsCommandList::SetPipelineState",
+    "ID3D12GraphicsCommandList::ResourceBarrier",
+    "ID3D12GraphicsCommandList::ExecuteBundle",
+    "ID3D12GraphicsCommandList::SetDescriptorHeaps",
+    "ID3D12GraphicsCommandList::SetComputeRootSignature",
+    "ID3D12GraphicsCommandList::SetGraphicsRootSignature",
+    "ID3D12GraphicsCommandList::SetComputeRootDescriptorTable",
+    "ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable",
+    "ID3D12GraphicsCommandList::SetComputeRoot32BitConstant",
+    "ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant",
+    "ID3D12GraphicsCommandList::SetComputeRoot32BitConstants",
+    "ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants",
+    "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView",
+    "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView",
+    "ID3D12GraphicsCommandList::SetComputeRootShaderResourceView",
+    "ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView",
+    "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView",
+    "ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView",
+    "ID3D12GraphicsCommandList::IASetIndexBuffer",
+    "ID3D12GraphicsCommandList::IASetVertexBuffers",
+    "ID3D12GraphicsCommandList::SOSetTargets",
+    "ID3D12GraphicsCommandList::OMSetRenderTargets",
+    "ID3D12GraphicsCommandList::ClearDepthStencilView",
+    "ID3D12GraphicsCommandList::ClearRenderTargetView",
+    "ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint",
+    "ID3D12GraphicsCommandList::ClearUnorderedAccessViewFloat",
+    "ID3D12GraphicsCommandList::DiscardResource",
+    "ID3D12GraphicsCommandList::BeginQuery",
+    "ID3D12GraphicsCommandList::EndQuery",
+    "ID3D12GraphicsCommandList::ResolveQueryData",
+    "ID3D12GraphicsCommandList::SetPredication",
+    "ID3D12GraphicsCommandList::SetMarker",
+    "ID3D12GraphicsCommandList::BeginEvent",
+    "ID3D12GraphicsCommandList::EndEvent",
+    "ID3D12GraphicsCommandList::ExecuteIndirect",
+    "ID3D12Object::GetPrivateData",
+    "ID3D12Object::SetPrivateData",
+    "ID3D12Object::SetPrivateDataInterface",
+    "ID3D12Object::SetName",
+    "ID3D12PipelineState::GetCachedBlob",
+    "ID3D12Resource::Map",
+    "ID3D12Resource::Unmap",
+    "ID3D12Resource::GetDesc",
+    "ID3D12Resource::GetGPUVirtualAddress",
+    "ID3D12Resource::WriteToSubresource",
+    "ID3D12Resource::ReadFromSubresource",
+    "ID3D12Resource::GetHeapProperties",
     "IDXGIAdapter::EnumOutputs",
     "IDXGIAdapter::GetDesc",
     "IDXGIAdapter::CheckInterfaceSupport",
@@ -676,7 +797,7 @@ pub const CASES: [&str; 635] = [
 ];
 
 /// Each export the C calls, by its place after the cases.
-pub const EXPORT_NAMES: [&str; 8] = [
+pub const EXPORT_NAMES: [&str; 9] = [
     "create_dxgi_factory",
     "create_dxgi_factory1",
     "create_dxgi_factory2",
@@ -685,6 +806,7 @@ pub const EXPORT_NAMES: [&str; 8] = [
     "dxgi_get_debug_interface1",
     "d_3d11_create_device",
     "d_3d11_create_device_and_swap_chain",
+    "d_3d12_create_device",
 ];
 
 /// The cases no object the caller can hold answers, by name, each with why (src/api.rs): never reached, whatever the
@@ -729,6 +851,7 @@ unsafe extern "C" {
 pub fn hostile_exports() -> Vec<usize> {
     let library_2 = directx_graphics_infrastructure_direct::exports(HostileLibrary);
     let library_3 = direct3d_11_direct::exports(HostileLibrary);
+    let library_4 = direct3d_12_direct::exports(wcontainers_direct3d_12_hostile::HostileLibrary);
     vec![
         library_2.create_dxgi_factory as usize,
         library_2.create_dxgi_factory1 as usize,
@@ -738,6 +861,7 @@ pub fn hostile_exports() -> Vec<usize> {
         library_2.dxgi_get_debug_interface1 as usize,
         library_3.d_3d11_create_device as usize,
         library_3.d_3d11_create_device_and_swap_chain as usize,
+        library_4.d_3d12_create_device as usize,
     ]
 }
 

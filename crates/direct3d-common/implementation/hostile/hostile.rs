@@ -20,6 +20,8 @@
 
 #[path = "../../../direct3d-11/implementation/direct/data.rs"]
 mod data_direct3d_11;
+#[path = "../../../direct3d-12/implementation/direct/data.rs"]
+mod data_direct3d_12;
 #[path = "../../../directx-graphics-infrastructure/implementation/direct/data.rs"]
 mod data_directx_graphics_infrastructure;
 

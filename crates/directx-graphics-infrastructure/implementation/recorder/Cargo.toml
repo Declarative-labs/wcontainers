@@ -28,6 +28,8 @@ wcontainers-direct3d-common-direct = { path = "../../../direct3d-common/implemen
 wcontainers-directx-graphics-infrastructure-direct = { path = "../../../directx-graphics-infrastructure/implementation/direct" }
 wcontainers-direct3d-11 = { path = "../../../direct3d-11" }
 wcontainers-direct3d-11-direct = { path = "../../../direct3d-11/implementation/direct" }
+wcontainers-direct3d-12 = { path = "../../../direct3d-12" }
+wcontainers-direct3d-12-direct = { path = "../../../direct3d-12/implementation/direct" }
 
 [dev-dependencies]
 wcontainers-directx-graphics-infrastructure-conformance = { path = "../../conformance" }

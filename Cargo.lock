@@ -4248,6 +4248,8 @@ dependencies = [
  "wcontainers-direct3d-11",
  "wcontainers-direct3d-11-conformance",
  "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
  "wcontainers-direct3d-common",
  "wcontainers-direct3d-common-direct",
  "wcontainers-direct3d-common-hostile",
@@ -4268,6 +4270,8 @@ dependencies = [
  "wcontainers-direct3d-11",
  "wcontainers-direct3d-11-conformance",
  "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
  "wcontainers-direct3d-common",
  "wcontainers-direct3d-common-direct",
  "wcontainers-direct3d-common-recorder",
@@ -4292,6 +4296,83 @@ dependencies = [
 
 [[package]]
 name = "wcontainers-direct3d-12"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-direct3d-common",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-common",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-hostile"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-conformance",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-direct3d-common-hostile",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-recorder"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-component-object-model",
+ "wcontainers-component-object-model-direct",
+ "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-conformance",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-common",
+ "wcontainers-direct3d-common-direct",
+ "wcontainers-direct3d-common-recorder",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-directx-graphics-infrastructure-direct",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-direct3d-12-translated"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -4349,6 +4430,8 @@ dependencies = [
  "wcontainers-component-object-model-direct",
  "wcontainers-direct3d-11",
  "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
  "wcontainers-direct3d-common",
  "wcontainers-direct3d-common-conformance",
  "wcontainers-direct3d-common-direct",
@@ -4367,6 +4450,8 @@ dependencies = [
  "wcontainers-component-object-model-direct",
  "wcontainers-direct3d-11",
  "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
  "wcontainers-direct3d-common",
  "wcontainers-direct3d-common-conformance",
  "wcontainers-direct3d-common-direct",
@@ -4435,6 +4520,8 @@ dependencies = [
  "wcontainers-component-object-model-direct",
  "wcontainers-direct3d-11",
  "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
  "wcontainers-direct3d-common",
  "wcontainers-direct3d-common-direct",
  "wcontainers-directx-graphics-infrastructure",
@@ -4453,6 +4540,8 @@ dependencies = [
  "wcontainers-component-object-model-direct",
  "wcontainers-direct3d-11",
  "wcontainers-direct3d-11-direct",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
  "wcontainers-direct3d-common",
  "wcontainers-direct3d-common-direct",
  "wcontainers-directx-graphics-infrastructure",

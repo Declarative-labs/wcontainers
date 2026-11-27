@@ -30,6 +30,8 @@ wcontainers-component-object-model-direct = { path = "../../../component-object-
 wcontainers-direct3d-common-direct = { path = "../../../direct3d-common/implementation/direct" }
 wcontainers-directx-graphics-infrastructure-direct = { path = "../../../directx-graphics-infrastructure/implementation/direct" }
 wcontainers-direct3d-11-direct = { path = "../../../direct3d-11/implementation/direct" }
+wcontainers-direct3d-12 = { path = "../../../direct3d-12" }
+wcontainers-direct3d-12-direct = { path = "../../../direct3d-12/implementation/direct" }
 
 [dev-dependencies]
 wcontainers-direct3d-11-conformance = { path = "../../conformance" }

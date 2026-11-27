@@ -1,0 +1,16 @@
+[package]
+name = "wcontainers-direct3d-12"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-component-object-model = { path = "../component-object-model" }
+wcontainers-direct3d-common = { path = "../direct3d-common" }
+wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure" }
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true

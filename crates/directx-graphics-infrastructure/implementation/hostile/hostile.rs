@@ -20,6 +20,8 @@
 
 #[path = "../../../direct3d-11/implementation/direct/data.rs"]
 mod data_direct3d_11;
+#[path = "../../../direct3d-12/implementation/direct/data.rs"]
+mod data_direct3d_12;
 #[path = "../direct/data.rs"]
 mod data_directx_graphics_infrastructure;
 
@@ -7070,37 +7072,37 @@ pub type Api = directx_graphics_infrastructure_direct::SystemDirectXGraphicsInfr
 pub struct Objects {
     pub api: Api,
     /// `Adapter`.
-    pub k51: Option<directx_graphics_infrastructure_direct::SystemAdapter<Api>>,
+    pub k61: Option<directx_graphics_infrastructure_direct::SystemAdapter<Api>>,
     /// `Debug`.
-    pub k52: Option<directx_graphics_infrastructure_direct::SystemDebug<Api>>,
+    pub k62: Option<directx_graphics_infrastructure_direct::SystemDebug<Api>>,
     /// `DecodeSwapChain`.
-    pub k53: Option<directx_graphics_infrastructure_direct::SystemDecodeSwapChain<Api>>,
+    pub k63: Option<directx_graphics_infrastructure_direct::SystemDecodeSwapChain<Api>>,
     /// `Device`.
-    pub k54: Option<directx_graphics_infrastructure_direct::SystemDevice<Api>>,
+    pub k64: Option<directx_graphics_infrastructure_direct::SystemDevice<Api>>,
     /// `DisplayControl`.
-    pub k55: Option<directx_graphics_infrastructure_direct::SystemDisplayControl<Api>>,
+    pub k65: Option<directx_graphics_infrastructure_direct::SystemDisplayControl<Api>>,
     /// `Factory`.
-    pub k56: Option<directx_graphics_infrastructure_direct::SystemFactory<Api>>,
+    pub k66: Option<directx_graphics_infrastructure_direct::SystemFactory<Api>>,
     /// `FactoryMedia`.
-    pub k57: Option<directx_graphics_infrastructure_direct::SystemFactoryMedia<Api>>,
+    pub k67: Option<directx_graphics_infrastructure_direct::SystemFactoryMedia<Api>>,
     /// `InfoQueue`.
-    pub k58: Option<directx_graphics_infrastructure_direct::SystemInfoQueue<Api>>,
+    pub k68: Option<directx_graphics_infrastructure_direct::SystemInfoQueue<Api>>,
     /// `KeyedMutex`.
-    pub k59: Option<directx_graphics_infrastructure_direct::SystemKeyedMutex<Api>>,
+    pub k69: Option<directx_graphics_infrastructure_direct::SystemKeyedMutex<Api>>,
     /// `Output`.
-    pub k60: Option<directx_graphics_infrastructure_direct::SystemOutput<Api>>,
+    pub k70: Option<directx_graphics_infrastructure_direct::SystemOutput<Api>>,
     /// `OutputDuplication`.
-    pub k61: Option<directx_graphics_infrastructure_direct::SystemOutputDuplication<Api>>,
+    pub k71: Option<directx_graphics_infrastructure_direct::SystemOutputDuplication<Api>>,
     /// `Resource`.
-    pub k62: Option<directx_graphics_infrastructure_direct::SystemResource<Api>>,
+    pub k72: Option<directx_graphics_infrastructure_direct::SystemResource<Api>>,
     /// `Surface`.
-    pub k63: Option<directx_graphics_infrastructure_direct::SystemSurface<Api>>,
+    pub k73: Option<directx_graphics_infrastructure_direct::SystemSurface<Api>>,
     /// `SwapChain`.
-    pub k64: Option<directx_graphics_infrastructure_direct::SystemSwapChain<Api>>,
+    pub k74: Option<directx_graphics_infrastructure_direct::SystemSwapChain<Api>>,
     /// `SwapChainMedia`.
-    pub k65: Option<directx_graphics_infrastructure_direct::SystemSwapChainMedia<Api>>,
+    pub k75: Option<directx_graphics_infrastructure_direct::SystemSwapChainMedia<Api>>,
     /// `GraphicsAnalysis`.
-    pub k66: Option<directx_graphics_infrastructure_direct::SystemGraphicsAnalysis<Api>>,
+    pub k76: Option<directx_graphics_infrastructure_direct::SystemGraphicsAnalysis<Api>>,
 }
 
 impl Objects {
@@ -7108,44 +7110,44 @@ impl Objects {
     pub fn new() -> Objects {
         Objects {
             api: directx_graphics_infrastructure_direct::served(HostileLibrary),
-            k51: None,
-            k52: None,
-            k53: None,
-            k54: None,
-            k55: None,
-            k56: None,
-            k57: None,
-            k58: None,
-            k59: None,
-            k60: None,
             k61: None,
             k62: None,
             k63: None,
             k64: None,
             k65: None,
             k66: None,
+            k67: None,
+            k68: None,
+            k69: None,
+            k70: None,
+            k71: None,
+            k72: None,
+            k73: None,
+            k74: None,
+            k75: None,
+            k76: None,
         }
     }
 
     /// How many kinds have an object.
     pub fn kinds_held(&self) -> usize {
         [
-            self.k51.is_some(),
-            self.k52.is_some(),
-            self.k53.is_some(),
-            self.k54.is_some(),
-            self.k55.is_some(),
-            self.k56.is_some(),
-            self.k57.is_some(),
-            self.k58.is_some(),
-            self.k59.is_some(),
-            self.k60.is_some(),
             self.k61.is_some(),
             self.k62.is_some(),
             self.k63.is_some(),
             self.k64.is_some(),
             self.k65.is_some(),
             self.k66.is_some(),
+            self.k67.is_some(),
+            self.k68.is_some(),
+            self.k69.is_some(),
+            self.k70.is_some(),
+            self.k71.is_some(),
+            self.k72.is_some(),
+            self.k73.is_some(),
+            self.k74.is_some(),
+            self.k75.is_some(),
+            self.k76.is_some(),
         ]
         .iter()
         .filter(|held| **held)
@@ -7162,7 +7164,7 @@ impl Default for Objects {
 impl Objects {
     /// The `Adapter` held, if any.
     pub fn adapter(&self) -> Option<&directx_graphics_infrastructure_direct::SystemAdapter<Api>> {
-        self.k51.as_ref()
+        self.k61.as_ref()
     }
 
     /// Holds a `Adapter`, in place of any held.
@@ -7170,24 +7172,24 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemAdapter<Api>,
     ) {
-        self.k51 = Some(value);
+        self.k61 = Some(value);
     }
 
     /// The `Debug` held, if any.
     pub fn debug(&self) -> Option<&directx_graphics_infrastructure_direct::SystemDebug<Api>> {
-        self.k52.as_ref()
+        self.k62.as_ref()
     }
 
     /// Holds a `Debug`, in place of any held.
     pub fn put_debug(&mut self, value: directx_graphics_infrastructure_direct::SystemDebug<Api>) {
-        self.k52 = Some(value);
+        self.k62 = Some(value);
     }
 
     /// The `DecodeSwapChain` held, if any.
     pub fn decode_swap_chain(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemDecodeSwapChain<Api>> {
-        self.k53.as_ref()
+        self.k63.as_ref()
     }
 
     /// Holds a `DecodeSwapChain`, in place of any held.
@@ -7195,24 +7197,24 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemDecodeSwapChain<Api>,
     ) {
-        self.k53 = Some(value);
+        self.k63 = Some(value);
     }
 
     /// The `Device` held, if any.
     pub fn device(&self) -> Option<&directx_graphics_infrastructure_direct::SystemDevice<Api>> {
-        self.k54.as_ref()
+        self.k64.as_ref()
     }
 
     /// Holds a `Device`, in place of any held.
     pub fn put_device(&mut self, value: directx_graphics_infrastructure_direct::SystemDevice<Api>) {
-        self.k54 = Some(value);
+        self.k64 = Some(value);
     }
 
     /// The `DisplayControl` held, if any.
     pub fn display_control(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemDisplayControl<Api>> {
-        self.k55.as_ref()
+        self.k65.as_ref()
     }
 
     /// Holds a `DisplayControl`, in place of any held.
@@ -7220,12 +7222,12 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemDisplayControl<Api>,
     ) {
-        self.k55 = Some(value);
+        self.k65 = Some(value);
     }
 
     /// The `Factory` held, if any.
     pub fn factory(&self) -> Option<&directx_graphics_infrastructure_direct::SystemFactory<Api>> {
-        self.k56.as_ref()
+        self.k66.as_ref()
     }
 
     /// Holds a `Factory`, in place of any held.
@@ -7233,14 +7235,14 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemFactory<Api>,
     ) {
-        self.k56 = Some(value);
+        self.k66 = Some(value);
     }
 
     /// The `FactoryMedia` held, if any.
     pub fn factory_media(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemFactoryMedia<Api>> {
-        self.k57.as_ref()
+        self.k67.as_ref()
     }
 
     /// Holds a `FactoryMedia`, in place of any held.
@@ -7248,14 +7250,14 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemFactoryMedia<Api>,
     ) {
-        self.k57 = Some(value);
+        self.k67 = Some(value);
     }
 
     /// The `InfoQueue` held, if any.
     pub fn info_queue(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemInfoQueue<Api>> {
-        self.k58.as_ref()
+        self.k68.as_ref()
     }
 
     /// Holds a `InfoQueue`, in place of any held.
@@ -7263,14 +7265,14 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemInfoQueue<Api>,
     ) {
-        self.k58 = Some(value);
+        self.k68 = Some(value);
     }
 
     /// The `KeyedMutex` held, if any.
     pub fn keyed_mutex(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemKeyedMutex<Api>> {
-        self.k59.as_ref()
+        self.k69.as_ref()
     }
 
     /// Holds a `KeyedMutex`, in place of any held.
@@ -7278,24 +7280,24 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemKeyedMutex<Api>,
     ) {
-        self.k59 = Some(value);
+        self.k69 = Some(value);
     }
 
     /// The `Output` held, if any.
     pub fn output(&self) -> Option<&directx_graphics_infrastructure_direct::SystemOutput<Api>> {
-        self.k60.as_ref()
+        self.k70.as_ref()
     }
 
     /// Holds a `Output`, in place of any held.
     pub fn put_output(&mut self, value: directx_graphics_infrastructure_direct::SystemOutput<Api>) {
-        self.k60 = Some(value);
+        self.k70 = Some(value);
     }
 
     /// The `OutputDuplication` held, if any.
     pub fn output_duplication(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemOutputDuplication<Api>> {
-        self.k61.as_ref()
+        self.k71.as_ref()
     }
 
     /// Holds a `OutputDuplication`, in place of any held.
@@ -7303,12 +7305,12 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemOutputDuplication<Api>,
     ) {
-        self.k61 = Some(value);
+        self.k71 = Some(value);
     }
 
     /// The `Resource` held, if any.
     pub fn resource(&self) -> Option<&directx_graphics_infrastructure_direct::SystemResource<Api>> {
-        self.k62.as_ref()
+        self.k72.as_ref()
     }
 
     /// Holds a `Resource`, in place of any held.
@@ -7316,12 +7318,12 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemResource<Api>,
     ) {
-        self.k62 = Some(value);
+        self.k72 = Some(value);
     }
 
     /// The `Surface` held, if any.
     pub fn surface(&self) -> Option<&directx_graphics_infrastructure_direct::SystemSurface<Api>> {
-        self.k63.as_ref()
+        self.k73.as_ref()
     }
 
     /// Holds a `Surface`, in place of any held.
@@ -7329,14 +7331,14 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemSurface<Api>,
     ) {
-        self.k63 = Some(value);
+        self.k73 = Some(value);
     }
 
     /// The `SwapChain` held, if any.
     pub fn swap_chain(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemSwapChain<Api>> {
-        self.k64.as_ref()
+        self.k74.as_ref()
     }
 
     /// Holds a `SwapChain`, in place of any held.
@@ -7344,14 +7346,14 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemSwapChain<Api>,
     ) {
-        self.k64 = Some(value);
+        self.k74 = Some(value);
     }
 
     /// The `SwapChainMedia` held, if any.
     pub fn swap_chain_media(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemSwapChainMedia<Api>> {
-        self.k65.as_ref()
+        self.k75.as_ref()
     }
 
     /// Holds a `SwapChainMedia`, in place of any held.
@@ -7359,14 +7361,14 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemSwapChainMedia<Api>,
     ) {
-        self.k65 = Some(value);
+        self.k75 = Some(value);
     }
 
     /// The `GraphicsAnalysis` held, if any.
     pub fn graphics_analysis(
         &self,
     ) -> Option<&directx_graphics_infrastructure_direct::SystemGraphicsAnalysis<Api>> {
-        self.k66.as_ref()
+        self.k76.as_ref()
     }
 
     /// Holds a `GraphicsAnalysis`, in place of any held.
@@ -7374,7 +7376,7 @@ impl Objects {
         &mut self,
         value: directx_graphics_infrastructure_direct::SystemGraphicsAnalysis<Api>,
     ) {
-        self.k66 = Some(value);
+        self.k76 = Some(value);
     }
 }
 
@@ -7384,11 +7386,11 @@ pub fn make_all(o: &mut Objects) -> usize {
     for _ in 0..6 {
         let before = o.kinds_held();
         // IDXGIAdapter::EnumOutputs
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Adapter::enum_outputs(
                         this,
                         Default::default(),
@@ -7397,17 +7399,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -7416,17 +7418,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -7435,17 +7437,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -7455,17 +7457,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -7474,17 +7476,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -7493,17 +7495,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -7512,17 +7514,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -7531,17 +7533,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -7550,17 +7552,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -7569,17 +7571,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -7588,17 +7590,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -7608,17 +7610,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -7627,17 +7629,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -7646,17 +7648,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -7665,17 +7667,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -7684,17 +7686,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k51.as_ref()?;
+                    let this = o.k61.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -7704,33 +7706,33 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIDevice::GetAdapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Device::get_adapter(this);
                     answer.ok()
                 })
             };
             if let Some(p0) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -7739,17 +7741,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -7758,17 +7760,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -7778,17 +7780,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -7797,17 +7799,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -7816,17 +7818,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -7835,17 +7837,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -7854,17 +7856,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -7873,17 +7875,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -7892,17 +7894,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -7911,17 +7913,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -7931,17 +7933,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -7950,17 +7952,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -7969,17 +7971,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -7988,17 +7990,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -8007,17 +8009,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k54.as_ref()?;
+                    let this = o.k64.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -8027,17 +8029,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8049,17 +8051,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8071,34 +8073,34 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, Default::default(), Default::default(), &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN);
                     answer.ok()
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8110,17 +8112,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8132,17 +8134,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8154,17 +8156,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8176,17 +8178,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8198,17 +8200,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8220,17 +8222,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8242,34 +8244,34 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, Default::default(), Default::default(), &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION);
                     answer.ok()
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8281,17 +8283,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8303,17 +8305,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8325,17 +8327,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8347,17 +8349,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIFactory6::EnumAdapterByGpuPreference for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                             this,
@@ -8370,17 +8372,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -8389,17 +8391,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -8408,17 +8410,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -8428,17 +8430,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -8447,17 +8449,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -8466,17 +8468,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -8485,17 +8487,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -8504,17 +8506,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -8523,17 +8525,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -8542,17 +8544,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -8561,17 +8563,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -8581,17 +8583,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -8600,17 +8602,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -8619,17 +8621,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -8638,17 +8640,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -8657,17 +8659,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIFactory4::EnumWarpAdapter for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -8677,52 +8679,52 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIFactory2::CreateSwapChainForHwnd
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k66.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
@@ -8732,91 +8734,91 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIFactory2::CreateSwapChainForCoreWindow
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k66.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
                     })?;
-                    let v2 = (if let Some(x) = o.k51.as_ref() {
+                    let v2 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
@@ -8826,52 +8828,52 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIFactory2::CreateSwapChainForComposition
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k66.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
@@ -8881,17 +8883,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIFactory1::EnumAdapters1
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory1::enum_adapters1(
                         this,
                         Default::default(),
@@ -8900,17 +8902,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIFactory::EnumAdapters
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Factory::enum_adapters(
                         this,
                         Default::default(),
@@ -8919,52 +8921,52 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIFactory::CreateSwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k66.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
@@ -8974,17 +8976,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -8993,17 +8995,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -9012,17 +9014,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -9032,17 +9034,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -9051,17 +9053,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -9070,17 +9072,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -9089,17 +9091,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -9108,17 +9110,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -9127,17 +9129,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -9146,17 +9148,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -9165,17 +9167,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -9185,17 +9187,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -9204,17 +9206,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -9223,17 +9225,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -9242,17 +9244,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -9261,17 +9263,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k56.as_ref()?;
+                    let this = o.k66.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -9281,52 +9283,52 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k57.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k67.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
@@ -9336,73 +9338,73 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k57.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k67.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
                     })?;
-                    let v2 = o.k62.as_ref()?;
+                    let v2 = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_decode_swap_chain_desc(&[u8::MIN; 4]), v2, None);
                     answer.ok()
                 })
             };
             if let Some(p0) = answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -9411,17 +9413,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -9430,17 +9432,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -9450,17 +9452,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -9469,17 +9471,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -9488,17 +9490,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -9507,17 +9509,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -9526,17 +9528,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -9545,17 +9547,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -9564,17 +9566,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -9583,17 +9585,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -9603,17 +9605,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -9622,17 +9624,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -9641,17 +9643,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -9660,17 +9662,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -9679,17 +9681,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -9699,17 +9701,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -9718,17 +9720,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -9737,17 +9739,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -9757,17 +9759,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -9776,17 +9778,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -9795,17 +9797,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -9814,17 +9816,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -9833,17 +9835,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -9852,17 +9854,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -9871,17 +9873,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -9890,17 +9892,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -9910,17 +9912,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -9929,17 +9931,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -9948,17 +9950,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -9967,17 +9969,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -9986,17 +9988,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k59.as_ref()?;
+                    let this = o.k69.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -10006,52 +10008,52 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIOutput5::DuplicateOutput1
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k70.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
@@ -10066,52 +10068,52 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIOutput1::DuplicateOutput
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
-                    let v1 = (if let Some(x) = o.k51.as_ref() {
+                    let this = o.k70.as_ref()?;
+                    let v1 = (if let Some(x) = o.k61.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-                    } else if let Some(x) = o.k52.as_ref() {
+                    } else if let Some(x) = o.k62.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-                    } else if let Some(x) = o.k53.as_ref() {
+                    } else if let Some(x) = o.k63.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-                    } else if let Some(x) = o.k54.as_ref() {
+                    } else if let Some(x) = o.k64.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-                    } else if let Some(x) = o.k55.as_ref() {
+                    } else if let Some(x) = o.k65.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                             x,
                         ))
-                    } else if let Some(x) = o.k56.as_ref() {
+                    } else if let Some(x) = o.k66.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-                    } else if let Some(x) = o.k57.as_ref() {
+                    } else if let Some(x) = o.k67.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-                    } else if let Some(x) = o.k58.as_ref() {
+                    } else if let Some(x) = o.k68.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-                    } else if let Some(x) = o.k59.as_ref() {
+                    } else if let Some(x) = o.k69.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-                    } else if let Some(x) = o.k60.as_ref() {
+                    } else if let Some(x) = o.k70.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-                    } else if let Some(x) = o.k61.as_ref() {
+                    } else if let Some(x) = o.k71.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-                    } else if let Some(x) = o.k62.as_ref() {
+                    } else if let Some(x) = o.k72.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-                    } else if let Some(x) = o.k63.as_ref() {
+                    } else if let Some(x) = o.k73.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-                    } else if let Some(x) = o.k64.as_ref() {
+                    } else if let Some(x) = o.k74.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-                    } else if let Some(x) = o.k65.as_ref() {
+                    } else if let Some(x) = o.k75.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                             x,
                         ))
-                    } else if let Some(x) = o.k66.as_ref() {
+                    } else if let Some(x) = o.k76.as_ref() {
                         Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
                     } else {
                         None
@@ -10122,17 +10124,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -10141,17 +10143,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -10160,17 +10162,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -10180,17 +10182,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -10199,17 +10201,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -10218,17 +10220,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -10237,17 +10239,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -10256,17 +10258,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -10275,17 +10277,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -10294,17 +10296,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -10313,17 +10315,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -10333,17 +10335,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -10352,17 +10354,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -10371,17 +10373,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -10390,17 +10392,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -10409,17 +10411,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k60.as_ref()?;
+                    let this = o.k70.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -10429,17 +10431,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIOutputDuplication::AcquireNextFrame
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::OutputDuplication::acquire_next_frame(
                             this,
@@ -10449,17 +10451,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some((p0, p1)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p1);
+                o.k72 = Some(p1);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -10468,17 +10470,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -10487,17 +10489,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -10507,17 +10509,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -10526,17 +10528,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -10545,17 +10547,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -10564,17 +10566,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -10583,17 +10585,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -10602,17 +10604,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -10621,17 +10623,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -10640,17 +10642,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -10660,17 +10662,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -10679,17 +10681,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -10698,17 +10700,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -10717,17 +10719,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -10736,17 +10738,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k61.as_ref()?;
+                    let this = o.k71.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -10756,17 +10758,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIResource1::CreateSubresourceSurface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Resource1::create_subresource_surface(
                             this,
@@ -10776,17 +10778,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(p0) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -10795,17 +10797,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -10814,17 +10816,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -10834,17 +10836,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -10853,17 +10855,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -10872,17 +10874,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -10891,17 +10893,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -10910,17 +10912,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -10929,17 +10931,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -10948,17 +10950,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -10967,17 +10969,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -10987,17 +10989,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -11006,17 +11008,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -11025,17 +11027,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -11044,17 +11046,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -11063,17 +11065,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -11083,17 +11085,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -11102,17 +11104,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -11121,17 +11123,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -11141,17 +11143,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -11160,17 +11162,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -11179,17 +11181,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -11198,17 +11200,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -11217,17 +11219,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -11236,17 +11238,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -11255,17 +11257,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -11274,17 +11276,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -11294,17 +11296,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -11313,17 +11315,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -11332,17 +11334,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -11351,17 +11353,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -11370,17 +11372,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k62.as_ref()?;
+                    let this = o.k72.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -11390,17 +11392,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -11409,17 +11411,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -11428,17 +11430,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -11448,17 +11450,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -11467,17 +11469,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -11486,17 +11488,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -11505,17 +11507,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -11524,17 +11526,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -11543,17 +11545,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -11562,17 +11564,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -11581,17 +11583,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -11601,17 +11603,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -11620,17 +11622,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -11639,17 +11641,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -11658,17 +11660,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -11677,17 +11679,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -11697,17 +11699,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -11716,17 +11718,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -11735,17 +11737,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -11755,17 +11757,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -11774,17 +11776,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -11793,17 +11795,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -11812,17 +11814,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -11831,17 +11833,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -11850,17 +11852,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -11869,17 +11871,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -11888,17 +11890,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -11908,17 +11910,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -11927,17 +11929,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -11946,17 +11948,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -11965,17 +11967,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -11984,17 +11986,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k63.as_ref()?;
+                    let this = o.k73.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -12004,17 +12006,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -12023,17 +12025,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -12042,17 +12044,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -12062,17 +12064,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -12081,17 +12083,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -12100,17 +12102,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -12119,17 +12121,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -12138,17 +12140,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -12157,17 +12159,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -12176,17 +12178,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -12195,17 +12197,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -12215,17 +12217,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -12234,17 +12236,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -12253,17 +12255,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -12272,17 +12274,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -12291,17 +12293,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGISwapChain1::GetCoreWindow for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::SwapChain1::get_core_window(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -12311,51 +12313,51 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGISwapChain::GetFullscreenState
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::SwapChain::get_fullscreen_state(this);
                     answer.ok()
                 })
             };
             if let Some((p0, p1)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p1);
+                o.k70 = Some(p1);
             }
         }
         // IDXGISwapChain::GetContainingOutput
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::SwapChain::get_containing_output(this);
                     answer.ok()
                 })
             };
             if let Some(p0) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -12364,17 +12366,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -12383,17 +12385,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -12403,17 +12405,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -12422,17 +12424,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -12441,17 +12443,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -12460,17 +12462,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -12479,17 +12481,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -12498,17 +12500,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -12517,17 +12519,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -12536,17 +12538,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -12556,17 +12558,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -12575,17 +12577,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -12594,17 +12596,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -12613,17 +12615,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -12632,17 +12634,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIDeviceSubObject::GetDevice for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::DeviceSubObject::get_device(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -12652,17 +12654,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
@@ -12671,17 +12673,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
@@ -12690,17 +12692,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN,
@@ -12710,17 +12712,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
@@ -12729,17 +12731,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
@@ -12748,17 +12750,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
@@ -12767,17 +12769,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
@@ -12786,17 +12788,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
@@ -12805,17 +12807,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
@@ -12824,17 +12826,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
@@ -12843,17 +12845,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION,
@@ -12863,17 +12865,17 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
@@ -12882,17 +12884,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
@@ -12901,17 +12903,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
@@ -12920,17 +12922,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
@@ -12939,17 +12941,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // IDXGIObject::GetParent for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
-                    let this = o.k64.as_ref()?;
+                    let this = o.k74.as_ref()?;
                     let answer = directx_graphics_infrastructure::Object::get_parent(
                         this,
                         &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
@@ -12959,13 +12961,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // CreateDXGIFactory for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -12974,13 +12976,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // CreateDXGIFactory for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -12989,13 +12991,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // CreateDXGIFactory for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13005,13 +13007,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // CreateDXGIFactory for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13020,13 +13022,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // CreateDXGIFactory for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13035,13 +13037,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // CreateDXGIFactory for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13050,13 +13052,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // CreateDXGIFactory for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13065,13 +13067,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // CreateDXGIFactory for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13080,13 +13082,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // CreateDXGIFactory for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13095,13 +13097,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // CreateDXGIFactory for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13110,13 +13112,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // CreateDXGIFactory for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13126,13 +13128,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // CreateDXGIFactory for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13141,13 +13143,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // CreateDXGIFactory for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13156,13 +13158,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // CreateDXGIFactory for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13171,13 +13173,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // CreateDXGIFactory for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13186,13 +13188,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // CreateDXGIFactory for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13202,13 +13204,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13217,13 +13219,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13232,13 +13234,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13248,13 +13250,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13263,13 +13265,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13278,13 +13280,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13293,13 +13295,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13308,13 +13310,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13323,13 +13325,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13338,13 +13340,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13353,13 +13355,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13369,13 +13371,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13384,13 +13386,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13399,13 +13401,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13414,13 +13416,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13429,13 +13431,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // CreateDXGIFactory1 for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13445,13 +13447,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13460,13 +13462,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13475,13 +13477,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13491,13 +13493,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13506,13 +13508,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13521,13 +13523,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13536,13 +13538,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13551,13 +13553,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13566,13 +13568,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13581,13 +13583,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13596,13 +13598,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13612,13 +13614,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13627,13 +13629,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13642,13 +13644,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13657,13 +13659,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13672,13 +13674,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // CreateDXGIFactory2 for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13688,13 +13690,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for Adapter
-        if o.k51.is_none() {
+        if o.k61.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13703,13 +13705,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Adapter(p0)) = answer
-                && o.k51.is_none()
+                && o.k61.is_none()
             {
-                o.k51 = Some(p0);
+                o.k61 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for Debug
-        if o.k52.is_none() {
+        if o.k62.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13718,13 +13720,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Debug(p0)) = answer
-                && o.k52.is_none()
+                && o.k62.is_none()
             {
-                o.k52 = Some(p0);
+                o.k62 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for DecodeSwapChain
-        if o.k53.is_none() {
+        if o.k63.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13734,13 +13736,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DecodeSwapChain(p0)) =
                 answer
-                && o.k53.is_none()
+                && o.k63.is_none()
             {
-                o.k53 = Some(p0);
+                o.k63 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for Device
-        if o.k54.is_none() {
+        if o.k64.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13749,13 +13751,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
+                && o.k64.is_none()
             {
-                o.k54 = Some(p0);
+                o.k64 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for DisplayControl
-        if o.k55.is_none() {
+        if o.k65.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13764,13 +13766,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::DisplayControl(p0)) = answer
-                && o.k55.is_none()
+                && o.k65.is_none()
             {
-                o.k55 = Some(p0);
+                o.k65 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for Factory
-        if o.k56.is_none() {
+        if o.k66.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13779,13 +13781,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Factory(p0)) = answer
-                && o.k56.is_none()
+                && o.k66.is_none()
             {
-                o.k56 = Some(p0);
+                o.k66 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for FactoryMedia
-        if o.k57.is_none() {
+        if o.k67.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13794,13 +13796,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::FactoryMedia(p0)) = answer
-                && o.k57.is_none()
+                && o.k67.is_none()
             {
-                o.k57 = Some(p0);
+                o.k67 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for InfoQueue
-        if o.k58.is_none() {
+        if o.k68.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13809,13 +13811,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::InfoQueue(p0)) = answer
-                && o.k58.is_none()
+                && o.k68.is_none()
             {
-                o.k58 = Some(p0);
+                o.k68 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for KeyedMutex
-        if o.k59.is_none() {
+        if o.k69.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13824,13 +13826,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::KeyedMutex(p0)) = answer
-                && o.k59.is_none()
+                && o.k69.is_none()
             {
-                o.k59 = Some(p0);
+                o.k69 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for Output
-        if o.k60.is_none() {
+        if o.k70.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13839,13 +13841,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Output(p0)) = answer
-                && o.k60.is_none()
+                && o.k70.is_none()
             {
-                o.k60 = Some(p0);
+                o.k70 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for OutputDuplication
-        if o.k61.is_none() {
+        if o.k71.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13855,13 +13857,13 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::OutputDuplication(p0)) =
                 answer
-                && o.k61.is_none()
+                && o.k71.is_none()
             {
-                o.k61 = Some(p0);
+                o.k71 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for Resource
-        if o.k62.is_none() {
+        if o.k72.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13870,13 +13872,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Resource(p0)) = answer
-                && o.k62.is_none()
+                && o.k72.is_none()
             {
-                o.k62 = Some(p0);
+                o.k72 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for Surface
-        if o.k63.is_none() {
+        if o.k73.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13885,13 +13887,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::Surface(p0)) = answer
-                && o.k63.is_none()
+                && o.k73.is_none()
             {
-                o.k63 = Some(p0);
+                o.k73 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for SwapChain
-        if o.k64.is_none() {
+        if o.k74.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13900,13 +13902,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChain(p0)) = answer
-                && o.k64.is_none()
+                && o.k74.is_none()
             {
-                o.k64 = Some(p0);
+                o.k74 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for SwapChainMedia
-        if o.k65.is_none() {
+        if o.k75.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13915,13 +13917,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 })
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::SwapChainMedia(p0)) = answer
-                && o.k65.is_none()
+                && o.k75.is_none()
             {
-                o.k65 = Some(p0);
+                o.k75 = Some(p0);
             }
         }
         // DXGIGetDebugInterface1 for GraphicsAnalysis
-        if o.k66.is_none() {
+        if o.k76.is_none() {
             let answer = {
                 let o = &*o;
                 made(|| {
@@ -13931,9 +13933,9 @@ pub fn make_all(o: &mut Objects) -> usize {
             };
             if let Some(directx_graphics_infrastructure::UnknownObject::GraphicsAnalysis(p0)) =
                 answer
-                && o.k66.is_none()
+                && o.k76.is_none()
             {
-                o.k66 = Some(p0);
+                o.k76 = Some(p0);
             }
         }
         if o.kinds_held() == before {
@@ -13959,7 +13961,7 @@ pub fn drive_where(
     // IDXGIAdapter4::GetDesc3 on Adapter
     if wanted(IDXGI_ADAPTER4) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Adapter4::get_desc3(this);
@@ -13969,7 +13971,7 @@ pub fn drive_where(
     // IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent on Adapter
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
-        let Some(this) = o.k51.as_ref() else { return false; };
+        let Some(this) = o.k61.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Adapter3::register_hardware_content_protection_teardown_status_event(this, Default::default());
         true
         });
@@ -13977,7 +13979,7 @@ pub fn drive_where(
     // IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
-        let Some(this) = o.k51.as_ref() else { return false; };
+        let Some(this) = o.k61.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, Default::default());
         true
         });
@@ -13985,7 +13987,7 @@ pub fn drive_where(
     // IDXGIAdapter3::QueryVideoMemoryInfo on Adapter
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Adapter3::query_video_memory_info(
@@ -13999,7 +14001,7 @@ pub fn drive_where(
     // IDXGIAdapter3::SetVideoMemoryReservation on Adapter
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Adapter3::set_video_memory_reservation(
@@ -14014,7 +14016,7 @@ pub fn drive_where(
     // IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent on Adapter
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
-        let Some(this) = o.k51.as_ref() else { return false; };
+        let Some(this) = o.k61.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Adapter3::register_video_memory_budget_change_notification_event(this, Default::default());
         true
         });
@@ -14022,7 +14024,7 @@ pub fn drive_where(
     // IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
-        let Some(this) = o.k51.as_ref() else { return false; };
+        let Some(this) = o.k61.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, Default::default());
         true
         });
@@ -14030,7 +14032,7 @@ pub fn drive_where(
     // IDXGIAdapter2::GetDesc2 on Adapter
     if wanted(IDXGI_ADAPTER2) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Adapter2::get_desc2(this);
@@ -14040,7 +14042,7 @@ pub fn drive_where(
     // IDXGIAdapter1::GetDesc1 on Adapter
     if wanted(IDXGI_ADAPTER1) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Adapter1::get_desc1(this);
@@ -14050,7 +14052,7 @@ pub fn drive_where(
     // IDXGIAdapter::EnumOutputs on Adapter
     if wanted(IDXGI_ADAPTER) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ =
@@ -14061,7 +14063,7 @@ pub fn drive_where(
     // IDXGIAdapter::GetDesc on Adapter
     if wanted(IDXGI_ADAPTER) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Adapter::get_desc(this);
@@ -14071,7 +14073,7 @@ pub fn drive_where(
     // IDXGIAdapter::CheckInterfaceSupport on Adapter
     if wanted(IDXGI_ADAPTER) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Adapter::check_interface_support(
@@ -14084,7 +14086,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on Adapter
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -14098,7 +14100,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on Adapter
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -14112,7 +14114,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on Adapter
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k51.as_ref() else {
+            let Some(this) = o.k61.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -14122,7 +14124,7 @@ pub fn drive_where(
     // IDXGIDebug1::EnableLeakTrackingForThread on Debug
     if wanted(IDXGI_DEBUG1) {
         driven.attempt(|| {
-            let Some(this) = o.k52.as_ref() else {
+            let Some(this) = o.k62.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Debug1::enable_leak_tracking_for_thread(this);
@@ -14132,7 +14134,7 @@ pub fn drive_where(
     // IDXGIDebug1::DisableLeakTrackingForThread on Debug
     if wanted(IDXGI_DEBUG1) {
         driven.attempt(|| {
-            let Some(this) = o.k52.as_ref() else {
+            let Some(this) = o.k62.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Debug1::disable_leak_tracking_for_thread(this);
@@ -14142,7 +14144,7 @@ pub fn drive_where(
     // IDXGIDebug1::IsLeakTrackingEnabledForThread on Debug
     if wanted(IDXGI_DEBUG1) {
         driven.attempt(|| {
-            let Some(this) = o.k52.as_ref() else {
+            let Some(this) = o.k62.as_ref() else {
                 return false;
             };
             let _ =
@@ -14153,7 +14155,7 @@ pub fn drive_where(
     // IDXGIDebug::ReportLiveObjects on Debug
     if wanted(IDXGI_DEBUG) {
         driven.attempt(|| {
-            let Some(this) = o.k52.as_ref() else {
+            let Some(this) = o.k62.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Debug::report_live_objects(
@@ -14167,7 +14169,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::PresentBuffer on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::present_buffer(
@@ -14182,7 +14184,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::SetSourceRect on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::set_source_rect(
@@ -14197,7 +14199,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::SetTargetRect on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::set_target_rect(
@@ -14212,7 +14214,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::SetDestSize on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::set_dest_size(
@@ -14226,7 +14228,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::GetSourceRect on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::get_source_rect(this);
@@ -14236,7 +14238,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::GetTargetRect on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::get_target_rect(this);
@@ -14246,7 +14248,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::GetDestSize on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::get_dest_size(this);
@@ -14256,7 +14258,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::SetColorSpace on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::set_color_space(
@@ -14269,7 +14271,7 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::GetColorSpace on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k53.as_ref() else {
+            let Some(this) = o.k63.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::get_color_space(this);
@@ -14279,7 +14281,7 @@ pub fn drive_where(
     // IDXGIDevice4::OfferResources1 on Device
     if wanted(IDXGI_DEVICE4) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device4::offer_resources1(
@@ -14294,7 +14296,7 @@ pub fn drive_where(
     // IDXGIDevice4::ReclaimResources1 on Device
     if wanted(IDXGI_DEVICE4) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device4::reclaim_resources1(this, &[]);
@@ -14304,7 +14306,7 @@ pub fn drive_where(
     // IDXGIDevice3::Trim on Device
     if wanted(IDXGI_DEVICE3) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device3::trim(this);
@@ -14314,7 +14316,7 @@ pub fn drive_where(
     // IDXGIDevice2::OfferResources on Device
     if wanted(IDXGI_DEVICE2) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device2::offer_resources(
@@ -14328,7 +14330,7 @@ pub fn drive_where(
     // IDXGIDevice2::ReclaimResources on Device
     if wanted(IDXGI_DEVICE2) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device2::reclaim_resources(this, &[]);
@@ -14338,7 +14340,7 @@ pub fn drive_where(
     // IDXGIDevice2::EnqueueSetEvent on Device
     if wanted(IDXGI_DEVICE2) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device2::enqueue_set_event(
@@ -14351,7 +14353,7 @@ pub fn drive_where(
     // IDXGIDevice1::SetMaximumFrameLatency on Device
     if wanted(IDXGI_DEVICE1) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device1::set_maximum_frame_latency(
@@ -14364,7 +14366,7 @@ pub fn drive_where(
     // IDXGIDevice1::GetMaximumFrameLatency on Device
     if wanted(IDXGI_DEVICE1) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device1::get_maximum_frame_latency(this);
@@ -14374,7 +14376,7 @@ pub fn drive_where(
     // IDXGIDevice::GetAdapter on Device
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device::get_adapter(this);
@@ -14384,7 +14386,7 @@ pub fn drive_where(
     // IDXGIDevice::CreateSurface on Device
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
-        let Some(this) = o.k54.as_ref() else { return false; };
+        let Some(this) = o.k64.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Device::create_surface(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_surface_desc(&[u8::MIN; 20]), Default::default(), Default::default(), None);
         true
         });
@@ -14392,7 +14394,7 @@ pub fn drive_where(
     // IDXGIDevice::SetGPUThreadPriority on Device
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device::set_gpu_thread_priority(
@@ -14405,7 +14407,7 @@ pub fn drive_where(
     // IDXGIDevice::GetGPUThreadPriority on Device
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Device::get_gpu_thread_priority(this);
@@ -14415,7 +14417,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on Device
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -14429,7 +14431,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on Device
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -14443,7 +14445,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on Device
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
+            let Some(this) = o.k64.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -14453,7 +14455,7 @@ pub fn drive_where(
     // IDXGIDisplayControl::IsStereoEnabled on DisplayControl
     if wanted(IDXGI_DISPLAY_CONTROL) {
         driven.attempt(|| {
-            let Some(this) = o.k55.as_ref() else {
+            let Some(this) = o.k65.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DisplayControl::is_stereo_enabled(this);
@@ -14463,7 +14465,7 @@ pub fn drive_where(
     // IDXGIDisplayControl::SetStereoEnabled on DisplayControl
     if wanted(IDXGI_DISPLAY_CONTROL) {
         driven.attempt(|| {
-            let Some(this) = o.k55.as_ref() else {
+            let Some(this) = o.k65.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DisplayControl::set_stereo_enabled(
@@ -14476,7 +14478,7 @@ pub fn drive_where(
     // IDXGIFactory7::RegisterAdaptersChangedEvent on Factory
     if wanted(IDXGI_FACTORY7) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory7::register_adapters_changed_event(
@@ -14489,7 +14491,7 @@ pub fn drive_where(
     // IDXGIFactory7::UnregisterAdaptersChangedEvent on Factory
     if wanted(IDXGI_FACTORY7) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory7::unregister_adapters_changed_event(
@@ -14502,7 +14504,7 @@ pub fn drive_where(
     // IDXGIFactory6::EnumAdapterByGpuPreference on Factory
     if wanted(IDXGI_FACTORY6) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
@@ -14517,7 +14519,7 @@ pub fn drive_where(
     // IDXGIFactory5::CheckFeatureSupport on Factory
     if wanted(IDXGI_FACTORY5) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let lying = bytes();
@@ -14532,7 +14534,7 @@ pub fn drive_where(
     // IDXGIFactory4::EnumWarpAdapter on Factory
     if wanted(IDXGI_FACTORY4) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
@@ -14545,7 +14547,7 @@ pub fn drive_where(
     // IDXGIFactory3::GetCreationFlags on Factory
     if wanted(IDXGI_FACTORY3) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory3::get_creation_flags(this);
@@ -14555,7 +14557,7 @@ pub fn drive_where(
     // IDXGIFactory2::IsWindowedStereoEnabled on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::is_windowed_stereo_enabled(this);
@@ -14565,8 +14567,8 @@ pub fn drive_where(
     // IDXGIFactory2::CreateSwapChainForHwnd on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-        let Some(this) = o.k56.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k51.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k52.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k53.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k54.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k55.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k56.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k57.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k58.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k59.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k60.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let Some(this) = o.k66.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None, None);
         true
         });
@@ -14574,9 +14576,9 @@ pub fn drive_where(
     // IDXGIFactory2::CreateSwapChainForCoreWindow on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-        let Some(this) = o.k56.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k51.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k52.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k53.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k54.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k55.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k56.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k57.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k58.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k59.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k60.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let Some(v2) = (if let Some(x) = o.k51.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k52.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k53.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k54.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k55.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k56.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k57.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k58.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k59.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k60.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let Some(this) = o.k66.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let Some(v2) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
         true
         });
@@ -14584,7 +14586,7 @@ pub fn drive_where(
     // IDXGIFactory2::GetSharedResourceAdapterLuid on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::get_shared_resource_adapter_luid(
@@ -14597,7 +14599,7 @@ pub fn drive_where(
     // IDXGIFactory2::RegisterStereoStatusWindow on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::register_stereo_status_window(
@@ -14611,7 +14613,7 @@ pub fn drive_where(
     // IDXGIFactory2::RegisterStereoStatusEvent on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::register_stereo_status_event(
@@ -14624,7 +14626,7 @@ pub fn drive_where(
     // IDXGIFactory2::UnregisterStereoStatus on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::unregister_stereo_status(
@@ -14637,7 +14639,7 @@ pub fn drive_where(
     // IDXGIFactory2::RegisterOcclusionStatusWindow on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::register_occlusion_status_window(
@@ -14651,7 +14653,7 @@ pub fn drive_where(
     // IDXGIFactory2::RegisterOcclusionStatusEvent on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::register_occlusion_status_event(
@@ -14664,7 +14666,7 @@ pub fn drive_where(
     // IDXGIFactory2::UnregisterOcclusionStatus on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::unregister_occlusion_status(
@@ -14677,8 +14679,8 @@ pub fn drive_where(
     // IDXGIFactory2::CreateSwapChainForComposition on Factory
     if wanted(IDXGI_FACTORY2) {
         driven.attempt(|| {
-        let Some(this) = o.k56.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k51.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k52.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k53.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k54.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k55.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k56.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k57.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k58.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k59.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k60.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let Some(this) = o.k66.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
         true
         });
@@ -14686,7 +14688,7 @@ pub fn drive_where(
     // IDXGIFactory1::EnumAdapters1 on Factory
     if wanted(IDXGI_FACTORY1) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ =
@@ -14697,7 +14699,7 @@ pub fn drive_where(
     // IDXGIFactory1::IsCurrent on Factory
     if wanted(IDXGI_FACTORY1) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory1::is_current(this);
@@ -14707,7 +14709,7 @@ pub fn drive_where(
     // IDXGIFactory::EnumAdapters on Factory
     if wanted(IDXGI_FACTORY) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ =
@@ -14718,7 +14720,7 @@ pub fn drive_where(
     // IDXGIFactory::MakeWindowAssociation on Factory
     if wanted(IDXGI_FACTORY) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory::make_window_association(
@@ -14732,7 +14734,7 @@ pub fn drive_where(
     // IDXGIFactory::GetWindowAssociation on Factory
     if wanted(IDXGI_FACTORY) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory::get_window_association(this);
@@ -14742,8 +14744,8 @@ pub fn drive_where(
     // IDXGIFactory::CreateSwapChain on Factory
     if wanted(IDXGI_FACTORY) {
         driven.attempt(|| {
-        let Some(this) = o.k56.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k51.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k52.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k53.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k54.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k55.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k56.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k57.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k58.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k59.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k60.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let Some(this) = o.k66.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let _ = directx_graphics_infrastructure::Factory::create_swap_chain(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc(&[u8::MIN; 72]));
         true
         });
@@ -14751,7 +14753,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on Factory
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -14765,7 +14767,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on Factory
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -14779,7 +14781,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on Factory
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k56.as_ref() else {
+            let Some(this) = o.k66.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -14789,8 +14791,8 @@ pub fn drive_where(
     // IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle on FactoryMedia
     if wanted(IDXGI_FACTORY_MEDIA) {
         driven.attempt(|| {
-        let Some(this) = o.k57.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k51.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k52.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k53.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k54.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k55.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k56.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k57.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k58.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k59.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k60.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let Some(this) = o.k67.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let _ = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
         true
         });
@@ -14798,9 +14800,9 @@ pub fn drive_where(
     // IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle on FactoryMedia
     if wanted(IDXGI_FACTORY_MEDIA) {
         driven.attempt(|| {
-        let Some(this) = o.k57.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k51.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k52.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k53.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k54.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k55.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k56.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k57.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k58.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k59.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k60.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let Some(v2) = o.k62.as_ref() else { return false; };
+        let Some(this) = o.k67.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let Some(v2) = o.k72.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_decode_swap_chain_desc(&[u8::MIN; 4]), v2, None);
         true
         });
@@ -14808,7 +14810,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::SetMessageCountLimit on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_message_count_limit(
@@ -14822,7 +14824,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::ClearStoredMessages on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::clear_stored_messages(
@@ -14835,7 +14837,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-        let Some(this) = o.k58.as_ref() else { return false; };
+        let Some(this) = o.k68.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::InfoQueue::get_num_stored_messages_allowed_by_retrieval_filters(this, Default::default());
         true
         });
@@ -14843,7 +14845,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetNumStoredMessages on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_num_stored_messages(
@@ -14856,7 +14858,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-        let Some(this) = o.k58.as_ref() else { return false; };
+        let Some(this) = o.k68.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_discarded_by_message_count_limit(this, Default::default());
         true
         });
@@ -14864,7 +14866,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetMessageCountLimit on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_message_count_limit(
@@ -14877,7 +14879,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-        let Some(this) = o.k58.as_ref() else { return false; };
+        let Some(this) = o.k68.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_allowed_by_storage_filter(this, Default::default());
         true
         });
@@ -14885,7 +14887,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-        let Some(this) = o.k58.as_ref() else { return false; };
+        let Some(this) = o.k68.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_denied_by_storage_filter(this, Default::default());
         true
         });
@@ -14893,7 +14895,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::ClearStorageFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::clear_storage_filter(
@@ -14906,7 +14908,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PushEmptyStorageFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_empty_storage_filter(
@@ -14919,7 +14921,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PushDenyAllStorageFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_deny_all_storage_filter(
@@ -14932,7 +14934,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PushCopyOfStorageFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_copy_of_storage_filter(
@@ -14945,7 +14947,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PopStorageFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::pop_storage_filter(
@@ -14958,7 +14960,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetStorageFilterStackSize on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_storage_filter_stack_size(
@@ -14971,7 +14973,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::ClearRetrievalFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::clear_retrieval_filter(
@@ -14984,7 +14986,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PushEmptyRetrievalFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_empty_retrieval_filter(
@@ -14997,7 +14999,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PushDenyAllRetrievalFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_deny_all_retrieval_filter(
@@ -15010,7 +15012,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PushCopyOfRetrievalFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_copy_of_retrieval_filter(
@@ -15023,7 +15025,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::PopRetrievalFilter on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::pop_retrieval_filter(
@@ -15036,7 +15038,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetRetrievalFilterStackSize on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_retrieval_filter_stack_size(
@@ -15049,7 +15051,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::AddMessage on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::add_message(
@@ -15066,7 +15068,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::AddApplicationMessage on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::add_application_message(
@@ -15080,7 +15082,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::SetBreakOnCategory on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_category(
@@ -15095,7 +15097,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(
@@ -15110,7 +15112,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::SetBreakOnID on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_id(
@@ -15125,7 +15127,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetBreakOnCategory on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_category(
@@ -15139,7 +15141,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetBreakOnSeverity on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_severity(
@@ -15153,7 +15155,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetBreakOnID on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_id(
@@ -15167,7 +15169,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_mute_debug_output(
@@ -15181,7 +15183,7 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetMuteDebugOutput on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k58.as_ref() else {
+            let Some(this) = o.k68.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_mute_debug_output(
@@ -15194,7 +15196,7 @@ pub fn drive_where(
     // IDXGIKeyedMutex::AcquireSync on KeyedMutex
     if wanted(IDXGI_KEYED_MUTEX) {
         driven.attempt(|| {
-            let Some(this) = o.k59.as_ref() else {
+            let Some(this) = o.k69.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::KeyedMutex::acquire_sync(
@@ -15208,7 +15210,7 @@ pub fn drive_where(
     // IDXGIKeyedMutex::ReleaseSync on KeyedMutex
     if wanted(IDXGI_KEYED_MUTEX) {
         driven.attempt(|| {
-            let Some(this) = o.k59.as_ref() else {
+            let Some(this) = o.k69.as_ref() else {
                 return false;
             };
             let _ =
@@ -15219,7 +15221,7 @@ pub fn drive_where(
     // IDXGIDeviceSubObject::GetDevice on KeyedMutex
     if wanted(IDXGI_DEVICE_SUB_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k59.as_ref() else {
+            let Some(this) = o.k69.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
@@ -15232,7 +15234,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on KeyedMutex
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k59.as_ref() else {
+            let Some(this) = o.k69.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -15246,7 +15248,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on KeyedMutex
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k59.as_ref() else {
+            let Some(this) = o.k69.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -15260,7 +15262,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on KeyedMutex
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k59.as_ref() else {
+            let Some(this) = o.k69.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -15270,7 +15272,7 @@ pub fn drive_where(
     // IDXGIOutput6::GetDesc1 on Output
     if wanted(IDXGI_OUTPUT6) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output6::get_desc1(this);
@@ -15280,7 +15282,7 @@ pub fn drive_where(
     // IDXGIOutput6::CheckHardwareCompositionSupport on Output
     if wanted(IDXGI_OUTPUT6) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ =
@@ -15291,44 +15293,44 @@ pub fn drive_where(
     // IDXGIOutput5::DuplicateOutput1 on Output
     if wanted(IDXGI_OUTPUT5) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = (if let Some(x) = o.k51.as_ref() {
+            let Some(v1) = (if let Some(x) = o.k61.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-            } else if let Some(x) = o.k52.as_ref() {
+            } else if let Some(x) = o.k62.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-            } else if let Some(x) = o.k53.as_ref() {
+            } else if let Some(x) = o.k63.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-            } else if let Some(x) = o.k54.as_ref() {
+            } else if let Some(x) = o.k64.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-            } else if let Some(x) = o.k55.as_ref() {
+            } else if let Some(x) = o.k65.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                     x,
                 ))
-            } else if let Some(x) = o.k56.as_ref() {
+            } else if let Some(x) = o.k66.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-            } else if let Some(x) = o.k57.as_ref() {
+            } else if let Some(x) = o.k67.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-            } else if let Some(x) = o.k58.as_ref() {
+            } else if let Some(x) = o.k68.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-            } else if let Some(x) = o.k59.as_ref() {
+            } else if let Some(x) = o.k69.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-            } else if let Some(x) = o.k60.as_ref() {
+            } else if let Some(x) = o.k70.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-            } else if let Some(x) = o.k61.as_ref() {
+            } else if let Some(x) = o.k71.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-            } else if let Some(x) = o.k62.as_ref() {
+            } else if let Some(x) = o.k72.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-            } else if let Some(x) = o.k63.as_ref() {
+            } else if let Some(x) = o.k73.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-            } else if let Some(x) = o.k64.as_ref() {
+            } else if let Some(x) = o.k74.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-            } else if let Some(x) = o.k65.as_ref() {
+            } else if let Some(x) = o.k75.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                     x,
                 ))
-            } else if let Some(x) = o.k66.as_ref() {
+            } else if let Some(x) = o.k76.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
             } else {
                 None
@@ -15347,44 +15349,44 @@ pub fn drive_where(
     // IDXGIOutput4::CheckOverlayColorSpaceSupport on Output
     if wanted(IDXGI_OUTPUT4) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = (if let Some(x) = o.k51.as_ref() {
+            let Some(v1) = (if let Some(x) = o.k61.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-            } else if let Some(x) = o.k52.as_ref() {
+            } else if let Some(x) = o.k62.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-            } else if let Some(x) = o.k53.as_ref() {
+            } else if let Some(x) = o.k63.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-            } else if let Some(x) = o.k54.as_ref() {
+            } else if let Some(x) = o.k64.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-            } else if let Some(x) = o.k55.as_ref() {
+            } else if let Some(x) = o.k65.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                     x,
                 ))
-            } else if let Some(x) = o.k56.as_ref() {
+            } else if let Some(x) = o.k66.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-            } else if let Some(x) = o.k57.as_ref() {
+            } else if let Some(x) = o.k67.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-            } else if let Some(x) = o.k58.as_ref() {
+            } else if let Some(x) = o.k68.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-            } else if let Some(x) = o.k59.as_ref() {
+            } else if let Some(x) = o.k69.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-            } else if let Some(x) = o.k60.as_ref() {
+            } else if let Some(x) = o.k70.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-            } else if let Some(x) = o.k61.as_ref() {
+            } else if let Some(x) = o.k71.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-            } else if let Some(x) = o.k62.as_ref() {
+            } else if let Some(x) = o.k72.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-            } else if let Some(x) = o.k63.as_ref() {
+            } else if let Some(x) = o.k73.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-            } else if let Some(x) = o.k64.as_ref() {
+            } else if let Some(x) = o.k74.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-            } else if let Some(x) = o.k65.as_ref() {
+            } else if let Some(x) = o.k75.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                     x,
                 ))
-            } else if let Some(x) = o.k66.as_ref() {
+            } else if let Some(x) = o.k76.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
             } else {
                 None
@@ -15403,44 +15405,44 @@ pub fn drive_where(
     // IDXGIOutput3::CheckOverlaySupport on Output
     if wanted(IDXGI_OUTPUT3) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = (if let Some(x) = o.k51.as_ref() {
+            let Some(v1) = (if let Some(x) = o.k61.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-            } else if let Some(x) = o.k52.as_ref() {
+            } else if let Some(x) = o.k62.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-            } else if let Some(x) = o.k53.as_ref() {
+            } else if let Some(x) = o.k63.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-            } else if let Some(x) = o.k54.as_ref() {
+            } else if let Some(x) = o.k64.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-            } else if let Some(x) = o.k55.as_ref() {
+            } else if let Some(x) = o.k65.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                     x,
                 ))
-            } else if let Some(x) = o.k56.as_ref() {
+            } else if let Some(x) = o.k66.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-            } else if let Some(x) = o.k57.as_ref() {
+            } else if let Some(x) = o.k67.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-            } else if let Some(x) = o.k58.as_ref() {
+            } else if let Some(x) = o.k68.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-            } else if let Some(x) = o.k59.as_ref() {
+            } else if let Some(x) = o.k69.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-            } else if let Some(x) = o.k60.as_ref() {
+            } else if let Some(x) = o.k70.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-            } else if let Some(x) = o.k61.as_ref() {
+            } else if let Some(x) = o.k71.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-            } else if let Some(x) = o.k62.as_ref() {
+            } else if let Some(x) = o.k72.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-            } else if let Some(x) = o.k63.as_ref() {
+            } else if let Some(x) = o.k73.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-            } else if let Some(x) = o.k64.as_ref() {
+            } else if let Some(x) = o.k74.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-            } else if let Some(x) = o.k65.as_ref() {
+            } else if let Some(x) = o.k75.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                     x,
                 ))
-            } else if let Some(x) = o.k66.as_ref() {
+            } else if let Some(x) = o.k76.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
             } else {
                 None
@@ -15458,7 +15460,7 @@ pub fn drive_where(
     // IDXGIOutput2::SupportsOverlays on Output
     if wanted(IDXGI_OUTPUT2) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output2::supports_overlays(this);
@@ -15468,7 +15470,7 @@ pub fn drive_where(
     // IDXGIOutput1::GetDisplayModeList1 on Output
     if wanted(IDXGI_OUTPUT1) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output1::get_display_mode_list1(
@@ -15482,7 +15484,7 @@ pub fn drive_where(
     // IDXGIOutput1::FindClosestMatchingMode1 on Output
     if wanted(IDXGI_OUTPUT1) {
         driven.attempt(|| {
-        let Some(this) = o.k60.as_ref() else { return false; };
+        let Some(this) = o.k70.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Output1::find_closest_matching_mode1(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&[u8::MIN; 32]), None);
         true
         });
@@ -15490,10 +15492,10 @@ pub fn drive_where(
     // IDXGIOutput1::GetDisplaySurfaceData1 on Output
     if wanted(IDXGI_OUTPUT1) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = o.k62.as_ref() else {
+            let Some(v1) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output1::get_display_surface_data1(this, v1);
@@ -15503,44 +15505,44 @@ pub fn drive_where(
     // IDXGIOutput1::DuplicateOutput on Output
     if wanted(IDXGI_OUTPUT1) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = (if let Some(x) = o.k51.as_ref() {
+            let Some(v1) = (if let Some(x) = o.k61.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-            } else if let Some(x) = o.k52.as_ref() {
+            } else if let Some(x) = o.k62.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-            } else if let Some(x) = o.k53.as_ref() {
+            } else if let Some(x) = o.k63.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-            } else if let Some(x) = o.k54.as_ref() {
+            } else if let Some(x) = o.k64.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-            } else if let Some(x) = o.k55.as_ref() {
+            } else if let Some(x) = o.k65.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                     x,
                 ))
-            } else if let Some(x) = o.k56.as_ref() {
+            } else if let Some(x) = o.k66.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-            } else if let Some(x) = o.k57.as_ref() {
+            } else if let Some(x) = o.k67.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-            } else if let Some(x) = o.k58.as_ref() {
+            } else if let Some(x) = o.k68.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-            } else if let Some(x) = o.k59.as_ref() {
+            } else if let Some(x) = o.k69.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-            } else if let Some(x) = o.k60.as_ref() {
+            } else if let Some(x) = o.k70.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-            } else if let Some(x) = o.k61.as_ref() {
+            } else if let Some(x) = o.k71.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-            } else if let Some(x) = o.k62.as_ref() {
+            } else if let Some(x) = o.k72.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-            } else if let Some(x) = o.k63.as_ref() {
+            } else if let Some(x) = o.k73.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-            } else if let Some(x) = o.k64.as_ref() {
+            } else if let Some(x) = o.k74.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-            } else if let Some(x) = o.k65.as_ref() {
+            } else if let Some(x) = o.k75.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                     x,
                 ))
-            } else if let Some(x) = o.k66.as_ref() {
+            } else if let Some(x) = o.k76.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
             } else {
                 None
@@ -15554,7 +15556,7 @@ pub fn drive_where(
     // IDXGIOutput::GetDesc on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::get_desc(this);
@@ -15564,7 +15566,7 @@ pub fn drive_where(
     // IDXGIOutput::GetDisplayModeList on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::get_display_mode_list(
@@ -15578,7 +15580,7 @@ pub fn drive_where(
     // IDXGIOutput::FindClosestMatchingMode on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-        let Some(this) = o.k60.as_ref() else { return false; };
+        let Some(this) = o.k70.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Output::find_closest_matching_mode(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&[u8::MIN; 28]), None);
         true
         });
@@ -15586,7 +15588,7 @@ pub fn drive_where(
     // IDXGIOutput::WaitForVBlank on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::wait_for_v_blank(this);
@@ -15596,44 +15598,44 @@ pub fn drive_where(
     // IDXGIOutput::TakeOwnership on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = (if let Some(x) = o.k51.as_ref() {
+            let Some(v1) = (if let Some(x) = o.k61.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-            } else if let Some(x) = o.k52.as_ref() {
+            } else if let Some(x) = o.k62.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-            } else if let Some(x) = o.k53.as_ref() {
+            } else if let Some(x) = o.k63.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-            } else if let Some(x) = o.k54.as_ref() {
+            } else if let Some(x) = o.k64.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-            } else if let Some(x) = o.k55.as_ref() {
+            } else if let Some(x) = o.k65.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                     x,
                 ))
-            } else if let Some(x) = o.k56.as_ref() {
+            } else if let Some(x) = o.k66.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-            } else if let Some(x) = o.k57.as_ref() {
+            } else if let Some(x) = o.k67.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-            } else if let Some(x) = o.k58.as_ref() {
+            } else if let Some(x) = o.k68.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-            } else if let Some(x) = o.k59.as_ref() {
+            } else if let Some(x) = o.k69.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-            } else if let Some(x) = o.k60.as_ref() {
+            } else if let Some(x) = o.k70.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-            } else if let Some(x) = o.k61.as_ref() {
+            } else if let Some(x) = o.k71.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-            } else if let Some(x) = o.k62.as_ref() {
+            } else if let Some(x) = o.k72.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-            } else if let Some(x) = o.k63.as_ref() {
+            } else if let Some(x) = o.k73.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-            } else if let Some(x) = o.k64.as_ref() {
+            } else if let Some(x) = o.k74.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-            } else if let Some(x) = o.k65.as_ref() {
+            } else if let Some(x) = o.k75.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                     x,
                 ))
-            } else if let Some(x) = o.k66.as_ref() {
+            } else if let Some(x) = o.k76.as_ref() {
                 Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
             } else {
                 None
@@ -15651,7 +15653,7 @@ pub fn drive_where(
     // IDXGIOutput::ReleaseOwnership on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::release_ownership(this);
@@ -15661,7 +15663,7 @@ pub fn drive_where(
     // IDXGIOutput::GetGammaControlCapabilities on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::get_gamma_control_capabilities(this);
@@ -15671,7 +15673,7 @@ pub fn drive_where(
     // IDXGIOutput::SetGammaControl on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-        let Some(this) = o.k60.as_ref() else { return false; };
+        let Some(this) = o.k70.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::Output::set_gamma_control(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_gamma_control(&[u8::MIN; 12324]));
         true
         });
@@ -15679,7 +15681,7 @@ pub fn drive_where(
     // IDXGIOutput::GetGammaControl on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::get_gamma_control(this);
@@ -15689,10 +15691,10 @@ pub fn drive_where(
     // IDXGIOutput::SetDisplaySurface on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = o.k63.as_ref() else {
+            let Some(v1) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::set_display_surface(this, v1);
@@ -15702,10 +15704,10 @@ pub fn drive_where(
     // IDXGIOutput::GetDisplaySurfaceData on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let Some(v1) = o.k63.as_ref() else {
+            let Some(v1) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::get_display_surface_data(this, v1);
@@ -15715,7 +15717,7 @@ pub fn drive_where(
     // IDXGIOutput::GetFrameStatistics on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Output::get_frame_statistics(this);
@@ -15725,7 +15727,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on Output
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -15739,7 +15741,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on Output
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -15753,7 +15755,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on Output
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k60.as_ref() else {
+            let Some(this) = o.k70.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -15763,7 +15765,7 @@ pub fn drive_where(
     // IDXGIOutputDuplication::GetDesc on OutputDuplication
     if wanted(IDXGI_OUTPUT_DUPLICATION) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::OutputDuplication::get_desc(this);
@@ -15773,7 +15775,7 @@ pub fn drive_where(
     // IDXGIOutputDuplication::AcquireNextFrame on OutputDuplication
     if wanted(IDXGI_OUTPUT_DUPLICATION) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::OutputDuplication::acquire_next_frame(
@@ -15786,7 +15788,7 @@ pub fn drive_where(
     // IDXGIOutputDuplication::GetFrameDirtyRects on OutputDuplication
     if wanted(IDXGI_OUTPUT_DUPLICATION) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let lying = bytes();
@@ -15799,7 +15801,7 @@ pub fn drive_where(
     // IDXGIOutputDuplication::GetFrameMoveRects on OutputDuplication
     if wanted(IDXGI_OUTPUT_DUPLICATION) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let lying = bytes();
@@ -15812,7 +15814,7 @@ pub fn drive_where(
     // IDXGIOutputDuplication::GetFramePointerShape on OutputDuplication
     if wanted(IDXGI_OUTPUT_DUPLICATION) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let lying = bytes();
@@ -15825,7 +15827,7 @@ pub fn drive_where(
     // IDXGIOutputDuplication::UnMapDesktopSurface on OutputDuplication
     if wanted(IDXGI_OUTPUT_DUPLICATION) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let _ =
@@ -15836,7 +15838,7 @@ pub fn drive_where(
     // IDXGIOutputDuplication::ReleaseFrame on OutputDuplication
     if wanted(IDXGI_OUTPUT_DUPLICATION) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::OutputDuplication::release_frame(this);
@@ -15846,7 +15848,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on OutputDuplication
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -15860,7 +15862,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on OutputDuplication
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -15874,7 +15876,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on OutputDuplication
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k61.as_ref() else {
+            let Some(this) = o.k71.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -15884,7 +15886,7 @@ pub fn drive_where(
     // IDXGIResource1::CreateSubresourceSurface on Resource
     if wanted(IDXGI_RESOURCE1) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource1::create_subresource_surface(
@@ -15897,7 +15899,7 @@ pub fn drive_where(
     // IDXGIResource::GetSharedHandle on Resource
     if wanted(IDXGI_RESOURCE) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource::get_shared_handle(this);
@@ -15907,7 +15909,7 @@ pub fn drive_where(
     // IDXGIResource::GetUsage on Resource
     if wanted(IDXGI_RESOURCE) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource::get_usage(this);
@@ -15917,7 +15919,7 @@ pub fn drive_where(
     // IDXGIResource::SetEvictionPriority on Resource
     if wanted(IDXGI_RESOURCE) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource::set_eviction_priority(
@@ -15930,7 +15932,7 @@ pub fn drive_where(
     // IDXGIResource::GetEvictionPriority on Resource
     if wanted(IDXGI_RESOURCE) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource::get_eviction_priority(this);
@@ -15940,7 +15942,7 @@ pub fn drive_where(
     // IDXGIDeviceSubObject::GetDevice on Resource
     if wanted(IDXGI_DEVICE_SUB_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
@@ -15953,7 +15955,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on Resource
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -15967,7 +15969,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on Resource
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -15981,7 +15983,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on Resource
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k62.as_ref() else {
+            let Some(this) = o.k72.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -15991,7 +15993,7 @@ pub fn drive_where(
     // IDXGISurface2::GetResource on Surface
     if wanted(IDXGI_SURFACE2) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ =
@@ -16002,7 +16004,7 @@ pub fn drive_where(
     // IDXGISurface1::GetDC on Surface
     if wanted(IDXGI_SURFACE1) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Surface1::get_dc(this, Default::default());
@@ -16012,7 +16014,7 @@ pub fn drive_where(
     // IDXGISurface1::ReleaseDC on Surface
     if wanted(IDXGI_SURFACE1) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Surface1::release_dc(this, None);
@@ -16022,7 +16024,7 @@ pub fn drive_where(
     // IDXGISurface::GetDesc on Surface
     if wanted(IDXGI_SURFACE) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Surface::get_desc(this);
@@ -16032,7 +16034,7 @@ pub fn drive_where(
     // IDXGISurface::Unmap on Surface
     if wanted(IDXGI_SURFACE) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Surface::unmap(this);
@@ -16042,7 +16044,7 @@ pub fn drive_where(
     // IDXGIDeviceSubObject::GetDevice on Surface
     if wanted(IDXGI_DEVICE_SUB_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
@@ -16055,7 +16057,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on Surface
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -16069,7 +16071,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on Surface
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -16083,7 +16085,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on Surface
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
+            let Some(this) = o.k73.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -16093,7 +16095,7 @@ pub fn drive_where(
     // IDXGISwapChain4::SetHDRMetaData on SwapChain
     if wanted(IDXGI_SWAP_CHAIN4) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain4::set_hdr_meta_data(
@@ -16107,7 +16109,7 @@ pub fn drive_where(
     // IDXGISwapChain3::GetCurrentBackBufferIndex on SwapChain
     if wanted(IDXGI_SWAP_CHAIN3) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ =
@@ -16118,7 +16120,7 @@ pub fn drive_where(
     // IDXGISwapChain3::CheckColorSpaceSupport on SwapChain
     if wanted(IDXGI_SWAP_CHAIN3) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain3::check_color_space_support(
@@ -16131,7 +16133,7 @@ pub fn drive_where(
     // IDXGISwapChain3::SetColorSpace1 on SwapChain
     if wanted(IDXGI_SWAP_CHAIN3) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain3::set_color_space1(
@@ -16144,7 +16146,7 @@ pub fn drive_where(
     // IDXGISwapChain2::SetSourceSize on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain2::set_source_size(
@@ -16158,7 +16160,7 @@ pub fn drive_where(
     // IDXGISwapChain2::GetSourceSize on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain2::get_source_size(this);
@@ -16168,7 +16170,7 @@ pub fn drive_where(
     // IDXGISwapChain2::SetMaximumFrameLatency on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain2::set_maximum_frame_latency(
@@ -16181,7 +16183,7 @@ pub fn drive_where(
     // IDXGISwapChain2::GetMaximumFrameLatency on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain2::get_maximum_frame_latency(this);
@@ -16191,7 +16193,7 @@ pub fn drive_where(
     // IDXGISwapChain2::GetFrameLatencyWaitableObject on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain2::get_frame_latency_waitable_object(
@@ -16203,7 +16205,7 @@ pub fn drive_where(
     // IDXGISwapChain2::SetMatrixTransform on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-        let Some(this) = o.k64.as_ref() else { return false; };
+        let Some(this) = o.k74.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::SwapChain2::set_matrix_transform(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_matrix_3_x2_f(&[u8::MIN; 24]));
         true
         });
@@ -16211,7 +16213,7 @@ pub fn drive_where(
     // IDXGISwapChain2::GetMatrixTransform on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain2::get_matrix_transform(this);
@@ -16221,7 +16223,7 @@ pub fn drive_where(
     // IDXGISwapChain1::GetDesc1 on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_desc1(this);
@@ -16231,7 +16233,7 @@ pub fn drive_where(
     // IDXGISwapChain1::GetFullscreenDesc on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_fullscreen_desc(this);
@@ -16241,7 +16243,7 @@ pub fn drive_where(
     // IDXGISwapChain1::GetHwnd on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_hwnd(this);
@@ -16251,7 +16253,7 @@ pub fn drive_where(
     // IDXGISwapChain1::GetCoreWindow on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_core_window(
@@ -16264,7 +16266,7 @@ pub fn drive_where(
     // IDXGISwapChain1::IsTemporaryMonoSupported on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::is_temporary_mono_supported(this);
@@ -16274,7 +16276,7 @@ pub fn drive_where(
     // IDXGISwapChain1::GetRestrictToOutput on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_restrict_to_output(this);
@@ -16284,7 +16286,7 @@ pub fn drive_where(
     // IDXGISwapChain1::SetBackgroundColor on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::set_background_color(
@@ -16299,7 +16301,7 @@ pub fn drive_where(
     // IDXGISwapChain1::GetBackgroundColor on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_background_color(this);
@@ -16309,7 +16311,7 @@ pub fn drive_where(
     // IDXGISwapChain1::SetRotation on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ =
@@ -16320,7 +16322,7 @@ pub fn drive_where(
     // IDXGISwapChain1::GetRotation on SwapChain
     if wanted(IDXGI_SWAP_CHAIN1) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_rotation(this);
@@ -16330,7 +16332,7 @@ pub fn drive_where(
     // IDXGISwapChain::Present on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::present(
@@ -16344,7 +16346,7 @@ pub fn drive_where(
     // IDXGISwapChain::GetBuffer on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ =
@@ -16355,7 +16357,7 @@ pub fn drive_where(
     // IDXGISwapChain::SetFullscreenState on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::set_fullscreen_state(
@@ -16369,7 +16371,7 @@ pub fn drive_where(
     // IDXGISwapChain::GetFullscreenState on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::get_fullscreen_state(this);
@@ -16379,7 +16381,7 @@ pub fn drive_where(
     // IDXGISwapChain::GetDesc on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::get_desc(this);
@@ -16389,7 +16391,7 @@ pub fn drive_where(
     // IDXGISwapChain::ResizeBuffers on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::resize_buffers(
@@ -16406,7 +16408,7 @@ pub fn drive_where(
     // IDXGISwapChain::ResizeTarget on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-        let Some(this) = o.k64.as_ref() else { return false; };
+        let Some(this) = o.k74.as_ref() else { return false; };
         let _ = directx_graphics_infrastructure::SwapChain::resize_target(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&[u8::MIN; 28]));
         true
         });
@@ -16414,7 +16416,7 @@ pub fn drive_where(
     // IDXGISwapChain::GetContainingOutput on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::get_containing_output(this);
@@ -16424,7 +16426,7 @@ pub fn drive_where(
     // IDXGISwapChain::GetFrameStatistics on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::get_frame_statistics(this);
@@ -16434,7 +16436,7 @@ pub fn drive_where(
     // IDXGISwapChain::GetLastPresentCount on SwapChain
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain::get_last_present_count(this);
@@ -16444,7 +16446,7 @@ pub fn drive_where(
     // IDXGIDeviceSubObject::GetDevice on SwapChain
     if wanted(IDXGI_DEVICE_SUB_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
@@ -16457,7 +16459,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateData on SwapChain
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
@@ -16471,7 +16473,7 @@ pub fn drive_where(
     // IDXGIObject::SetPrivateDataInterface on SwapChain
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
@@ -16485,7 +16487,7 @@ pub fn drive_where(
     // IDXGIObject::GetParent on SwapChain
     if wanted(IDXGI_OBJECT) {
         driven.attempt(|| {
-            let Some(this) = o.k64.as_ref() else {
+            let Some(this) = o.k74.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
@@ -16495,7 +16497,7 @@ pub fn drive_where(
     // IDXGISwapChainMedia::GetFrameStatisticsMedia on SwapChainMedia
     if wanted(IDXGI_SWAP_CHAIN_MEDIA) {
         driven.attempt(|| {
-            let Some(this) = o.k65.as_ref() else {
+            let Some(this) = o.k75.as_ref() else {
                 return false;
             };
             let _ =
@@ -16506,7 +16508,7 @@ pub fn drive_where(
     // IDXGISwapChainMedia::SetPresentDuration on SwapChainMedia
     if wanted(IDXGI_SWAP_CHAIN_MEDIA) {
         driven.attempt(|| {
-            let Some(this) = o.k65.as_ref() else {
+            let Some(this) = o.k75.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChainMedia::set_present_duration(
@@ -16519,7 +16521,7 @@ pub fn drive_where(
     // IDXGISwapChainMedia::CheckPresentDurationSupport on SwapChainMedia
     if wanted(IDXGI_SWAP_CHAIN_MEDIA) {
         driven.attempt(|| {
-            let Some(this) = o.k65.as_ref() else {
+            let Some(this) = o.k75.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChainMedia::check_present_duration_support(
@@ -16532,7 +16534,7 @@ pub fn drive_where(
     // IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis
     if wanted(IDX_GRAPHICS_ANALYSIS) {
         driven.attempt(|| {
-            let Some(this) = o.k66.as_ref() else {
+            let Some(this) = o.k76.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::GraphicsAnalysis::begin_capture(this);
@@ -16542,7 +16544,7 @@ pub fn drive_where(
     // IDXGraphicsAnalysis::EndCapture on GraphicsAnalysis
     if wanted(IDX_GRAPHICS_ANALYSIS) {
         driven.attempt(|| {
-            let Some(this) = o.k66.as_ref() else {
+            let Some(this) = o.k76.as_ref() else {
                 return false;
             };
             let _ = directx_graphics_infrastructure::GraphicsAnalysis::end_capture(this);
@@ -16824,7 +16826,7 @@ pub const NEVER_REACHED: &[&str] = &[
 
 /// IDXGIAdapter4::GetDesc3 on Adapter, of random arguments.
 fn fuzz_0(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16834,7 +16836,7 @@ fn fuzz_0(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent on Adapter, of random arguments.
 fn fuzz_1(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16844,7 +16846,7 @@ fn fuzz_1(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter, of random arguments.
 fn fuzz_2(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16854,7 +16856,7 @@ fn fuzz_2(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter3::QueryVideoMemoryInfo on Adapter, of random arguments.
 fn fuzz_3(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16864,7 +16866,7 @@ fn fuzz_3(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter3::SetVideoMemoryReservation on Adapter, of random arguments.
 fn fuzz_4(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16874,7 +16876,7 @@ fn fuzz_4(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent on Adapter, of random arguments.
 fn fuzz_5(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16884,7 +16886,7 @@ fn fuzz_5(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter, of random arguments.
 fn fuzz_6(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16894,7 +16896,7 @@ fn fuzz_6(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter2::GetDesc2 on Adapter, of random arguments.
 fn fuzz_7(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16904,7 +16906,7 @@ fn fuzz_7(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter1::GetDesc1 on Adapter, of random arguments.
 fn fuzz_8(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16914,7 +16916,7 @@ fn fuzz_8(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter::EnumOutputs on Adapter, of random arguments.
 fn fuzz_9(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16924,7 +16926,7 @@ fn fuzz_9(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter::GetDesc on Adapter, of random arguments.
 fn fuzz_10(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16934,7 +16936,7 @@ fn fuzz_10(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIAdapter::CheckInterfaceSupport on Adapter, of random arguments.
 fn fuzz_11(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16944,7 +16946,7 @@ fn fuzz_11(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on Adapter, of random arguments.
 fn fuzz_12(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16955,7 +16957,7 @@ fn fuzz_12(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on Adapter, of random arguments.
 fn fuzz_13(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16965,7 +16967,7 @@ fn fuzz_13(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on Adapter, of random arguments.
 fn fuzz_14(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k51.as_ref() else {
+    let Some(this) = o.k61.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16975,7 +16977,7 @@ fn fuzz_14(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDebug1::EnableLeakTrackingForThread on Debug, of random arguments.
 fn fuzz_15(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k52.as_ref() else {
+    let Some(this) = o.k62.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16985,7 +16987,7 @@ fn fuzz_15(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDebug1::DisableLeakTrackingForThread on Debug, of random arguments.
 fn fuzz_16(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k52.as_ref() else {
+    let Some(this) = o.k62.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -16995,7 +16997,7 @@ fn fuzz_16(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDebug1::IsLeakTrackingEnabledForThread on Debug, of random arguments.
 fn fuzz_17(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k52.as_ref() else {
+    let Some(this) = o.k62.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17005,7 +17007,7 @@ fn fuzz_17(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDebug::ReportLiveObjects on Debug, of random arguments.
 fn fuzz_18(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k52.as_ref() else {
+    let Some(this) = o.k62.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17015,7 +17017,7 @@ fn fuzz_18(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::PresentBuffer on DecodeSwapChain, of random arguments.
 fn fuzz_19(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17025,7 +17027,7 @@ fn fuzz_19(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::SetSourceRect on DecodeSwapChain, of random arguments.
 fn fuzz_20(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17035,7 +17037,7 @@ fn fuzz_20(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::SetTargetRect on DecodeSwapChain, of random arguments.
 fn fuzz_21(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17045,7 +17047,7 @@ fn fuzz_21(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::SetDestSize on DecodeSwapChain, of random arguments.
 fn fuzz_22(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17055,7 +17057,7 @@ fn fuzz_22(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::GetSourceRect on DecodeSwapChain, of random arguments.
 fn fuzz_23(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17065,7 +17067,7 @@ fn fuzz_23(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::GetTargetRect on DecodeSwapChain, of random arguments.
 fn fuzz_24(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17075,7 +17077,7 @@ fn fuzz_24(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::GetDestSize on DecodeSwapChain, of random arguments.
 fn fuzz_25(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17085,7 +17087,7 @@ fn fuzz_25(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::SetColorSpace on DecodeSwapChain, of random arguments.
 fn fuzz_26(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17095,7 +17097,7 @@ fn fuzz_26(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDecodeSwapChain::GetColorSpace on DecodeSwapChain, of random arguments.
 fn fuzz_27(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k53.as_ref() else {
+    let Some(this) = o.k63.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17105,12 +17107,12 @@ fn fuzz_27(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice4::OfferResources1 on Device, of random arguments.
 fn fuzz_28(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let s1: Vec<_> = (0..count)
-        .map(|_| o.k62.as_ref().filter(|_| r.coin()))
+        .map(|_| o.k72.as_ref().filter(|_| r.coin()))
         .collect();
     let _ = <directx_graphics_infrastructure_direct::SystemDevice<Api> as directx_graphics_infrastructure::Device4>::offer_resources1(this, s1.as_slice(), directx_graphics_infrastructure::enumerations::OfferResourcePriority(r.value()), r.value::<u32>());
     true
@@ -17118,12 +17120,12 @@ fn fuzz_28(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice4::ReclaimResources1 on Device, of random arguments.
 fn fuzz_29(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let s1: Vec<_> = (0..count)
-        .map(|_| o.k62.as_ref().filter(|_| r.coin()))
+        .map(|_| o.k72.as_ref().filter(|_| r.coin()))
         .collect();
     let _ = <directx_graphics_infrastructure_direct::SystemDevice<Api> as directx_graphics_infrastructure::Device4>::reclaim_resources1(this, s1.as_slice());
     true
@@ -17131,7 +17133,7 @@ fn fuzz_29(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice3::Trim on Device, of random arguments.
 fn fuzz_30(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17141,12 +17143,12 @@ fn fuzz_30(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice2::OfferResources on Device, of random arguments.
 fn fuzz_31(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let s1: Vec<_> = (0..count)
-        .map(|_| o.k62.as_ref().filter(|_| r.coin()))
+        .map(|_| o.k72.as_ref().filter(|_| r.coin()))
         .collect();
     let _ = <directx_graphics_infrastructure_direct::SystemDevice<Api> as directx_graphics_infrastructure::Device2>::offer_resources(this, s1.as_slice(), directx_graphics_infrastructure::enumerations::OfferResourcePriority(r.value()));
     true
@@ -17154,12 +17156,12 @@ fn fuzz_31(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice2::ReclaimResources on Device, of random arguments.
 fn fuzz_32(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let s1: Vec<_> = (0..count)
-        .map(|_| o.k62.as_ref().filter(|_| r.coin()))
+        .map(|_| o.k72.as_ref().filter(|_| r.coin()))
         .collect();
     let _ = <directx_graphics_infrastructure_direct::SystemDevice<Api> as directx_graphics_infrastructure::Device2>::reclaim_resources(this, s1.as_slice());
     true
@@ -17167,7 +17169,7 @@ fn fuzz_32(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice2::EnqueueSetEvent on Device, of random arguments.
 fn fuzz_33(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17177,7 +17179,7 @@ fn fuzz_33(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice1::SetMaximumFrameLatency on Device, of random arguments.
 fn fuzz_34(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17187,7 +17189,7 @@ fn fuzz_34(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice1::GetMaximumFrameLatency on Device, of random arguments.
 fn fuzz_35(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17197,7 +17199,7 @@ fn fuzz_35(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice::GetAdapter on Device, of random arguments.
 fn fuzz_36(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17207,7 +17209,7 @@ fn fuzz_36(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice::CreateSurface on Device, of random arguments.
 fn fuzz_37(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17222,7 +17224,7 @@ fn fuzz_37(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice::SetGPUThreadPriority on Device, of random arguments.
 fn fuzz_38(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17232,7 +17234,7 @@ fn fuzz_38(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDevice::GetGPUThreadPriority on Device, of random arguments.
 fn fuzz_39(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17242,7 +17244,7 @@ fn fuzz_39(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on Device, of random arguments.
 fn fuzz_40(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17253,7 +17255,7 @@ fn fuzz_40(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on Device, of random arguments.
 fn fuzz_41(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17263,7 +17265,7 @@ fn fuzz_41(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on Device, of random arguments.
 fn fuzz_42(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k54.as_ref() else {
+    let Some(this) = o.k64.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17273,7 +17275,7 @@ fn fuzz_42(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDisplayControl::IsStereoEnabled on DisplayControl, of random arguments.
 fn fuzz_43(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k55.as_ref() else {
+    let Some(this) = o.k65.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17283,7 +17285,7 @@ fn fuzz_43(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDisplayControl::SetStereoEnabled on DisplayControl, of random arguments.
 fn fuzz_44(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k55.as_ref() else {
+    let Some(this) = o.k65.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17293,7 +17295,7 @@ fn fuzz_44(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory7::RegisterAdaptersChangedEvent on Factory, of random arguments.
 fn fuzz_45(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17303,7 +17305,7 @@ fn fuzz_45(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory7::UnregisterAdaptersChangedEvent on Factory, of random arguments.
 fn fuzz_46(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17313,7 +17315,7 @@ fn fuzz_46(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory6::EnumAdapterByGpuPreference on Factory, of random arguments.
 fn fuzz_47(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17323,7 +17325,7 @@ fn fuzz_47(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory5::CheckFeatureSupport on Factory, of random arguments.
 fn fuzz_48(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17334,7 +17336,7 @@ fn fuzz_48(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory4::EnumWarpAdapter on Factory, of random arguments.
 fn fuzz_49(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17344,7 +17346,7 @@ fn fuzz_49(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory3::GetCreationFlags on Factory, of random arguments.
 fn fuzz_50(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17354,7 +17356,7 @@ fn fuzz_50(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::IsWindowedStereoEnabled on Factory, of random arguments.
 fn fuzz_51(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17364,62 +17366,62 @@ fn fuzz_51(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::CreateSwapChainForHwnd on Factory, of random arguments.
 fn fuzz_52(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -17433,68 +17435,68 @@ fn fuzz_52(o: &Objects, r: &mut Rng) -> bool {
     } else {
         None
     };
-    let _ = <directx_graphics_infrastructure_direct::SystemFactory<Api> as directx_graphics_infrastructure::Factory2>::create_swap_chain_for_hwnd(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), v2, o.k60.as_ref().filter(|_| r.coin()));
+    let _ = <directx_graphics_infrastructure_direct::SystemFactory<Api> as directx_graphics_infrastructure::Factory2>::create_swap_chain_for_hwnd(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), v2, o.k70.as_ref().filter(|_| r.coin()));
     true
 }
 
 /// IDXGIFactory2::CreateSwapChainForCoreWindow on Factory, of random arguments.
 fn fuzz_53(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -17505,56 +17507,56 @@ fn fuzz_53(o: &Objects, r: &mut Rng) -> bool {
     };
     let v2 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -17563,13 +17565,13 @@ fn fuzz_53(o: &Objects, r: &mut Rng) -> bool {
         let at = r.below(choices.len());
         choices.swap_remove(at)
     };
-    let _ = <directx_graphics_infrastructure_direct::SystemFactory<Api> as directx_graphics_infrastructure::Factory2>::create_swap_chain_for_core_window(this, v1, v2, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), o.k60.as_ref().filter(|_| r.coin()));
+    let _ = <directx_graphics_infrastructure_direct::SystemFactory<Api> as directx_graphics_infrastructure::Factory2>::create_swap_chain_for_core_window(this, v1, v2, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), o.k70.as_ref().filter(|_| r.coin()));
     true
 }
 
 /// IDXGIFactory2::GetSharedResourceAdapterLuid on Factory, of random arguments.
 fn fuzz_54(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17579,7 +17581,7 @@ fn fuzz_54(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::RegisterStereoStatusWindow on Factory, of random arguments.
 fn fuzz_55(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17589,7 +17591,7 @@ fn fuzz_55(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::RegisterStereoStatusEvent on Factory, of random arguments.
 fn fuzz_56(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17599,7 +17601,7 @@ fn fuzz_56(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::UnregisterStereoStatus on Factory, of random arguments.
 fn fuzz_57(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17609,7 +17611,7 @@ fn fuzz_57(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::RegisterOcclusionStatusWindow on Factory, of random arguments.
 fn fuzz_58(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17619,7 +17621,7 @@ fn fuzz_58(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::RegisterOcclusionStatusEvent on Factory, of random arguments.
 fn fuzz_59(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17629,7 +17631,7 @@ fn fuzz_59(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::UnregisterOcclusionStatus on Factory, of random arguments.
 fn fuzz_60(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17639,62 +17641,62 @@ fn fuzz_60(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory2::CreateSwapChainForComposition on Factory, of random arguments.
 fn fuzz_61(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -17703,13 +17705,13 @@ fn fuzz_61(o: &Objects, r: &mut Rng) -> bool {
         let at = r.below(choices.len());
         choices.swap_remove(at)
     };
-    let _ = <directx_graphics_infrastructure_direct::SystemFactory<Api> as directx_graphics_infrastructure::Factory2>::create_swap_chain_for_composition(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), o.k60.as_ref().filter(|_| r.coin()));
+    let _ = <directx_graphics_infrastructure_direct::SystemFactory<Api> as directx_graphics_infrastructure::Factory2>::create_swap_chain_for_composition(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), o.k70.as_ref().filter(|_| r.coin()));
     true
 }
 
 /// IDXGIFactory1::EnumAdapters1 on Factory, of random arguments.
 fn fuzz_62(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17719,7 +17721,7 @@ fn fuzz_62(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory1::IsCurrent on Factory, of random arguments.
 fn fuzz_63(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17729,7 +17731,7 @@ fn fuzz_63(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory::EnumAdapters on Factory, of random arguments.
 fn fuzz_64(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17739,7 +17741,7 @@ fn fuzz_64(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory::MakeWindowAssociation on Factory, of random arguments.
 fn fuzz_65(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17749,7 +17751,7 @@ fn fuzz_65(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory::GetWindowAssociation on Factory, of random arguments.
 fn fuzz_66(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17759,62 +17761,62 @@ fn fuzz_66(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactory::CreateSwapChain on Factory, of random arguments.
 fn fuzz_67(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -17829,7 +17831,7 @@ fn fuzz_67(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on Factory, of random arguments.
 fn fuzz_68(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17840,7 +17842,7 @@ fn fuzz_68(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on Factory, of random arguments.
 fn fuzz_69(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17850,7 +17852,7 @@ fn fuzz_69(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on Factory, of random arguments.
 fn fuzz_70(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k56.as_ref() else {
+    let Some(this) = o.k66.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -17860,62 +17862,62 @@ fn fuzz_70(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle on FactoryMedia, of random arguments.
 fn fuzz_71(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k57.as_ref() else {
+    let Some(this) = o.k67.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -17924,68 +17926,68 @@ fn fuzz_71(o: &Objects, r: &mut Rng) -> bool {
         let at = r.below(choices.len());
         choices.swap_remove(at)
     };
-    let _ = <directx_graphics_infrastructure_direct::SystemFactoryMedia<Api> as directx_graphics_infrastructure::FactoryMedia>::create_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), o.k60.as_ref().filter(|_| r.coin()));
+    let _ = <directx_graphics_infrastructure_direct::SystemFactoryMedia<Api> as directx_graphics_infrastructure::FactoryMedia>::create_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&r.bytes(48)), o.k70.as_ref().filter(|_| r.coin()));
     true
 }
 
 /// IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle on FactoryMedia, of random arguments.
 fn fuzz_72(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k57.as_ref() else {
+    let Some(this) = o.k67.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -17994,16 +17996,16 @@ fn fuzz_72(o: &Objects, r: &mut Rng) -> bool {
         let at = r.below(choices.len());
         choices.swap_remove(at)
     };
-    let Some(v2) = o.k62.as_ref() else {
+    let Some(v2) = o.k72.as_ref() else {
         return false;
     };
-    let _ = <directx_graphics_infrastructure_direct::SystemFactoryMedia<Api> as directx_graphics_infrastructure::FactoryMedia>::create_decode_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_decode_swap_chain_desc(&r.bytes(4)), v2, o.k60.as_ref().filter(|_| r.coin()));
+    let _ = <directx_graphics_infrastructure_direct::SystemFactoryMedia<Api> as directx_graphics_infrastructure::FactoryMedia>::create_decode_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_decode_swap_chain_desc(&r.bytes(4)), v2, o.k70.as_ref().filter(|_| r.coin()));
     true
 }
 
 /// IDXGIInfoQueue::SetMessageCountLimit on InfoQueue, of random arguments.
 fn fuzz_73(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18013,7 +18015,7 @@ fn fuzz_73(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::ClearStoredMessages on InfoQueue, of random arguments.
 fn fuzz_74(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18023,7 +18025,7 @@ fn fuzz_74(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters on InfoQueue, of random arguments.
 fn fuzz_75(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18033,7 +18035,7 @@ fn fuzz_75(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetNumStoredMessages on InfoQueue, of random arguments.
 fn fuzz_76(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18043,7 +18045,7 @@ fn fuzz_76(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue, of random arguments.
 fn fuzz_77(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18053,7 +18055,7 @@ fn fuzz_77(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetMessageCountLimit on InfoQueue, of random arguments.
 fn fuzz_78(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18063,7 +18065,7 @@ fn fuzz_78(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue, of random arguments.
 fn fuzz_79(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18073,7 +18075,7 @@ fn fuzz_79(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue, of random arguments.
 fn fuzz_80(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18083,7 +18085,7 @@ fn fuzz_80(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::ClearStorageFilter on InfoQueue, of random arguments.
 fn fuzz_81(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18093,7 +18095,7 @@ fn fuzz_81(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PushEmptyStorageFilter on InfoQueue, of random arguments.
 fn fuzz_82(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18103,7 +18105,7 @@ fn fuzz_82(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PushDenyAllStorageFilter on InfoQueue, of random arguments.
 fn fuzz_83(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18113,7 +18115,7 @@ fn fuzz_83(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PushCopyOfStorageFilter on InfoQueue, of random arguments.
 fn fuzz_84(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18123,7 +18125,7 @@ fn fuzz_84(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PopStorageFilter on InfoQueue, of random arguments.
 fn fuzz_85(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18133,7 +18135,7 @@ fn fuzz_85(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetStorageFilterStackSize on InfoQueue, of random arguments.
 fn fuzz_86(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18143,7 +18145,7 @@ fn fuzz_86(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::ClearRetrievalFilter on InfoQueue, of random arguments.
 fn fuzz_87(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18153,7 +18155,7 @@ fn fuzz_87(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PushEmptyRetrievalFilter on InfoQueue, of random arguments.
 fn fuzz_88(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18163,7 +18165,7 @@ fn fuzz_88(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PushDenyAllRetrievalFilter on InfoQueue, of random arguments.
 fn fuzz_89(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18173,7 +18175,7 @@ fn fuzz_89(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PushCopyOfRetrievalFilter on InfoQueue, of random arguments.
 fn fuzz_90(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18183,7 +18185,7 @@ fn fuzz_90(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::PopRetrievalFilter on InfoQueue, of random arguments.
 fn fuzz_91(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18193,7 +18195,7 @@ fn fuzz_91(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetRetrievalFilterStackSize on InfoQueue, of random arguments.
 fn fuzz_92(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18203,7 +18205,7 @@ fn fuzz_92(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::AddMessage on InfoQueue, of random arguments.
 fn fuzz_93(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18213,7 +18215,7 @@ fn fuzz_93(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::AddApplicationMessage on InfoQueue, of random arguments.
 fn fuzz_94(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18223,7 +18225,7 @@ fn fuzz_94(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::SetBreakOnCategory on InfoQueue, of random arguments.
 fn fuzz_95(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18233,7 +18235,7 @@ fn fuzz_95(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue, of random arguments.
 fn fuzz_96(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18243,7 +18245,7 @@ fn fuzz_96(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::SetBreakOnID on InfoQueue, of random arguments.
 fn fuzz_97(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18253,7 +18255,7 @@ fn fuzz_97(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetBreakOnCategory on InfoQueue, of random arguments.
 fn fuzz_98(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18263,7 +18265,7 @@ fn fuzz_98(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetBreakOnSeverity on InfoQueue, of random arguments.
 fn fuzz_99(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18273,7 +18275,7 @@ fn fuzz_99(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetBreakOnID on InfoQueue, of random arguments.
 fn fuzz_100(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18283,7 +18285,7 @@ fn fuzz_100(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue, of random arguments.
 fn fuzz_101(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18293,7 +18295,7 @@ fn fuzz_101(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIInfoQueue::GetMuteDebugOutput on InfoQueue, of random arguments.
 fn fuzz_102(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k58.as_ref() else {
+    let Some(this) = o.k68.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18303,7 +18305,7 @@ fn fuzz_102(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIKeyedMutex::AcquireSync on KeyedMutex, of random arguments.
 fn fuzz_103(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k59.as_ref() else {
+    let Some(this) = o.k69.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18313,7 +18315,7 @@ fn fuzz_103(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIKeyedMutex::ReleaseSync on KeyedMutex, of random arguments.
 fn fuzz_104(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k59.as_ref() else {
+    let Some(this) = o.k69.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18323,7 +18325,7 @@ fn fuzz_104(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDeviceSubObject::GetDevice on KeyedMutex, of random arguments.
 fn fuzz_105(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k59.as_ref() else {
+    let Some(this) = o.k69.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18333,7 +18335,7 @@ fn fuzz_105(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on KeyedMutex, of random arguments.
 fn fuzz_106(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k59.as_ref() else {
+    let Some(this) = o.k69.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18344,7 +18346,7 @@ fn fuzz_106(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on KeyedMutex, of random arguments.
 fn fuzz_107(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k59.as_ref() else {
+    let Some(this) = o.k69.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18354,7 +18356,7 @@ fn fuzz_107(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on KeyedMutex, of random arguments.
 fn fuzz_108(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k59.as_ref() else {
+    let Some(this) = o.k69.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18364,7 +18366,7 @@ fn fuzz_108(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput6::GetDesc1 on Output, of random arguments.
 fn fuzz_109(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18374,7 +18376,7 @@ fn fuzz_109(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput6::CheckHardwareCompositionSupport on Output, of random arguments.
 fn fuzz_110(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18384,62 +18386,62 @@ fn fuzz_110(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput5::DuplicateOutput1 on Output, of random arguments.
 fn fuzz_111(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -18457,62 +18459,62 @@ fn fuzz_111(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput4::CheckOverlayColorSpaceSupport on Output, of random arguments.
 fn fuzz_112(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -18527,62 +18529,62 @@ fn fuzz_112(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput3::CheckOverlaySupport on Output, of random arguments.
 fn fuzz_113(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -18597,7 +18599,7 @@ fn fuzz_113(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput2::SupportsOverlays on Output, of random arguments.
 fn fuzz_114(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18607,7 +18609,7 @@ fn fuzz_114(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput1::GetDisplayModeList1 on Output, of random arguments.
 fn fuzz_115(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18617,7 +18619,7 @@ fn fuzz_115(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput1::FindClosestMatchingMode1 on Output, of random arguments.
 fn fuzz_116(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18627,11 +18629,11 @@ fn fuzz_116(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput1::GetDisplaySurfaceData1 on Output, of random arguments.
 fn fuzz_117(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
-    let Some(v1) = o.k62.as_ref() else {
+    let Some(v1) = o.k72.as_ref() else {
         return false;
     };
     let _ = <directx_graphics_infrastructure_direct::SystemOutput<Api> as directx_graphics_infrastructure::Output1>::get_display_surface_data1(this, v1);
@@ -18640,62 +18642,62 @@ fn fuzz_117(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput1::DuplicateOutput on Output, of random arguments.
 fn fuzz_118(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -18710,7 +18712,7 @@ fn fuzz_118(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::GetDesc on Output, of random arguments.
 fn fuzz_119(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18720,7 +18722,7 @@ fn fuzz_119(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::GetDisplayModeList on Output, of random arguments.
 fn fuzz_120(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18730,7 +18732,7 @@ fn fuzz_120(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::FindClosestMatchingMode on Output, of random arguments.
 fn fuzz_121(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18740,7 +18742,7 @@ fn fuzz_121(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::WaitForVBlank on Output, of random arguments.
 fn fuzz_122(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18750,62 +18752,62 @@ fn fuzz_122(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::TakeOwnership on Output, of random arguments.
 fn fuzz_123(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
     let v1 = {
         let mut choices = Vec::new();
-        if let Some(x) = o.k51.as_ref() {
+        if let Some(x) = o.k61.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Adapter(x));
         }
-        if let Some(x) = o.k52.as_ref() {
+        if let Some(x) = o.k62.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Debug(x));
         }
-        if let Some(x) = o.k53.as_ref() {
+        if let Some(x) = o.k63.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x));
         }
-        if let Some(x) = o.k54.as_ref() {
+        if let Some(x) = o.k64.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Device(x));
         }
-        if let Some(x) = o.k55.as_ref() {
+        if let Some(x) = o.k65.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::DisplayControl(
                 x,
             ));
         }
-        if let Some(x) = o.k56.as_ref() {
+        if let Some(x) = o.k66.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Factory(x));
         }
-        if let Some(x) = o.k57.as_ref() {
+        if let Some(x) = o.k67.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x));
         }
-        if let Some(x) = o.k58.as_ref() {
+        if let Some(x) = o.k68.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::InfoQueue(x));
         }
-        if let Some(x) = o.k59.as_ref() {
+        if let Some(x) = o.k69.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x));
         }
-        if let Some(x) = o.k60.as_ref() {
+        if let Some(x) = o.k70.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Output(x));
         }
-        if let Some(x) = o.k61.as_ref() {
+        if let Some(x) = o.k71.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x));
         }
-        if let Some(x) = o.k62.as_ref() {
+        if let Some(x) = o.k72.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Resource(x));
         }
-        if let Some(x) = o.k63.as_ref() {
+        if let Some(x) = o.k73.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::Surface(x));
         }
-        if let Some(x) = o.k64.as_ref() {
+        if let Some(x) = o.k74.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChain(x));
         }
-        if let Some(x) = o.k65.as_ref() {
+        if let Some(x) = o.k75.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
                 x,
             ));
         }
-        if let Some(x) = o.k66.as_ref() {
+        if let Some(x) = o.k76.as_ref() {
             choices.push(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x));
         }
         if choices.is_empty() {
@@ -18820,7 +18822,7 @@ fn fuzz_123(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::ReleaseOwnership on Output, of random arguments.
 fn fuzz_124(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18830,7 +18832,7 @@ fn fuzz_124(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::GetGammaControlCapabilities on Output, of random arguments.
 fn fuzz_125(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18840,7 +18842,7 @@ fn fuzz_125(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::SetGammaControl on Output, of random arguments.
 fn fuzz_126(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18850,7 +18852,7 @@ fn fuzz_126(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::GetGammaControl on Output, of random arguments.
 fn fuzz_127(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18860,11 +18862,11 @@ fn fuzz_127(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::SetDisplaySurface on Output, of random arguments.
 fn fuzz_128(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
-    let Some(v1) = o.k63.as_ref() else {
+    let Some(v1) = o.k73.as_ref() else {
         return false;
     };
     let _ = <directx_graphics_infrastructure_direct::SystemOutput<Api> as directx_graphics_infrastructure::Output>::set_display_surface(this, v1);
@@ -18873,11 +18875,11 @@ fn fuzz_128(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::GetDisplaySurfaceData on Output, of random arguments.
 fn fuzz_129(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
-    let Some(v1) = o.k63.as_ref() else {
+    let Some(v1) = o.k73.as_ref() else {
         return false;
     };
     let _ = <directx_graphics_infrastructure_direct::SystemOutput<Api> as directx_graphics_infrastructure::Output>::get_display_surface_data(this, v1);
@@ -18886,7 +18888,7 @@ fn fuzz_129(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutput::GetFrameStatistics on Output, of random arguments.
 fn fuzz_130(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18896,7 +18898,7 @@ fn fuzz_130(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on Output, of random arguments.
 fn fuzz_131(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18907,7 +18909,7 @@ fn fuzz_131(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on Output, of random arguments.
 fn fuzz_132(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18917,7 +18919,7 @@ fn fuzz_132(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on Output, of random arguments.
 fn fuzz_133(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k60.as_ref() else {
+    let Some(this) = o.k70.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18927,7 +18929,7 @@ fn fuzz_133(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutputDuplication::GetDesc on OutputDuplication, of random arguments.
 fn fuzz_134(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18937,7 +18939,7 @@ fn fuzz_134(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutputDuplication::AcquireNextFrame on OutputDuplication, of random arguments.
 fn fuzz_135(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18947,7 +18949,7 @@ fn fuzz_135(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutputDuplication::GetFrameDirtyRects on OutputDuplication, of random arguments.
 fn fuzz_136(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18958,7 +18960,7 @@ fn fuzz_136(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutputDuplication::GetFrameMoveRects on OutputDuplication, of random arguments.
 fn fuzz_137(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18969,7 +18971,7 @@ fn fuzz_137(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutputDuplication::GetFramePointerShape on OutputDuplication, of random arguments.
 fn fuzz_138(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18980,7 +18982,7 @@ fn fuzz_138(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutputDuplication::UnMapDesktopSurface on OutputDuplication, of random arguments.
 fn fuzz_139(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -18990,7 +18992,7 @@ fn fuzz_139(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIOutputDuplication::ReleaseFrame on OutputDuplication, of random arguments.
 fn fuzz_140(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19000,7 +19002,7 @@ fn fuzz_140(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on OutputDuplication, of random arguments.
 fn fuzz_141(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19011,7 +19013,7 @@ fn fuzz_141(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on OutputDuplication, of random arguments.
 fn fuzz_142(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19021,7 +19023,7 @@ fn fuzz_142(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on OutputDuplication, of random arguments.
 fn fuzz_143(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k61.as_ref() else {
+    let Some(this) = o.k71.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19031,7 +19033,7 @@ fn fuzz_143(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIResource1::CreateSubresourceSurface on Resource, of random arguments.
 fn fuzz_144(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19041,7 +19043,7 @@ fn fuzz_144(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIResource::GetSharedHandle on Resource, of random arguments.
 fn fuzz_145(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19051,7 +19053,7 @@ fn fuzz_145(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIResource::GetUsage on Resource, of random arguments.
 fn fuzz_146(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19061,7 +19063,7 @@ fn fuzz_146(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIResource::SetEvictionPriority on Resource, of random arguments.
 fn fuzz_147(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19071,7 +19073,7 @@ fn fuzz_147(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIResource::GetEvictionPriority on Resource, of random arguments.
 fn fuzz_148(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19081,7 +19083,7 @@ fn fuzz_148(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDeviceSubObject::GetDevice on Resource, of random arguments.
 fn fuzz_149(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19091,7 +19093,7 @@ fn fuzz_149(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on Resource, of random arguments.
 fn fuzz_150(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19102,7 +19104,7 @@ fn fuzz_150(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on Resource, of random arguments.
 fn fuzz_151(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19112,7 +19114,7 @@ fn fuzz_151(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on Resource, of random arguments.
 fn fuzz_152(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k62.as_ref() else {
+    let Some(this) = o.k72.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19122,7 +19124,7 @@ fn fuzz_152(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISurface2::GetResource on Surface, of random arguments.
 fn fuzz_153(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19132,7 +19134,7 @@ fn fuzz_153(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISurface1::GetDC on Surface, of random arguments.
 fn fuzz_154(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19142,7 +19144,7 @@ fn fuzz_154(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISurface1::ReleaseDC on Surface, of random arguments.
 fn fuzz_155(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19161,7 +19163,7 @@ fn fuzz_155(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISurface::GetDesc on Surface, of random arguments.
 fn fuzz_156(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19171,7 +19173,7 @@ fn fuzz_156(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISurface::Unmap on Surface, of random arguments.
 fn fuzz_157(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19181,7 +19183,7 @@ fn fuzz_157(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDeviceSubObject::GetDevice on Surface, of random arguments.
 fn fuzz_158(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19191,7 +19193,7 @@ fn fuzz_158(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on Surface, of random arguments.
 fn fuzz_159(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19202,7 +19204,7 @@ fn fuzz_159(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on Surface, of random arguments.
 fn fuzz_160(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19212,7 +19214,7 @@ fn fuzz_160(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on Surface, of random arguments.
 fn fuzz_161(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k63.as_ref() else {
+    let Some(this) = o.k73.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19222,7 +19224,7 @@ fn fuzz_161(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain4::SetHDRMetaData on SwapChain, of random arguments.
 fn fuzz_162(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19234,7 +19236,7 @@ fn fuzz_162(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain3::GetCurrentBackBufferIndex on SwapChain, of random arguments.
 fn fuzz_163(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19244,7 +19246,7 @@ fn fuzz_163(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain3::CheckColorSpaceSupport on SwapChain, of random arguments.
 fn fuzz_164(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19254,7 +19256,7 @@ fn fuzz_164(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain3::SetColorSpace1 on SwapChain, of random arguments.
 fn fuzz_165(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19264,7 +19266,7 @@ fn fuzz_165(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain2::SetSourceSize on SwapChain, of random arguments.
 fn fuzz_166(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19274,7 +19276,7 @@ fn fuzz_166(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain2::GetSourceSize on SwapChain, of random arguments.
 fn fuzz_167(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19284,7 +19286,7 @@ fn fuzz_167(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain2::SetMaximumFrameLatency on SwapChain, of random arguments.
 fn fuzz_168(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19294,7 +19296,7 @@ fn fuzz_168(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain2::GetMaximumFrameLatency on SwapChain, of random arguments.
 fn fuzz_169(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19304,7 +19306,7 @@ fn fuzz_169(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain2::GetFrameLatencyWaitableObject on SwapChain, of random arguments.
 fn fuzz_170(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19314,7 +19316,7 @@ fn fuzz_170(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain2::SetMatrixTransform on SwapChain, of random arguments.
 fn fuzz_171(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19324,7 +19326,7 @@ fn fuzz_171(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain2::GetMatrixTransform on SwapChain, of random arguments.
 fn fuzz_172(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19334,7 +19336,7 @@ fn fuzz_172(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::GetDesc1 on SwapChain, of random arguments.
 fn fuzz_173(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19344,7 +19346,7 @@ fn fuzz_173(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::GetFullscreenDesc on SwapChain, of random arguments.
 fn fuzz_174(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19354,7 +19356,7 @@ fn fuzz_174(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::GetHwnd on SwapChain, of random arguments.
 fn fuzz_175(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19364,7 +19366,7 @@ fn fuzz_175(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::GetCoreWindow on SwapChain, of random arguments.
 fn fuzz_176(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19374,7 +19376,7 @@ fn fuzz_176(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::IsTemporaryMonoSupported on SwapChain, of random arguments.
 fn fuzz_177(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19384,7 +19386,7 @@ fn fuzz_177(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::GetRestrictToOutput on SwapChain, of random arguments.
 fn fuzz_178(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19394,7 +19396,7 @@ fn fuzz_178(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::SetBackgroundColor on SwapChain, of random arguments.
 fn fuzz_179(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19404,7 +19406,7 @@ fn fuzz_179(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::GetBackgroundColor on SwapChain, of random arguments.
 fn fuzz_180(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19414,7 +19416,7 @@ fn fuzz_180(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::SetRotation on SwapChain, of random arguments.
 fn fuzz_181(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19424,7 +19426,7 @@ fn fuzz_181(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain1::GetRotation on SwapChain, of random arguments.
 fn fuzz_182(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19434,7 +19436,7 @@ fn fuzz_182(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::Present on SwapChain, of random arguments.
 fn fuzz_183(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19444,7 +19446,7 @@ fn fuzz_183(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::GetBuffer on SwapChain, of random arguments.
 fn fuzz_184(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19454,17 +19456,17 @@ fn fuzz_184(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::SetFullscreenState on SwapChain, of random arguments.
 fn fuzz_185(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
-    let _ = <directx_graphics_infrastructure_direct::SystemSwapChain<Api> as directx_graphics_infrastructure::SwapChain>::set_fullscreen_state(this, r.value::<bool>(), o.k60.as_ref().filter(|_| r.coin()));
+    let _ = <directx_graphics_infrastructure_direct::SystemSwapChain<Api> as directx_graphics_infrastructure::SwapChain>::set_fullscreen_state(this, r.value::<bool>(), o.k70.as_ref().filter(|_| r.coin()));
     true
 }
 
 /// IDXGISwapChain::GetFullscreenState on SwapChain, of random arguments.
 fn fuzz_186(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19474,7 +19476,7 @@ fn fuzz_186(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::GetDesc on SwapChain, of random arguments.
 fn fuzz_187(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19484,7 +19486,7 @@ fn fuzz_187(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::ResizeBuffers on SwapChain, of random arguments.
 fn fuzz_188(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19494,7 +19496,7 @@ fn fuzz_188(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::ResizeTarget on SwapChain, of random arguments.
 fn fuzz_189(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19504,7 +19506,7 @@ fn fuzz_189(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::GetContainingOutput on SwapChain, of random arguments.
 fn fuzz_190(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19514,7 +19516,7 @@ fn fuzz_190(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::GetFrameStatistics on SwapChain, of random arguments.
 fn fuzz_191(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19524,7 +19526,7 @@ fn fuzz_191(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChain::GetLastPresentCount on SwapChain, of random arguments.
 fn fuzz_192(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19534,7 +19536,7 @@ fn fuzz_192(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIDeviceSubObject::GetDevice on SwapChain, of random arguments.
 fn fuzz_193(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19544,7 +19546,7 @@ fn fuzz_193(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateData on SwapChain, of random arguments.
 fn fuzz_194(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19555,7 +19557,7 @@ fn fuzz_194(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::SetPrivateDataInterface on SwapChain, of random arguments.
 fn fuzz_195(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19565,7 +19567,7 @@ fn fuzz_195(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGIObject::GetParent on SwapChain, of random arguments.
 fn fuzz_196(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k64.as_ref() else {
+    let Some(this) = o.k74.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19575,7 +19577,7 @@ fn fuzz_196(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChainMedia::GetFrameStatisticsMedia on SwapChainMedia, of random arguments.
 fn fuzz_197(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k65.as_ref() else {
+    let Some(this) = o.k75.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19585,7 +19587,7 @@ fn fuzz_197(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChainMedia::SetPresentDuration on SwapChainMedia, of random arguments.
 fn fuzz_198(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k65.as_ref() else {
+    let Some(this) = o.k75.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19595,7 +19597,7 @@ fn fuzz_198(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGISwapChainMedia::CheckPresentDurationSupport on SwapChainMedia, of random arguments.
 fn fuzz_199(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k65.as_ref() else {
+    let Some(this) = o.k75.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19605,7 +19607,7 @@ fn fuzz_199(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis, of random arguments.
 fn fuzz_200(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k66.as_ref() else {
+    let Some(this) = o.k76.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
@@ -19615,7 +19617,7 @@ fn fuzz_200(o: &Objects, r: &mut Rng) -> bool {
 
 /// IDXGraphicsAnalysis::EndCapture on GraphicsAnalysis, of random arguments.
 fn fuzz_201(o: &Objects, r: &mut Rng) -> bool {
-    let Some(this) = o.k66.as_ref() else {
+    let Some(this) = o.k76.as_ref() else {
         return false;
     };
     let count = r.below(SLICE_LENGTHS);
