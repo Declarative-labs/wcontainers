@@ -3,9 +3,12 @@
 //! The reference runs on a chip with more features than the one the kernel presents, so a field
 //! Linux lets a program see
 //! (<https://docs.kernel.org/arch/arm64/cpu-feature-registers.html#:~:text=List%20of%20registers%20with%20visible%20features>)
-//! may say less here than there, and a capability may be missing here; every field Linux hides
-//! shows its safe value, the same on every chip, so it must be equal; and a read is undefined in
-//! the same places.
+//! may say less here than there; every field Linux hides shows its safe value, the same on every
+//! chip, so it must be equal; and a read is undefined in the same places.
+//!
+//! The capability words and /proc/cpuinfo's Features must say exactly what the registers say: the
+//! guest derives both from the fields it read, as Linux does, and on each side they must be equal
+//! to what that side's kernel gave. The reference shows that derivation agrees with Linux itself.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,8 +23,11 @@ type Place = (u8, u8);
 /// MIDR_EL1 and REVIDR_EL1, which Linux answers with the processor's own.
 const NAMING_THE_PROCESSOR: [Place; 2] = [(0, 0), (0, 6)];
 
-/// The `AT_HWCAP` bit Linux sets on every processor: CPUID, as it answers the registers' reads.
-const ON_EVERY_PROCESSOR: u64 = 1 << 11;
+/// The `AT_HWCAP` bit no identification register gives: EVTSTRM, the generic timer's event
+/// stream (<https://docs.kernel.org/arch/arm64/elf_hwcaps.html#:~:text=HWCAP%5FEVTSTRM>).
+///
+/// The reference's kernel may set it; this kernel presents no event stream, so it is 0 here.
+const EVENT_STREAM: u64 = 1 << 2;
 
 /// Each register's fields Linux lets a program see, by lowest bit, each 4 bits wide.
 const VISIBLE_FIELDS: &[(Place, &[u32])] = &[
@@ -59,20 +65,41 @@ const VISIBLE_FIELDS: &[(Place, &[u32])] = &[
     ((7, 3), &[16]),
 ];
 
-/// What a program printed: each register's value (`None` where the read is undefined) and each
-/// capability word.
+/// What a program printed: each register's value (`None` where the read is undefined), each
+/// capability word (`AT_HWCAP`, `derived AT_HWCAP`, ...) and each line about /proc/cpuinfo's
+/// Features (`cpuinfo Features`, `cpuinfo same`, `derived Features`).
 struct Seen {
     registers: BTreeMap<Place, Option<u64>>,
     capabilities: BTreeMap<String, u64>,
+    features: BTreeMap<String, String>,
 }
+
+/// The capability words the guest prints, given and derived.
+const WORDS: [&str; 4] = [
+    "AT_HWCAP",
+    "AT_HWCAP2",
+    "derived AT_HWCAP",
+    "derived AT_HWCAP2",
+];
+/// The lines about /proc/cpuinfo's Features the guest prints.
+const FEATURE_LINES: [&str; 3] = ["cpuinfo Features", "cpuinfo same", "derived Features"];
 
 fn parse(text: &str) -> Seen {
     let mut seen = Seen {
         registers: BTreeMap::new(),
         capabilities: BTreeMap::new(),
+        features: BTreeMap::new(),
     };
     for line in text.lines() {
-        let (name, value) = line.split_once(' ').expect("a name and a value");
+        if let Some(name) = FEATURE_LINES
+            .iter()
+            .find(|name| line.starts_with(&format!("{name} ")) || line == **name)
+        {
+            let value = line[name.len()..].trim_start_matches(' ');
+            seen.features.insert(name.to_string(), value.to_string());
+            continue;
+        }
+        let (name, value) = line.rsplit_once(' ').expect("a name and a value");
         if let Some(place) = name.strip_prefix("S3_0_C0_C") {
             let (crm, op2) = place.split_once('_').expect("CRm and op2");
             let value = match value {
@@ -84,6 +111,7 @@ fn parse(text: &str) -> Seen {
                 value,
             );
         } else {
+            assert!(WORDS.contains(&name), "an unknown line: {line}");
             seen.capabilities.insert(
                 name.to_string(),
                 u64::from_str_radix(value, 16).expect("a value"),
@@ -91,6 +119,38 @@ fn parse(text: &str) -> Seen {
         }
     }
     seen
+}
+
+/// Why one side's capability words and Features line are not exactly what its registers say, if
+/// they are not: `event_stream` is the EVTSTRM bit that side's kernel may give besides.
+fn capability_differences(side: &str, seen: &Seen, event_stream: u64) -> Vec<String> {
+    let word = |name: &str| seen.capabilities.get(name).copied();
+    let line = |name: &str| seen.features.get(name).map(String::as_str);
+    let mut differences = Vec::new();
+    for (given, derived, extra) in [
+        ("AT_HWCAP", "derived AT_HWCAP", event_stream),
+        ("AT_HWCAP2", "derived AT_HWCAP2", 0),
+    ] {
+        let (given_word, derived_word) = (word(given), word(derived));
+        let expected = derived_word.map(|derived| derived | (given_word.unwrap_or(0) & extra));
+        if given_word.is_none() || given_word != expected {
+            differences.push(format!(
+                "{side} {given}: given {given_word:016x?}, the registers say {expected:016x?}"
+            ));
+        }
+    }
+    if line("cpuinfo same") != Some("yes") {
+        differences.push(format!(
+            "{side}: the processors' Features lines are not all the same"
+        ));
+    }
+    let (features, derived) = (line("cpuinfo Features"), line("derived Features"));
+    if features.is_none() || features != derived {
+        differences.push(format!(
+            "{side} /proc/cpuinfo Features: {features:?}, the registers say {derived:?}"
+        ));
+    }
+    differences
 }
 
 /// The field of `value` at `low`.
@@ -176,23 +236,9 @@ fn identification_registers_and_capabilities_match_reference() {
                 .map(|why| format!("S3_0_C0_C{}_{}: {why}", place.0, place.1))
         })
         .collect();
-    for (name, ours) in &ours_seen.capabilities {
-        let theirs = theirs_seen
-            .capabilities
-            .get(name)
-            .copied()
-            .unwrap_or_default();
-        if name == "AT_HWCAP" && (ours ^ theirs) & ON_EVERY_PROCESSOR != 0 {
-            differences.push(format!(
-                "{name}: ours {ours:016x}, theirs {theirs:016x} differ in CPUID"
-            ));
-        }
-        if ours & !theirs != 0 {
-            differences.push(format!(
-                "{name}: ours {ours:016x} has bits {:016x} theirs {theirs:016x} lacks",
-                ours & !theirs
-            ));
-        }
-    }
+    // Ours exactly as its registers say, with no event stream; theirs as its registers say, which
+    // checks the guest's derivation against Linux.
+    differences.extend(capability_differences("ours", &ours_seen, 0));
+    differences.extend(capability_differences("theirs", &theirs_seen, EVENT_STREAM));
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
