@@ -14,7 +14,7 @@ mod calls;
 
 use core::ffi::{CStr, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use wcontainers_egl::constants;
 
@@ -33,11 +33,19 @@ mod runtime {
     std::thread_local! {
         /// The error of the glue's last refusal on this thread, reported by the next `get_error` before EGL's.
         static REFUSED: Cell<i32> = const { Cell::new(constants::SUCCESS) };
+        /// How many calls the glue itself refused on this thread.
+        static REFUSALS: Cell<u64> = const { Cell::new(0) };
     }
 
     /// Records a refusal, as EGL records its own errors per thread.
     pub(crate) fn refuse(error: i32) {
+        REFUSALS.with(|refusals| refusals.set(refusals.get().saturating_add(1)));
         REFUSED.with(|refused| refused.set(error));
+    }
+
+    /// How many calls the glue itself refused on this thread.
+    pub(crate) fn refusals() -> u64 {
+        REFUSALS.with(Cell::get)
     }
 
     /// Returns and clears the last refusal.
@@ -102,6 +110,20 @@ struct Loaded {
     _library: libloading::Library,
 }
 
+/// The first library loaded from each folder, kept for the process: the system unloads a library with its last
+/// handle, and Mesa's then unloads its driver too and loads it again for the next context (about 55 ms a context,
+/// MEASURED by the WebGL back end). Every later load of the folder is a library of its own (its handles are its own)
+/// that finds the code still loaded.
+static KEPT: Mutex<Vec<(Option<std::path::PathBuf>, Arc<Loaded>)>> = Mutex::new(Vec::new());
+
+/// Keeps the folder's first library loaded for the process.
+fn keep(folder: Option<&std::path::Path>, loaded: &Arc<Loaded>) {
+    let mut kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !kept.iter().any(|(kept, _)| kept.as_deref() == folder) {
+        kept.push((folder.map(std::path::Path::to_path_buf), Arc::clone(loaded)));
+    }
+}
+
 /// EGL's library, loaded once and shared by every clone.
 #[derive(Clone)]
 pub struct Library {
@@ -123,8 +145,9 @@ impl Library {
             let symbol = unsafe { library.get::<unsafe extern "system" fn()>(name.to_bytes_with_nul()) };
             symbol.map_or(core::ptr::null(), |symbol| *symbol as *const c_void)
         });
-        let loaded = Loaded { entries, gate: RwLock::new(()), _library: library };
-        let library = Library { loaded: Arc::new(loaded) };
+        let loaded = Arc::new(Loaded { entries, gate: RwLock::new(()), _library: library });
+        keep(folder, &loaded);
+        let library = Library { loaded };
         // Every client API entry point must come by name (EGL 1.5, or EGL_KHR_client_get_all_proc_addresses).
         let extensions = {
             let _gate = library.reading();
@@ -136,6 +159,12 @@ impl Library {
         };
         let names_all = extensions.split(|&byte| byte == b' ').any(|name| name == b"EGL_KHR_client_get_all_proc_addresses");
         (names_all && library.entries().get_proc_address.is_some() && library.entries().get_current_context.is_some()).then_some(library)
+    }
+
+    /// How many calls the glue itself refused on the calling thread, before reaching the library: a test tells the
+    /// glue's refusal from the library's own error by it.
+    pub fn refusals(&self) -> u64 {
+        runtime::refusals()
     }
 
     fn entries(&self) -> &calls::Entries {

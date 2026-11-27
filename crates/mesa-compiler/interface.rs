@@ -1,5 +1,5 @@
-// Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/nir/bridge). Do not edit.
-//! Mesa's shader compiler as our C bridge offers it (crates/nir/bridge: NIR made from SPIR-V or GLSL, changed for the
+// Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/mesa-compiler/implementation/direct/bridge). Do not edit.
+//! Mesa's shader compiler as our C bridge offers it (crates/mesa-compiler/implementation/direct/bridge: NIR made from SPIR-V or GLSL, changed for the
 //! routes, read as a flat form, written as SPIR-V), as a safe trait. Every enumeration the bridge writes is a `u32` the
 //! caller converts by a checked `TryFrom`.
 

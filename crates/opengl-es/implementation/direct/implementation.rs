@@ -19,6 +19,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeMap;
 
+use wcontainers_egl::Egl;
 use wcontainers_egl_direct::{Binding, Context, Display, Library, Surface};
 use wcontainers_opengl_es::{CompressedPixelUnpack, OnEgl, PixelPack, PixelUnpack, constants};
 
@@ -27,6 +28,10 @@ const ROOM: usize = 64;
 
 /// The vertex attributes checked before a draw, at most (OpenGL ES 3.2 asks for 16; no implementation gives 64).
 const MOST_ATTRIBUTES: u32 = 64;
+
+/// The most extensions the glue reads a context's names of: past any real library's (Mesa and ANGLE name a few
+/// hundred), so that a library answering a count it cannot have does not keep the glue asking for ever.
+const MOST_EXTENSIONS: u32 = 4096;
 
 /// Each context's number, which its fences carry.
 static NEXT_CONTEXT: AtomicU64 = AtomicU64::new(1);
@@ -68,11 +73,50 @@ pub struct OpenGlEsContext {
     entries: calls::Entries,
     /// The first error of the glue's refusals since the last `get_error`.
     refused: Cell<u32>,
+    /// How many calls the glue itself refused since the context was made.
+    refusals: Cell<u64>,
     extensions: OnceCell<Vec<Vec<u8>>>,
     fences: RefCell<BTreeMap<u64, usize>>,
     next_fence: Cell<u64>,
     number: u64,
+    /// The EGL objects the context owns, destroyed at its drop (made by `owning`).
+    owned: Option<Owned>,
     _thread: PhantomData<*const ()>,
+}
+
+/// The EGL objects a context made by `owning` destroys at its drop, after its last call.
+struct Owned {
+    egl: Library,
+    display: Display,
+    context: Context,
+    draw: Option<Surface>,
+    read: Option<Surface>,
+}
+
+impl OpenGlEsContext {
+    /// Makes a context that owns the EGL context and surfaces it draws with: at its drop, after its last call, it
+    /// makes no context current on the thread and destroys them (EGL defers a destroy of what another thread has
+    /// current until it is released). A surface given as both `draw` and `read` is destroyed once.
+    pub fn owning(egl: Library, display: Display, context: Context, draw: Option<Surface>, read: Option<Surface>) -> Option<Self> {
+        let mut made = <Self as OnEgl<Library>>::new(&egl, &display, &context, draw.as_ref(), read.as_ref())?;
+        made.owned = Some(Owned { egl, display, context, draw, read });
+        Some(made)
+    }
+}
+
+impl Drop for OpenGlEsContext {
+    fn drop(&mut self) {
+        let Some(owned) = self.owned.take() else { return };
+        // Each refusal is the library's to report; a drop has nobody to report it to.
+        let _ = owned.egl.make_current(&owned.display, None, None, None);
+        if let Some(draw) = &owned.draw {
+            let _ = owned.egl.destroy_surface(&owned.display, draw);
+        }
+        if let Some(read) = owned.read.as_ref().filter(|read| owned.draw.as_ref() != Some(*read)) {
+            let _ = owned.egl.destroy_surface(&owned.display, read);
+        }
+        let _ = owned.egl.destroy_context(&owned.display, &owned.context);
+    }
 }
 
 impl OnEgl<Library> for OpenGlEsContext {
@@ -83,10 +127,12 @@ impl OnEgl<Library> for OpenGlEsContext {
             binding,
             entries,
             refused: Cell::new(constants::NO_ERROR),
+            refusals: Cell::new(0),
             extensions: OnceCell::new(),
             fences: RefCell::new(BTreeMap::new()),
             next_fence: Cell::new(1),
             number: NEXT_CONTEXT.fetch_add(1, Ordering::Relaxed),
+            owned: None,
             _thread: PhantomData,
         })
     }
@@ -170,8 +216,15 @@ impl OpenGlEsContext {
         }
     }
 
+    /// How many calls the glue itself refused, before reaching the library, since the context was made: a test tells
+    /// the glue's refusal from the library's own error by it.
+    pub fn refusals(&self) -> u64 {
+        self.refusals.get()
+    }
+
     /// Records a refusal; as OpenGL ES records errors, the first is kept until `get_error`.
     fn refuse(&self, error: u32) {
+        self.refusals.set(self.refusals.get().saturating_add(1));
         if self.refused.get() == constants::NO_ERROR {
             self.refused.set(error);
         }
@@ -308,7 +361,7 @@ impl OpenGlEsContext {
     /// Whether the context names any of the extensions (read once, by glGetStringi).
     fn has_extension(&self, names: &[&CStr]) -> bool {
         let extensions = self.extensions.get_or_init(|| {
-            let count = u32::try_from(self.integer(constants::NUM_EXTENSIONS)).unwrap_or(0);
+            let count = u32::try_from(self.integer(constants::NUM_EXTENSIONS)).unwrap_or(0).min(MOST_EXTENSIONS);
             let Some(get) = self.entries.get_stringi else { return Vec::new() };
             (0..count)
                 .filter_map(|index| {

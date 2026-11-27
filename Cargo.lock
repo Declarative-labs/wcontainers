@@ -4575,6 +4575,7 @@ dependencies = [
  "wcontainers-gpu-recording",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",
+ "wcontainers-opengl-es-webgl",
  "web-sys",
  "wgpu",
 ]
@@ -4605,6 +4606,7 @@ dependencies = [
  "wcontainers-graphics-test",
  "wcontainers-opengl-es",
  "wcontainers-opengl-es-direct",
+ "wcontainers-opengl-es-webgl",
  "wcontainers-test-window",
  "wcontainers-test-window-win32",
  "web-sys",
@@ -4841,10 +4843,21 @@ name = "wcontainers-mesa-compiler"
 version = "0.1.0"
 
 [[package]]
-name = "wcontainers-mesa-compiler-direct"
+name = "wcontainers-mesa-compiler-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-mesa-compiler",
+]
+
+[[package]]
+name = "wcontainers-mesa-compiler-direct"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "serde",
+ "serde_json",
+ "wcontainers-mesa-compiler",
+ "wcontainers-mesa-compiler-conformance",
 ]
 
 [[package]]
@@ -4901,7 +4914,6 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "blake3",
- "cc",
  "glam",
  "glow 0.18.0",
  "khronos-egl",
@@ -4981,6 +4993,16 @@ dependencies = [
  "wcontainers-egl-direct",
  "wcontainers-opengl-es",
  "wcontainers-opengl-es-conformance",
+]
+
+[[package]]
+name = "wcontainers-opengl-es-webgl"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "wcontainers-opengl-es",
+ "web-sys",
 ]
 
 [[package]]

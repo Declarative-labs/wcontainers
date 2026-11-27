@@ -112,8 +112,10 @@ pub(crate) struct Entries {
     pub scissor: Option<unsafe extern "system" fn(i32, i32, i32, i32)>,
     pub shader_source: Option<unsafe extern "system" fn(u32, i32, *const *const u8, *const i32)>,
     pub stencil_func: Option<unsafe extern "system" fn(u32, i32, u32)>,
+    pub stencil_func_separate: Option<unsafe extern "system" fn(u32, u32, i32, u32)>,
     pub stencil_mask: Option<unsafe extern "system" fn(u32)>,
     pub stencil_op: Option<unsafe extern "system" fn(u32, u32, u32)>,
+    pub stencil_op_separate: Option<unsafe extern "system" fn(u32, u32, u32, u32)>,
     pub tex_parameteri: Option<unsafe extern "system" fn(u32, u32, i32)>,
     pub tex_storage_2d: Option<unsafe extern "system" fn(u32, i32, u32, i32, i32)>,
     pub tex_storage_3d: Option<unsafe extern "system" fn(u32, i32, u32, i32, i32, i32)>,
@@ -784,6 +786,12 @@ impl Entries {
                 // SAFETY: a function pointer and a data pointer have the same size on the targets EGL runs on, and null is None.
                 unsafe { core::mem::transmute::<*const c_void, Option<unsafe extern "system" fn(u32, i32, u32)>>(address) }
             },
+            stencil_func_separate: {
+                let address = load(c"glStencilFuncSeparate");
+                #[expect(unsafe_code, reason = "gl.xml: the address the library gives for glStencilFuncSeparate is of the C signature the registry declares, or null")]
+                // SAFETY: a function pointer and a data pointer have the same size on the targets EGL runs on, and null is None.
+                unsafe { core::mem::transmute::<*const c_void, Option<unsafe extern "system" fn(u32, u32, i32, u32)>>(address) }
+            },
             stencil_mask: {
                 let address = load(c"glStencilMask");
                 #[expect(unsafe_code, reason = "gl.xml: the address the library gives for glStencilMask is of the C signature the registry declares, or null")]
@@ -795,6 +803,12 @@ impl Entries {
                 #[expect(unsafe_code, reason = "gl.xml: the address the library gives for glStencilOp is of the C signature the registry declares, or null")]
                 // SAFETY: a function pointer and a data pointer have the same size on the targets EGL runs on, and null is None.
                 unsafe { core::mem::transmute::<*const c_void, Option<unsafe extern "system" fn(u32, u32, u32)>>(address) }
+            },
+            stencil_op_separate: {
+                let address = load(c"glStencilOpSeparate");
+                #[expect(unsafe_code, reason = "gl.xml: the address the library gives for glStencilOpSeparate is of the C signature the registry declares, or null")]
+                // SAFETY: a function pointer and a data pointer have the same size on the targets EGL runs on, and null is None.
+                unsafe { core::mem::transmute::<*const c_void, Option<unsafe extern "system" fn(u32, u32, u32, u32)>>(address) }
             },
             tex_parameteri: {
                 let address = load(c"glTexParameteri");
@@ -2017,6 +2031,14 @@ impl wcontainers_opengl_es::OpenGlEs for OpenGlEsContext {
         unsafe { entry(func, ref_, mask) };
     }
 
+    fn stencil_func_separate(&self, face: u32, func: u32, ref_: i32, mask: u32) {
+        let Some(entries) = self.enter() else { return Default::default(); };
+        let Some(entry) = entries.stencil_func_separate else { self.refuse(constants::INVALID_OPERATION); return Default::default(); };
+        #[expect(unsafe_code, reason = "gl.xml: glStencilFuncSeparate takes the C types the field declares; plain values only")]
+        // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
+        unsafe { entry(face, func, ref_, mask) };
+    }
+
     fn stencil_mask(&self, mask: u32) {
         let Some(entries) = self.enter() else { return Default::default(); };
         let Some(entry) = entries.stencil_mask else { self.refuse(constants::INVALID_OPERATION); return Default::default(); };
@@ -2031,6 +2053,14 @@ impl wcontainers_opengl_es::OpenGlEs for OpenGlEsContext {
         #[expect(unsafe_code, reason = "gl.xml: glStencilOp takes the C types the field declares; plain values only")]
         // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
         unsafe { entry(fail, zfail, zpass) };
+    }
+
+    fn stencil_op_separate(&self, face: u32, sfail: u32, dpfail: u32, dppass: u32) {
+        let Some(entries) = self.enter() else { return Default::default(); };
+        let Some(entry) = entries.stencil_op_separate else { self.refuse(constants::INVALID_OPERATION); return Default::default(); };
+        #[expect(unsafe_code, reason = "gl.xml: glStencilOpSeparate takes the C types the field declares; plain values only")]
+        // SAFETY: the entry point is the library's own for this command, of the type gl.xml or egl.xml declares; every pointer passed is to memory of ours or the caller's, as long as the command reads or writes, and lives for the call.
+        unsafe { entry(face, sfail, dpfail, dppass) };
     }
 
     fn tex_parameteri(&self, target: u32, pname: u32, param: i32) {

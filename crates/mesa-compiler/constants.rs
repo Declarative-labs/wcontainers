@@ -1,4 +1,4 @@
-// Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/nir/bridge). Do not edit.
+// Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/mesa-compiler/implementation/direct/bridge). Do not edit.
 //! The bridge's numbers: its defines and every enumeration's values.
 
 /// `WC_COMPONENTS` of the bridge's headers.
