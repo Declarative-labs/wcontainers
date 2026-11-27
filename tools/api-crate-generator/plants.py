@@ -2,6 +2,7 @@
 """Planted defects in the generated glue, and the run that shows each one fails the tests.
 
     plants.py list <direct crate folder> <api name>      writes the plant list of one API's direct crate (stdout)
+    plants.py list-rules <lengths.rs>                     writes the plant list of the length rules (stdout)
     plants.py run <plant list> [--only N,M] -- <test command ...>
                                                            applies each plant in turn to the tree (from the repository's
                                                            root), runs the test command, restores the file; a plant is
@@ -12,7 +13,11 @@ One plant per field of every copy function (data.rs: a field a decoder reads is 
 encoder writes is not written), per argument of every call into the system (call.rs: a value passed as its type's
 default, a pointer as null) and per argument of every call into the implementation (serve.rs: passed as its type's
 default), and the named plants the independent checks asked for. The list is text, one plant a line, tab-separated:
-id, file, the function the plant is in, the text replaced (with \\n for new lines), the text put in its place.
+id, file, the function the plant is in (`*`: anywhere in the file), the text replaced (with \\n for new lines), the text
+put in its place.
+
+The length rules (lengths.rs, hand-written, the Direct3D 11 direct crate's): each rule's result one byte fewer and one
+more, and the plants the independent checks of 2026-11-27 named, each a branch or table row of a rule.
 """
 
 import os
@@ -203,8 +208,38 @@ def list_plants(folder, api):
         print("\t".join([ident, path, function, escape(old), escape(new)]))
 
 
+def rule_plants(path):
+    with open(path) as handle:
+        text = handle.read()
+    rows = []
+    for match in re.finditer(r"pub\(crate\) fn ((?:upload|initial|mapped|lent)_length_[a-z0-9_]+)\((.*?)\) -> Option<usize> \{", text, re.S):
+        name, params = match.group(1), match.group(2)
+        names = [p.split(":")[0].strip() for p in params.split(",") if p.strip()]
+        old = f"pub(crate) fn {name}("
+        for how, change in (("under", "length.saturating_sub(1)"), ("over", "length + 1")):
+            wrapper = f"/// A planted defect.\npub(crate) fn {name}({params}) -> Option<usize> {{\n    {name}_unplanted({', '.join(names)}).map(|length| {change})\n}}\n\npub(crate) fn {name}_unplanted("
+            rows.append((f"{name}.{how}", path, "*", old, wrapper))
+    named = [
+        # The checks' plants (batch-31 and the run before): each a branch or a table row of a rule.
+        ("checker.bc2-eight-bytes", "block", "        73..=78 | 82..=84 => compressed(16),", "        73..=75 => compressed(8),\n        76..=78 | 82..=84 => compressed(16),"),
+        ("checker.r32g32b32-as-8", "block", "        5..=8 => texel(12),", "        5..=8 => texel(8),"),
+        ("checker.lent-rows-minus-one", "whole_slices", ".checked_add(u64::from(row_pitch).checked_mul(rows)?)?;", ".checked_add(u64::from(row_pitch).checked_mul(rows - 1)?)?;"),
+        ("checker.box-past-accepted", "*", "region.right > full.0 || region.bottom > full.1 || region.back > full.2", "region.right > full.0 + 1 || region.bottom > full.1 + 1 || region.back > full.2 + 1"),
+        ("checker.row-pitch-short", "*", ".checked_add(row_bytes)?;", ".checked_add(row_bytes)?.saturating_sub(u64::from(row_pitch));"),
+        ("checker.depth-ignored", "*", "u64::from(depth).max(1),", "1,"),
+        ("checker.pitches-ignored", "at_least_pitches", "let length = length.max(pitches);", "let length = length.max(pitches * 0);"),
+    ]
+    for ident, function, old, new in named:
+        rows.append((ident, path, function, old, new))
+    for ident, path, function, old, new in rows:
+        print("\t".join([ident, path, function, escape(old), escape(new)]))
+
+
 def apply(text, function, old, new):
-    """The text with `old` replaced by `new` once inside `function` (the first such function holding it)."""
+    """The text with `old` replaced by `new` once inside `function` (the first such function holding it; `*`: the first
+    place in the file, which must be the only one)."""
+    if function == "*":
+        return text.replace(old, new, 1) if text.count(old) == 1 else None
     for name, start, end in functions(text):
         if name != function:
             continue
@@ -251,6 +286,9 @@ def run(list_path, only, command):
 
 
 def main(arguments):
+    if len(arguments) == 2 and arguments[0] == "list-rules":
+        rule_plants(arguments[1])
+        return 0
     if len(arguments) >= 3 and arguments[0] == "list":
         list_plants(arguments[1], arguments[2])
         return 0

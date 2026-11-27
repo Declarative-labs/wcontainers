@@ -11,6 +11,9 @@ path = "implementation.rs"
 [features]
 # A table of objects small enough for a test to fill: 12,288 objects instead of 16,773,120, and a quarantine of 1,024.
 small-table = []
+# Shadow memory of exactly the length lent, never rounded up to a size class: AddressSanitizer then reports a touch one
+# byte past what the glue lends (the exact C tests turn it on).
+exact-shadow = []
 
 [dependencies]
 wcontainers-byte-sink = { path = "../../../byte-sink" }

@@ -638,7 +638,7 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
         tests.push_str("\n[[test]]\nname = \"exact\"\npath = \"tests/exact/main.rs\"\nrequired-features = [\"c-caller\"]\n");
     }
     let section = format!(
-        "\n[features]\n# The C tests (tests/c_caller, tests/exact): build.rs compiles their C only with this feature, which the suite's job\n# turns on.\nc-caller = [\"dep:cc\"]\n\n[build-dependencies]\ncc = {{ version = \"1\", optional = true }}\n{tests}"
+        "\n[features]\n# The C tests (tests/c_caller, tests/exact): build.rs compiles their C only with this feature, which the suite's job\n# turns on; COM's shadow memory is then exactly the length lent.\nc-caller = [\"dep:cc\", \"wcontainers-component-object-model-direct/exact-shadow\"]\n\n[build-dependencies]\ncc = {{ version = \"1\", optional = true }}\n{tests}"
     );
     let at = manifest.find("\n# A C boundary").unwrap_or(manifest.len());
     manifest.insert_str(at, &section);

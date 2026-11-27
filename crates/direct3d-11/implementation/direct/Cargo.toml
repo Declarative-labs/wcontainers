@@ -20,8 +20,8 @@ wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 
 [features]
 # The C tests (tests/c_caller, tests/exact): build.rs compiles their C only with this feature, which the suite's job
-# turns on.
-c-caller = ["dep:cc"]
+# turns on; COM's shadow memory is then exactly the length lent.
+c-caller = ["dep:cc", "wcontainers-component-object-model-direct/exact-shadow"]
 
 [build-dependencies]
 cc = { version = "1", optional = true }

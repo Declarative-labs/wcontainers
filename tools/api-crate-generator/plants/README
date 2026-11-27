@@ -1,0 +1,12 @@
+Planted defects and the commands that run them (from the repository's root, inside `nix develop`, on Linux):
+
+  python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/direct3d-12.tsv -- \
+    cargo test -q --release -p wcontainers-direct3d-12-direct -p wcontainers-direct3d-12-recorder \
+    -p wcontainers-direct3d-12-hostile -p wcontainers-direct3d-12-conformance
+  python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/lengths.tsv -- \
+    cargo test -q --release -p wcontainers-direct3d-11-direct --lib lengths
+  python3 tools/api-crate-generator/plants.py run tools/api-crate-generator/plants/lengths.tsv -- \
+    bash tools/api-crate-generator/plants/exact-under-asan.sh
+
+Each list is written by `plants.py list` (a direct crate) or `plants.py list-rules` (lengths.rs); every plant must be
+CAUGHT (the command fails). A SURVIVED plant is a test to write or code reached by nothing, to remove.

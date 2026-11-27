@@ -121,8 +121,8 @@ const LEVELS: [FeatureLevel; 1] = [FeatureLevel(0xb000)];
 /// d3d11.h's D3D11_SDK_VERSION.
 const SDK_VERSION: u32 = 7;
 
-/// The resources of every test: each class of format (plain, packed pairs, block-compressed, depth, refused planar)
-/// in each dimension, with arrays and mip chains.
+/// The resources of every test: each class of format (plain, 96-bit texels, packed pairs, block-compressed of 8 and of
+/// 16 bytes a block, depth, refused planar) in each dimension it is allowed in, with arrays and mip chains.
 fn resources() -> Vec<Resource> {
     vec![
         Resource::Buffer(256),
@@ -215,6 +215,56 @@ fn resources() -> Vec<Resource> {
             mips: 1,
             array: 1,
             format: 103,
+        },
+        // R32G32B32_FLOAT, _UINT, _SINT and _TYPELESS: 12-byte texels.
+        Resource::Texture1D {
+            width: 33,
+            mips: 0,
+            array: 2,
+            format: 6,
+        },
+        Resource::Texture2D {
+            width: 7,
+            height: 5,
+            mips: 0,
+            array: 1,
+            format: 7,
+        },
+        Resource::Texture3D {
+            width: 5,
+            height: 3,
+            depth: 2,
+            mips: 0,
+            format: 8,
+        },
+        Resource::Texture2D {
+            width: 3,
+            height: 3,
+            mips: 1,
+            array: 1,
+            format: 5,
+        },
+        // BC2_UNORM and BC3_UNORM: 16 bytes a 4 x 4 block, off the block grid and with a full chain.
+        Resource::Texture2D {
+            width: 37,
+            height: 23,
+            mips: 0,
+            array: 2,
+            format: 74,
+        },
+        Resource::Texture3D {
+            width: 13,
+            height: 9,
+            depth: 3,
+            mips: 0,
+            format: 77,
+        },
+        Resource::Texture2D {
+            width: 64,
+            height: 64,
+            mips: 0,
+            array: 1,
+            format: 77,
         },
     ]
 }
@@ -329,6 +379,11 @@ fn box_words(region: &d3d11::structures::Box) -> [u32; 6] {
     ]
 }
 
+/// How many uploads reached the recorder behind the serving glue so far.
+fn updates_reaching_the_implementation() -> usize {
+    wcontainers_direct3d_11_recorder::calls("ID3D11DeviceContext::UpdateSubresource").len()
+}
+
 thread_local! {
     /// The resource and subresource whose mapped bytes C touches now.
     static TOUCHING: Cell<(Resource, u32)> = const { Cell::new((Resource::Buffer(0), 0)) };
@@ -363,7 +418,8 @@ fn the_serving_glue_reads_and_lends_exactly_the_documented_bytes() {
         status >= 0 && device != 0 && context != 0,
         "a device through the serving glue: {status:#x}"
     );
-    let (mut created, mut uploads, mut maps, mut touched_bytes) = (0, 0, 0, 0_u64);
+    let (mut created, mut uploads, mut maps, mut touched_bytes, mut refused_boxes) =
+        (0, 0, 0, 0_u64, 0);
     for resource in resources() {
         let (kind, desc) = described(resource);
         let Some(layout) = initial_layout(resource) else {
@@ -421,15 +477,15 @@ fn the_serving_glue_reads_and_lends_exactly_the_documented_bytes() {
             let row_pitch = u32::try_from(row).unwrap_or(0) + 5;
             let depth_pitch = row_pitch * u32::try_from(rows).unwrap_or(0) + 3;
             for region in boxes(sides) {
-                let Some(length) =
-                    reference_upload(resource, index, region.as_ref(), row_pitch, depth_pitch)
-                else {
-                    continue;
-                };
+                // A box the reference refuses (past an edge) is handed one byte: the glue must refuse it, never read on.
+                let reference =
+                    reference_upload(resource, index, region.as_ref(), row_pitch, depth_pitch);
+                let length = reference.unwrap_or(1);
                 let region_words = region.as_ref().map(box_words);
                 let region_pointer = region_words
                     .as_ref()
                     .map_or(core::ptr::null(), |words| words.as_ptr());
+                let before = updates_reaching_the_implementation();
                 #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
                 // SAFETY: `context` and `made` are the serving glue's; `region_pointer` is six words or null.
                 unsafe {
@@ -443,7 +499,16 @@ fn the_serving_glue_reads_and_lends_exactly_the_documented_bytes() {
                         depth_pitch,
                     )
                 };
-                uploads += 1;
+                if reference.is_some() {
+                    uploads += 1;
+                } else {
+                    assert_eq!(
+                        updates_reaching_the_implementation(),
+                        before,
+                        "{resource:?} {index} {region:?}: a box the reference refuses never reaches the implementation"
+                    );
+                    refused_boxes += 1;
+                }
             }
             TOUCHING.with(|touching| touching.set((resource, index)));
             let mut touched = 0_u64;
@@ -469,9 +534,9 @@ fn the_serving_glue_reads_and_lends_exactly_the_documented_bytes() {
         let _ = unsafe { exact_release(made) };
     }
     println!(
-        "EXACT SERVING: {created} resources created, {uploads} uploads, {maps} maps touching {touched_bytes} bytes"
+        "EXACT SERVING: {created} resources created, {uploads} uploads, {refused_boxes} boxes past an edge refused, {maps} maps touching {touched_bytes} bytes"
     );
-    assert!(created >= 14 && uploads > 0 && maps > 0);
+    assert!(created >= 21 && uploads > 0 && maps > 0 && refused_boxes > 0);
     #[expect(unsafe_code, reason = "exact.c's caller over the serving glue")]
     // SAFETY: references the serving glue handed out, each released once.
     let _ = unsafe { (exact_release(context), exact_release(device)) };
@@ -666,7 +731,8 @@ fn make(
 #[test]
 fn the_calling_glue_passes_and_views_exactly_the_documented_bytes() {
     let (device, context) = stand_in();
-    let (mut short_refused, mut uploads, mut maps, mut viewed_bytes) = (0, 0, 0, 0_u64);
+    let (mut short_refused, mut uploads, mut maps, mut viewed_bytes, mut refused_boxes) =
+        (0, 0, 0, 0_u64, 0);
     for resource in resources() {
         let Some(layout) = initial_layout(resource) else {
             let before = seen()[0];
@@ -721,6 +787,24 @@ fn the_calling_glue_passes_and_views_exactly_the_documented_bytes() {
                 let Some(length) =
                     reference_upload(resource, index, region.as_ref(), row_pitch, depth_pitch)
                 else {
+                    // A box the reference refuses (past an edge) is refused before the system, however many bytes come.
+                    let whole = reference_upload(resource, index, None, row_pitch, depth_pitch)
+                        .unwrap_or(0);
+                    let before = seen()[1];
+                    context.update_subresource(
+                        made.as_ref(),
+                        index,
+                        region.as_ref(),
+                        &vec![3; whole + (1 << 16)],
+                        row_pitch,
+                        depth_pitch,
+                    );
+                    assert_eq!(
+                        seen()[1],
+                        before,
+                        "{resource:?} {index} {region:?}: a box the reference refuses is refused"
+                    );
+                    refused_boxes += 1;
                     continue;
                 };
                 expect_lengths(&[u64::try_from(length).unwrap_or(0)]);
@@ -806,14 +890,14 @@ fn the_calling_glue_passes_and_views_exactly_the_documented_bytes() {
     }
     let seen = seen();
     println!(
-        "EXACT CALLING: {short_refused} short bytes refused, {uploads} exact uploads, {maps} maps viewing {viewed_bytes} bytes; the stand-in saw {seen:?}"
+        "EXACT CALLING: {short_refused} short bytes refused, {uploads} exact uploads, {refused_boxes} boxes past an edge refused, {maps} maps viewing {viewed_bytes} bytes; the stand-in saw {seen:?}"
     );
     assert_eq!(seen[2], seen[3], "every map unmapped");
     assert_eq!(
         seen[4], 0,
         "the calling glue called no slot the stand-in does not serve"
     );
-    assert!(uploads > 0 && maps > 0);
+    assert!(uploads > 0 && maps > 0 && refused_boxes > 0);
 }
 
 fn answer(kind: u32, answered: &[Guid]) {

@@ -24,6 +24,7 @@ use wcontainers_volatile_bytes_pointer::{PointerAndLength, PointerBytes};
 use crate::key::GlueKey;
 
 /// The smallest block of the pool.
+#[cfg(not(feature = "exact-shadow"))]
 const SMALLEST: usize = 64;
 
 /// The system's lent memory, shared by its clones; reached only through `VolatileBytes`, and empty once revoked.
@@ -177,7 +178,11 @@ impl Shadow {
     /// Returns memory of this many bytes, from the pool or new; what it holds at first is unspecified. None when the
     /// allocator cannot give it.
     pub fn allocate(length: usize) -> Option<Shadow> {
+        #[cfg(not(feature = "exact-shadow"))]
         let class = length.max(SMALLEST).checked_next_power_of_two()?;
+        // Exactly the length lent (at least one byte), so that a touch past it lands outside the block.
+        #[cfg(feature = "exact-shadow")]
+        let class = length.max(1);
         let spare = SPARE
             .try_with(|spare| {
                 let mut spare = spare.try_borrow_mut().ok()?;
