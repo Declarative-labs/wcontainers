@@ -682,7 +682,7 @@ have (kvm, linux-socket-options, wasmtime: other tracks').
   SCRATCH/kernel-port/r32/ks6/out (whole.log, ks6-out.tgz), r32/perf3.out, r32/perf3b.out,
   r32/pyprobe1, r32/identity1.out.
 
-### Linter (MEASURED at the tree of `b2c92eb35`, no key): the kernel's own crates 31,527 (31,496)
+### Linter (MEASURED on the working tree before `ae1ee6d87`'s summaries were shortened, no key): the kernel's own crates 31,527 (31,496)
 New rules of the linter's newer build fire on interface files and other crates (independent_trait,
 associated_type_unused, conformance_untested_method, trait_not_implemented +3); on this run's lines:
 magic_literal +4, number_constant_without_link +2, name_unanswered +3, summary shape +8,
