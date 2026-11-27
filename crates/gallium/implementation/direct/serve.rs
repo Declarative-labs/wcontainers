@@ -73,6 +73,12 @@ pub struct Table {
     bind_vertex_elements_state: extern "C" fn(usize, usize, usize) -> u8,
     /// `pipe_context.delete_vertex_elements_state`.
     delete_vertex_elements_state: extern "C" fn(usize, usize, usize) -> u8,
+    /// `pipe_screen.shader_caps`, by stage.
+    shader_caps: extern "C" fn(usize, usize, i32) -> FlatShaderCaps,
+    /// `pipe_screen.caps`, with the two values Mesa computes from the stages' capabilities.
+    caps: extern "C" fn(usize, usize, u32, u8) -> FlatCaps,
+    /// `pipe_screen.compute_caps`.
+    compute_caps: extern "C" fn(usize, usize) -> FlatComputeCaps,
 }
 
 /// A screen being served: the implementation, the objects Mesa holds by key, and the table its trampolines call.
@@ -125,6 +131,9 @@ impl<G: Servable> Served<G> {
             create_vertex_elements_state: create_vertex_elements_state::<G>,
             bind_vertex_elements_state: bind_vertex_elements_state::<G>,
             delete_vertex_elements_state: delete_vertex_elements_state::<G>,
+            shader_caps: shader_caps::<G>,
+            caps: caps::<G>,
+            compute_caps: compute_caps::<G>,
             },
         }
     }
@@ -330,5 +339,37 @@ extern "C" fn delete_vertex_elements_state<G: Servable>(screen: usize, context: 
     let Some(object) = served.vertex_elements.take(state) else { return 0 };
     context.delete_vertex_elements_state(object);
     1
+}
+
+/// Mesa's `pipe_screen.shader_caps[stage]`, asked once by serve.c while it makes the screen: zero (Mesa sets no default)
+/// as the implementation changes it.
+extern "C" fn shader_caps<G: Servable>(screen: usize, _context: usize, stage: i32) -> FlatShaderCaps {
+    let mut caps = wcontainers_gallium::ShaderCaps::default();
+    if let Some(served) = registry::screen::<Served<G>>(screen) {
+        served.screen.shader_caps(values::MesaShaderStage(stage), &mut caps);
+    }
+    FlatShaderCaps::of(&caps)
+}
+
+/// Mesa's `pipe_screen.caps`, asked once by serve.c after the stages': Mesa's defaults (u_init_pipe_screen_caps's), with
+/// the two it computes from the stages' capabilities (the fragment stage's first constant buffer's size; the
+/// geometry stage's indirect addressing and storage buffers, for selection by a hardware geometry program), as the
+/// implementation changes them. Mesa's MESA_HW_ACCEL_SELECT is not read: selection is as Mesa's default.
+extern "C" fn caps<G: Servable>(screen: usize, _context: usize, constant_buffer0_size: u32, hardware_select: u8) -> FlatCaps {
+    let mut caps = wcontainers_gallium::Caps { max_constant_buffer_size: constant_buffer0_size, hardware_gl_select: hardware_select != 0, ..wcontainers_gallium::Caps::default() };
+    if let Some(served) = registry::screen::<Served<G>>(screen) {
+        served.screen.caps(&mut caps);
+    }
+    FlatCaps::of(&caps)
+}
+
+/// Mesa's `pipe_screen.compute_caps`, asked once by serve.c: zero (Mesa sets no default) as the implementation changes
+/// it.
+extern "C" fn compute_caps<G: Servable>(screen: usize, _context: usize) -> FlatComputeCaps {
+    let mut caps = wcontainers_gallium::ComputeCaps::default();
+    if let Some(served) = registry::screen::<Served<G>>(screen) {
+        served.screen.compute_caps(&mut caps);
+    }
+    FlatComputeCaps::of(&caps)
 }
 

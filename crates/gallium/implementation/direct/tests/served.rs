@@ -13,12 +13,17 @@ use wcontainers_gallium_recording::Recording;
 unsafe extern "C" {
     fn wc_caller_cases() -> i32;
     fn wc_caller_case(address: usize, which: i32) -> i32;
+    fn wc_caller_caps(address: usize) -> i32;
 }
 
 /// The environment variable naming the one case a child process runs.
 const CASE_VARIABLE: &str = "WCONTAINERS_GALLIUM_CASE";
 
-/// What each case must leave in the log: the methods that reached the implementation, in order.
+/// The methods serve.c calls while it makes the screen, before any case: each stage's capabilities (the eight of
+/// MESA_SHADER_MESH_STAGES), the screen's, the compute capabilities.
+const SCREEN_MADE: &[&str] = &["shader_caps", "shader_caps", "shader_caps", "shader_caps", "shader_caps", "shader_caps", "shader_caps", "shader_caps", "caps", "compute_caps"];
+
+/// What each case must leave in the log after the screen is made: the methods that reached the implementation, in order.
 const EXPECTED: &[&[&str]] = &[
     &[
         "context_create",
@@ -68,7 +73,12 @@ const CONTEXT_CREATED: &str = "context_create priv_ 23130 flags 4";
 /// geometry stage (MESA_SHADER_GEOMETRY, 3) from slot 3.
 fn first_case() -> Vec<String> {
     let object = |kind: &str, number: u32| format!("Object {{ kind: {kind:?}, number: {number} }}");
-    let mut log = vec![CONTEXT_CREATED.to_string()];
+    // The screen made: each stage's capabilities, then the screen's and the compute ones, each as Mesa's defaults (the
+    // trait's Default; `caps_are_mesas_defaults` holds them to Mesa's own function).
+    let mut log: Vec<String> = (0..8).map(|stage| format!("shader_caps stage {:?} caps {:?}", wcontainers_gallium::values::MesaShaderStage(stage), wcontainers_gallium::ShaderCaps::default())).collect();
+    log.push(format!("caps caps {:?}", wcontainers_gallium::Caps::default()));
+    log.push(format!("compute_caps caps {:?}", wcontainers_gallium::ComputeCaps::default()));
+    log.push(CONTEXT_CREATED.to_string());
     for (at, kind, call) in [(0, "Blend", "blend"), (1, "DepthStencilAlpha", "depth_stencil_alpha"), (2, "Rasterizer", "rasterizer")] {
         log.push(FILLED[at].to_string());
         log.push(format!("bind_{call}_state arg1 Some({})", object(kind, at.try_into().unwrap_or(0))));
@@ -106,15 +116,16 @@ fn run(which: i32) -> (i32, Vec<String>) {
 fn holds(which: i32) -> Result<(), String> {
     let (status, calls) = run(which);
     let names: Vec<&str> = calls.iter().map(|call| call.split(' ').next().unwrap_or_default()).collect();
-    let expected = EXPECTED.get(usize::try_from(which).unwrap_or(usize::MAX)).ok_or("no such case")?;
+    let case = EXPECTED.get(usize::try_from(which).unwrap_or(usize::MAX)).ok_or("no such case")?;
+    let expected: Vec<&str> = SCREEN_MADE.iter().chain(case.iter()).copied().collect();
     if status != 0 {
         return Err(format!("case {which}: C saw status {status}; calls {names:?}"));
     }
     if names != *expected {
         return Err(format!("case {which}: calls {names:?}, expected {expected:?}"));
     }
-    if calls.first().map(String::as_str) != Some(CONTEXT_CREATED) {
-        return Err(format!("case {which}: the context made as {:?}, expected {CONTEXT_CREATED}", calls.first()));
+    if calls.get(SCREEN_MADE.len()).map(String::as_str) != Some(CONTEXT_CREATED) {
+        return Err(format!("case {which}: the context made as {:?}, expected {CONTEXT_CREATED}", calls.get(SCREEN_MADE.len())));
     }
     if which == 0 {
         // The whole log, line by line: every argument of every call as caller.c made it.
@@ -124,6 +135,19 @@ fn holds(which: i32) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The capabilities serve.c writes into the screen are Mesa's own: a screen of the recording implementation (which
+/// changes no capability) holds, byte for byte, the `caps` u_init_pipe_screen_caps writes for its stages'
+/// capabilities.
+#[test]
+fn caps_are_mesas_defaults() {
+    let address = wcontainers_gallium_direct::serve::serve(Recording::new()).expect("the screen is served");
+    #[expect(unsafe_code, reason = "caller.c: wc_caller_caps takes the address serve returned (serve.c's live struct pipe_screen), reads its capabilities and destroys it")]
+    // SAFETY: the address is the screen serve made just now, not yet destroyed; the call destroys it last.
+    let status = unsafe { wc_caller_caps(address) };
+    println!("CAPS status {status}");
+    assert_eq!(status, 0, "the screen's caps differ from Mesa's u_init_pipe_screen_caps first at byte {}", status - 2);
 }
 
 /// Every case, each alone in a process of its own (this test binary run again for one case).

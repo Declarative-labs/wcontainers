@@ -255,11 +255,45 @@ impl Writer<'_> {
             let value = owned_value(field, &format!("self.{}", field.rust), &fields, 0);
             let _ = writeln!(body, "            {}: {value},", field.rust);
         }
+        // A structure the driver fills (G5) also goes back: the flat copy of the trait's owned structure, which serve.c
+        // writes into Mesa's screen.
+        let back = if filled_or_held(name) {
+            let mut fields_back = String::new();
+            for field in &fields {
+                let _ = writeln!(fields_back, "            {}: {},", field.rust, flat_value(field, &format!("owned.{}", field.rust), 0));
+            }
+            format!("\n    /// The flat copy of the trait's owned structure (what serve.c writes into Mesa's screen).\n    pub fn of(owned: &{owned}) -> {flat} {{\n        {flat} {{\n{fields_back}        }}\n    }}\n")
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             self.rust,
-            "    /// The trait's owned structure, each object a handle `held` holds; None where a value is out of its range or names\n    /// an object not held.\n    pub fn owned<{lifetime}G: Gallium>(&self, {held}: {lent}Held<G>) -> Option<{owned}> {{\n        Some(wcontainers_gallium::{} {{\n{body}        }})\n    }}\n}}\n",
+            "    /// The trait's owned structure, each object a handle `held` holds; None where a value is out of its range or names\n    /// an object not held.\n    pub fn owned<{lifetime}G: Gallium>(&self, {held}: {lent}Held<G>) -> Option<{owned}> {{\n        Some(wcontainers_gallium::{} {{\n{body}        }})\n    }}\n{back}}}\n",
             type_name(name)
         );
+    }
+}
+
+/// Whether a structure is one the driver fills (G5), or held by value inside one: it goes back to Mesa too.
+fn filled_or_held(name: &str) -> bool {
+    crate::gallium::FILLED.iter().any(|filled| filled.structure == name) || crate::gallium_interface::HELD_IN_FILLED.contains(&name)
+}
+
+/// The flat value of one field of the trait's owned structure (`place` its Rust expression; inside a closure, the
+/// element).
+fn flat_value(field: &Field, place: &str, depth: usize) -> String {
+    if depth < field.dims.len() {
+        if matches!(field.kind, Kind::Number { value: None, .. } | Kind::Color) {
+            return place.to_string();
+        }
+        let element = format!("element{depth}");
+        return format!("{place}.map(|{element}| {})", flat_value(field, &element, depth + 1));
+    }
+    match &field.kind {
+        Kind::Number { value: Some(_), .. } => format!("{place}.0"),
+        Kind::Flag => format!("u8::from({place})"),
+        Kind::Nested(inner) => format!("{}::of(&{place})", rust_flat(inner)),
+        _ => place.to_string(),
     }
 }
 
@@ -394,6 +428,13 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
             c_copy(field, &format!("in->{}", field.c), &format!("out->{}", field.c), header, 0, &mut body)?;
         }
         let _ = writeln!(functions, "void {}_from(const struct {name} *in, struct {} *out)\n{{\n    memset(out, 0, sizeof *out);\n{body}}}\n", c_flat(name), c_flat(name));
+        if filled_or_held(name) && !name.contains('.') && crate::gallium::FILLED.iter().any(|filled| filled.structure == name) {
+            let mut back = String::new();
+            for field in &fields {
+                c_copy(field, &format!("in->{}", field.c), &format!("out->{}", field.c), header, 0, &mut back)?;
+            }
+            let _ = writeln!(functions, "void {}_to(const struct {} *in, struct {name} *out)\n{{\n{back}}}\n", c_flat(name), c_flat(name));
+        }
     }
     let (layout_cases, field_rows, left_rows, field_count) = field_layouts(header, &writer.done)?;
     if !writer.failures.is_empty() {
@@ -408,7 +449,7 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
     }
     write(
         direct.join("flat.h"),
-        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n/* Each structure Mesa passes, flattened (flat.c). */\n{}\n#endif\n", writer.c_types, writer.done.iter().filter(|name| !name.contains('.')).map(|name| format!("struct {name};\nvoid {}_from(const struct {name} *in, struct {} *out);\n", c_flat(name), c_flat(name))).collect::<String>()),
+        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n/* Each structure Mesa passes, flattened (flat.c). */\n{}\n#endif\n", writer.c_types, writer.done.iter().filter(|name| !name.contains('.')).map(|name| { let back = if crate::gallium::FILLED.iter().any(|filled| filled.structure == *name) { format!("void {}_to(const struct {} *in, struct {name} *out);\n", c_flat(name), c_flat(name)) } else { String::new() }; format!("struct {name};\nvoid {}_from(const struct {name} *in, struct {} *out);\n{back}", c_flat(name), c_flat(name)) }).collect::<String>()),
     )?;
     write(
         direct.join("flat.c"),

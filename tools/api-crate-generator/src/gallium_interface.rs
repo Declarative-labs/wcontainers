@@ -451,7 +451,7 @@ impl Structures<'_> {
 }
 
 /// The structures a filled structure holds by value, which take defaults too (pipe_caps holds pipe_mesh_caps).
-const HELD_IN_FILLED: &[&str] = &["pipe_mesh_caps"];
+pub(crate) const HELD_IN_FILLED: &[&str] = &["pipe_mesh_caps"];
 
 /// Mesa's defaults of pipe_caps (u_init_pipe_screen_caps), one field a line.
 const CAPS_DEFAULTS: &str = include_str!("../inputs/gallium/caps-defaults.txt");

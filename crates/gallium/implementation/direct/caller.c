@@ -4,6 +4,7 @@
  * their bound). Each case returns 0 when what C sees holds; the Rust test (tests/served.rs) checks what reached the
  * implementation. Built with the direct crate's `hostile` feature only. */
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pipe/p_context.h"
@@ -11,9 +12,12 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "util/blend.h"
+#include "util/u_screen.h"
 
 int wc_caller_cases(void);
 int wc_caller_case(uintptr_t address, int which);
+int wc_caller_caps(uintptr_t address);
+int drmGetCap(int fd, uint64_t capability, uint64_t *value);
 
 /* Every field the trait carries of each served state set to a value of its own (written by the generator, which
  * states in tests/served.rs the owned structure each must reach the implementation as). */
@@ -411,6 +415,41 @@ int wc_caller_case(uintptr_t address, int which)
         return 2;
     const int status = cases[which](ctx);
     ctx->destroy(ctx);
+    screen->destroy(screen);
+    return status;
+}
+
+/* u_init_pipe_screen_caps's one call into libdrm, made only through a screen's get_screen_fd, which neither the served
+ * screen nor the reference sets: a stand-in in the test's own caller, so that the test links Mesa's function without
+ * libdrm. */
+int drmGetCap(int fd, uint64_t capability, uint64_t *value)
+{
+    (void)fd;
+    (void)capability;
+    (void)value;
+    return -1;
+}
+
+/* The served screen's capabilities against Mesa's own: a reference screen given the served stages' capabilities and
+ * filled by u_init_pipe_screen_caps as a driver accelerated by hardware fills it (accel 1). 0 when every byte of the
+ * two `caps` is equal, else 2 plus the offset of the first that differs; the served screen is destroyed. */
+int wc_caller_caps(uintptr_t address)
+{
+    struct pipe_screen *screen = (struct pipe_screen *)address;
+    struct pipe_screen *reference = calloc(1, sizeof *reference);
+    if (!reference)
+        return 1;
+    memcpy((void *)reference->shader_caps, screen->shader_caps, sizeof screen->shader_caps);
+    u_init_pipe_screen_caps(reference, 1);
+    int status = 0;
+    const unsigned char *ours = (const unsigned char *)&screen->caps, *mesas = (const unsigned char *)&reference->caps;
+    for (size_t at = 0; at < sizeof screen->caps; at++) {
+        if (ours[at] != mesas[at]) {
+            status = 2 + (int)at;
+            break;
+        }
+    }
+    free(reference);
     screen->destroy(screen);
     return status;
 }

@@ -17,6 +17,10 @@ const SERVE_SOURCE: &str = "serve.c";
 const CALLER_SOURCE: &str = "caller.c";
 const HOSTILE_FEATURE: &str = "CARGO_FEATURE_HOSTILE";
 const GLUE_LIBRARY: &str = "wcontainers_gallium_direct_glue";
+/// Mesa's libraries the hostile caller's reference links (by folder in Mesa's build), and how cargo is told.
+const REFERENCE_LIBRARIES: &[(&str, &str)] = &[("src/gallium/auxiliary", "gallium"), ("src/util", "mesa_util")];
+const LINK_SEARCH: &str = "cargo::rustc-link-search=native=";
+const LINK_STATIC: &str = "cargo::rustc-link-lib=static=";
 /// The Gallium file whose defines and C standard the glue's C takes from Mesa's compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
 /// The variable that carries the glue's compile flags to tests/layouts.rs, and what separates them.
@@ -40,7 +44,8 @@ fn main() {
     let mut glue = cc::Build::new();
     // Mesa's headers warn under the flags cc adds by default; Mesa builds them without those.
     glue.file(FLAT_SOURCE).file(SERVE_SOURCE).includes(&includes).warnings(false);
-    if env::var_os(HOSTILE_FEATURE).is_some() {
+    let hostile = env::var_os(HOSTILE_FEATURE).is_some();
+    if hostile {
         glue.file(CALLER_SOURCE);
     }
     let flags = mesa_flags(&build, FLAGS_FROM);
@@ -51,5 +56,13 @@ fn main() {
     let clang_args: Vec<String> = includes.iter().map(|folder| format!("-I{}", folder.display())).chain(flags).collect();
     println!("{RUSTC_ENV}{CLANG_ARGS}{ASSIGN}{}", clang_args.join(ARGUMENT_SEPARATOR));
     glue.compile(GLUE_LIBRARY);
+    if hostile {
+        // The caller's reference for the screen's capabilities: Mesa's u_init_pipe_screen_caps (Gallium's auxiliary
+        // library) and what it calls of Mesa's utilities, linked after the glue.
+        for (folder, library) in REFERENCE_LIBRARIES {
+            println!("{LINK_SEARCH}{}", build.join(folder).display());
+            println!("{LINK_STATIC}{library}");
+        }
+    }
     println!("{CFG}");
 }

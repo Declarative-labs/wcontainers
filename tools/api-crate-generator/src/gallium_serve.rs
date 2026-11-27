@@ -153,6 +153,18 @@ fn c_trampoline(structure: &str, pointer: &str, how: Served) -> String {
 }
 
 /// serve.rs and serve.c, and the report line.
+/// The table's entries for the screen's capabilities (G5): Rust's, then C's.
+const CAPS_TABLE_RUST: &str = "    /// `pipe_screen.shader_caps`, by stage.\n    shader_caps: extern \"C\" fn(usize, usize, i32) -> FlatShaderCaps,\n    /// `pipe_screen.caps`, with the two values Mesa computes from the stages' capabilities.\n    caps: extern \"C\" fn(usize, usize, u32, u8) -> FlatCaps,\n    /// `pipe_screen.compute_caps`.\n    compute_caps: extern \"C\" fn(usize, usize) -> FlatComputeCaps,\n";
+const CAPS_TABLE_C: &str = "    struct wc_flat_pipe_shader_caps (*shader_caps)(uintptr_t screen, uintptr_t context, int32_t stage);\n    struct wc_flat_pipe_caps (*caps)(uintptr_t screen, uintptr_t context, uint32_t constant_buffer0_size, uint8_t hardware_select);\n    struct wc_flat_pipe_compute_caps (*compute_caps)(uintptr_t screen, uintptr_t context);\n";
+
+/// The Rust entries of the screen's capabilities: each starts from Mesa's defaults (the trait's `Default`, which the
+/// direct crate's test compares with what u_init_pipe_screen_caps writes) and hands them to the implementation.
+const CAPS_RUST: &str = "/// Mesa's `pipe_screen.shader_caps[stage]`, asked once by serve.c while it makes the screen: zero (Mesa sets no default)\n/// as the implementation changes it.\nextern \"C\" fn shader_caps<G: Servable>(screen: usize, _context: usize, stage: i32) -> FlatShaderCaps {\n    let mut caps = wcontainers_gallium::ShaderCaps::default();\n    if let Some(served) = registry::screen::<Served<G>>(screen) {\n        served.screen.shader_caps(values::MesaShaderStage(stage), &mut caps);\n    }\n    FlatShaderCaps::of(&caps)\n}\n\n/// Mesa's `pipe_screen.caps`, asked once by serve.c after the stages': Mesa's defaults (u_init_pipe_screen_caps's), with\n/// the two it computes from the stages' capabilities (the fragment stage's first constant buffer's size; the\n/// geometry stage's indirect addressing and storage buffers, for selection by a hardware geometry program), as the\n/// implementation changes them. Mesa's MESA_HW_ACCEL_SELECT is not read: selection is as Mesa's default.\nextern \"C\" fn caps<G: Servable>(screen: usize, _context: usize, constant_buffer0_size: u32, hardware_select: u8) -> FlatCaps {\n    let mut caps = wcontainers_gallium::Caps { max_constant_buffer_size: constant_buffer0_size, hardware_gl_select: hardware_select != 0, ..wcontainers_gallium::Caps::default() };\n    if let Some(served) = registry::screen::<Served<G>>(screen) {\n        served.screen.caps(&mut caps);\n    }\n    FlatCaps::of(&caps)\n}\n\n/// Mesa's `pipe_screen.compute_caps`, asked once by serve.c: zero (Mesa sets no default) as the implementation changes\n/// it.\nextern \"C\" fn compute_caps<G: Servable>(screen: usize, _context: usize) -> FlatComputeCaps {\n    let mut caps = wcontainers_gallium::ComputeCaps::default();\n    if let Some(served) = registry::screen::<Served<G>>(screen) {\n        served.screen.compute_caps(&mut caps);\n    }\n    FlatComputeCaps::of(&caps)\n}\n\n";
+
+/// serve.c's part of making the screen: the capabilities written into Mesa's screen (its const fields, which a driver
+/// fills once), each stage's first, as u_init_pipe_screen_caps reads them.
+const CAPS_C: &str = "    for (int32_t stage = 0; stage < MESA_SHADER_MESH_STAGES; stage++) {\n        const struct wc_flat_pipe_shader_caps flat = table->shader_caps(key, 0, stage);\n        wc_flat_pipe_shader_caps_to(&flat, (struct pipe_shader_caps *)&screen->shader_caps[stage]);\n    }\n    const struct pipe_shader_caps *geometry = &screen->shader_caps[MESA_SHADER_GEOMETRY];\n    const struct wc_flat_pipe_caps caps = table->caps(key, 0, screen->shader_caps[MESA_SHADER_FRAGMENT].max_const_buffer0_size, geometry->indirect_temp_addr && geometry->max_shader_buffers);\n    wc_flat_pipe_caps_to(&caps, (struct pipe_caps *)&screen->caps);\n    const struct wc_flat_pipe_compute_caps compute = table->compute_caps(key, 0);\n    wc_flat_pipe_compute_caps_to(&compute, (struct pipe_compute_caps *)&screen->compute_caps);\n";
+
 pub fn generate(header: &Header) -> Result<(String, String, String), String> {
     let bound = |name: &str| header.known_numbers.get(name).copied().ok_or_else(|| format!("no value for {name}"));
     for (structure, pointer, _) in SLICE {
@@ -176,6 +188,10 @@ pub fn generate(header: &Header) -> Result<(String, String, String), String> {
         rust.push_str(&rust_function(structure, pointer, *how));
         rust.push('\n');
     }
+    // The screen's capabilities (G5), asked once while serve.c makes the screen.
+    table.push_str(CAPS_TABLE_RUST);
+    filled.push_str("            shader_caps: shader_caps::<G>,\n            caps: caps::<G>,\n            compute_caps: compute_caps::<G>,\n");
+    rust.push_str(CAPS_RUST);
     let kinds_bound: Vec<String> = HELD.iter().map(|(kind, _)| format!("{kind}: Send + Sync")).collect();
     let maps: String = HELD.iter().skip(1).map(|(kind, field)| format!("    /// Each {kind} Mesa holds, by key.\n    pub {field}: Map<G::{kind}>,\n")).collect();
     let new_maps: String = HELD.iter().skip(1).map(|(_, field)| format!("            {field}: Map::default(),\n")).collect();
@@ -197,6 +213,7 @@ pub fn generate(header: &Header) -> Result<(String, String, String), String> {
         let params = if params.is_empty() { String::new() } else { format!(", {params}") };
         let _ = writeln!(c_table, "    {ret} (*{name})(uintptr_t screen, uintptr_t context{params});");
     }
+    c_table.push_str(CAPS_TABLE_C);
     let _ = writeln!(c, "/* Rust's table (serve.rs `Table`, the same order). */\nstruct wc_table {{\n{c_table}}};\n\nstruct wc_screen {{\n    struct pipe_screen base;\n    uintptr_t key;\n    const struct wc_table *table;\n}};\n\nstruct wc_context {{\n    struct pipe_context base;\n    uintptr_t key;\n    struct wc_screen *screen;\n}};\n\nstatic void wc_context_pointers(struct pipe_context *pipe);\nuintptr_t wc_screen_create(uintptr_t key, const struct wc_table *table);\nsize_t wc_table_size(void);\n");
     let mut context_pointers = String::new();
     let mut screen_pointers = String::new();
@@ -206,6 +223,6 @@ pub fn generate(header: &Header) -> Result<(String, String, String), String> {
         let line = format!("    pipe->{pointer} = wc_{};\n", entry_name(structure, pointer));
         if *structure == "pipe_screen" { screen_pointers.push_str(&line.replace("pipe->", "screen->")) } else { context_pointers.push_str(&line) }
     }
-    let _ = writeln!(c, "static void wc_context_pointers(struct pipe_context *pipe)\n{{\n{context_pointers}}}\n\nuintptr_t wc_screen_create(uintptr_t key, const struct wc_table *table)\n{{\n    struct wc_screen *s = calloc(1, sizeof *s);\n    if (!s || !table)\n        return 0;\n    s->key = key;\n    s->table = table;\n    struct pipe_screen *screen = &s->base;\n{screen_pointers}    return (uintptr_t)screen;\n}}\n\n/* The table's size, which the Rust side checks against its own. */\nsize_t wc_table_size(void)\n{{\n    return sizeof(struct wc_table);\n}}");
+    let _ = writeln!(c, "static void wc_context_pointers(struct pipe_context *pipe)\n{{\n{context_pointers}}}\n\nuintptr_t wc_screen_create(uintptr_t key, const struct wc_table *table)\n{{\n    struct wc_screen *s = calloc(1, sizeof *s);\n    if (!s || !table)\n        return 0;\n    s->key = key;\n    s->table = table;\n    struct pipe_screen *screen = &s->base;\n{screen_pointers}{CAPS_C}    return (uintptr_t)screen;\n}}\n\n/* The table's size, which the Rust side checks against its own. */\nsize_t wc_table_size(void)\n{{\n    return sizeof(struct wc_table);\n}}");
     Ok((rust_file, c, format!("GALLIUM SERVED: {} pointers of the slice (of {} planned)\n", SLICE.len(), PLAN.len())))
 }

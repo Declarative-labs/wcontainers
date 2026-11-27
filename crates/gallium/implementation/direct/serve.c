@@ -42,6 +42,9 @@ struct wc_table {
     uintptr_t (*create_vertex_elements_state)(uintptr_t screen, uintptr_t context, struct wc_vertex_elements list);
     uint8_t (*bind_vertex_elements_state)(uintptr_t screen, uintptr_t context, uintptr_t state);
     uint8_t (*delete_vertex_elements_state)(uintptr_t screen, uintptr_t context, uintptr_t state);
+    struct wc_flat_pipe_shader_caps (*shader_caps)(uintptr_t screen, uintptr_t context, int32_t stage);
+    struct wc_flat_pipe_caps (*caps)(uintptr_t screen, uintptr_t context, uint32_t constant_buffer0_size, uint8_t hardware_select);
+    struct wc_flat_pipe_compute_caps (*compute_caps)(uintptr_t screen, uintptr_t context);
 };
 
 struct wc_screen {
@@ -244,6 +247,15 @@ uintptr_t wc_screen_create(uintptr_t key, const struct wc_table *table)
     struct pipe_screen *screen = &s->base;
     screen->context_create = wc_context_create;
     screen->destroy = wc_screen_destroy;
+    for (int32_t stage = 0; stage < MESA_SHADER_MESH_STAGES; stage++) {
+        const struct wc_flat_pipe_shader_caps flat = table->shader_caps(key, 0, stage);
+        wc_flat_pipe_shader_caps_to(&flat, (struct pipe_shader_caps *)&screen->shader_caps[stage]);
+    }
+    const struct pipe_shader_caps *geometry = &screen->shader_caps[MESA_SHADER_GEOMETRY];
+    const struct wc_flat_pipe_caps caps = table->caps(key, 0, screen->shader_caps[MESA_SHADER_FRAGMENT].max_const_buffer0_size, geometry->indirect_temp_addr && geometry->max_shader_buffers);
+    wc_flat_pipe_caps_to(&caps, (struct pipe_caps *)&screen->caps);
+    const struct wc_flat_pipe_compute_caps compute = table->compute_caps(key, 0);
+    wc_flat_pipe_compute_caps_to(&compute, (struct pipe_compute_caps *)&screen->compute_caps);
     return (uintptr_t)screen;
 }
 
