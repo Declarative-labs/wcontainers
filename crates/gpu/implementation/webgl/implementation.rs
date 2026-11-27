@@ -1,7 +1,8 @@
-//! The WebGL 2 back end of the wcontainers graphics interface, written on glow.
+//! The WebGL 2 back end of the wcontainers graphics interface, written on the OpenGL ES crate's trait.
 //!
-//! The same code draws through Chrome's WebGL 2 when built for WebAssembly and through ANGLE's OpenGL ES
-//! 3.0 natively (a test tool only), following WebGL 2's rules on both. Blocks are applied by difference:
+//! The same code draws on any implementation of that trait, following WebGL 2's rules: natively an OpenGL ES 3
+//! context of an EGL library (ANGLE's or Mesa's; a test tool only), and in the browser WebGL 2 once the OpenGL ES
+//! crate has an implementation on it. Blocks are applied by difference:
 //! a block is looked at only when its handle changed, and then only GL values that differ are set. The
 //! interface's row 0 is the top: with EXT_clip_control the device draws upper-left; without it, programs
 //! negate y and the front face is swapped.
@@ -12,7 +13,7 @@ mod convert;
 mod depth;
 mod format;
 mod host;
-pub mod platform;
+mod platform;
 mod restart;
 mod shader;
 mod state;
@@ -23,7 +24,6 @@ pub mod glsl {
     pub use crate::shader::{GlslSettings, ShaderText, needs, write};
 }
 
-use glow::HasContext;
 use shader::{ProgramObj, ShaderObj, Slot};
 use state::GlValues;
 use std::cell::{Cell, RefCell};
@@ -33,6 +33,8 @@ use std::rc::Rc;
 use wcontainers_gpu::{
     caps::*, draw::*, error::*, format::*, helpers::*, resource::*, shader::*, slow::*, state::*, *,
 };
+use wcontainers_opengl_es::constants as gles;
+use wcontainers_opengl_es::{CompressedPixelUnpack, OpenGlEs, PixelPack, PixelUnpack};
 
 /// Ids name objects in the state the back end last applied; they are never reused.
 type Id = u64;
@@ -54,8 +56,8 @@ pub struct BufferObj {
     usage: u32,
     /// The GL buffer for everything but indices, and the one for indices (WebGL never lets one GL
     /// buffer hold both).
-    data: Option<glow::Buffer>,
-    index: Option<glow::Buffer>,
+    data: Option<u32>,
+    index: Option<u32>,
     /// A range of one of the two GL buffers that a GPU write could not reach; the other holds it.
     stale: Cell<Option<Stale>>,
     /// Where indices may be GL's restart value, for buffers that hold indices.
@@ -75,8 +77,8 @@ struct Stale {
 /// programs, so `MULTISAMPLE_READ` is absent).
 #[derive(Clone, Copy, Debug)]
 enum Storage {
-    Texture(glow::Texture),
-    Samples(glow::Renderbuffer),
+    Texture(u32),
+    Samples(u32),
 }
 
 #[derive(Debug)]
@@ -125,10 +127,10 @@ pub struct ViewObj {
 #[derive(Debug)]
 pub struct SamplerObj {
     id: Id,
-    raw: glow::Sampler,
+    raw: u32,
     /// Its twin whose minimum level of detail is 0, for units that gathers read, where its own
     /// minimum is above 0.
-    level_zero: Option<(Id, glow::Sampler)>,
+    level_zero: Option<(Id, u32)>,
 }
 
 /// What one binding of a set holds.
@@ -145,16 +147,17 @@ pub struct SetObj {
     entries: Vec<(u32, Bound)>,
 }
 
+/// A read back; `F` is the OpenGL ES fence type.
 #[derive(Debug)]
-pub struct ReadbackObj {
+pub struct ReadbackObj<F> {
     /// The pack buffer texels or bytes are copied into; none for query results.
-    pbo: Option<glow::Buffer>,
+    pbo: Option<u32>,
     /// The queries read, in order; none for a query never begun or written, which reads zero.
-    queries: Vec<Option<Rc<glow::Query>>>,
+    queries: Vec<Option<Rc<u32>>>,
     /// The queries are timestamps (64-bit results).
     timestamps: bool,
     size: usize,
-    sync: Option<glow::Fence>,
+    sync: Option<F>,
     /// Waited for: WebGL updates a sync object's status only between tasks, so after `finish` it is
     /// known done though the sync object does not say so yet.
     waited: bool,
@@ -164,10 +167,11 @@ pub struct ReadbackObj {
     host: Option<Vec<u8>>,
 }
 
+/// A fence; `F` is the OpenGL ES fence type.
 #[derive(Debug)]
-pub struct FenceObj {
+pub struct FenceObj<F> {
     /// None where the context was lost when the fence was made.
-    sync: Option<glow::Fence>,
+    sync: Option<F>,
     done: Cell<bool>,
 }
 
@@ -177,7 +181,7 @@ pub struct Handle<T>(Rc<T>);
 
 impl TextureObj {
     /// The GL texture; none for a multisampled texture.
-    fn tex(&self) -> Option<glow::Texture> {
+    fn tex(&self) -> Option<u32> {
         match self.storage {
             Storage::Texture(t) => Some(t),
             Storage::Samples(_) => None,
@@ -207,15 +211,15 @@ pub type GlProgram = Handle<ProgramObj>;
 /// A state block: its id and the GL values it stands for.
 pub type Block<T> = Handle<(Id, T)>;
 pub type BindingSet = Handle<SetObj>;
-pub type Readback = Handle<core::cell::RefCell<ReadbackObj>>;
-pub type Fence = Handle<FenceObj>;
+pub type Readback<F> = Handle<core::cell::RefCell<ReadbackObj<F>>>;
+pub type Fence<F> = Handle<FenceObj<F>>;
 
 /// A query set: each query's GL object, made when the query is first begun or written. A read back
 /// holds the objects it reads, so a query begun again before the read finished gets a new one.
 #[derive(Debug)]
 pub struct QuerySetObj {
     kind: QueryKind,
-    slots: core::cell::RefCell<Vec<Option<Rc<glow::Query>>>>,
+    slots: core::cell::RefCell<Vec<Option<Rc<u32>>>>,
 }
 
 pub type QuerySet = Handle<QuerySetObj>;
@@ -247,7 +251,7 @@ type FramebufferKey = [Option<Attachment>; MAX_COLOR_TARGETS + 1];
 /// What a running pass must do when it ends.
 #[derive(Debug)]
 struct Pass {
-    framebuffer: glow::Framebuffer,
+    framebuffer: u32,
     discard: Points,
     occlusion: Option<QuerySet>,
     /// An occlusion query is running.
@@ -296,8 +300,8 @@ struct Applied {
     attributes: Vec<(Id, u64)>,
     enabled: u32,
     index: Id,
-    draw_framebuffer: Option<glow::Framebuffer>,
-    read_framebuffer: Option<glow::Framebuffer>,
+    draw_framebuffer: Option<u32>,
+    read_framebuffer: Option<u32>,
 }
 
 impl Applied {
@@ -326,45 +330,77 @@ impl Applied {
 /// what a frame costs between two reports.
 pub const FRAME_REPORT: &str = "webgl: frames=";
 
-/// What a WebGL 2 back end is made from natively: ANGLE's folder and the extensions to leave unused.
+/// What a WebGL 2 back end is made from natively: the folder of the EGL library to load (ANGLE's or Mesa's; the
+/// system's where none is named) and the WebGL extensions to leave unused.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct GlConfig {
-    pub angle: std::path::PathBuf,
+    pub egl: Option<std::path::PathBuf>,
     pub off: Vec<String>,
 }
 
-/// What a WebGL 2 back end is made from in a browser: a canvas's context and extensions left unused.
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug)]
-pub struct GlConfig {
-    pub context: web_sys::WebGl2RenderingContext,
-    pub off: Vec<String>,
-}
-
-impl StandaloneGpu for Gl {
+/// Natively the back end draws on the OpenGL ES crate's direct implementation, over the EGL crate's.
+#[cfg(not(target_arch = "wasm32"))]
+impl StandaloneGpu for Gl<wcontainers_opengl_es_direct::OpenGlEsContext> {
     type Config = GlConfig;
-    /// Why ANGLE gave no context, as its loader or EGL said.
+    /// Why the EGL library gave no context, as its loader or EGL said.
     type NewError = String;
 
     fn new(config: GlConfig) -> Result<Self, String> {
         let off: Vec<&str> = config.off.iter().map(String::as_str).collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        return Gl::on_angle(&config.angle, &off);
-        #[cfg(target_arch = "wasm32")]
-        return Ok(Gl::on_canvas(config.context, &off));
+        let (gl, held) =
+            platform::context::<wcontainers_egl_direct::Library, _>(config.egl.as_deref())?;
+        let mut b = Gl::new(gl, UNUSABLE_UNIFORM_BLOCKS, &off);
+        b.held = Some(held);
+        Ok(b)
     }
 }
 
-/// The WebGL 2 back end. Made on the device thread, which owns the GL context.
-pub struct Gl {
-    gl: glow::Context,
-    platform: platform::Platform,
+/// What a WebGL 2 back end is made from in a browser: a canvas's WebGL 2 context as a value of the OpenGL ES
+/// crate's trait (that crate's implementation on WebGL is still to come) and the WebGL extensions to leave
+/// unused.
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug)]
+pub struct GlConfig<O> {
+    pub gl: O,
+    pub off: Vec<String>,
+}
+
+/// In the browser the back end draws on whatever implementation of the OpenGL ES crate's trait the page
+/// makes from its canvas, and presents into that canvas.
+#[cfg(target_arch = "wasm32")]
+impl<O: OpenGlEs> StandaloneGpu for Gl<O> {
+    type Config = GlConfig<O>;
+    /// The back end is made on any context it is given.
+    type NewError = core::convert::Infallible;
+
+    fn new(config: GlConfig<O>) -> Result<Self, core::convert::Infallible> {
+        let off: Vec<&str> = config.off.iter().map(String::as_str).collect();
+        let mut b = Gl::new(config.gl, 0, &off);
+        b.presents = true;
+        Ok(b)
+    }
+}
+
+/// Uniform blocks GL counts that a stage cannot use natively: mozangle 0.7.1 numbers a stage's blocks from
+/// register b2 (b0 and b1 hold its own constants) and asserts each register below the block count, so a
+/// program using the last two aborts the process.
+#[cfg(not(target_arch = "wasm32"))]
+const UNUSABLE_UNIFORM_BLOCKS: u32 = 2;
+
+/// The WebGL 2 back end, drawing through `O`, a context of the OpenGL ES crate's trait. Made on the device
+/// thread, which owns the GL context.
+pub struct Gl<O: OpenGlEs> {
+    gl: O,
+    /// Whether the context draws into something a host shows (a canvas's drawing buffer), which a surface
+    /// presents into. Natively it does not: the OpenGL ES crate gives no EGL window surface yet (its window
+    /// loan waits on the owner's question of a window in the interface).
+    presents: bool,
     extensions: BTreeSet<&'static str>,
     renderer: String,
     caps: Caps,
     slow: SlowPaths,
-    helpers: Helpers<Gl>,
+    helpers: Helpers<Gl<O>>,
     lost: Option<LossReason>,
     next_id: Id,
     /// Frames presented, for [`FRAME_REPORT`].
@@ -377,11 +413,11 @@ pub struct Gl {
     /// The live shaders by their text, so shaders of equal text are one.
     shaders: HashMap<Rc<shader::ShaderText>, Shader>,
     programs: HashMap<(Id, Id), GlProgram>,
-    framebuffers: HashMap<FramebufferKey, glow::Framebuffer>,
+    framebuffers: HashMap<FramebufferKey, u32>,
     /// Framebuffers of passes without attachments, each on an `R8` renderbuffer of its own that no
     /// draw writes (GLES 3.0 has no framebuffer without attachments).
-    empty_passes: HashMap<EmptyPass, glow::Framebuffer>,
-    empty_fragment: glow::Shader,
+    empty_passes: HashMap<EmptyPass, u32>,
+    empty_fragment: u32,
     pass: Option<Pass>,
     /// How many buffers have a stale range, so draws look for them only when some do.
     stale_buffers: u32,
@@ -396,7 +432,7 @@ pub struct Gl {
     /// The depth and stencil read programs, by [`Fetch`], made at their first use.
     depth_read: [Option<depth::DepthRead>; 5],
     /// The stencil bit draws' program, made at its first use.
-    bits_program: Option<glow::Program>,
+    bits_program: Option<u32>,
     /// The stencil write programs for 2D and 2D array sources.
     stencil_write: [Option<depth::StencilWrite>; 2],
     /// The programs of copies by draws, by source format, destination format and source target, with
@@ -404,17 +440,16 @@ pub struct Gl {
     /// Programs of `copy_by_draw` by formats and source target.
     copy_programs: HashMap<(Format, Format, u32), CopyProgram>,
     /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
-    point_sampler: Option<glow::Sampler>,
+    point_sampler: Option<u32>,
     /// Whether blits between textures of one float format keep every bit (the probe at creation).
     float_blits: bool,
+    /// The EGL objects the context lives in, destroyed after every field above.
+    #[cfg(not(target_arch = "wasm32"))]
+    held: Option<platform::Held>,
 }
 
 /// A program of `copy_by_draw`, with its uniforms `at` and, into unorm depth, `unit`.
-type CopyProgram = (
-    glow::Program,
-    glow::UniformLocation,
-    Option<glow::UniformLocation>,
-);
+type CopyProgram = (u32, i32, Option<i32>);
 
 /// What the back end's own fetch draws read: depth or stencil of a 2D or 2D array texture, or depth
 /// of a cube.
@@ -441,50 +476,52 @@ impl Fetch {
     }
 }
 
+/// Whether a fence sync object has signalled.
+fn signaled<O: OpenGlEs>(gl: &O, sync: &O::Fence) -> bool {
+    let mut status = [0];
+    gl.get_synciv(sync, gles::SYNC_STATUS, &mut status);
+    status[0] == gles::SIGNALED as i32
+}
+
 /// The name in `off` that takes blits keeping every bit of floats as missing, as where the probe
 /// finds they do not.
 pub const FLOAT_BLITS: &str = "float_blits";
 
-impl Gl {
-    /// Makes the back end on a current GL ES 3.0 or WebGL 2 context. `off` lists WebGL extension names
-    /// (and [`FLOAT_BLITS`]) to treat as missing, so tests can take the routes of browsers without them.
-    pub fn new(gl: glow::Context, platform: platform::Platform, off: &[&str]) -> Gl {
-        let extensions = platform::extensions(&gl, off);
-        let renderer = platform::renderer(&gl);
-        let mut caps = caps::caps(&gl, &platform, &extensions, &renderer);
+impl<O: OpenGlEs> Gl<O> {
+    /// Makes the back end on an OpenGL ES 3.0 context, of which `unusable_uniform_blocks` uniform blocks
+    /// cannot be used by a stage. `off` lists WebGL extension names (and [`FLOAT_BLITS`]) to treat as
+    /// missing, so tests can take the routes of browsers without them.
+    fn new(gl: O, unusable_uniform_blocks: u32, off: &[&str]) -> Gl<O> {
+        let extensions = platform::extensions(&platform::supported(&gl), off);
+        let renderer = platform::string(&gl, gles::RENDERER);
+        let mut caps = caps::caps(&gl, unusable_uniform_blocks, &extensions, &renderer);
         // Timestamps where the extension is present and the GPU writes them (it may give zero bits).
         caps.features.set(
             Features::TIMESTAMPS,
             extensions.contains("EXT_disjoint_timer_query_webgl2")
-                && platform.timestamp_bits(&gl) > 0,
+                && platform::timestamp_bits(&gl) > 0,
         );
         let flip_y = !extensions.contains("EXT_clip_control");
         let noperspective = extensions.contains(platform::NOPERSPECTIVE_INTERPOLATION);
         let clip_depth = if flip_y {
-            glow::NEGATIVE_ONE_TO_ONE
+            gles::NEGATIVE_ONE_TO_ONE_EXT
         } else {
-            platform.clip_control(&gl, glow::UPPER_LEFT, glow::ZERO_TO_ONE);
-            glow::ZERO_TO_ONE
+            let _ = gl.clip_control_ext(gles::UPPER_LEFT_EXT, gles::ZERO_TO_ONE_EXT);
+            gles::ZERO_TO_ONE_EXT
         };
-        // SAFETY: plain GL calls on the current context.
-        let empty_fragment = unsafe {
-            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            // WebGL 2 always restarts strips at the largest index; GLES has it as a switch.
-            #[cfg(not(target_arch = "wasm32"))]
-            gl.enable(glow::PRIMITIVE_RESTART_FIXED_INDEX);
-            let vao = gl.create_vertex_array().expect("a vertex array object");
-            gl.bind_vertex_array(Some(vao));
-            let s = gl
-                .create_shader(glow::FRAGMENT_SHADER)
-                .expect("a shader object");
-            gl.shader_source(s, "#version 300 es\nvoid main() {}\n");
-            gl.compile_shader(s);
-            s
-        };
+        gl.pixel_storei(gles::PACK_ALIGNMENT, 1);
+        gl.pixel_storei(gles::UNPACK_ALIGNMENT, 1);
+        // WebGL 2 always restarts strips at the largest index; GLES has it as a switch.
+        #[cfg(not(target_arch = "wasm32"))]
+        gl.enable(gles::PRIMITIVE_RESTART_FIXED_INDEX);
+        let vao = platform::one(|n| gl.gen_vertex_arrays(n)).expect("a vertex array object");
+        gl.bind_vertex_array(vao);
+        let empty_fragment = gl.create_shader(gles::FRAGMENT_SHADER);
+        gl.shader_source(empty_fragment, &[b"#version 300 es\nvoid main() {}\n"]);
+        gl.compile_shader(empty_fragment);
         let mut b = Gl {
             gl,
-            platform,
+            presents: false,
             extensions,
             renderer,
             caps,
@@ -516,6 +553,8 @@ impl Gl {
             copy_programs: HashMap::new(),
             point_sampler: None,
             float_blits: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            held: None,
         };
         match b.probe_depth24() {
             Ok(unorm) => b.caps.features.set(Features::DEPTH24_UNORM, unorm),
@@ -681,32 +720,26 @@ impl Gl {
         let out_fb = self.texture_framebuffer(&out, 0, 0);
         let mut bits = [0u32; 2];
         for (units, bits) in units.into_iter().zip(&mut bits) {
-            // SAFETY: plain GL calls; the program and the framebuffer are alive.
-            unsafe {
-                self.gl.use_program(Some(program));
-                let clip = if self.values.clip_depth == glow::ZERO_TO_ONE {
-                    z
-                } else {
-                    2.0 * z - 1.0
-                };
-                self.gl.uniform_1_f32(Some(&uniform), clip);
-                self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-                self.applied.draw_framebuffer = Some(fb);
-                self.open_writes();
-                self.gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
-            }
-            state::plain(&self.gl, &mut self.values, [0, 0, 1, 1], &self.platform);
+            self.gl.use_program(program);
+            let clip = if self.values.clip_depth == gles::ZERO_TO_ONE_EXT {
+                z
+            } else {
+                2.0 * z - 1.0
+            };
+            self.gl.uniform1f(uniform, clip);
+            self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
+            self.applied.draw_framebuffer = Some(fb);
+            self.open_writes();
+            self.gl.clear_bufferfv(gles::DEPTH, 0, &[1.0]);
+            state::plain(&self.gl, &mut self.values, [0, 0, 1, 1]);
             let (gl, v) = (&self.gl, &mut self.values);
-            // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
-            unsafe {
-                gl.enable(glow::DEPTH_TEST);
-                v.depth_test = true;
-                gl.depth_func(glow::ALWAYS);
-                v.depth_func = glow::ALWAYS;
-                gl.enable(glow::POLYGON_OFFSET_FILL);
-                gl.polygon_offset(0.0, units);
-                v.polygon_offset = Some((0.0, units, 0.0));
-            }
+            gl.enable(gles::DEPTH_TEST);
+            v.depth_test = true;
+            gl.depth_func(gles::ALWAYS);
+            v.depth_func = gles::ALWAYS;
+            gl.enable(gles::POLYGON_OFFSET_FILL);
+            gl.polygon_offset(0.0, units);
+            v.polygon_offset = Some((0.0, units, 0.0));
             self.own_draw();
             self.applied.program = 0;
             self.fetch(Fetch::Depth2D, &depth, 0, [0; 3], 0, out_fb, (1, 1))
@@ -732,35 +765,8 @@ impl Gl {
         }
         self.destroy(Object::Texture(depth));
         self.destroy(Object::Texture(out));
-        // SAFETY: a plain GL call; the program is no longer used.
-        unsafe { self.gl.delete_program(program) };
+        self.gl.delete_program(program);
         Ok(bits)
-    }
-
-    /// Makes the back end on ANGLE's OpenGL ES 3.0, loaded from `libEGL` in `dir` (on the desktop, the
-    /// mozangle build angle\build.cmd makes). A test tool: ANGLE is never shipped.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn on_angle(dir: &std::path::Path, off: &[&str]) -> Result<Gl, String> {
-        let (gl, platform) = platform::angle(dir)?;
-        Ok(Gl::new(gl, platform, off))
-    }
-
-    /// Names a host window (an `HWND` on Windows) that `create_surface` may attach to, as the host's
-    /// graphics hook numbers it.
-    ///
-    /// # Safety
-    /// `window` is a native window that outlives every surface made on it.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub unsafe fn add_window(&mut self, name: u32, window: *mut core::ffi::c_void) {
-        // SAFETY: as the caller promises.
-        unsafe { self.platform.add_window(name, window) }
-    }
-
-    /// Makes the back end on a canvas's WebGL 2 context.
-    #[cfg(target_arch = "wasm32")]
-    pub fn on_canvas(context: web_sys::WebGl2RenderingContext, off: &[&str]) -> Gl {
-        let (gl, platform) = platform::canvas(context);
-        Gl::new(gl, platform, off)
     }
 
     /// Whether the probe at creation found that blits keep every bit of 16-bit and 32-bit floats, so
@@ -793,7 +799,7 @@ impl Gl {
 
     /// Every extension the context reports.
     pub fn context_extensions(&self) -> Vec<String> {
-        let mut all: Vec<String> = self.gl.supported_extensions().iter().cloned().collect();
+        let mut all: Vec<String> = platform::supported(&self.gl).into_iter().collect();
         all.sort();
         all
     }
@@ -811,12 +817,11 @@ impl Gl {
     /// Loses the device for an error GL has recorded since the last look: a bug of ours or a lost
     /// context. Called where the back end has just waited for the GPU, so the look costs no wait.
     fn gl_errors(&mut self) {
-        // SAFETY: a plain GL query.
-        let error = unsafe { self.gl.get_error() };
+        let error = self.gl.get_error();
         let reason = match error {
-            glow::NO_ERROR => return,
-            glow::OUT_OF_MEMORY => LossReason::OutOfMemory,
-            glow::CONTEXT_LOST => LossReason::Reset,
+            gles::NO_ERROR => return,
+            gles::OUT_OF_MEMORY => LossReason::OutOfMemory,
+            gles::CONTEXT_LOST => LossReason::Reset,
             _ => LossReason::Error,
         };
         if self.lost.is_none() {
@@ -867,7 +872,7 @@ impl Gl {
     /// shape, which [`Gl::fresh`] keeps holding the same bytes.
     /// The GL query object for query `index` of `set`, a new one when a read back still holds the
     /// last. None (the device lost) past the set's end or when GL makes none.
-    fn query_slot(&mut self, set: &QuerySet, index: u32) -> Option<glow::Query> {
+    fn query_slot(&mut self, set: &QuerySet, index: u32) -> Option<u32> {
         let mut slots = set.slots.borrow_mut();
         let Some(slot) = slots.get_mut(index as usize) else {
             drop(slots);
@@ -875,10 +880,9 @@ impl Gl {
             return None;
         };
         if slot.as_ref().is_none_or(|q| Rc::strong_count(q) > 1) {
-            // SAFETY: a plain GL call.
-            match unsafe { self.gl.create_query() } {
-                Ok(q) => *slot = Some(Rc::new(q)),
-                Err(_) => {
+            match platform::one(|n| self.gl.gen_queries(n)) {
+                Some(q) => *slot = Some(Rc::new(q)),
+                None => {
                     drop(slots);
                     self.fail(LossReason::OutOfMemory);
                     return None;
@@ -889,15 +893,11 @@ impl Gl {
     }
 
     /// Whether every query's result is available.
-    fn queries_available(&self, queries: &[Option<Rc<glow::Query>>]) -> bool {
-        queries.iter().flatten().all(|q| {
-            // SAFETY: a plain query of a live query object.
-            unsafe {
-                self.gl
-                    .get_query_parameter_u32(**q, glow::QUERY_RESULT_AVAILABLE)
-                    != 0
-            }
-        })
+    fn queries_available(&self, queries: &[Option<Rc<u32>>]) -> bool {
+        queries
+            .iter()
+            .flatten()
+            .all(|q| platform::query_value(&self.gl, **q, gles::QUERY_RESULT_AVAILABLE) != 0)
     }
 
     /// A multisampled texture: a renderbuffer of the format and sample count.
@@ -918,14 +918,11 @@ impl Gl {
             ));
         }
         let gl = &self.gl;
-        // SAFETY: plain GL calls; the renderbuffer binding is used by nothing else.
-        let rb = unsafe {
-            let rb = gl
-                .create_renderbuffer()
-                .map_err(|_| GpuError::OutOfMemory)?;
-            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+        let rb = {
+            let rb = platform::one(|n| gl.gen_renderbuffers(n)).ok_or(GpuError::OutOfMemory)?;
+            gl.bind_renderbuffer(gles::RENDERBUFFER, rb);
             gl.renderbuffer_storage_multisample(
-                glow::RENDERBUFFER,
+                gles::RENDERBUFFER,
                 desc.samples as i32,
                 gl_format.internal,
                 desc.width as i32,
@@ -936,7 +933,7 @@ impl Gl {
         Ok(Handle(Rc::new(TextureObj {
             id: self.id(),
             storage: Storage::Samples(rb),
-            target: glow::RENDERBUFFER,
+            target: gles::RENDERBUFFER,
             desc: *desc,
             gl: gl_format,
             read: None,
@@ -957,21 +954,18 @@ impl Gl {
     /// `dst` of the same format, by `blitFramebuffer`.
     fn blit_resolve(&mut self, src: &Texture, dst: &Texture, mip: u32, layer: u32) {
         let mask = match FORMAT_FACTS[src.desc.format as usize].kind {
-            FormatKind::DepthStencil => glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT,
-            FormatKind::Depth => glow::DEPTH_BUFFER_BIT,
-            FormatKind::Stencil => glow::STENCIL_BUFFER_BIT,
-            _ => glow::COLOR_BUFFER_BIT,
+            FormatKind::DepthStencil => gles::DEPTH_BUFFER_BIT | gles::STENCIL_BUFFER_BIT,
+            FormatKind::Depth => gles::DEPTH_BUFFER_BIT,
+            FormatKind::Stencil => gles::STENCIL_BUFFER_BIT,
+            _ => gles::COLOR_BUFFER_BIT,
         };
         self.open_writes();
         self.read_framebuffer(src, 0, 0);
         let fb = self.texture_framebuffer(dst, mip, layer);
         let (w, h) = (src.desc.width as i32, src.desc.height as i32);
-        // SAFETY: plain GL calls; both framebuffers hold one image of the same format and size.
-        unsafe {
-            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-            self.gl
-                .blit_framebuffer(0, 0, w, h, 0, 0, w, h, mask, glow::NEAREST);
-        }
+        self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
+        self.gl
+            .blit_framebuffer(0, 0, w, h, 0, 0, w, h, mask, gles::NEAREST);
         self.applied.draw_framebuffer = Some(fb);
     }
 
@@ -1199,41 +1193,35 @@ impl Gl {
             .expect("the caller checked the source is read as stored");
         let texel = read.texel_kept() as u32;
         let layer_bytes = extent.width * extent.height * texel;
-        // SAFETY: plain GL calls on the current context.
-        let pbo = unsafe {
-            let Ok(pbo) = self.gl.create_buffer() else {
+        let pbo = {
+            let Some(pbo) = platform::one(|n| self.gl.gen_buffers(n)) else {
                 self.fail(LossReason::OutOfMemory);
                 return;
             };
-            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
-            self.gl.buffer_data_size(
-                glow::PIXEL_PACK_BUFFER,
-                (layer_bytes * extent.depth_or_layers) as i32,
-                glow::STREAM_COPY,
+            self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, pbo);
+            self.gl.buffer_data(
+                gles::PIXEL_PACK_BUFFER,
+                i64::from(layer_bytes * extent.depth_or_layers),
+                None,
+                gles::STREAM_COPY,
             );
             pbo
         };
         for i in 0..extent.depth_or_layers {
             let layer = self.read_layer(src, i);
             self.read_framebuffer(src.texture, src.mip, layer);
-            // SAFETY: the pack buffer is bound and holds every layer's rows.
-            unsafe {
-                self.gl.read_pixels(
-                    src.origin.x as i32,
-                    src.origin.y as i32,
-                    extent.width as i32,
-                    extent.height as i32,
-                    read.format,
-                    read.ty,
-                    glow::PixelPackData::BufferOffset(i * layer_bytes),
-                );
-            }
+            self.gl.read_pixels(
+                src.origin.x as i32,
+                src.origin.y as i32,
+                extent.width as i32,
+                extent.height as i32,
+                read.format,
+                read.ty,
+                PixelPack::Offset(u64::from(i * layer_bytes)),
+            );
         }
-        // SAFETY: plain GL calls; the buffer moves from packing to unpacking.
-        unsafe {
-            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
-        }
+        self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, 0);
+        self.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, pbo);
         self.upload(
             dst,
             extent,
@@ -1241,11 +1229,8 @@ impl Gl {
             extent.width * texel,
             extent.height,
         );
-        // SAFETY: plain GL calls; GL keeps the buffer for the upload already issued.
-        unsafe {
-            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-            self.gl.delete_buffer(pbo);
-        }
+        self.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, 0);
+        self.gl.delete_buffers(&[pbo]);
     }
 
     /// Copies a region between colour formats of one typeless group by a draw per layer that fetches
@@ -1260,9 +1245,9 @@ impl Gl {
     ) -> bool {
         let (from, to) = (src.texture.desc.format, dst.texture.desc.format);
         let sampler = match src.texture.target {
-            glow::TEXTURE_2D => "2D",
-            glow::TEXTURE_2D_ARRAY => "2DArray",
-            glow::TEXTURE_3D => "3D",
+            gles::TEXTURE_2D => "2D",
+            gles::TEXTURE_2D_ARRAY => "2DArray",
+            gles::TEXTURE_3D => "3D",
             _ => "Cube",
         };
         let drawn = if FORMAT_FACTS[to as usize].depth_stencil {
@@ -1279,13 +1264,10 @@ impl Gl {
                 return false;
             };
             let built = depth::link(&self.gl, &source).and_then(|p| {
-                // SAFETY: plain queries of a linked program.
-                let (at, unit) = unsafe {
-                    (
-                        self.gl.get_uniform_location(p, "at"),
-                        self.gl.get_uniform_location(p, "unit"),
-                    )
-                };
+                let (at, unit) = (
+                    platform::location(&self.gl, p, "at"),
+                    platform::location(&self.gl, p, "unit"),
+                );
                 at.map(|at| (p, at, unit))
                     .ok_or_else(|| "the copy program has no uniform at".to_string())
             });
@@ -1315,18 +1297,15 @@ impl Gl {
         for i in 0..extent.depth_or_layers {
             let fb = self.texture_framebuffer(dst.texture, dst.mip, self.read_layer(dst, i));
             let (program, at, unit) = &self.copy_programs[&key];
-            // SAFETY: plain GL calls; the program is alive.
-            unsafe {
-                self.gl.use_program(Some(*program));
-                self.gl.uniform_3_i32(
-                    Some(at),
-                    src.origin.x as i32 - rect[0],
-                    src.origin.y as i32 - rect[1],
-                    self.read_layer(src, i) as i32,
-                );
-                if let Some(u) = convert::depth_unit(to) {
-                    self.gl.uniform_2_f32(unit.as_ref(), u[0], u[1]);
-                }
+            self.gl.use_program(*program);
+            self.gl.uniform3i(
+                *at,
+                src.origin.x as i32 - rect[0],
+                src.origin.y as i32 - rect[1],
+                self.read_layer(src, i) as i32,
+            );
+            if let Some(u) = convert::depth_unit(to) {
+                self.gl.uniform2f(unit.unwrap_or(-1), u[0], u[1]);
             }
             if FORMAT_FACTS[to as usize].depth_stencil {
                 self.own_depth_draw_into(fb, rect);
@@ -1430,10 +1409,10 @@ impl Gl {
         extent: Extent,
     ) {
         let mask = match FORMAT_FACTS[src.texture.desc.format as usize].kind {
-            FormatKind::DepthStencil => glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT,
-            FormatKind::Depth => glow::DEPTH_BUFFER_BIT,
-            FormatKind::Stencil => glow::STENCIL_BUFFER_BIT,
-            _ => glow::COLOR_BUFFER_BIT,
+            FormatKind::DepthStencil => gles::DEPTH_BUFFER_BIT | gles::STENCIL_BUFFER_BIT,
+            FormatKind::Depth => gles::DEPTH_BUFFER_BIT,
+            FormatKind::Stencil => gles::STENCIL_BUFFER_BIT,
+            _ => gles::COLOR_BUFFER_BIT,
         };
         self.open_writes();
         let (sx, sy, dx, dy, w, h) = (
@@ -1447,23 +1426,19 @@ impl Gl {
         for i in 0..extent.depth_or_layers {
             self.read_framebuffer(src.texture, src.mip, self.read_layer(src, i));
             let fb = self.texture_framebuffer(dst.texture, dst.mip, self.read_layer(dst, i));
-            // SAFETY: plain GL calls; both framebuffers hold one level and layer of a texture of the
-            // same format.
-            unsafe {
-                self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-                self.gl.blit_framebuffer(
-                    sx,
-                    sy,
-                    sx + w,
-                    sy + h,
-                    dx,
-                    dy,
-                    dx + w,
-                    dy + h,
-                    mask,
-                    glow::NEAREST,
-                );
-            }
+            self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
+            self.gl.blit_framebuffer(
+                sx,
+                sy,
+                sx + w,
+                sy + h,
+                dx,
+                dy,
+                dx + w,
+                dy + h,
+                mask,
+                gles::NEAREST,
+            );
             self.applied.draw_framebuffer = Some(fb);
         }
     }
@@ -1472,20 +1447,17 @@ impl Gl {
     /// draw apply its blocks again.
     fn open_writes(&mut self) {
         let (gl, v) = (&self.gl, &mut self.values);
-        // SAFETY: plain GL state calls.
-        unsafe {
-            if v.scissor_test {
-                gl.disable(glow::SCISSOR_TEST);
-                v.scissor_test = false;
-            }
-            if !v.depth_mask {
-                gl.depth_mask(true);
-                v.depth_mask = true;
-            }
-            if v.stencil_write_mask != 0xff {
-                gl.stencil_mask(0xff);
-                v.stencil_write_mask = 0xff;
-            }
+        if v.scissor_test {
+            gl.disable(gles::SCISSOR_TEST);
+            v.scissor_test = false;
+        }
+        if !v.depth_mask {
+            gl.depth_mask(true);
+            v.depth_mask = true;
+        }
+        if v.stencil_write_mask != 0xff {
+            gl.stencil_mask(0xff);
+            v.stencil_write_mask = 0xff;
         }
         state::open_masks(gl, v);
         self.applied.blend = 0;
@@ -1493,60 +1465,55 @@ impl Gl {
         self.applied.raster = 0;
     }
 
-    fn framebuffer(
-        &mut self,
-        key: FramebufferKey,
-        views: &[Option<&TextureView>],
-    ) -> glow::Framebuffer {
+    fn framebuffer(&mut self, key: FramebufferKey, views: &[Option<&TextureView>]) -> u32 {
         if let Some(fb) = self.framebuffers.get(&key) {
             return *fb;
         }
         let gl = &self.gl;
-        // SAFETY: plain GL calls on the current context; the views' textures are alive.
-        let fb = unsafe {
-            let fb = gl.create_framebuffer().expect("a framebuffer object");
-            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-            let mut draw_buffers = [glow::NONE; MAX_COLOR_TARGETS];
+        let fb = {
+            let fb = platform::one(|n| gl.gen_framebuffers(n)).expect("a framebuffer object");
+            gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
+            let mut draw_buffers = [gles::NONE; MAX_COLOR_TARGETS];
             for (i, view) in views.iter().enumerate() {
                 let (Some(view), Some((_, mip, layer))) = (view, key[i]) else {
                     continue;
                 };
                 let t = &view.texture;
                 let point = if i < MAX_COLOR_TARGETS {
-                    draw_buffers[i] = glow::COLOR_ATTACHMENT0 + i as u32;
-                    glow::COLOR_ATTACHMENT0 + i as u32
+                    draw_buffers[i] = gles::COLOR_ATTACHMENT0 + i as u32;
+                    gles::COLOR_ATTACHMENT0 + i as u32
                 } else {
                     match FORMAT_FACTS[t.desc.format as usize].kind {
-                        FormatKind::DepthStencil => glow::DEPTH_STENCIL_ATTACHMENT,
-                        FormatKind::Stencil => glow::STENCIL_ATTACHMENT,
-                        _ => glow::DEPTH_ATTACHMENT,
+                        FormatKind::DepthStencil => gles::DEPTH_STENCIL_ATTACHMENT,
+                        FormatKind::Stencil => gles::STENCIL_ATTACHMENT,
+                        _ => gles::DEPTH_ATTACHMENT,
                     }
                 };
                 match (t.storage, t.target) {
                     (Storage::Samples(rb), _) => gl.framebuffer_renderbuffer(
-                        glow::DRAW_FRAMEBUFFER,
+                        gles::DRAW_FRAMEBUFFER,
                         point,
-                        glow::RENDERBUFFER,
-                        Some(rb),
+                        gles::RENDERBUFFER,
+                        rb,
                     ),
-                    (Storage::Texture(raw), glow::TEXTURE_2D) => gl.framebuffer_texture_2d(
-                        glow::DRAW_FRAMEBUFFER,
+                    (Storage::Texture(raw), gles::TEXTURE_2D) => gl.framebuffer_texture_2d(
+                        gles::DRAW_FRAMEBUFFER,
                         point,
-                        glow::TEXTURE_2D,
-                        Some(raw),
+                        gles::TEXTURE_2D,
+                        raw,
                         mip as i32,
                     ),
-                    (Storage::Texture(raw), glow::TEXTURE_CUBE_MAP) => gl.framebuffer_texture_2d(
-                        glow::DRAW_FRAMEBUFFER,
+                    (Storage::Texture(raw), gles::TEXTURE_CUBE_MAP) => gl.framebuffer_texture_2d(
+                        gles::DRAW_FRAMEBUFFER,
                         point,
-                        glow::TEXTURE_CUBE_MAP_POSITIVE_X + layer,
-                        Some(raw),
+                        gles::TEXTURE_CUBE_MAP_POSITIVE_X + layer,
+                        raw,
                         mip as i32,
                     ),
                     (Storage::Texture(raw), _) => gl.framebuffer_texture_layer(
-                        glow::DRAW_FRAMEBUFFER,
+                        gles::DRAW_FRAMEBUFFER,
                         point,
-                        Some(raw),
+                        raw,
                         mip as i32,
                         layer as i32,
                     ),
@@ -1554,10 +1521,10 @@ impl Gl {
             }
             let last = draw_buffers
                 .iter()
-                .rposition(|b| *b != glow::NONE)
+                .rposition(|b| *b != gles::NONE)
                 .map_or(0, |i| i + 1);
             gl.draw_buffers(&draw_buffers[..last.max(1)]);
-            if gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+            if gl.check_framebuffer_status(gles::DRAW_FRAMEBUFFER) != gles::FRAMEBUFFER_COMPLETE {
                 self.lost.get_or_insert(LossReason::Error);
             }
             fb
@@ -1573,50 +1540,46 @@ impl Gl {
         let gl = &self.gl;
         let fb = match self.empty_passes.get(&empty) {
             Some(fb) => *fb,
-            // SAFETY: plain GL calls on the current context.
-            None => unsafe {
-                let rb = gl.create_renderbuffer().expect("a renderbuffer object");
-                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+            None => {
+                let rb = platform::one(|n| gl.gen_renderbuffers(n)).expect("a renderbuffer object");
+                gl.bind_renderbuffer(gles::RENDERBUFFER, rb);
                 let (w, h) = (empty.width as i32, empty.height as i32);
                 if empty.samples > 1 {
                     gl.renderbuffer_storage_multisample(
-                        glow::RENDERBUFFER,
+                        gles::RENDERBUFFER,
                         empty.samples as i32,
-                        glow::R8,
+                        gles::R8,
                         w,
                         h,
                     );
                 } else {
-                    gl.renderbuffer_storage(glow::RENDERBUFFER, glow::R8, w, h);
+                    gl.renderbuffer_storage(gles::RENDERBUFFER, gles::R8, w, h);
                 }
-                let fb = gl.create_framebuffer().expect("a framebuffer object");
-                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
+                let fb = platform::one(|n| gl.gen_framebuffers(n)).expect("a framebuffer object");
+                gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
                 gl.framebuffer_renderbuffer(
-                    glow::DRAW_FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::RENDERBUFFER,
-                    Some(rb),
+                    gles::DRAW_FRAMEBUFFER,
+                    gles::COLOR_ATTACHMENT0,
+                    gles::RENDERBUFFER,
+                    rb,
                 );
-                gl.draw_buffers(&[glow::NONE]);
-                if gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE
+                gl.draw_buffers(&[gles::NONE]);
+                if gl.check_framebuffer_status(gles::DRAW_FRAMEBUFFER) != gles::FRAMEBUFFER_COMPLETE
                 {
                     self.lost.get_or_insert(LossReason::Error);
                 }
                 self.applied.draw_framebuffer = Some(fb);
                 self.empty_passes.insert(empty, fb);
                 fb
-            },
+            }
         };
         let mut discard = Points::default();
-        discard.push(glow::COLOR_ATTACHMENT0);
-        // SAFETY: plain GL calls on a live framebuffer.
-        unsafe {
-            if self.applied.draw_framebuffer != Some(fb) {
-                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-                self.applied.draw_framebuffer = Some(fb);
-            }
-            gl.invalidate_framebuffer(glow::DRAW_FRAMEBUFFER, discard.get());
+        discard.push(gles::COLOR_ATTACHMENT0);
+        if self.applied.draw_framebuffer != Some(fb) {
+            gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
+            self.applied.draw_framebuffer = Some(fb);
         }
+        gl.invalidate_framebuffer(gles::DRAW_FRAMEBUFFER, discard.get());
         self.pass = Some(Pass {
             framebuffer: fb,
             discard,
@@ -1642,27 +1605,21 @@ impl Gl {
     fn read_framebuffer(&mut self, texture: &Texture, mip: u32, layer: u32) {
         let fb = self.texture_framebuffer(texture, mip, layer);
         if self.applied.read_framebuffer != Some(fb) {
-            // SAFETY: a plain GL call.
-            unsafe { self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fb)) };
+            self.gl.bind_framebuffer(gles::READ_FRAMEBUFFER, fb);
             self.applied.read_framebuffer = Some(fb);
         }
     }
 
     /// The framebuffer holding one level and layer of `texture` alone, made if new; the draw binding
     /// stays as it was.
-    fn texture_framebuffer(
-        &mut self,
-        texture: &Texture,
-        mip: u32,
-        layer: u32,
-    ) -> glow::Framebuffer {
+    fn texture_framebuffer(&mut self, texture: &Texture, mip: u32, layer: u32) -> u32 {
         self.own_framebuffer(&[(texture, mip, layer)])
     }
 
     /// The framebuffer of the back end's own holding `parts` (each a texture, level and layer; colour
     /// ones on targets 0, 1 and on, a depth or stencil one on its point), made if new; the draw binding
     /// stays as it was.
-    fn own_framebuffer(&mut self, parts: &[(&Texture, u32, u32)]) -> glow::Framebuffer {
+    fn own_framebuffer(&mut self, parts: &[(&Texture, u32, u32)]) -> u32 {
         let mut key: FramebufferKey = [None; MAX_COLOR_TARGETS + 1];
         let mut views: [Option<TextureView>; MAX_COLOR_TARGETS + 1] = Default::default();
         let mut colour = 0;
@@ -1692,8 +1649,8 @@ impl Gl {
         let draw = self.applied.draw_framebuffer;
         let fb = self.framebuffer(key, &views);
         if self.applied.draw_framebuffer != draw {
-            // SAFETY: a plain GL call; the draw binding is put back as it was.
-            unsafe { self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, draw) };
+            self.gl
+                .bind_framebuffer(gles::DRAW_FRAMEBUFFER, draw.unwrap_or(0));
             self.applied.draw_framebuffer = draw;
         }
         fb
@@ -1718,8 +1675,8 @@ impl Gl {
             (kept, scale)
         };
         let kind = match src.target {
-            glow::TEXTURE_2D => Fetch::Depth2D,
-            glow::TEXTURE_2D_ARRAY => Fetch::DepthArray,
+            gles::TEXTURE_2D => Fetch::Depth2D,
+            gles::TEXTURE_2D_ARRAY => Fetch::DepthArray,
             _ => Fetch::DepthCube,
         };
         // The stencil of a cube sampled through WEBGL_stencil_texturing reads 0 in Chrome 157 on the
@@ -1749,8 +1706,8 @@ impl Gl {
         Rc::get_mut(&mut scratch.0)
             .expect("a texture just made has one handle")
             .read = Some(format::ReadAs {
-            format: glow::RGBA_INTEGER,
-            ty: glow::UNSIGNED_INT,
+            format: gles::RGBA_INTEGER,
+            ty: gles::UNSIGNED_INT,
             comp_read: 4,
             comp_kept: kept,
             n: 1,
@@ -1794,7 +1751,7 @@ impl Gl {
         mip: u32,
         at: [i32; 3],
         scale: u32,
-        target: glow::Framebuffer,
+        target: u32,
         size: (i32, i32),
     ) -> Result<(), GpuError> {
         let k = kind as usize;
@@ -1808,15 +1765,11 @@ impl Gl {
         let stencil = kind.stencil();
         self.aspect(src, stencil);
         let program = self.depth_read[k].as_ref().expect("built above");
-        // SAFETY: plain GL calls; the program is alive.
-        unsafe {
-            self.gl.use_program(Some(program.program));
-            if let Some(location) = &program.scale {
-                self.gl.uniform_1_u32(Some(location), scale);
-            }
-            self.gl
-                .uniform_3_i32(Some(&program.at), at[0], at[1], at[2]);
+        self.gl.use_program(program.program);
+        if let Some(location) = &program.scale {
+            self.gl.uniform1ui(*location, scale);
         }
+        self.gl.uniform3i(program.at, at[0], at[1], at[2]);
         self.own_draw_into(target, [0, 0, size.0, size.1]);
         Ok(())
     }
@@ -1830,15 +1783,12 @@ impl Gl {
         self.bind_scratch(src.target, raw);
         let sampler = self.point_sampler()?;
         let gl = &self.gl;
-        // SAFETY: plain GL calls on the bound texture.
-        unsafe {
-            if src.levels.get() != (mip, mip) {
-                gl.tex_parameter_i32(src.target, glow::TEXTURE_BASE_LEVEL, mip as i32);
-                gl.tex_parameter_i32(src.target, glow::TEXTURE_MAX_LEVEL, mip as i32);
-                src.levels.set((mip, mip));
-            }
-            gl.bind_sampler(0, Some(sampler));
+        if src.levels.get() != (mip, mip) {
+            gl.tex_parameteri(src.target, gles::TEXTURE_BASE_LEVEL, mip as i32);
+            gl.tex_parameteri(src.target, gles::TEXTURE_MAX_LEVEL, mip as i32);
+            src.levels.set((mip, mip));
         }
+        gl.bind_sampler(0, sampler);
         // The next draw binds its own sampler on unit 0 again.
         self.applied.units[0].1 = Id::MAX;
         Ok(())
@@ -1847,44 +1797,33 @@ impl Gl {
     /// Draws the back end's full-screen triangle with the program in use into `target`, in the
     /// viewport `rect` (GL's window coordinates, row 0 the texture's first), with no blending, tests or
     /// culling; the next draw applies its own state.
-    fn own_draw_into(&mut self, target: glow::Framebuffer, rect: [i32; 4]) {
-        // SAFETY: a plain GL call; the framebuffer is alive.
-        unsafe {
-            self.gl
-                .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(target))
-        };
+    fn own_draw_into(&mut self, target: u32, rect: [i32; 4]) {
+        self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, target);
         self.applied.draw_framebuffer = Some(target);
         self.applied.program = 0;
         self.open_writes();
-        state::plain(&self.gl, &mut self.values, rect, &self.platform);
+        state::plain(&self.gl, &mut self.values, rect);
         self.own_draw();
     }
 
     /// As [`Gl::own_draw_into`], for a program writing depth into the depth attachment of
     /// `target`: the depth test passes always and writes, in the full depth range; stencil stays.
-    fn own_depth_draw_into(&mut self, target: glow::Framebuffer, rect: [i32; 4]) {
-        // SAFETY: a plain GL call; the framebuffer is alive.
-        unsafe {
-            self.gl
-                .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(target))
-        };
+    fn own_depth_draw_into(&mut self, target: u32, rect: [i32; 4]) {
+        self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, target);
         self.applied.draw_framebuffer = Some(target);
         self.applied.program = 0;
         self.open_writes();
-        state::plain(&self.gl, &mut self.values, rect, &self.platform);
+        state::plain(&self.gl, &mut self.values, rect);
         let (gl, v) = (&self.gl, &mut self.values);
-        // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
-        unsafe {
-            gl.enable(glow::DEPTH_TEST);
-            v.depth_test = true;
-            if v.depth_func != glow::ALWAYS {
-                gl.depth_func(glow::ALWAYS);
-                v.depth_func = glow::ALWAYS;
-            }
-            if v.depth_range != [0.0, 1.0] {
-                gl.depth_range_f32(0.0, 1.0);
-                v.depth_range = [0.0, 1.0];
-            }
+        gl.enable(gles::DEPTH_TEST);
+        v.depth_test = true;
+        if v.depth_func != gles::ALWAYS {
+            gl.depth_func(gles::ALWAYS);
+            v.depth_func = gles::ALWAYS;
+        }
+        if v.depth_range != [0.0, 1.0] {
+            gl.depth_rangef(0.0, 1.0);
+            v.depth_range = [0.0, 1.0];
         }
         self.own_draw();
     }
@@ -1948,7 +1887,7 @@ impl Gl {
         extent: Extent,
     ) {
         self.record_slow_path(SlowPath::StencilWrittenByDraw);
-        let k = usize::from(src.texture.target == glow::TEXTURE_2D_ARRAY);
+        let k = usize::from(src.texture.target == gles::TEXTURE_2D_ARRAY);
         if self.stencil_write[k].is_none() {
             match depth::build_stencil_write(&self.gl, k == 1) {
                 Ok(p) => self.stencil_write[k] = Some(p),
@@ -1969,41 +1908,34 @@ impl Gl {
         ];
         for i in 0..extent.depth_or_layers {
             let fb = self.texture_framebuffer(dst.texture, dst.mip, self.read_layer(dst, i));
-            // SAFETY: a plain GL call; the framebuffer is alive.
-            unsafe { self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb)) };
+            self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
             self.applied.draw_framebuffer = Some(fb);
             self.applied.program = 0;
             self.open_writes();
-            state::plain(&self.gl, &mut self.values, rect, &self.platform);
+            state::plain(&self.gl, &mut self.values, rect);
             let program = self.stencil_write[k].as_ref().expect("built above");
             let (gl, v) = (&self.gl, &mut self.values);
-            let replace = [glow::KEEP, glow::KEEP, glow::REPLACE];
-            // SAFETY: plain GL calls, recorded in the values so the next draw sets its own.
-            unsafe {
-                gl.use_program(Some(program.program));
-                gl.uniform_3_i32(
-                    Some(&program.at),
-                    src.origin.x as i32 - rect[0],
-                    src.origin.y as i32 - rect[1],
-                    (src.layer + i) as i32,
-                );
-                gl.enable(glow::STENCIL_TEST);
-                v.stencil_test = true;
-                gl.stencil_op(replace[0], replace[1], replace[2]);
-                v.stencil_op = [replace; 2];
-            }
+            let replace = [gles::KEEP, gles::KEEP, gles::REPLACE];
+            gl.use_program(program.program);
+            gl.uniform3i(
+                program.at,
+                src.origin.x as i32 - rect[0],
+                src.origin.y as i32 - rect[1],
+                (src.layer + i) as i32,
+            );
+            gl.enable(gles::STENCIL_TEST);
+            v.stencil_test = true;
+            gl.stencil_op(replace[0], replace[1], replace[2]);
+            v.stencil_op = [replace; 2];
             // Bit 0 of the loop is the clear: no fragment discarded, 0 written through every bit.
             for (bit, reference, mask) in
                 std::iter::once((0, 0, 0xff)).chain((0..8).map(|b| (1u32 << b, 0xff, 1u8 << b)))
             {
                 let program = self.stencil_write[k].as_ref().expect("built above");
-                // SAFETY: plain GL state calls.
-                unsafe {
-                    self.gl.uniform_1_u32(Some(&program.bit), bit);
-                    self.gl.stencil_func(glow::ALWAYS, reference, 0xff);
-                    self.gl.stencil_mask(u32::from(mask));
-                }
-                self.values.stencil_func = [(glow::ALWAYS, reference as u8, 0xff); 2];
+                self.gl.uniform1ui(program.bit, bit);
+                self.gl.stencil_func(gles::ALWAYS, reference, 0xff);
+                self.gl.stencil_mask(u32::from(mask));
+                self.values.stencil_func = [(gles::ALWAYS, reference as u8, 0xff); 2];
                 self.values.stencil_write_mask = mask;
                 self.own_draw();
             }
@@ -2013,14 +1945,15 @@ impl Gl {
     /// Draws the back end's full-screen triangle with GL's lower-left window origin.
     fn own_draw(&mut self) {
         if !self.glsl.flip_y {
-            self.platform
-                .clip_control(&self.gl, glow::LOWER_LEFT, self.values.clip_depth);
+            let _ = self
+                .gl
+                .clip_control_ext(gles::LOWER_LEFT_EXT, self.values.clip_depth);
         }
-        // SAFETY: the caller bound the program, the target and the state.
-        unsafe { self.gl.draw_arrays(glow::TRIANGLES, 0, 3) };
+        self.gl.draw_arrays(gles::TRIANGLES, 0, 3);
         if !self.glsl.flip_y {
-            self.platform
-                .clip_control(&self.gl, glow::UPPER_LEFT, self.values.clip_depth);
+            let _ = self
+                .gl
+                .clip_control_ext(gles::UPPER_LEFT_EXT, self.values.clip_depth);
         }
     }
 
@@ -2034,24 +1967,20 @@ impl Gl {
 
     /// A nearest-filtering sampler for the back end's own fetches and for textures read only by
     /// loads, made at its first use.
-    fn point_sampler(&mut self) -> Result<glow::Sampler, GpuError> {
+    fn point_sampler(&mut self) -> Result<u32, GpuError> {
         if let Some(s) = self.point_sampler {
             return Ok(s);
         }
-        // SAFETY: plain GL calls on the current context.
-        let s = unsafe {
-            let s = self
-                .gl
-                .create_sampler()
-                .map_err(|_| GpuError::OutOfMemory)?;
+        let s = {
+            let s = platform::one(|n| self.gl.gen_samplers(n)).ok_or(GpuError::OutOfMemory)?;
             // A mipmap filter: texel fetches reach only the base level without one.
-            self.gl.sampler_parameter_i32(
+            self.gl.sampler_parameteri(
                 s,
-                glow::TEXTURE_MIN_FILTER,
-                glow::NEAREST_MIPMAP_NEAREST as i32,
+                gles::TEXTURE_MIN_FILTER,
+                gles::NEAREST_MIPMAP_NEAREST as i32,
             );
             self.gl
-                .sampler_parameter_i32(s, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+                .sampler_parameteri(s, gles::TEXTURE_MAG_FILTER, gles::NEAREST as i32);
             s
         };
         self.point_sampler = Some(s);
@@ -2063,18 +1992,15 @@ impl Gl {
     fn aspect(&mut self, texture: &TextureObj, stencil: bool) {
         if texture.stencil_mode.get() != stencil {
             let mode = if stencil {
-                glow::STENCIL_INDEX
+                gles::STENCIL_INDEX
             } else {
-                glow::DEPTH_COMPONENT
+                gles::DEPTH_COMPONENT
             };
-            // SAFETY: a plain GL call on the bound texture.
-            unsafe {
-                self.gl.tex_parameter_i32(
-                    texture.target,
-                    glow::DEPTH_STENCIL_TEXTURE_MODE,
-                    mode as i32,
-                )
-            };
+            self.gl.tex_parameteri(
+                texture.target,
+                gles::DEPTH_STENCIL_TEXTURE_MODE,
+                mode as i32,
+            );
             texture.stencil_mode.set(stencil);
         }
     }
@@ -2108,50 +2034,36 @@ impl Gl {
             reinterpret: false,
         })?;
         let fb = self.own_framebuffer(&[(&counted, 0, 0), (src, mip, layer)]);
-        // SAFETY: plain GL calls; the framebuffer holds the counted texture and the source's stencil.
-        unsafe {
-            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-            self.gl.use_program(self.bits_program);
-        }
+        self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
+        self.gl.use_program(self.bits_program.unwrap_or(0));
         self.applied.draw_framebuffer = Some(fb);
         self.applied.program = 0;
         self.open_writes();
-        state::plain(
-            &self.gl,
-            &mut self.values,
-            [0, 0, w as i32, h as i32],
-            &self.platform,
-        );
+        state::plain(&self.gl, &mut self.values, [0, 0, w as i32, h as i32]);
         let (gl, v) = (&self.gl, &mut self.values);
-        let keep = [glow::KEEP; 3];
-        // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
-        unsafe {
-            gl.clear_buffer_f32_slice(glow::COLOR, 0, &[0.0; 4]);
-            let add = state::GlTarget {
-                on: true,
-                func: [
-                    glow::CONSTANT_COLOR,
-                    glow::ONE,
-                    glow::CONSTANT_COLOR,
-                    glow::ONE,
-                ],
-                ..state::GlTarget::OFF
-            };
-            state::uniform(gl, v, &add);
-            gl.enable(glow::STENCIL_TEST);
-            v.stencil_test = true;
-            gl.stencil_op(keep[0], keep[1], keep[2]);
-            v.stencil_op = [keep; 2];
-        }
+        let keep = [gles::KEEP; 3];
+        gl.clear_bufferfv(gles::COLOR, 0, &[0.0; 4]);
+        let add = state::GlTarget {
+            on: true,
+            func: [
+                gles::CONSTANT_COLOR,
+                gles::ONE,
+                gles::CONSTANT_COLOR,
+                gles::ONE,
+            ],
+            ..state::GlTarget::OFF
+        };
+        state::uniform(gl, v, &add);
+        gl.enable(gles::STENCIL_TEST);
+        v.stencil_test = true;
+        gl.stencil_op(keep[0], keep[1], keep[2]);
+        v.stencil_op = [keep; 2];
         for bit in 0..8 {
             let weight = f32::from(1u8 << bit) / 255.0;
-            let func = (glow::EQUAL, 1u8 << bit, 1u8 << bit);
-            // SAFETY: plain GL state calls.
-            unsafe {
-                self.gl
-                    .stencil_func(func.0, i32::from(func.1), u32::from(func.2));
-                self.gl.blend_color(weight, weight, weight, weight);
-            }
+            let func = (gles::EQUAL, 1u8 << bit, 1u8 << bit);
+            self.gl
+                .stencil_func(func.0, i32::from(func.1), u32::from(func.2));
+            self.gl.blend_color(weight, weight, weight, weight);
             self.values.stencil_func = [func; 2];
             self.values.blend_color = [weight; 4];
             self.own_draw();
@@ -2161,17 +2073,14 @@ impl Gl {
 
     /// Binds a texture on unit 0 for an upload or a parameter change. The next draw walks its bindings
     /// again, so unit 0 gets back what its program samples there.
-    fn bind_scratch(&mut self, target: u32, raw: glow::Texture) {
+    fn bind_scratch(&mut self, target: u32, raw: u32) {
         if self.applied.units.is_empty() {
             self.applied.units.push((0, 0));
         }
         self.applied.units[0] = (0, 0);
         self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
-        // SAFETY: plain GL calls on the current context.
-        unsafe {
-            self.gl.active_texture(glow::TEXTURE0);
-            self.gl.bind_texture(target, Some(raw));
-        }
+        self.gl.active_texture(gles::TEXTURE0);
+        self.gl.bind_texture(target, raw);
     }
 
     /// Writes texels from the host or from a buffer (bound as the pixel unpack buffer) into a region.
@@ -2339,46 +2248,43 @@ impl Gl {
             region.mip as i32,
         );
         let slice = wide * high * block_bytes as usize;
-        // SAFETY: plain GL calls; `blocks` holds every block of the region, tightly packed.
-        unsafe {
-            match t.target {
-                glow::TEXTURE_2D => gl.compressed_tex_sub_image_2d(
-                    t.target,
-                    level,
-                    x,
-                    y,
-                    w as i32,
-                    ht as i32,
-                    t.gl.internal,
-                    glow::CompressedPixelUnpackData::Slice(&blocks),
-                ),
-                glow::TEXTURE_CUBE_MAP => {
-                    for (i, face) in blocks.chunks_exact(slice).enumerate() {
-                        gl.compressed_tex_sub_image_2d(
-                            glow::TEXTURE_CUBE_MAP_POSITIVE_X + region.layer + i as u32,
-                            level,
-                            x,
-                            y,
-                            w as i32,
-                            ht as i32,
-                            t.gl.internal,
-                            glow::CompressedPixelUnpackData::Slice(face),
-                        );
-                    }
+        match t.target {
+            gles::TEXTURE_2D => gl.compressed_tex_sub_image_2d(
+                t.target,
+                level,
+                x,
+                y,
+                w as i32,
+                ht as i32,
+                t.gl.internal,
+                CompressedPixelUnpack::Bytes(&blocks),
+            ),
+            gles::TEXTURE_CUBE_MAP => {
+                for (i, face) in blocks.chunks_exact(slice).enumerate() {
+                    gl.compressed_tex_sub_image_2d(
+                        gles::TEXTURE_CUBE_MAP_POSITIVE_X + region.layer + i as u32,
+                        level,
+                        x,
+                        y,
+                        w as i32,
+                        ht as i32,
+                        t.gl.internal,
+                        CompressedPixelUnpack::Bytes(face),
+                    );
                 }
-                _ => gl.compressed_tex_sub_image_3d(
-                    t.target,
-                    level,
-                    x,
-                    y,
-                    region.layer as i32,
-                    w as i32,
-                    ht as i32,
-                    slices as i32,
-                    t.gl.internal,
-                    glow::CompressedPixelUnpackData::Slice(&blocks),
-                ),
             }
+            _ => gl.compressed_tex_sub_image_3d(
+                t.target,
+                level,
+                x,
+                y,
+                region.layer as i32,
+                w as i32,
+                ht as i32,
+                slices as i32,
+                t.gl.internal,
+                CompressedPixelUnpack::Bytes(&blocks),
+            ),
         }
     }
 
@@ -2406,55 +2312,52 @@ impl Gl {
         );
         let layer_bytes = row_pitch as usize * rows_per_layer as usize;
         let from = |i: usize| match texels {
-            Texels::Bytes(data) => glow::PixelUnpackData::Slice(Some(&data[i * layer_bytes..])),
+            Texels::Bytes(data) => PixelUnpack::Bytes(&data[i * layer_bytes..]),
             Texels::Offset(offset) => {
-                glow::PixelUnpackData::BufferOffset(offset + (i * layer_bytes) as u32)
+                PixelUnpack::Offset(u64::from(offset) + (i * layer_bytes) as u64)
             }
         };
-        // SAFETY: plain GL calls; the source holds every row the region reads, by the interface's rule.
-        unsafe {
-            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, (row_pitch / block_bytes) as i32);
-            gl.pixel_store_i32(glow::UNPACK_IMAGE_HEIGHT, rows_per_layer as i32);
-            let level = region.mip as i32;
-            match t.target {
-                glow::TEXTURE_2D => {
-                    gl.tex_sub_image_2d(t.target, level, x, y, w, h, fmt.format, fmt.ty, from(0))
-                }
-                glow::TEXTURE_CUBE_MAP => {
-                    for i in 0..extent.depth_or_layers {
-                        gl.tex_sub_image_2d(
-                            glow::TEXTURE_CUBE_MAP_POSITIVE_X + region.layer + i,
-                            level,
-                            x,
-                            y,
-                            w,
-                            h,
-                            fmt.format,
-                            fmt.ty,
-                            from(i as usize),
-                        );
-                    }
-                }
-                _ => {
-                    let z = if t.target == glow::TEXTURE_3D {
-                        region.origin.z
-                    } else {
-                        region.layer
-                    };
-                    gl.tex_sub_image_3d(
-                        t.target,
+        gl.pixel_storei(gles::UNPACK_ROW_LENGTH, (row_pitch / block_bytes) as i32);
+        gl.pixel_storei(gles::UNPACK_IMAGE_HEIGHT, rows_per_layer as i32);
+        let level = region.mip as i32;
+        match t.target {
+            gles::TEXTURE_2D => {
+                gl.tex_sub_image_2d(t.target, level, x, y, w, h, fmt.format, fmt.ty, from(0))
+            }
+            gles::TEXTURE_CUBE_MAP => {
+                for i in 0..extent.depth_or_layers {
+                    gl.tex_sub_image_2d(
+                        gles::TEXTURE_CUBE_MAP_POSITIVE_X + region.layer + i,
                         level,
                         x,
                         y,
-                        z as i32,
                         w,
                         h,
-                        extent.depth_or_layers as i32,
                         fmt.format,
                         fmt.ty,
-                        from(0),
+                        from(i as usize),
                     );
                 }
+            }
+            _ => {
+                let z = if t.target == gles::TEXTURE_3D {
+                    region.origin.z
+                } else {
+                    region.layer
+                };
+                gl.tex_sub_image_3d(
+                    t.target,
+                    level,
+                    x,
+                    y,
+                    z as i32,
+                    w,
+                    h,
+                    extent.depth_or_layers as i32,
+                    fmt.format,
+                    fmt.ty,
+                    from(0),
+                );
             }
         }
     }
@@ -2569,18 +2472,15 @@ impl Gl {
             } else {
                 &mut wide[..]
             };
-            // SAFETY: the read framebuffer holds the region's level and layer; `into` fits the rows.
-            unsafe {
-                self.gl.read_pixels(
-                    region.origin.x as i32,
-                    region.origin.y as i32,
-                    extent.width as i32,
-                    extent.height as i32,
-                    read.format,
-                    read.ty,
-                    glow::PixelPackData::Slice(Some(into)),
-                );
-            }
+            self.gl.read_pixels(
+                region.origin.x as i32,
+                region.origin.y as i32,
+                extent.width as i32,
+                extent.height as i32,
+                read.format,
+                read.ty,
+                PixelPack::Bytes(into),
+            );
             if !wide.is_empty() {
                 read.repack(&wide, out);
             }
@@ -2605,7 +2505,7 @@ impl Gl {
 
     /// The GL buffer of `buffer` that a copy or read can reach, brought up to date: the data one, else
     /// the index one.
-    fn any_gl(&mut self, buffer: &BufferObj) -> glow::Buffer {
+    fn any_gl(&mut self, buffer: &BufferObj) -> u32 {
         let index = buffer.data.is_none();
         self.refresh(buffer, Some(index));
         if index { buffer.index } else { buffer.data }.expect("every buffer has a GL buffer")
@@ -2628,22 +2528,17 @@ impl Gl {
             (buffer.index, buffer.data)
         };
         let mut bytes = vec![0; (stale.end - stale.start) as usize];
-        // SAFETY: plain GL calls; the copy targets take buffers of either WebGL type.
-        unsafe {
-            self.gl.bind_buffer(glow::COPY_READ_BUFFER, from);
-            if !platform::get_buffer_sub_data(
-                &self.gl,
-                glow::COPY_READ_BUFFER,
-                stale.start as i32,
-                &mut bytes,
-            ) {
-                self.read_failed();
-                return;
-            }
-            self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, to);
-            self.gl
-                .buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER, stale.start as i32, &bytes);
+        self.gl
+            .bind_buffer(gles::COPY_READ_BUFFER, from.unwrap_or(0));
+        if !platform::get_buffer_sub_data(&self.gl, gles::COPY_READ_BUFFER, stale.start, &mut bytes)
+        {
+            self.read_failed();
+            return;
         }
+        self.gl
+            .bind_buffer(gles::COPY_WRITE_BUFFER, to.unwrap_or(0));
+        self.gl
+            .buffer_sub_data(gles::COPY_WRITE_BUFFER, stale.start as i64, &bytes);
         buffer.stale.set(None);
         self.stale_buffers -= 1;
     }
@@ -2682,8 +2577,7 @@ impl Gl {
             return Some(l);
         }
         let parallel = self.extensions.contains("KHR_parallel_shader_compile");
-        // SAFETY: a plain query of a live program.
-        if !parallel || !unsafe { self.gl.get_program_completion_status(program.raw) } {
+        if !parallel || !platform::completed(&self.gl, program.raw) {
             self.record_slow_path(SlowPath::PipelineMiss);
         }
         match shader::finish(&self.gl, program) {
@@ -2786,23 +2680,17 @@ impl Gl {
             let aspect = FORMAT_FACTS[t.desc.format as usize].depth_stencil
                 && t.stencil_mode.get() != v.desc.stencil;
             if self.applied.units[unit] != ids || t.levels.get() != levels || aspect {
-                // SAFETY: plain GL calls; the texture is alive.
-                unsafe {
-                    self.gl.active_texture(glow::TEXTURE0 + unit as u32);
-                    self.gl.bind_texture(t.target, Some(raw));
-                }
+                self.gl.active_texture(gles::TEXTURE0 + unit as u32);
+                self.gl.bind_texture(t.target, raw);
             }
             if aspect {
                 self.aspect(t, v.desc.stencil);
             }
             let gl = &self.gl;
-            // SAFETY: plain GL calls; the texture and sampler are alive.
-            unsafe {
-                if t.levels.get() != levels {
-                    gl.tex_parameter_i32(t.target, glow::TEXTURE_BASE_LEVEL, levels.0 as i32);
-                    gl.tex_parameter_i32(t.target, glow::TEXTURE_MAX_LEVEL, levels.1 as i32);
-                    t.levels.set(levels);
-                }
+            if t.levels.get() != levels {
+                gl.tex_parameteri(t.target, gles::TEXTURE_BASE_LEVEL, levels.0 as i32);
+                gl.tex_parameteri(t.target, gles::TEXTURE_MAX_LEVEL, levels.1 as i32);
+                t.levels.set(levels);
             }
             if let Some((location, held)) = &linked.sizes[unit] {
                 let base = v.desc.base_mip;
@@ -2814,14 +2702,12 @@ impl Gl {
                 let size = [(d.width >> base).max(1), (d.height >> base).max(1), depth];
                 let size = size.map(|s| s as i32);
                 if held.get() != size {
-                    // SAFETY: the program is in use.
-                    unsafe { gl.uniform_3_i32(Some(location), size[0], size[1], size[2]) };
+                    gl.uniform3i(*location, size[0], size[1], size[2]);
                     held.set(size);
                 }
             }
             if self.applied.units[unit].1 != ids.1 {
-                // SAFETY: a plain GL call; the sampler is alive.
-                unsafe { gl.bind_sampler(unit as u32, sampler.map(|s| s.1).or(point)) };
+                gl.bind_sampler(unit as u32, sampler.map(|s| s.1).or(point).unwrap_or(0));
             }
             self.applied.units[unit] = ids;
         }
@@ -2850,16 +2736,13 @@ impl Gl {
             };
             let key = (buffer.id, *offset, *size);
             if self.applied.blocks[point] != key {
-                // SAFETY: a plain GL call; the buffer is alive.
-                unsafe {
-                    self.gl.bind_buffer_range(
-                        glow::UNIFORM_BUFFER,
-                        point as u32,
-                        buffer.data,
-                        *offset as i32,
-                        *size as i32,
-                    )
-                };
+                self.gl.bind_buffer_range(
+                    gles::UNIFORM_BUFFER,
+                    point as u32,
+                    buffer.data.unwrap_or(0),
+                    *offset as i64,
+                    *size as i64,
+                );
                 self.applied.blocks[point] = key;
             }
         }
@@ -2919,40 +2802,28 @@ impl Gl {
                 .push((buffer.map_or(0, |b| b.id), offset));
             let Some(buffer) = buffer else { continue };
             enabled |= 1 << a.location;
-            // SAFETY: plain GL calls; the buffer is alive and holds other data.
-            unsafe {
-                gl.bind_buffer(glow::ARRAY_BUFFER, buffer.data);
-                let stride = a.stride as i32;
-                if a.integer {
-                    gl.vertex_attrib_pointer_i32(
-                        a.location,
-                        a.components,
-                        a.ty,
-                        stride,
-                        offset as i32,
-                    );
-                } else {
-                    gl.vertex_attrib_pointer_f32(
-                        a.location,
-                        a.components,
-                        a.ty,
-                        a.normalized,
-                        stride,
-                        offset as i32,
-                    );
-                }
-                gl.vertex_attrib_divisor(a.location, a.divisor);
+            gl.bind_buffer(gles::ARRAY_BUFFER, buffer.data.unwrap_or(0));
+            let stride = a.stride as i32;
+            if a.integer {
+                gl.vertex_attrib_i_pointer(a.location, a.components, a.ty, stride, offset);
+            } else {
+                gl.vertex_attrib_pointer(
+                    a.location,
+                    a.components,
+                    a.ty,
+                    a.normalized,
+                    stride,
+                    offset,
+                );
             }
+            gl.vertex_attrib_divisor(a.location, a.divisor);
         }
         let flip = enabled ^ self.applied.enabled;
         for location in (0..32).filter(|l| flip & (1 << l) != 0) {
-            // SAFETY: plain GL calls.
-            unsafe {
-                if enabled & (1 << location) != 0 {
-                    gl.enable_vertex_attrib_array(location);
-                } else {
-                    gl.disable_vertex_attrib_array(location);
-                }
+            if enabled & (1 << location) != 0 {
+                gl.enable_vertex_attrib_array(location);
+            } else {
+                gl.disable_vertex_attrib_array(location);
             }
         }
         self.applied.enabled = enabled;
@@ -2992,7 +2863,7 @@ fn f(bits: u32) -> f32 {
 const NO_PASS: (u32, u32) = (i32::MAX as u32, i32::MAX as u32);
 
 /// The byte range of a buffer that a draw's indices `first..first + count` take.
-fn index_bytes(index: &IndexBinding<'_, Gl>, first: u32, count: u32) -> Range<u64> {
+fn index_bytes<B: Gpu>(index: &IndexBinding<'_, B>, first: u32, count: u32) -> Range<u64> {
     let size = u64::from(INDEX_FORMATS[index.format as usize].size);
     let start = index.offset + u64::from(first) * size;
     start..start + u64::from(count) * size
@@ -3006,7 +2877,7 @@ fn gl_rect(s: &ScissorRect, size: (u32, u32)) -> [i32; 4] {
     [x, y, width, height].map(|v| v as i32)
 }
 
-impl Gl {
+impl<O: OpenGlEs> Gl<O> {
     /// [`Gpu::draw`], with the draw's instances starting `later` instances past its first
     /// instance: `instance_index` and the per-instance streams as the full draw has them there.
     /// The bytes of a draw's indices, read back from the index GL buffer (waiting for the GPU).
@@ -3025,16 +2896,10 @@ impl Gl {
         let mut raw = vec![0u8; (range.end - range.start) as usize];
         self.refresh(index.buffer, Some(true));
         let gl_buffer = index.buffer.index.or(index.buffer.data);
-        // SAFETY: plain GL calls; the copy target takes buffers of either WebGL type, and the range
-        // was checked above.
-        let read = unsafe {
-            self.gl.bind_buffer(glow::COPY_READ_BUFFER, gl_buffer);
-            platform::get_buffer_sub_data(
-                &self.gl,
-                glow::COPY_READ_BUFFER,
-                range.start as i32,
-                &mut raw,
-            )
+        let read = {
+            self.gl
+                .bind_buffer(gles::COPY_READ_BUFFER, gl_buffer.unwrap_or(0));
+            platform::get_buffer_sub_data(&self.gl, gles::COPY_READ_BUFFER, range.start, &mut raw)
         };
         if !read {
             return Err(self.read_failed());
@@ -3172,17 +3037,13 @@ impl Gl {
             if let Some(pass) = &self.pass
                 && self.applied.draw_framebuffer != Some(pass.framebuffer)
             {
-                // SAFETY: a plain GL call; the pass's framebuffer is alive.
-                unsafe {
-                    self.gl
-                        .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pass.framebuffer))
-                };
+                self.gl
+                    .bind_framebuffer(gles::DRAW_FRAMEBUFFER, pass.framebuffer);
                 self.applied.draw_framebuffer = Some(pass.framebuffer);
             }
         }
         if self.applied.program != program.id {
-            // SAFETY: a plain GL call; the program is alive.
-            unsafe { self.gl.use_program(Some(program.raw)) };
+            self.gl.use_program(program.raw);
             self.applied.program = program.id;
             self.applied.sets = [u64::MAX; MAX_BINDING_SETS];
             let n = program.stages.0.clip_distances;
@@ -3202,7 +3063,6 @@ impl Gl {
                 &self.gl,
                 &mut self.values,
                 &call.blend.0.1,
-                &self.platform,
                 self.pass_unwritten,
             );
             self.applied.blend = call.blend.0.0;
@@ -3212,67 +3072,65 @@ impl Gl {
         if self.applied.depth_stencil != call.depth_stencil.0.0
             || self.applied.stencil_reference != reference
         {
-            state::depth_stencil(gl, v, &call.depth_stencil.0.1, reference);
+            if let Err(what) = state::depth_stencil(gl, v, &call.depth_stencil.0.1, reference) {
+                self.unbuilt(what);
+                return;
+            }
             self.applied.depth_stencil = call.depth_stencil.0.0;
             self.applied.stencil_reference = reference;
         }
         if self.applied.raster != call.raster.0.0 {
-            state::raster(gl, v, &call.raster.0.1, &self.platform);
+            state::raster(gl, v, &call.raster.0.1);
             self.applied.raster = call.raster.0.0;
         }
-        // SAFETY: plain GL state calls.
-        unsafe {
-            if let Some(vp) = call.viewports.first() {
-                let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
-                let range = [f(vp.min_depth), f(vp.max_depth)];
-                // The interface's bounds (WebGPU's); a front draws a larger viewport in the program.
-                let most = self.caps.limits.max_texture_2d as f32;
-                let edge = |at: f32, size: f32| {
-                    (0.0..=most).contains(&size)
-                        && at >= -2.0 * most
-                        && at + size <= 2.0 * most - 1.0
-                };
-                if !edge(floats[0], floats[2])
-                    || !edge(floats[1], floats[3])
-                    || !range.iter().all(|d| (0.0..=1.0).contains(d))
-                    || range[0] > range[1]
-                {
-                    self.invalid(format!(
-                        "the viewport {floats:?} with depths {range:?} past the interface's bounds"
-                    ));
-                    return;
-                }
-                let rect = floats.map(|v| v as i32);
-                // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
-                if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
-                    self.invalid(format!(
-                        "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
-                    ));
-                    return;
-                }
-                if v.viewport != rect {
-                    gl.viewport(rect[0], rect[1], rect[2], rect[3]);
-                    v.viewport = rect;
-                }
-                if v.depth_range != range {
-                    gl.depth_range_f32(range[0], range[1]);
-                    v.depth_range = range;
-                }
-            }
-            if v.scissor_test
-                && let Some(s) = call.scissors.first()
+        if let Some(vp) = call.viewports.first() {
+            let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
+            let range = [f(vp.min_depth), f(vp.max_depth)];
+            // The interface's bounds (WebGPU's); a front draws a larger viewport in the program.
+            let most = self.caps.limits.max_texture_2d as f32;
+            let edge = |at: f32, size: f32| {
+                (0.0..=most).contains(&size) && at >= -2.0 * most && at + size <= 2.0 * most - 1.0
+            };
+            if !edge(floats[0], floats[2])
+                || !edge(floats[1], floats[3])
+                || !range.iter().all(|d| (0.0..=1.0).contains(d))
+                || range[0] > range[1]
             {
-                let rect = gl_rect(s, self.pass.as_ref().map_or(NO_PASS, |p| p.size));
-                if v.scissor != rect {
-                    gl.scissor(rect[0], rect[1], rect[2], rect[3]);
-                    v.scissor = rect;
-                }
+                self.invalid(format!(
+                    "the viewport {floats:?} with depths {range:?} past the interface's bounds"
+                ));
+                return;
             }
-            let color = call.blend_constant.map(f);
-            if v.blend_color != color {
-                gl.blend_color(color[0], color[1], color[2], color[3]);
-                v.blend_color = color;
+            let rect = floats.map(|v| v as i32);
+            // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
+            if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
+                self.invalid(format!(
+                    "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
+                ));
+                return;
             }
+            if v.viewport != rect {
+                gl.viewport(rect[0], rect[1], rect[2], rect[3]);
+                v.viewport = rect;
+            }
+            if v.depth_range != range {
+                gl.depth_rangef(range[0], range[1]);
+                v.depth_range = range;
+            }
+        }
+        if v.scissor_test
+            && let Some(s) = call.scissors.first()
+        {
+            let rect = gl_rect(s, self.pass.as_ref().map_or(NO_PASS, |p| p.size));
+            if v.scissor != rect {
+                gl.scissor(rect[0], rect[1], rect[2], rect[3]);
+                v.scissor = rect;
+            }
+        }
+        let color = call.blend_constant.map(f);
+        if v.blend_color != color {
+            gl.blend_color(color[0], color[1], color[2], color[3]);
+            v.blend_color = color;
         }
         match self.apply_bindings(program.id, linked, &call.bindings) {
             Ok(()) => {}
@@ -3324,8 +3182,7 @@ impl Gl {
             if let Some((location, held)) = uniform
                 && held.get() != value
             {
-                // SAFETY: the program is in use.
-                unsafe { self.gl.uniform_1_u32(Some(location), value) };
+                self.gl.uniform1ui(*location, value);
                 held.set(value);
             }
         }
@@ -3334,44 +3191,31 @@ impl Gl {
         let gl = &self.gl;
         match call.range {
             DrawRange::Vertices { first, count, .. } => {
-                // SAFETY: the draw's state is applied.
-                unsafe {
-                    gl.draw_arrays_instanced(mode, first as i32, count as i32, instances as i32)
-                };
+                gl.draw_arrays_instanced(mode, first as i32, count as i32, instances as i32)
             }
             DrawRange::Indexed { first, count, .. } => {
                 let Some(index) = &call.index else {
                     return self.invalid("an indexed draw without an index buffer".into());
                 };
                 if self.applied.index != index.buffer.id {
-                    // SAFETY: the buffer's index GL buffer is alive.
-                    unsafe { gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, index.buffer.index) };
+                    gl.bind_buffer(gles::ELEMENT_ARRAY_BUFFER, index.buffer.index.unwrap_or(0));
                     self.applied.index = index.buffer.id;
                 }
                 let ty = match index.format {
-                    IndexFormat::U8 => glow::UNSIGNED_BYTE,
-                    IndexFormat::U16 => glow::UNSIGNED_SHORT,
-                    IndexFormat::U32 => glow::UNSIGNED_INT,
+                    IndexFormat::U8 => gles::UNSIGNED_BYTE,
+                    IndexFormat::U16 => gles::UNSIGNED_SHORT,
+                    IndexFormat::U32 => gles::UNSIGNED_INT,
                 };
                 let offset = index.offset
                     + u64::from(first) * u64::from(INDEX_FORMATS[index.format as usize].size);
-                // SAFETY: the draw's state and index buffer are applied.
-                unsafe {
-                    gl.draw_elements_instanced(
-                        mode,
-                        count as i32,
-                        ty,
-                        offset as i32,
-                        instances as i32,
-                    )
-                };
+                gl.draw_elements_instanced(mode, count as i32, ty, offset, instances as i32)
             }
             _ => unreachable!("indirect draws returned above"),
         }
     }
 }
 
-impl Gpu for Gl {
+impl<O: OpenGlEs> Gpu for Gl<O> {
     type Buffer = Buffer;
     type Texture = Texture;
     type TextureView = TextureView;
@@ -3384,8 +3228,8 @@ impl Gpu for Gl {
     type VertexLayout = Block<state::GlLayout>;
     type BindingSet = BindingSet;
     type QuerySet = QuerySet;
-    type Readback = Readback;
-    type Fence = Fence;
+    type Readback = Readback<O::Fence>;
+    type Fence = Fence<O::Fence>;
     type ResourceTable = NoTable;
     type Surface = Surface;
 
@@ -3394,15 +3238,10 @@ impl Gpu for Gl {
     }
 
     fn slow_paths(&mut self) -> &mut SlowPaths {
-        self.platform.current();
         &mut self.slow
     }
 
     fn status(&mut self) -> DeviceStatus {
-        self.platform.current();
-        if let Some(reason) = self.platform.lost() {
-            self.fail(reason);
-        }
         match self.lost {
             Some(reason) => DeviceStatus::Lost(reason),
             None => DeviceStatus::Ok,
@@ -3410,16 +3249,14 @@ impl Gpu for Gl {
     }
 
     fn helpers(&mut self) -> &mut Helpers<Self> {
-        self.platform.current();
         &mut self.helpers
     }
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> Result<Buffer, GpuError> {
-        self.platform.current();
         let size = i32::try_from(desc.size).map_err(|_| GpuError::OutOfMemory)?;
         let usage = match desc.intent {
-            MapIntent::Rarely => glow::STATIC_DRAW,
-            MapIntent::Often => glow::DYNAMIC_DRAW,
+            MapIntent::Rarely => gles::STATIC_DRAW,
+            MapIntent::Often => gles::DYNAMIC_DRAW,
         };
         let copies = BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::READ_BACK;
         let indices = desc.usage.contains(BufferUsage::INDEX);
@@ -3428,18 +3265,15 @@ impl Gpu for Gl {
             self.record_slow_path(SlowPath::IndexBufferTwin);
         }
         let gl = &self.gl;
-        // SAFETY: plain GL calls. Each GL buffer is first bound to the target that fixes its WebGL
-        // type, with the vertex array the back end keeps bound, whose index binding is redone at the
-        // next indexed draw.
-        let make = |target| unsafe {
-            let b = gl.create_buffer().map_err(|_| GpuError::OutOfMemory)?;
-            gl.bind_buffer(target, Some(b));
-            gl.buffer_data_size(target, size, usage);
+        let make = |target| {
+            let b = platform::one(|n| gl.gen_buffers(n)).ok_or(GpuError::OutOfMemory)?;
+            gl.bind_buffer(target, b);
+            gl.buffer_data(target, size as i64, None, usage);
             Ok::<_, GpuError>(b)
         };
-        let data = other.then(|| make(glow::ARRAY_BUFFER)).transpose()?;
+        let data = other.then(|| make(gles::ARRAY_BUFFER)).transpose()?;
         let index = indices
-            .then(|| make(glow::ELEMENT_ARRAY_BUFFER))
+            .then(|| make(gles::ELEMENT_ARRAY_BUFFER))
             .transpose()?;
         if indices {
             self.applied.index = 0;
@@ -3456,7 +3290,6 @@ impl Gpu for Gl {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
-        self.platform.current();
         if self.caps.formats.uses[desc.format as usize] == FormatUse::empty() {
             return Err(GpuError::Invalid(
                 "webgl: the format has no capabilities here",
@@ -3493,34 +3326,30 @@ impl Gpu for Gl {
             return self.create_samples(desc, gl_format);
         }
         let target = match desc.own_view() {
-            ViewDimension::D2 => glow::TEXTURE_2D,
-            ViewDimension::D2Array => glow::TEXTURE_2D_ARRAY,
-            ViewDimension::Cube => glow::TEXTURE_CUBE_MAP,
-            ViewDimension::D3 => glow::TEXTURE_3D,
+            ViewDimension::D2 => gles::TEXTURE_2D,
+            ViewDimension::D2Array => gles::TEXTURE_2D_ARRAY,
+            ViewDimension::Cube => gles::TEXTURE_CUBE_MAP,
+            ViewDimension::D3 => gles::TEXTURE_3D,
             ViewDimension::CubeArray => {
                 return Err(GpuError::Invalid("webgl: WebGL 2 has no cube arrays"));
             }
         };
-        // SAFETY: a plain GL call on the current context.
-        let raw = unsafe { self.gl.create_texture() }.map_err(|_| GpuError::OutOfMemory)?;
+        let raw = platform::one(|n| self.gl.gen_textures(n)).ok_or(GpuError::OutOfMemory)?;
         self.bind_scratch(target, raw);
         let gl = &self.gl;
-        // SAFETY: plain GL calls on the bound texture.
-        unsafe {
-            let (w, h, d) = (
-                desc.width as i32,
-                desc.height as i32,
-                desc.depth_or_layers as i32,
-            );
-            let levels = desc.mip_levels as i32;
-            match target {
-                glow::TEXTURE_2D | glow::TEXTURE_CUBE_MAP => {
-                    gl.tex_storage_2d(target, levels, gl_format.internal, w, h)
-                }
-                _ => gl.tex_storage_3d(target, levels, gl_format.internal, w, h, d),
+        let (w, h, d) = (
+            desc.width as i32,
+            desc.height as i32,
+            desc.depth_or_layers as i32,
+        );
+        let levels = desc.mip_levels as i32;
+        match target {
+            gles::TEXTURE_2D | gles::TEXTURE_CUBE_MAP => {
+                gl.tex_storage_2d(target, levels, gl_format.internal, w, h)
             }
-            gl.tex_parameter_i32(target, glow::TEXTURE_MAX_LEVEL, levels - 1);
+            _ => gl.tex_storage_3d(target, levels, gl_format.internal, w, h, d),
         }
+        gl.tex_parameteri(target, gles::TEXTURE_MAX_LEVEL, levels - 1);
         Ok(Handle(Rc::new(TextureObj {
             id: self.id(),
             storage: Storage::Texture(raw),
@@ -3552,7 +3381,6 @@ impl Gpu for Gl {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
-        self.platform.current();
         let t = &texture.desc;
         let three_d = t.dimension == TextureDimension::D3;
         let to_draw = desc.mip_count == 1 && (desc.layer_count == 1 || three_d);
@@ -3598,14 +3426,13 @@ impl Gpu for Gl {
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Sampler, GpuError> {
-        self.platform.current();
         let address = |a| match a {
-            AddressMode::Repeat => Ok(glow::REPEAT),
-            AddressMode::Mirror => Ok(glow::MIRRORED_REPEAT),
-            AddressMode::Clamp => Ok(glow::CLAMP_TO_EDGE),
+            AddressMode::Repeat => Ok(gles::REPEAT),
+            AddressMode::Mirror => Ok(gles::MIRRORED_REPEAT),
+            AddressMode::Clamp => Ok(gles::CLAMP_TO_EDGE),
             AddressMode::Border => Err(GpuError::Absent(Features::BORDER_COLOR)),
             AddressMode::MirrorOnce if self.caps.features.contains(Features::MIRROR_ONCE) => {
-                Ok(glow::MIRROR_CLAMP_TO_EDGE)
+                Ok(crate::platform::MIRROR_CLAMP_TO_EDGE)
             }
             AddressMode::MirrorOnce => Err(GpuError::Absent(Features::MIRROR_ONCE)),
         };
@@ -3618,45 +3445,44 @@ impl Gpu for Gl {
             address(desc.address[2])?,
         ];
         let min = match (desc.min, desc.mip) {
-            (Filter::Nearest, Filter::Nearest) => glow::NEAREST_MIPMAP_NEAREST,
-            (Filter::Linear, Filter::Nearest) => glow::LINEAR_MIPMAP_NEAREST,
-            (Filter::Nearest, Filter::Linear) => glow::NEAREST_MIPMAP_LINEAR,
-            (Filter::Linear, Filter::Linear) => glow::LINEAR_MIPMAP_LINEAR,
+            (Filter::Nearest, Filter::Nearest) => gles::NEAREST_MIPMAP_NEAREST,
+            (Filter::Linear, Filter::Nearest) => gles::LINEAR_MIPMAP_NEAREST,
+            (Filter::Nearest, Filter::Linear) => gles::NEAREST_MIPMAP_LINEAR,
+            (Filter::Linear, Filter::Linear) => gles::LINEAR_MIPMAP_LINEAR,
         };
         let mag = match desc.mag {
-            Filter::Nearest => glow::NEAREST,
-            Filter::Linear => glow::LINEAR,
+            Filter::Nearest => gles::NEAREST,
+            Filter::Linear => gles::LINEAR,
         };
         let gl = &self.gl;
-        // SAFETY: plain GL calls on the current context.
-        let make = |min_lod: f32| unsafe {
-            let raw = gl.create_sampler().map_err(|_| GpuError::OutOfMemory)?;
-            gl.sampler_parameter_i32(raw, glow::TEXTURE_MIN_FILTER, min as i32);
-            gl.sampler_parameter_i32(raw, glow::TEXTURE_MAG_FILTER, mag as i32);
+        let make = |min_lod: f32| {
+            let raw = platform::one(|n| gl.gen_samplers(n)).ok_or(GpuError::OutOfMemory)?;
+            gl.sampler_parameteri(raw, gles::TEXTURE_MIN_FILTER, min as i32);
+            gl.sampler_parameteri(raw, gles::TEXTURE_MAG_FILTER, mag as i32);
             for (name, mode) in [
-                glow::TEXTURE_WRAP_S,
-                glow::TEXTURE_WRAP_T,
-                glow::TEXTURE_WRAP_R,
+                gles::TEXTURE_WRAP_S,
+                gles::TEXTURE_WRAP_T,
+                gles::TEXTURE_WRAP_R,
             ]
             .into_iter()
             .zip(wrap)
             {
-                gl.sampler_parameter_i32(raw, name, mode as i32);
+                gl.sampler_parameteri(raw, name, mode as i32);
             }
-            gl.sampler_parameter_f32(raw, glow::TEXTURE_MIN_LOD, min_lod);
-            gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_LOD, f(desc.lod_range[1]));
+            gl.sampler_parameterf(raw, gles::TEXTURE_MIN_LOD, min_lod);
+            gl.sampler_parameterf(raw, gles::TEXTURE_MAX_LOD, f(desc.lod_range[1]));
             if let Some(c) = desc.compare {
-                gl.sampler_parameter_i32(
+                gl.sampler_parameteri(
                     raw,
-                    glow::TEXTURE_COMPARE_MODE,
-                    glow::COMPARE_REF_TO_TEXTURE as i32,
+                    gles::TEXTURE_COMPARE_MODE,
+                    gles::COMPARE_REF_TO_TEXTURE as i32,
                 );
-                gl.sampler_parameter_i32(raw, glow::TEXTURE_COMPARE_FUNC, state::compare(c) as i32);
+                gl.sampler_parameteri(raw, gles::TEXTURE_COMPARE_FUNC, state::compare(c) as i32);
             }
             // Above 1 only where EXT_texture_filter_anisotropic raised the limit.
             if desc.anisotropy > 1 {
                 let a = f32::from(desc.anisotropy);
-                gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_ANISOTROPY_EXT, a);
+                gl.sampler_parameterf(raw, crate::platform::TEXTURE_MAX_ANISOTROPY_EXT, a);
             }
             Ok(raw)
         };
@@ -3674,7 +3500,6 @@ impl Gpu for Gl {
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {
-        self.platform.current();
         if module.stage == ShaderStage::Compute {
             return Err(GpuError::Absent(Features::COMPUTE));
         }
@@ -3705,7 +3530,6 @@ impl Gpu for Gl {
     }
 
     fn create_program(&mut self, program: &Program<'_, Self>) -> Result<GlProgram, GpuError> {
-        self.platform.current();
         let Program::Render { vertex, fragment } = program else {
             return Err(GpuError::Absent(Features::COMPUTE));
         };
@@ -3728,7 +3552,6 @@ impl Gpu for Gl {
     }
 
     fn create_blend(&mut self, desc: &BlendDesc) -> Result<Block<state::GlBlend>, GpuError> {
-        self.platform.current();
         if desc.logic_op.is_some() {
             return Err(GpuError::Absent(Features::LOGIC_OP));
         }
@@ -3772,7 +3595,6 @@ impl Gpu for Gl {
         &mut self,
         desc: &DepthStencilDesc,
     ) -> Result<Block<state::GlDepthStencil>, GpuError> {
-        self.platform.current();
         if desc.depth_bounds.is_some() {
             return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
         }
@@ -3788,7 +3610,6 @@ impl Gpu for Gl {
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Block<state::GlRaster>, GpuError> {
-        self.platform.current();
         let has = |f| self.caps.features.contains(f);
         let absent = [
             (
@@ -3837,7 +3658,6 @@ impl Gpu for Gl {
         &mut self,
         desc: &VertexLayoutDesc,
     ) -> Result<Block<state::GlLayout>, GpuError> {
-        self.platform.current();
         if desc
             .streams
             .iter()
@@ -3879,7 +3699,6 @@ impl Gpu for Gl {
         &mut self,
         entries: &[BindingEntry<'_, Self>],
     ) -> Result<BindingSet, GpuError> {
-        self.platform.current();
         let mut bound = Vec::with_capacity(entries.len());
         for e in entries {
             let r = match &e.resource {
@@ -3929,7 +3748,6 @@ impl Gpu for Gl {
     }
 
     fn create_query_set(&mut self, kind: QueryKind, count: u32) -> Result<QuerySet, GpuError> {
-        self.platform.current();
         match kind {
             QueryKind::OcclusionAny => {}
             // GL ES answers only whether any sample passed.
@@ -3946,14 +3764,12 @@ impl Gpu for Gl {
     }
 
     fn destroy(&mut self, object: Object<Self>) {
-        self.platform.current();
         if let Object::Surface(surface) = &object {
-            if self.surface.as_ref().is_some_and(|s| s.id == surface.id) {
-                if let Some((t, v)) = self.surface.take().and_then(|s| s.frame) {
-                    self.destroy(Object::TextureView(v));
-                    self.destroy(Object::Texture(t));
-                }
-                self.platform.detach();
+            if self.surface.as_ref().is_some_and(|s| s.id == surface.id)
+                && let Some((t, v)) = self.surface.take().and_then(|s| s.frame)
+            {
+                self.destroy(Object::TextureView(v));
+                self.destroy(Object::Texture(t));
             }
             return;
         }
@@ -3965,104 +3781,100 @@ impl Gpu for Gl {
             self.destroy(Object::Texture(twin));
         }
         let gl = &self.gl;
-        // SAFETY: GL keeps an object alive for commands already issued that use it.
-        unsafe {
-            match object {
-                Object::Buffer(b) => {
-                    if b.stale.get().is_some() {
-                        self.stale_buffers -= 1;
-                    }
-                    for raw in [b.data, b.index].into_iter().flatten() {
-                        gl.delete_buffer(raw);
-                    }
+        match object {
+            Object::Buffer(b) => {
+                if b.stale.get().is_some() {
+                    self.stale_buffers -= 1;
                 }
-                Object::Texture(t) => {
-                    self.framebuffers.retain(|key, fb| {
-                        let uses = key.iter().flatten().any(|a| a.0 == t.id);
-                        if uses {
-                            gl.delete_framebuffer(*fb);
-                        }
-                        !uses
-                    });
-                    if self
-                        .applied
-                        .draw_framebuffer
-                        .is_some_and(|fb| !self.framebuffers.values().any(|f| *f == fb))
-                    {
-                        self.applied.draw_framebuffer = None;
-                    }
-                    if self
-                        .applied
-                        .read_framebuffer
-                        .is_some_and(|fb| !self.framebuffers.values().any(|f| *f == fb))
-                    {
-                        self.applied.read_framebuffer = None;
-                    }
-                    match t.storage {
-                        Storage::Texture(raw) => gl.delete_texture(raw),
-                        Storage::Samples(rb) => gl.delete_renderbuffer(rb),
-                    }
+                for raw in [b.data, b.index].into_iter().flatten() {
+                    gl.delete_buffers(&[raw]);
                 }
-                Object::Sampler(s) => {
-                    gl.delete_sampler(s.raw);
-                    if let Some((_, twin)) = s.level_zero {
-                        gl.delete_sampler(twin);
+            }
+            Object::Texture(t) => {
+                self.framebuffers.retain(|key, fb| {
+                    let uses = key.iter().flatten().any(|a| a.0 == t.id);
+                    if uses {
+                        gl.delete_framebuffers(&[*fb]);
                     }
+                    !uses
+                });
+                if self
+                    .applied
+                    .draw_framebuffer
+                    .is_some_and(|fb| !self.framebuffers.values().any(|f| *f == fb))
+                {
+                    self.applied.draw_framebuffer = None;
                 }
-                Object::Shader(s) => {
-                    s.handles.set(s.handles.get() - 1);
-                    if s.handles.get() == 0 {
-                        self.shaders.remove(&s.text);
-                        gl.delete_shader(s.raw);
-                    }
+                if self
+                    .applied
+                    .read_framebuffer
+                    .is_some_and(|fb| !self.framebuffers.values().any(|f| *f == fb))
+                {
+                    self.applied.read_framebuffer = None;
                 }
-                Object::Program(p) => {
-                    p.handles.set(p.handles.get() - 1);
-                    if p.handles.get() == 0 {
-                        self.programs.remove(&p.pair);
-                        gl.delete_program(p.raw);
-                        let captures = p.captures.iter().filter_map(|c| c.get());
-                        for c in captures.chain(core::iter::once(&p.0)) {
-                            for (_, v) in c.variants.borrow().iter() {
-                                gl.delete_program(v.raw);
-                                if self.applied.program == v.id {
-                                    self.applied.program = 0;
-                                }
-                            }
-                        }
-                        for c in p.captures.iter().filter_map(|c| c.get()) {
-                            gl.delete_program(c.raw);
-                            if self.applied.program == c.id {
+                match t.storage {
+                    Storage::Texture(raw) => gl.delete_textures(&[raw]),
+                    Storage::Samples(rb) => gl.delete_renderbuffers(&[rb]),
+                }
+            }
+            Object::Sampler(s) => {
+                gl.delete_samplers(&[s.raw]);
+                if let Some((_, twin)) = s.level_zero {
+                    gl.delete_samplers(&[twin]);
+                }
+            }
+            Object::Shader(s) => {
+                s.handles.set(s.handles.get() - 1);
+                if s.handles.get() == 0 {
+                    self.shaders.remove(&s.text);
+                    gl.delete_shader(s.raw);
+                }
+            }
+            Object::Program(p) => {
+                p.handles.set(p.handles.get() - 1);
+                if p.handles.get() == 0 {
+                    self.programs.remove(&p.pair);
+                    gl.delete_program(p.raw);
+                    let captures = p.captures.iter().filter_map(|c| c.get());
+                    for c in captures.chain(core::iter::once(&p.0)) {
+                        for (_, v) in c.variants.borrow().iter() {
+                            gl.delete_program(v.raw);
+                            if self.applied.program == v.id {
                                 self.applied.program = 0;
                             }
                         }
-                        if self.applied.program == p.id {
+                    }
+                    for c in p.captures.iter().filter_map(|c| c.get()) {
+                        gl.delete_program(c.raw);
+                        if self.applied.program == c.id {
                             self.applied.program = 0;
                         }
                     }
-                }
-                Object::Blend(_)
-                | Object::DepthStencil(_)
-                | Object::Raster(_)
-                | Object::VertexLayout(_)
-                | Object::TextureView(_)
-                | Object::BindingSet(_)
-                | Object::Surface(_) => {}
-                Object::QuerySet(set) => {
-                    // Queries a read back still holds are deleted when it finishes.
-                    for q in set.slots.borrow_mut().drain(..).flatten() {
-                        if let Ok(q) = Rc::try_unwrap(q) {
-                            gl.delete_query(q);
-                        }
+                    if self.applied.program == p.id {
+                        self.applied.program = 0;
                     }
                 }
-                Object::ResourceTable(t) => match t {},
             }
+            Object::Blend(_)
+            | Object::DepthStencil(_)
+            | Object::Raster(_)
+            | Object::VertexLayout(_)
+            | Object::TextureView(_)
+            | Object::BindingSet(_)
+            | Object::Surface(_) => {}
+            Object::QuerySet(set) => {
+                // Queries a read back still holds are deleted when it finishes.
+                for q in set.slots.borrow_mut().drain(..).flatten() {
+                    if let Ok(q) = Rc::try_unwrap(q) {
+                        gl.delete_queries(&[q]);
+                    }
+                }
+            }
+            Object::ResourceTable(t) => match t {},
         }
     }
 
     fn write_buffer(&mut self, buffer: &Buffer, offset: u64, data: &[u8], mode: WriteMode) {
-        self.platform.current();
         if offset + data.len() as u64 > buffer.size {
             return self.invalid(format!(
                 "a write of {} bytes at {offset} past a buffer of {}",
@@ -4075,15 +3887,17 @@ impl Gpu for Gl {
         }
         let gl = &self.gl;
         for raw in [buffer.data, buffer.index].into_iter().flatten() {
-            // SAFETY: plain GL calls; the copy targets take buffers of either WebGL type.
-            unsafe {
-                gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(raw));
-                if mode == WriteMode::Discard {
-                    // Orphan at the buffer's own size, so later writes above this part still fit.
-                    gl.buffer_data_size(glow::COPY_WRITE_BUFFER, buffer.size as i32, buffer.usage);
-                }
-                gl.buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER, offset as i32, data);
+            gl.bind_buffer(gles::COPY_WRITE_BUFFER, raw);
+            if mode == WriteMode::Discard {
+                // Orphan at the buffer's own size, so later writes above this part still fit.
+                gl.buffer_data(
+                    gles::COPY_WRITE_BUFFER,
+                    buffer.size as i64,
+                    None,
+                    buffer.usage,
+                );
             }
+            gl.buffer_sub_data(gles::COPY_WRITE_BUFFER, offset as i64, data);
         }
     }
 
@@ -4096,7 +3910,6 @@ impl Gpu for Gl {
         rows_per_layer: u32,
         _mode: WriteMode,
     ) {
-        self.platform.current();
         self.fresh(region.texture);
         self.written(region.texture);
         let t = region.texture;
@@ -4175,7 +3988,6 @@ impl Gpu for Gl {
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
-        self.platform.current();
         if let Some(empty) = pass.empty {
             return self.begin_empty_pass(empty, pass.occlusion.cloned());
         }
@@ -4251,103 +4063,94 @@ impl Gpu for Gl {
         let gl = &self.gl;
         let mut start_discard = Points::default();
         let mut end_discard = Points::default();
-        // SAFETY: plain GL calls on the bound framebuffer.
-        unsafe {
-            if self.applied.draw_framebuffer != Some(fb) {
-                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-                self.applied.draw_framebuffer = Some(fb);
-            }
-            let clears = pass
-                .colors
-                .iter()
-                .flatten()
-                .any(|c| matches!(c.load, LoadOp::Clear(_)))
-                || pass.depth.as_ref().is_some_and(|d| {
-                    d.depth.is_some_and(|a| matches!(a.load, LoadOp::Clear(_)))
-                        || d.stencil
-                            .is_some_and(|s| matches!(s.load, LoadOp::Clear(_)))
-                });
-            if clears {
-                // Clears obey the scissor and the write masks.
-                self.open_writes();
-            }
-            let gl = &self.gl;
-            // A layer of a 2D array is never invalidated: in Chrome (ANGLE on Direct3D 11) that
-            // loses the other layers of the level.
-            let whole = |v: &TextureView| v.texture.target != glow::TEXTURE_2D_ARRAY;
-            for (i, c) in pass.colors.iter().enumerate() {
-                let Some(c) = c else { continue };
-                let point = glow::COLOR_ATTACHMENT0 + i as u32;
-                let format = c.view.texture.desc.format;
-                // A target lacking channels keeps their values, which a discard would lose.
-                let whole = whole(c.view) && format::unwritten(format) == 0;
-                match c.load {
-                    LoadOp::Clear(value) => match FORMAT_FACTS[format as usize].kind {
-                        FormatKind::Uint => {
-                            gl.clear_buffer_u32_slice(glow::COLOR, i as u32, &value)
-                        }
-                        FormatKind::Sint => gl.clear_buffer_i32_slice(
-                            glow::COLOR,
-                            i as u32,
-                            &value.map(|x| x as i32),
-                        ),
-                        _ => gl.clear_buffer_f32_slice(
-                            glow::COLOR,
-                            i as u32,
-                            &format::clear_value(format, value).map(f),
-                        ),
-                    },
-                    LoadOp::DontCare if whole => start_discard.push(point),
-                    LoadOp::DontCare | LoadOp::Load => {}
-                }
-                if c.store == StoreOp::Discard && whole {
-                    end_discard.push(point);
-                }
-            }
-            if let Some(d) = &pass.depth {
-                let depth = d.depth.and_then(|a| match a.load {
-                    LoadOp::Clear(v) => Some(f(v)),
-                    _ => None,
-                });
-                let stencil = d.stencil.and_then(|a| match a.load {
-                    LoadOp::Clear(v) => Some(i32::from(v)),
-                    _ => None,
-                });
-                match (depth, stencil) {
-                    (Some(depth), Some(stencil)) => {
-                        gl.clear_buffer_depth_stencil(glow::DEPTH_STENCIL, 0, depth, stencil)
+        if self.applied.draw_framebuffer != Some(fb) {
+            gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
+            self.applied.draw_framebuffer = Some(fb);
+        }
+        let clears = pass
+            .colors
+            .iter()
+            .flatten()
+            .any(|c| matches!(c.load, LoadOp::Clear(_)))
+            || pass.depth.as_ref().is_some_and(|d| {
+                d.depth.is_some_and(|a| matches!(a.load, LoadOp::Clear(_)))
+                    || d.stencil
+                        .is_some_and(|s| matches!(s.load, LoadOp::Clear(_)))
+            });
+        if clears {
+            // Clears obey the scissor and the write masks.
+            self.open_writes();
+        }
+        let gl = &self.gl;
+        // A layer of a 2D array is never invalidated: in Chrome (ANGLE on Direct3D 11) that
+        // loses the other layers of the level.
+        let whole = |v: &TextureView| v.texture.target != gles::TEXTURE_2D_ARRAY;
+        for (i, c) in pass.colors.iter().enumerate() {
+            let Some(c) = c else { continue };
+            let point = gles::COLOR_ATTACHMENT0 + i as u32;
+            let format = c.view.texture.desc.format;
+            // A target lacking channels keeps their values, which a discard would lose.
+            let whole = whole(c.view) && format::unwritten(format) == 0;
+            match c.load {
+                LoadOp::Clear(value) => match FORMAT_FACTS[format as usize].kind {
+                    FormatKind::Uint => gl.clear_bufferuiv(gles::COLOR, i as i32, &value),
+                    FormatKind::Sint => {
+                        gl.clear_bufferiv(gles::COLOR, i as i32, &value.map(|x| x as i32))
                     }
-                    (Some(depth), None) => gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[depth]),
-                    (None, Some(stencil)) => {
-                        gl.clear_buffer_i32_slice(glow::STENCIL, 0, &[stencil])
-                    }
-                    (None, None) => {}
-                }
-                for (ops, point) in [
-                    (
-                        d.depth.map(|a| (a.load == LoadOp::DontCare, a.store)),
-                        glow::DEPTH_ATTACHMENT,
+                    _ => gl.clear_bufferfv(
+                        gles::COLOR,
+                        i as i32,
+                        &format::clear_value(format, value).map(f),
                     ),
-                    (
-                        d.stencil.map(|a| (a.load == LoadOp::DontCare, a.store)),
-                        glow::STENCIL_ATTACHMENT,
-                    ),
-                ] {
-                    if let Some((load, store)) = ops
-                        && whole(d.view)
-                    {
-                        if load {
-                            start_discard.push(point);
-                        }
-                        if store == StoreOp::Discard {
-                            end_discard.push(point);
-                        }
+                },
+                LoadOp::DontCare if whole => start_discard.push(point),
+                LoadOp::DontCare | LoadOp::Load => {}
+            }
+            if c.store == StoreOp::Discard && whole {
+                end_discard.push(point);
+            }
+        }
+        if let Some(d) = &pass.depth {
+            let depth = d.depth.and_then(|a| match a.load {
+                LoadOp::Clear(v) => Some(f(v)),
+                _ => None,
+            });
+            let stencil = d.stencil.and_then(|a| match a.load {
+                LoadOp::Clear(v) => Some(i32::from(v)),
+                _ => None,
+            });
+            match (depth, stencil) {
+                (Some(depth), Some(stencil)) => {
+                    gl.clear_bufferfi(gles::DEPTH_STENCIL, 0, depth, stencil)
+                }
+                (Some(depth), None) => gl.clear_bufferfv(gles::DEPTH, 0, &[depth]),
+                (None, Some(stencil)) => gl.clear_bufferiv(gles::STENCIL, 0, &[stencil]),
+                (None, None) => {}
+            }
+            for (ops, point) in [
+                (
+                    d.depth.map(|a| (a.load == LoadOp::DontCare, a.store)),
+                    gles::DEPTH_ATTACHMENT,
+                ),
+                (
+                    d.stencil.map(|a| (a.load == LoadOp::DontCare, a.store)),
+                    gles::STENCIL_ATTACHMENT,
+                ),
+            ] {
+                if let Some((load, store)) = ops
+                    && whole(d.view)
+                {
+                    if load {
+                        start_discard.push(point);
+                    }
+                    if store == StoreOp::Discard {
+                        end_discard.push(point);
                     }
                 }
             }
-            if start_discard.len > 0 {
-                gl.invalidate_framebuffer(glow::DRAW_FRAMEBUFFER, start_discard.get());
-            }
+        }
+        if start_discard.len > 0 {
+            gl.invalidate_framebuffer(gles::DRAW_FRAMEBUFFER, start_discard.get());
         }
         self.pass = Some(Pass {
             framebuffer: fb,
@@ -4364,7 +4167,6 @@ impl Gpu for Gl {
     }
 
     fn end_pass(&mut self) {
-        self.platform.current();
         if self.pass.as_ref().is_some_and(|p| p.counting) {
             self.invalid("a pass ended with its occlusion query running".into());
         }
@@ -4380,24 +4182,17 @@ impl Gpu for Gl {
             resolved = true;
         }
         if resolved && pass.discard.len > 0 {
-            // SAFETY: a plain GL call; the discard below names the pass's framebuffer.
-            unsafe {
-                self.gl
-                    .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pass.framebuffer))
-            };
+            self.gl
+                .bind_framebuffer(gles::DRAW_FRAMEBUFFER, pass.framebuffer);
             self.applied.draw_framebuffer = Some(pass.framebuffer);
         }
         if pass.discard.len > 0 {
-            // SAFETY: the pass's framebuffer is still bound.
-            unsafe {
-                self.gl
-                    .invalidate_framebuffer(glow::DRAW_FRAMEBUFFER, pass.discard.get())
-            };
+            self.gl
+                .invalidate_framebuffer(gles::DRAW_FRAMEBUFFER, pass.discard.get())
         }
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
-        self.platform.current();
         if !call.restart
             && let (Some(index), DrawRange::Indexed { first, count, .. }) =
                 (&call.index, &call.range)
@@ -4413,7 +4208,6 @@ impl Gpu for Gl {
     }
 
     fn begin_query(&mut self, index: u32) {
-        self.platform.current();
         let Some(pass) = &self.pass else {
             return self.invalid("begin_query outside a pass".into());
         };
@@ -4424,21 +4218,18 @@ impl Gpu for Gl {
         let Some(q) = self.query_slot(&set, index) else {
             return;
         };
-        // SAFETY: a plain GL call; no other occlusion query runs.
-        unsafe { self.gl.begin_query(glow::ANY_SAMPLES_PASSED, q) };
+        self.gl.begin_query(gles::ANY_SAMPLES_PASSED, q);
         if let Some(p) = &mut self.pass {
             p.counting = true;
         }
     }
 
     fn end_query(&mut self) {
-        self.platform.current();
         match &mut self.pass {
             Some(p) if p.counting => p.counting = false,
             _ => return self.invalid("end_query with no query running".into()),
         }
-        // SAFETY: a plain GL call ending the running query.
-        unsafe { self.gl.end_query(glow::ANY_SAMPLES_PASSED) };
+        self.gl.end_query(gles::ANY_SAMPLES_PASSED);
     }
 
     fn copy_buffer(
@@ -4449,7 +4240,6 @@ impl Gpu for Gl {
         dst_offset: u64,
         size: u64,
     ) {
-        self.platform.current();
         // Both sides are made whole first, so afterwards at most the side no copy reached is stale.
         self.refresh(src, None);
         self.refresh(dst, None);
@@ -4460,18 +4250,15 @@ impl Gpu for Gl {
             match (s, d) {
                 (Some(s), Some(d)) => {
                     let gl = &self.gl;
-                    // SAFETY: plain GL calls between GL buffers of one WebGL type.
-                    unsafe {
-                        gl.bind_buffer(glow::COPY_READ_BUFFER, Some(s));
-                        gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(d));
-                        gl.copy_buffer_sub_data(
-                            glow::COPY_READ_BUFFER,
-                            glow::COPY_WRITE_BUFFER,
-                            src_offset as i32,
-                            dst_offset as i32,
-                            size as i32,
-                        );
-                    }
+                    gl.bind_buffer(gles::COPY_READ_BUFFER, s);
+                    gl.bind_buffer(gles::COPY_WRITE_BUFFER, d);
+                    gl.copy_buffer_sub_data(
+                        gles::COPY_READ_BUFFER,
+                        gles::COPY_WRITE_BUFFER,
+                        src_offset as i64,
+                        dst_offset as i64,
+                        size as i64,
+                    );
                     copied = true;
                 }
                 (None, Some(_)) => missed = Some(index),
@@ -4514,7 +4301,6 @@ impl Gpu for Gl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.platform.current();
         // Signed normalised texels drawn since their host copy was whole are drawn on the GPU where
         // they hold no smallest value.
         let level = 1 << src.mip;
@@ -4600,34 +4386,29 @@ impl Gpu for Gl {
             );
             let level = dst.mip as i32;
             let gl = &self.gl;
-            // SAFETY: plain GL calls; the read framebuffer holds the source level and layer.
-            unsafe {
-                match d.target {
-                    glow::TEXTURE_2D => {
-                        gl.copy_tex_sub_image_2d(d.target, level, x, y, sx, sy, w, h)
-                    }
-                    glow::TEXTURE_CUBE_MAP => gl.copy_tex_sub_image_2d(
-                        glow::TEXTURE_CUBE_MAP_POSITIVE_X + dst.layer + i,
-                        level,
-                        x,
-                        y,
-                        sx,
-                        sy,
-                        w,
-                        h,
-                    ),
-                    _ => gl.copy_tex_sub_image_3d(
-                        d.target,
-                        level,
-                        x,
-                        y,
-                        self.read_layer(dst, i) as i32,
-                        sx,
-                        sy,
-                        w,
-                        h,
-                    ),
-                }
+            match d.target {
+                gles::TEXTURE_2D => gl.copy_tex_sub_image_2d(d.target, level, x, y, sx, sy, w, h),
+                gles::TEXTURE_CUBE_MAP => gl.copy_tex_sub_image_2d(
+                    gles::TEXTURE_CUBE_MAP_POSITIVE_X + dst.layer + i,
+                    level,
+                    x,
+                    y,
+                    sx,
+                    sy,
+                    w,
+                    h,
+                ),
+                _ => gl.copy_tex_sub_image_3d(
+                    d.target,
+                    level,
+                    x,
+                    y,
+                    self.read_layer(dst, i) as i32,
+                    sx,
+                    sy,
+                    w,
+                    h,
+                ),
             }
         }
     }
@@ -4638,7 +4419,6 @@ impl Gpu for Gl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.platform.current();
         let data = src.buffer.data.filter(|_| {
             dst.texture.host.is_none() && !format::converts_writes(dst.texture.desc.format)
         });
@@ -4672,16 +4452,14 @@ impl Gpu for Gl {
         self.refresh(src.buffer, Some(false));
         self.fresh(dst.texture);
         self.written(dst.texture);
-        // SAFETY: a plain GL call; the buffer holds other data.
-        unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(data)) };
+        self.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, data);
         let texels = Texels::Offset(src.offset as u32);
         if FORMAT_FACTS[dst.texture.desc.format as usize].depth_stencil {
             self.write_depth(dst, extent, texels, src.row_pitch, src.rows_per_layer);
         } else {
             self.upload(dst, extent, texels, src.row_pitch, src.rows_per_layer);
         }
-        // SAFETY: a plain GL call; host uploads need no unpack buffer bound.
-        unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None) };
+        self.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, 0);
     }
 
     fn copy_texture_to_buffer(
@@ -4690,7 +4468,6 @@ impl Gpu for Gl {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        self.platform.current();
         if self
             .through_draw(src, extent, |b, colour| {
                 b.copy_texture_to_buffer(colour, dst, extent);
@@ -4747,27 +4524,22 @@ impl Gpu for Gl {
         for i in 0..extent.depth_or_layers {
             let layer = self.read_layer(src, i);
             self.read_framebuffer(src.texture, src.mip, layer);
-            // SAFETY: plain GL calls; the buffer holds other data and every row of the region.
-            unsafe {
-                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(data));
-                self.gl.pixel_store_i32(
-                    glow::PACK_ROW_LENGTH,
-                    (dst.row_pitch as usize / read.texel_kept()) as i32,
-                );
-                self.gl.read_pixels(
-                    src.origin.x as i32,
-                    src.origin.y as i32,
-                    extent.width as i32,
-                    extent.height as i32,
-                    read.format,
-                    read.ty,
-                    glow::PixelPackData::BufferOffset(
-                        (dst.offset as usize + i as usize * layer_bytes) as u32,
-                    ),
-                );
-                self.gl.pixel_store_i32(glow::PACK_ROW_LENGTH, 0);
-                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-            }
+            self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, data);
+            self.gl.pixel_storei(
+                gles::PACK_ROW_LENGTH,
+                (dst.row_pitch as usize / read.texel_kept()) as i32,
+            );
+            self.gl.read_pixels(
+                src.origin.x as i32,
+                src.origin.y as i32,
+                extent.width as i32,
+                extent.height as i32,
+                read.format,
+                read.ty,
+                PixelPack::Offset(dst.offset + (i as usize * layer_bytes) as u64),
+            );
+            self.gl.pixel_storei(gles::PACK_ROW_LENGTH, 0);
+            self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, 0);
         }
         if dst.buffer.index.is_some() {
             let end = dst.offset + (layer_bytes * extent.depth_or_layers as usize) as u64;
@@ -4779,7 +4551,6 @@ impl Gpu for Gl {
     /// WebGL 2 has no buffer clear: one block of the pattern is written from the host into every GL
     /// buffer of `buffer`, then doubled by copies within each ([`SlowPath::PatternClearCopied`]).
     fn clear_buffer(&mut self, buffer: &Buffer, offset: u64, size: u64, pattern: &[u8]) {
-        self.platform.current();
         if size == 0 {
             return;
         }
@@ -4805,22 +4576,18 @@ impl Gpu for Gl {
         let gl = &self.gl;
         for raw in [buffer.data, buffer.index].into_iter().flatten() {
             let mut done = first;
-            // SAFETY: plain GL calls; the ranges lie in the buffer and never overlap, as WebGL requires
-            // of a copy within one buffer.
-            unsafe {
-                gl.bind_buffer(glow::COPY_READ_BUFFER, Some(raw));
-                gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(raw));
-                while done < size {
-                    let n = done.min(size - done);
-                    gl.copy_buffer_sub_data(
-                        glow::COPY_READ_BUFFER,
-                        glow::COPY_WRITE_BUFFER,
-                        offset as i32,
-                        (offset + done) as i32,
-                        n as i32,
-                    );
-                    done += n;
-                }
+            gl.bind_buffer(gles::COPY_READ_BUFFER, raw);
+            gl.bind_buffer(gles::COPY_WRITE_BUFFER, raw);
+            while done < size {
+                let n = done.min(size - done);
+                gl.copy_buffer_sub_data(
+                    gles::COPY_READ_BUFFER,
+                    gles::COPY_WRITE_BUFFER,
+                    offset as i64,
+                    (offset + done) as i64,
+                    n as i64,
+                );
+                done += n;
             }
         }
         if buffer.index.is_some() {
@@ -4840,7 +4607,6 @@ impl Gpu for Gl {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
-        self.platform.current();
         let (s, d) = (src.texture, dst.texture);
         if s.desc.samples == 1 || d.desc.samples != 1 {
             return self.invalid("a resolve from one sample or into several".into());
@@ -4862,16 +4628,11 @@ impl Gpu for Gl {
         self.blit_resolve(s, &target, dst.mip, dst.layer);
     }
 
-    fn submit(&mut self) -> Fence {
-        self.platform.current();
+    fn submit(&mut self) -> Self::Fence {
         // GL's errors are read where the back end waits anyway (`gl_errors`): in the browser
-        // `getError` waits for the GPU process. A lost context is seen here without waiting.
-        if let Some(reason) = self.platform.lost() {
-            self.fail(reason);
-        }
-        // SAFETY: plain GL calls.
-        let sync = unsafe {
-            let sync = self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok();
+        // `getError` waits for the GPU process.
+        let sync = {
+            let sync = self.gl.fence_sync(gles::SYNC_GPU_COMMANDS_COMPLETE, 0);
             self.gl.flush();
             sync
         };
@@ -4885,44 +4646,35 @@ impl Gpu for Gl {
         }))
     }
 
-    fn fence_done(&mut self, fence: &Fence) -> bool {
-        self.platform.current();
+    fn fence_done(&mut self, fence: &Self::Fence) -> bool {
         if !fence.done.get()
-            && let Some(sync) = fence.sync
+            && let Some(sync) = &fence.sync
         {
-            // SAFETY: a plain query of a live sync object.
-            let status = unsafe { self.gl.get_sync_status(sync) };
-            fence.done.set(status == glow::SIGNALED);
+            fence.done.set(signaled(&self.gl, sync));
         }
         fence.done.get()
     }
 
-    fn wait_fence(&mut self, fence: &Fence) {
-        self.platform.current();
-        let Some(sync) = fence.sync.filter(|_| !fence.done.get()) else {
+    fn wait_fence(&mut self, fence: &Self::Fence) {
+        let Some(sync) = fence.sync.as_ref().filter(|_| !fence.done.get()) else {
             return;
         };
-        // SAFETY: plain GL calls. WebGL cannot wait on a sync object (its longest wait is zero), and
-        // finish returns only when every earlier command has completed.
-        unsafe {
-            #[cfg(target_arch = "wasm32")]
-            {
-                let _ = sync;
-                self.gl.finish();
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            while self
-                .gl
-                .client_wait_sync(sync, glow::SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000)
-                == glow::TIMEOUT_EXPIRED
-            {}
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = sync;
+            self.gl.finish();
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        while self
+            .gl
+            .client_wait_sync(sync, gles::SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000)
+            == gles::TIMEOUT_EXPIRED
+        {}
         fence.done.set(true);
         self.gl_errors();
     }
 
-    fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Readback, GpuError> {
-        self.platform.current();
+    fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError> {
         if let ReadSource::Texture { region, extent } = src
             && let Some(r) = self.through_draw(region, *extent, |b, colour| {
                 b.read_back(&ReadSource::Texture {
@@ -4973,23 +4725,22 @@ impl Gpu for Gl {
             ReadSource::Buffer { buffer, .. } if buffer.data.is_none() => {
                 // The vertex array's index binding changes; the next indexed draw rebinds it.
                 self.applied.index = 0;
-                glow::ELEMENT_ARRAY_BUFFER
+                gles::ELEMENT_ARRAY_BUFFER
             }
-            ReadSource::Buffer { .. } => glow::COPY_WRITE_BUFFER,
-            ReadSource::Texture { .. } => glow::PIXEL_PACK_BUFFER,
+            ReadSource::Buffer { .. } => gles::COPY_WRITE_BUFFER,
+            ReadSource::Texture { .. } => gles::PIXEL_PACK_BUFFER,
         };
-        // SAFETY: plain GL calls; the pack buffer is unbound again before returning.
-        let pbo = unsafe {
-            let pbo = self.gl.create_buffer().map_err(|_| GpuError::OutOfMemory)?;
-            let first = if target == glow::COPY_WRITE_BUFFER {
-                glow::ARRAY_BUFFER
+        let pbo = {
+            let pbo = platform::one(|n| self.gl.gen_buffers(n)).ok_or(GpuError::OutOfMemory)?;
+            let first = if target == gles::COPY_WRITE_BUFFER {
+                gles::ARRAY_BUFFER
             } else {
                 target
             };
-            self.gl.bind_buffer(first, Some(pbo));
+            self.gl.bind_buffer(first, pbo);
             self.gl
-                .buffer_data_size(first, size as i32, glow::STREAM_READ);
-            self.gl.bind_buffer(target, Some(pbo));
+                .buffer_data(first, size as i64, None, gles::STREAM_READ);
+            self.gl.bind_buffer(target, pbo);
             pbo
         };
         match src {
@@ -4999,17 +4750,14 @@ impl Gpu for Gl {
                 size,
             } => {
                 let raw = self.any_gl(buffer);
-                // SAFETY: plain GL calls between GL buffers of one WebGL type.
-                unsafe {
-                    self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(raw));
-                    self.gl.copy_buffer_sub_data(
-                        glow::COPY_READ_BUFFER,
-                        target,
-                        *offset as i32,
-                        0,
-                        *size as i32,
-                    );
-                }
+                self.gl.bind_buffer(gles::COPY_READ_BUFFER, raw);
+                self.gl.copy_buffer_sub_data(
+                    gles::COPY_READ_BUFFER,
+                    target,
+                    *offset as i64,
+                    0,
+                    *size as i64,
+                );
             }
             ReadSource::Texture { region, extent } => {
                 let t = region.texture;
@@ -5018,25 +4766,21 @@ impl Gpu for Gl {
                 for i in 0..extent.depth_or_layers {
                     let layer = self.read_layer(region, i);
                     self.read_framebuffer(t, region.mip, layer);
-                    // SAFETY: the pack buffer holds every layer's rows.
-                    unsafe {
-                        self.gl.read_pixels(
-                            region.origin.x as i32,
-                            region.origin.y as i32,
-                            extent.width as i32,
-                            extent.height as i32,
-                            read.format,
-                            read.ty,
-                            glow::PixelPackData::BufferOffset(i * layer_bytes),
-                        );
-                    }
+                    self.gl.read_pixels(
+                        region.origin.x as i32,
+                        region.origin.y as i32,
+                        extent.width as i32,
+                        extent.height as i32,
+                        read.format,
+                        read.ty,
+                        PixelPack::Offset(u64::from(i * layer_bytes)),
+                    );
                 }
             }
         }
-        // SAFETY: plain GL calls.
-        let sync = unsafe {
-            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-            self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok()
+        let sync = {
+            self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, 0);
+            self.gl.fence_sync(gles::SYNC_GPU_COMMANDS_COMPLETE, 0)
         };
         // Without a sync object nothing says when the copy is done: only a lost context fails here.
         if sync.is_none() {
@@ -5067,15 +4811,13 @@ impl Gpu for Gl {
         set: &QuerySet,
         first: u32,
         count: u32,
-    ) -> Result<Readback, GpuError> {
-        self.platform.current();
+    ) -> Result<Self::Readback, GpuError> {
         let slots = set.slots.borrow();
         let queries = slots
             .get(first as usize..(first + count) as usize)
             .ok_or(GpuError::Invalid("read_queries past the set's end"))?
             .to_vec();
-        // SAFETY: a plain GL call; results arrive only once the commands reach the GPU.
-        unsafe { self.gl.flush() };
+        self.gl.flush();
         Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
             pbo: None,
             queries,
@@ -5090,8 +4832,7 @@ impl Gpu for Gl {
 
     /// Ready once the copy's sync object is signalled; a read back made without one is ready at once and
     /// reads nothing, the device having been lost when it was made.
-    fn read_state(&mut self, readback: &Readback) -> ReadState {
-        self.platform.current();
+    fn read_state(&mut self, readback: &Self::Readback) -> ReadState {
         let r = readback.borrow();
         if r.pbo.is_none() {
             return if self.queries_available(&r.queries) {
@@ -5100,30 +4841,28 @@ impl Gpu for Gl {
                 ReadState::Pending
             };
         }
-        match r.sync {
-            // SAFETY: a plain query of a live sync object.
-            Some(sync)
-                if !r.waited && unsafe { self.gl.get_sync_status(sync) } != glow::SIGNALED =>
-            {
-                ReadState::Pending
-            }
+        match &r.sync {
+            Some(sync) if !r.waited && !signaled(&self.gl, sync) => ReadState::Pending,
             _ => ReadState::Ready,
         }
     }
 
-    fn wait_read(&mut self, readback: &Readback) {
-        self.platform.current();
+    fn wait_read(&mut self, readback: &Self::Readback) {
         if readback.borrow().pbo.is_none() {
-            // WebGL makes results available only between tasks, so the device thread gives way
-            // until they are (natively they arrive while it spins).
+            // Natively the results arrive while the device thread spins. WebGL makes them available only
+            // between tasks, so in the browser the thread must give way until they are, through a wait
+            // the OpenGL ES crate's implementation on WebGL is to give (NEEDED-FROM-API-CRATES.md); until
+            // then it loses the device rather than spin for ever.
+            #[cfg(target_arch = "wasm32")]
+            if !self.queries_available(&readback.borrow().queries) {
+                self.unbuilt("waiting for query results between the browser's tasks");
+            }
             while self.status() == DeviceStatus::Ok
                 && !self.queries_available(&readback.borrow().queries)
-            {
-                self.platform.next_task();
-            }
+            {}
             return;
         }
-        let sync = readback.borrow().sync;
+        let sync = readback.borrow().sync.clone();
         if let Some(sync) = sync {
             let fence = Handle(Rc::new(FenceObj {
                 sync: Some(sync),
@@ -5134,8 +4873,7 @@ impl Gpu for Gl {
         }
     }
 
-    fn finish_read(&mut self, readback: Readback, dst: &mut [u8]) {
-        self.platform.current();
+    fn finish_read(&mut self, readback: Self::Readback, dst: &mut [u8]) {
         if let Some(kept) = readback.borrow_mut().host.take() {
             let n = kept.len().min(dst.len());
             dst[..n].copy_from_slice(&kept[..n]);
@@ -5145,13 +4883,14 @@ impl Gpu for Gl {
             let r = readback.borrow();
             for (q, out) in r.queries.iter().zip(dst.as_chunks_mut::<8>().0) {
                 let value = q.as_deref().map_or(0, |&q| {
-                    // SAFETY: plain queries of a live query object, whose result is available.
-                    unsafe {
-                        if r.timestamps {
-                            self.gl.get_query_parameter_u64(q, glow::QUERY_RESULT)
-                        } else {
-                            u64::from(self.gl.get_query_parameter_u32(q, glow::QUERY_RESULT))
-                        }
+                    if r.timestamps {
+                        let mut value = [0];
+                        let _ =
+                            self.gl
+                                .get_query_objectui64v_ext(q, gles::QUERY_RESULT, &mut value);
+                        value[0]
+                    } else {
+                        u64::from(platform::query_value(&self.gl, q, gles::QUERY_RESULT))
                     }
                 });
                 *out = value.to_le_bytes();
@@ -5159,31 +4898,29 @@ impl Gpu for Gl {
             drop(r);
             for q in readback.borrow_mut().queries.drain(..).flatten() {
                 if let Ok(q) = Rc::try_unwrap(q) {
-                    // SAFETY: no query set holds it any more.
-                    unsafe { self.gl.delete_query(q) };
+                    self.gl.delete_queries(&[q]);
                 }
             }
             return;
         };
         let r = readback.borrow();
         let mut wide = Vec::new();
-        // SAFETY: plain GL calls; reading the pack buffer waits for the copy into it.
-        let read = unsafe {
-            self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(pbo));
+        let read = {
+            self.gl.bind_buffer(gles::COPY_READ_BUFFER, pbo);
             let read = if let Some(read) = r.repack {
                 wide.resize(r.size, 0);
                 let ok =
-                    platform::get_buffer_sub_data(&self.gl, glow::COPY_READ_BUFFER, 0, &mut wide);
+                    platform::get_buffer_sub_data(&self.gl, gles::COPY_READ_BUFFER, 0, &mut wide);
                 read.repack(&wide, dst);
                 ok
             } else {
                 let n = r.size.min(dst.len());
-                platform::get_buffer_sub_data(&self.gl, glow::COPY_READ_BUFFER, 0, &mut dst[..n])
+                platform::get_buffer_sub_data(&self.gl, gles::COPY_READ_BUFFER, 0, &mut dst[..n])
             };
-            if let Some(sync) = r.sync {
+            if let Some(sync) = &r.sync {
                 self.gl.delete_sync(sync);
             }
-            self.gl.delete_buffer(pbo);
+            self.gl.delete_buffers(&[pbo]);
             read
         };
         if !read {
@@ -5192,17 +4929,16 @@ impl Gpu for Gl {
     }
 
     /// A WebGL context draws into one canvas, the one the back end was made on, whatever window the
-    /// host names; so a back end has one surface at a time. Natively the surface is an EGL window
-    /// surface on a window the host named with `add_window`.
+    /// host names; so a back end has one surface at a time. Natively there is none: the OpenGL ES crate
+    /// makes no EGL window surface yet, so every window is refused.
     fn create_surface(&mut self, window: u32) -> Result<Surface, GpuError> {
-        self.platform.current();
         if self.surface.is_some() {
             return Err(GpuError::Invalid(
                 "webgl: a back end has one surface, its context's canvas",
             ));
         }
-        if let Err(e) = self.platform.attach(window) {
-            self.last_log = format!("webgl: attaching to window {window}: {e}");
+        if !self.presents {
+            self.last_log = format!("webgl: attaching to window {window}: no window surface");
             return Err(GpuError::Invalid("webgl: the host has no such window"));
         }
         let id = self.id();
@@ -5210,17 +4946,16 @@ impl Gpu for Gl {
         Ok(Surface { id })
     }
 
-    /// In the browser `vsync` changes nothing: the browser shows the canvas when it composites the
-    /// page, at the display's rate, and presenting never waits. Natively it is the swap interval.
+    /// `vsync` changes nothing: the browser shows the canvas when it composites the page, at the
+    /// display's rate, and presenting never waits.
     fn configure_surface(
         &mut self,
         surface: &Surface,
         format: Format,
         width: u32,
         height: u32,
-        vsync: bool,
+        _vsync: bool,
     ) -> Result<(), GpuError> {
-        self.platform.current();
         if self.surface.as_ref().map(|s| s.id) != Some(surface.id) {
             return Err(GpuError::Invalid("webgl: the surface was destroyed"));
         }
@@ -5229,10 +4964,6 @@ impl Gpu for Gl {
             return Err(GpuError::Invalid(
                 "webgl: surfaces take rgba8unorm and bgra8unorm only",
             ));
-        }
-        if let Err(e) = self.platform.resize(&self.gl, width, height, vsync) {
-            self.last_log = format!("webgl: resizing the surface: {e}");
-            return Err(GpuError::OutOfMemory);
         }
         let texture = self.create_texture(&TextureDesc {
             dimension: TextureDimension::D2,
@@ -5270,7 +5001,6 @@ impl Gpu for Gl {
     }
 
     fn current_texture(&mut self, surface: &Surface) -> Result<TextureView, GpuError> {
-        self.platform.current();
         match &self.surface {
             Some(s) if s.id == surface.id => match &s.frame {
                 Some((_, view)) => Ok(view.clone()),
@@ -5285,7 +5015,6 @@ impl Gpu for Gl {
     /// size where the host's window has another; the browser shows it when the device thread returns
     /// to its event loop.
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
-        self.platform.current();
         if let Some(reason) = self.lost {
             return Err(match reason {
                 LossReason::OutOfMemory => GpuError::OutOfMemory,
@@ -5302,29 +5031,22 @@ impl Gpu for Gl {
         self.read_framebuffer(&texture, 0, 0);
         self.open_writes();
         let (w, h) = (texture.desc.width as i32, texture.desc.height as i32);
-        let (dw, dh) = self.platform.drawable_size(&self.gl);
-        // SAFETY: plain GL calls; the frame's framebuffer is bound for reading.
-        unsafe {
-            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-            self.applied.draw_framebuffer = None;
-            self.gl.blit_framebuffer(
-                0,
-                0,
-                w,
-                h,
-                0,
-                dh,
-                dw,
-                0,
-                glow::COLOR_BUFFER_BIT,
-                glow::NEAREST,
-            );
-        }
-        if let Err(e) = self.platform.swap() {
-            self.last_log = format!("webgl: presenting: {e}");
-            self.fail(LossReason::Removed);
-            return Err(GpuError::DeviceLost);
-        }
+        // The drawing buffer takes the configured size, as a canvas's does.
+        let (dw, dh) = (w, h);
+        self.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, 0);
+        self.applied.draw_framebuffer = None;
+        self.gl.blit_framebuffer(
+            0,
+            0,
+            w,
+            h,
+            0,
+            dh,
+            dw,
+            0,
+            gles::COLOR_BUFFER_BIT,
+            gles::NEAREST,
+        );
         self.presented += 1;
         if self.presented.is_power_of_two() {
             platform::report(&self.frame_report());
@@ -5338,7 +5060,6 @@ impl Gpu for Gl {
         src: &ReadSource<'_, Self>,
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
-        self.platform.current();
         match src {
             ReadSource::Texture { region, extent } => self.read_texture_now(region, *extent, dst),
             ReadSource::Buffer {
@@ -5347,16 +5068,13 @@ impl Gpu for Gl {
                 size,
             } => {
                 let raw = self.any_gl(buffer);
-                // SAFETY: plain GL calls; the copy target takes buffers of either WebGL type.
-                unsafe {
-                    self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(raw));
-                    platform::get_buffer_sub_data(
-                        &self.gl,
-                        glow::COPY_READ_BUFFER,
-                        *offset as i32,
-                        &mut dst[..*size as usize],
-                    )
-                }
+                self.gl.bind_buffer(gles::COPY_READ_BUFFER, raw);
+                platform::get_buffer_sub_data(
+                    &self.gl,
+                    gles::COPY_READ_BUFFER,
+                    *offset,
+                    &mut dst[..*size as usize],
+                )
                 .then_some(())
                 .ok_or_else(|| self.read_failed())
             }
@@ -5371,7 +5089,6 @@ impl Gpu for Gl {
         value: ClearValue,
         rects: &[ScissorRect],
     ) -> Result<(), GpuError> {
-        self.platform.current();
         if rects.is_empty() {
             return Ok(());
         }
@@ -5423,39 +5140,30 @@ impl Gpu for Gl {
         // Clears obey the scissor and the write masks.
         self.open_writes();
         let (gl, v) = (&self.gl, &mut self.values);
-        // SAFETY: plain GL calls on the pass's framebuffer.
-        unsafe {
-            gl.enable(glow::SCISSOR_TEST);
-            v.scissor_test = true;
-            for r in rects {
-                let rect = gl_rect(r, self.pass.as_ref().map_or(NO_PASS, |p| p.size));
-                if v.scissor != rect {
-                    gl.scissor(rect[0], rect[1], rect[2], rect[3]);
-                    v.scissor = rect;
+        gl.enable(gles::SCISSOR_TEST);
+        v.scissor_test = true;
+        for r in rects {
+            let rect = gl_rect(r, self.pass.as_ref().map_or(NO_PASS, |p| p.size));
+            if v.scissor != rect {
+                gl.scissor(rect[0], rect[1], rect[2], rect[3]);
+                v.scissor = rect;
+            }
+            match (value, kind) {
+                (ClearValue::Color(c), FormatKind::Uint) => gl.clear_bufferuiv(gles::COLOR, 0, &c),
+                (ClearValue::Color(c), FormatKind::Sint) => {
+                    gl.clear_bufferiv(gles::COLOR, 0, &c.map(|x| x as i32))
                 }
-                match (value, kind) {
-                    (ClearValue::Color(c), FormatKind::Uint) => {
-                        gl.clear_buffer_u32_slice(glow::COLOR, 0, &c)
-                    }
-                    (ClearValue::Color(c), FormatKind::Sint) => {
-                        gl.clear_buffer_i32_slice(glow::COLOR, 0, &c.map(|x| x as i32))
-                    }
-                    (ClearValue::Color(c), _) => gl.clear_buffer_f32_slice(
-                        glow::COLOR,
-                        0,
-                        &format::clear_value(view.texture.desc.format, c).map(f),
-                    ),
-                    (ClearValue::DepthStencil { .. }, _) => match (depth, stencil) {
-                        (Some(d), Some(s)) => {
-                            gl.clear_buffer_depth_stencil(glow::DEPTH_STENCIL, 0, f(d), s.into())
-                        }
-                        (Some(d), None) => gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[f(d)]),
-                        (None, Some(s)) => {
-                            gl.clear_buffer_i32_slice(glow::STENCIL, 0, &[i32::from(s)])
-                        }
-                        (None, None) => {}
-                    },
-                }
+                (ClearValue::Color(c), _) => gl.clear_bufferfv(
+                    gles::COLOR,
+                    0,
+                    &format::clear_value(view.texture.desc.format, c).map(f),
+                ),
+                (ClearValue::DepthStencil { .. }, _) => match (depth, stencil) {
+                    (Some(d), Some(s)) => gl.clear_bufferfi(gles::DEPTH_STENCIL, 0, f(d), s.into()),
+                    (Some(d), None) => gl.clear_bufferfv(gles::DEPTH, 0, &[f(d)]),
+                    (None, Some(s)) => gl.clear_bufferiv(gles::STENCIL, 0, &[i32::from(s)]),
+                    (None, None) => {}
+                },
             }
         }
         self.end_pass();
@@ -5472,7 +5180,6 @@ impl Gpu for Gl {
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
-        self.platform.current();
         let levels = mips.start.max(1)..mips.end.min(desc.mip_levels);
         let every_layer = layers.start == 0 && layers.end >= desc.depth_or_layers;
         let native = FormatUse::RENDER | FormatUse::FILTER;
@@ -5492,15 +5199,12 @@ impl Gpu for Gl {
         self.bind_scratch(texture.target, raw);
         let range = (levels.start - 1, levels.end - 1);
         let gl = &self.gl;
-        // SAFETY: plain GL calls on the bound texture.
-        unsafe {
-            if texture.levels.get() != range {
-                gl.tex_parameter_i32(texture.target, glow::TEXTURE_BASE_LEVEL, range.0 as i32);
-                gl.tex_parameter_i32(texture.target, glow::TEXTURE_MAX_LEVEL, range.1 as i32);
-                texture.levels.set(range);
-            }
-            gl.generate_mipmap(texture.target);
+        if texture.levels.get() != range {
+            gl.tex_parameteri(texture.target, gles::TEXTURE_BASE_LEVEL, range.0 as i32);
+            gl.tex_parameteri(texture.target, gles::TEXTURE_MAX_LEVEL, range.1 as i32);
+            texture.levels.set(range);
         }
+        gl.generate_mipmap(texture.target);
         self.written(texture);
         Ok(())
     }
@@ -5519,7 +5223,6 @@ impl Gpu for Gl {
         first_instance: u32,
         instances: u32,
     ) -> Result<(), GpuError> {
-        self.platform.current();
         let topology = match kind {
             FanOrLoop::TriangleFan => Topology::TriangleFan,
             FanOrLoop::LineLoop => Topology::LineLoop,
@@ -5613,7 +5316,6 @@ impl Gpu for Gl {
         targets: CaptureTargets<'_, Self>,
         rasterize: bool,
     ) -> Result<(), GpuError> {
-        self.platform.current();
         if self.lost.is_some() {
             return Err(GpuError::DeviceLost);
         }
@@ -5636,9 +5338,9 @@ impl Gpu for Gl {
             ));
         }
         let native = match (call.topology, &call.range) {
-            (Topology::PointList, DrawRange::Vertices { .. }) => Some((glow::POINTS, 1)),
-            (Topology::LineList, DrawRange::Vertices { .. }) => Some((glow::LINES, 2)),
-            (Topology::TriangleList, DrawRange::Vertices { .. }) => Some((glow::TRIANGLES, 3)),
+            (Topology::PointList, DrawRange::Vertices { .. }) => Some((gles::POINTS, 1)),
+            (Topology::LineList, DrawRange::Vertices { .. }) => Some((gles::LINES, 2)),
+            (Topology::TriangleList, DrawRange::Vertices { .. }) => Some((gles::TRIANGLES, 3)),
             _ => None,
         };
         // The vertex numbers in list order, for draws GL cannot capture as they are.
@@ -5766,40 +5468,37 @@ impl Gpu for Gl {
             self.refresh(t.buffer, Some(false));
         }
         let gl = &self.gl;
-        // SAFETY: plain GL calls; the targets' data GL buffers are alive and hold the ranges.
-        unsafe {
-            if discard {
-                // Outside a pass nothing is drawn; the default framebuffer is always complete.
-                if !rasterize && self.applied.draw_framebuffer.is_some() {
-                    gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-                    self.applied.draw_framebuffer = None;
-                }
-                gl.enable(glow::RASTERIZER_DISCARD);
+        if discard {
+            // Outside a pass nothing is drawn; the default framebuffer is always complete.
+            if !rasterize && self.applied.draw_framebuffer.is_some() {
+                gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, 0);
+                self.applied.draw_framebuffer = None;
             }
-            // WebGL refuses a draw while a capture target is bound anywhere else.
-            for target in [
-                glow::ARRAY_BUFFER,
-                glow::COPY_READ_BUFFER,
-                glow::COPY_WRITE_BUFFER,
-            ] {
-                gl.bind_buffer(target, None);
-            }
-            for (n, t) in targets.iter().enumerate() {
-                gl.bind_buffer_range(
-                    glow::TRANSFORM_FEEDBACK_BUFFER,
-                    n as u32,
-                    t.buffer.data,
-                    t.offset as i32,
-                    t.size as i32,
-                );
-            }
-            if self.applied.program != capture.id {
-                gl.use_program(Some(capture.raw));
-                self.applied.program = capture.id;
-                self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
-            }
-            gl.begin_transform_feedback(native.map_or(glow::POINTS, |(mode, _)| mode));
+            gl.enable(gles::RASTERIZER_DISCARD);
         }
+        // WebGL refuses a draw while a capture target is bound anywhere else.
+        for target in [
+            gles::ARRAY_BUFFER,
+            gles::COPY_READ_BUFFER,
+            gles::COPY_WRITE_BUFFER,
+        ] {
+            gl.bind_buffer(target, 0);
+        }
+        for (n, t) in targets.iter().enumerate() {
+            gl.bind_buffer_range(
+                gles::TRANSFORM_FEEDBACK_BUFFER,
+                n as u32,
+                t.buffer.data.unwrap_or(0),
+                t.offset as i64,
+                t.size as i64,
+            );
+        }
+        if self.applied.program != capture.id {
+            gl.use_program(capture.raw);
+            self.applied.program = capture.id;
+            self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
+        }
+        gl.begin_transform_feedback(native.map_or(gles::POINTS, |(mode, _)| mode));
         if let DrawRange::Vertices {
             first,
             count,
@@ -5840,17 +5539,14 @@ impl Gpu for Gl {
             }
         }
         let gl = &self.gl;
-        // SAFETY: plain GL calls ending what was begun above.
-        unsafe {
-            gl.end_transform_feedback();
-            if discard {
-                gl.disable(glow::RASTERIZER_DISCARD);
-            }
-            for n in 0..targets.len() {
-                gl.bind_buffer_base(glow::TRANSFORM_FEEDBACK_BUFFER, n as u32, None);
-            }
-            gl.bind_buffer(glow::TRANSFORM_FEEDBACK_BUFFER, None);
+        gl.end_transform_feedback();
+        if discard {
+            gl.disable(gles::RASTERIZER_DISCARD);
         }
+        for n in 0..targets.len() {
+            gl.bind_buffer_base(gles::TRANSFORM_FEEDBACK_BUFFER, n as u32, 0);
+        }
+        gl.bind_buffer(gles::TRANSFORM_FEEDBACK_BUFFER, 0);
         for (n, t) in targets.iter().enumerate() {
             if t.buffer.index.is_some() {
                 let end = t.offset + vertices * stride(n);
@@ -5869,7 +5565,6 @@ impl Gpu for Gl {
 
     /// `queryCounterEXT` with `TIMESTAMP_EXT`, which GL writes between any two commands.
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
-        self.platform.current();
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
@@ -5879,19 +5574,18 @@ impl Gpu for Gl {
             ));
         }
         let q = self.query_slot(set, index).ok_or(GpuError::DeviceLost)?;
-        // SAFETY: a plain GL call the extension defines.
-        unsafe { self.gl.query_counter(q, glow::TIMESTAMP) };
+        self.gl.query_counter_ext(q, gles::TIMESTAMP_EXT);
         Ok(())
     }
 
     /// `GPU_DISJOINT_EXT`, which reading clears.
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
-        self.platform.current();
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
-        // SAFETY: a plain query the extension defines.
-        Ok(unsafe { self.gl.get_parameter_bool(platform::GPU_DISJOINT) })
+        let mut disjoint = [false];
+        self.gl.get_booleanv(gles::GPU_DISJOINT_EXT, &mut disjoint);
+        Ok(disjoint[0])
     }
 
     fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {

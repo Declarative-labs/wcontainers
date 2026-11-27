@@ -4301,6 +4301,18 @@ name = "wcontainers-docker"
 version = "0.1.0"
 
 [[package]]
+name = "wcontainers-egl"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-egl-direct"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "wcontainers-egl",
+]
+
+[[package]]
 name = "wcontainers-executor"
 version = "0.1.0"
 dependencies = [
@@ -4575,11 +4587,9 @@ dependencies = [
  "bcdec_rs",
  "bytemuck",
  "getrandom 0.4.3",
- "glow 0.18.0",
  "half",
  "image",
  "js-sys",
- "khronos-egl",
  "naga",
  "pollster",
  "rand 0.9.5",
@@ -4587,10 +4597,14 @@ dependencies = [
  "rangemap",
  "serde",
  "wasm-bindgen",
+ "wcontainers-egl",
+ "wcontainers-egl-direct",
  "wcontainers-gpu",
  "wcontainers-gpu-conformance",
  "wcontainers-gpu-webgpu",
  "wcontainers-graphics-test",
+ "wcontainers-opengl-es",
+ "wcontainers-opengl-es-direct",
  "wcontainers-test-window",
  "wcontainers-test-window-win32",
  "web-sys",
@@ -4928,6 +4942,31 @@ dependencies = [
  "wcontainers-win32-windows",
  "wgpu",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-opengl-es"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-egl",
+]
+
+[[package]]
+name = "wcontainers-opengl-es-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-egl",
+ "wcontainers-opengl-es",
+]
+
+[[package]]
+name = "wcontainers-opengl-es-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-egl",
+ "wcontainers-egl-direct",
+ "wcontainers-opengl-es",
+ "wcontainers-opengl-es-conformance",
 ]
 
 [[package]]

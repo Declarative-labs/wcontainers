@@ -1,7 +1,7 @@
 //! How each interface format is stored in GL ES 3.0, and what GL lets it do.
 
-use glow::*;
 use wcontainers_gpu::{caps::FormatUse, format::FORMAT_FACTS, format::Format};
+use wcontainers_opengl_es::constants::*;
 
 /// A format's GL sized internal format and the format and type its texels are written in.
 #[derive(Clone, Copy, Debug)]
@@ -62,12 +62,12 @@ pub(crate) fn gl_format(format: Format) -> Option<GlFormat> {
         F::R16Sint => f(R16I, RED_INTEGER, SHORT, int),
         F::R16Float => f(R16F, RED, HALF_FLOAT, Half),
         // 16-bit normalised formats with EXT_texture_norm16 ([`uses`] gives none without it).
-        F::R16Unorm => f(R16, RED, UNSIGNED_SHORT, norm),
-        F::R16Snorm => f(R16_SNORM, RED, SHORT, snorm),
-        F::Rg16Unorm => f(RG16, RG, UNSIGNED_SHORT, norm),
-        F::Rg16Snorm => f(RG16_SNORM, RG, SHORT, snorm),
-        F::Rgba16Unorm => f(RGBA16, RGBA, UNSIGNED_SHORT, norm),
-        F::Rgba16Snorm => f(RGBA16_SNORM, RGBA, SHORT, snorm),
+        F::R16Unorm => f(R16_EXT, RED, UNSIGNED_SHORT, norm),
+        F::R16Snorm => f(R16_SNORM_EXT, RED, SHORT, snorm),
+        F::Rg16Unorm => f(RG16_EXT, RG, UNSIGNED_SHORT, norm),
+        F::Rg16Snorm => f(RG16_SNORM_EXT, RG, SHORT, snorm),
+        F::Rgba16Unorm => f(RGBA16_EXT, RGBA, UNSIGNED_SHORT, norm),
+        F::Rgba16Snorm => f(RGBA16_SNORM_EXT, RGBA, SHORT, snorm),
         F::Rg8Unorm => f(RG8, RG, UNSIGNED_BYTE, norm),
         F::Rg8Snorm => f(RG8_SNORM, RG, BYTE, snorm),
         F::Rg8Uint => f(RG8UI, RG_INTEGER, UNSIGNED_BYTE, int),

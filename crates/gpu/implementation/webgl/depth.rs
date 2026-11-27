@@ -5,18 +5,20 @@
 //! WEBGL_stencil_texturing; without it, eight draws count its bits into an `r8unorm` texture first
 //! ([`wcontainers_gpu::slow::SlowPath::StencilCopiedByDraw`]), which the same fetch reads with a scale of 255.
 
-use glow::HasContext;
+use crate::platform;
+use wcontainers_opengl_es::OpenGlEs;
+use wcontainers_opengl_es::constants as gles;
 
 /// The program for one kind of source texture, and its uniforms.
 #[derive(Debug)]
 pub(crate) struct DepthRead {
-    pub(crate) program: glow::Program,
+    pub(crate) program: u32,
     /// The region's origin x and y, and its layer; the level is the texture's base level, which the
     /// draw sets to the region's.
-    pub(crate) at: glow::UniformLocation,
+    pub(crate) at: i32,
     /// What a depth of 1 is stored as (65535, 16777215), or 0 to keep a float's bits; None for
     /// stencil.
-    pub(crate) scale: Option<glow::UniformLocation>,
+    pub(crate) scale: Option<i32>,
 }
 
 /// A triangle covering the target, from the vertex number alone.
@@ -109,26 +111,22 @@ void main() {
 ";
 
 /// Builds the program for sources of `shape`, of depth or of stencil. Err holds GL's log.
-pub(crate) fn build(gl: &glow::Context, shape: Shape, stencil: bool) -> Result<DepthRead, String> {
+pub(crate) fn build(gl: &impl OpenGlEs, shape: Shape, stencil: bool) -> Result<DepthRead, String> {
     let program = link(gl, &fragment(shape, stencil))?;
-    // SAFETY: plain queries of a linked program.
-    unsafe {
-        let at = gl
-            .get_uniform_location(program, "at")
-            .ok_or("the depth read program has no uniform at")?;
-        let scale = gl.get_uniform_location(program, "scale");
-        Ok(DepthRead { program, at, scale })
-    }
+    let at =
+        platform::location(gl, program, "at").ok_or("the depth read program has no uniform at")?;
+    let scale = platform::location(gl, program, "scale");
+    Ok(DepthRead { program, at, scale })
 }
 
 /// The program writing stencil from an `r8uint` texture, and its uniforms.
 #[derive(Debug)]
 pub(crate) struct StencilWrite {
-    pub(crate) program: glow::Program,
+    pub(crate) program: u32,
     /// As [`DepthRead::at`]: the source's offset from the fragment, and its layer.
-    pub(crate) at: glow::UniformLocation,
+    pub(crate) at: i32,
     /// The bit drawn: fragments whose source value lacks it are discarded; 0 discards none.
-    pub(crate) bit: glow::UniformLocation,
+    pub(crate) bit: i32,
 }
 
 /// Keeps the fragments whose source texel holds `bit`, for draws that set that stencil bit.
@@ -154,16 +152,13 @@ void main() {{
 }
 
 /// Builds the stencil write program for 2D (`array` false) or 2D array sources. Err holds GL's log.
-pub(crate) fn build_stencil_write(gl: &glow::Context, array: bool) -> Result<StencilWrite, String> {
+pub(crate) fn build_stencil_write(gl: &impl OpenGlEs, array: bool) -> Result<StencilWrite, String> {
     let program = link(gl, &stencil_write(array))?;
-    // SAFETY: plain queries of a linked program.
-    unsafe {
-        let at = gl.get_uniform_location(program, "at");
-        let bit = gl.get_uniform_location(program, "bit");
-        match (at, bit) {
-            (Some(at), Some(bit)) => Ok(StencilWrite { program, at, bit }),
-            _ => Err("the stencil write program lacks a uniform".into()),
-        }
+    let at = platform::location(gl, program, "at");
+    let bit = platform::location(gl, program, "bit");
+    match (at, bit) {
+        (Some(at), Some(bit)) => Ok(StencilWrite { program, at, bit }),
+        _ => Err("the stencil write program lacks a uniform".into()),
     }
 }
 
@@ -176,53 +171,50 @@ void main() {
 ";
 
 /// Builds the 24-bit depth probe's program and its uniform `z`. Err holds GL's log.
-pub(crate) fn build_probe(
-    gl: &glow::Context,
-) -> Result<(glow::Program, glow::UniformLocation), String> {
+pub(crate) fn build_probe(gl: &impl OpenGlEs) -> Result<(u32, i32), String> {
     let program = link_with(gl, PROBE, ONE)?;
-    // SAFETY: a plain query of a linked program.
-    let z = unsafe { gl.get_uniform_location(program, "z") };
+    let z = platform::location(gl, program, "z");
     Ok((program, z.ok_or("the probe program has no uniform z")?))
 }
 
 /// Builds the program the stencil bit draws use. Err holds GL's log.
-pub(crate) fn build_bits(gl: &glow::Context) -> Result<glow::Program, String> {
+pub(crate) fn build_bits(gl: &impl OpenGlEs) -> Result<u32, String> {
     link(gl, ONE)
 }
 
 /// Links the full-screen vertex program with `fragment`. Err holds GL's log.
-pub(crate) fn link(gl: &glow::Context, fragment: &str) -> Result<glow::Program, String> {
+pub(crate) fn link(gl: &impl OpenGlEs, fragment: &str) -> Result<u32, String> {
     link_with(gl, VERTEX, fragment)
 }
 
-fn link_with(gl: &glow::Context, vertex: &str, fragment: &str) -> Result<glow::Program, String> {
-    // SAFETY: plain GL calls on the current context; the shaders are deleted once linked.
-    unsafe {
-        let program = gl.create_program()?;
-        let mut shaders = Vec::new();
-        for (stage, source) in [
-            (glow::VERTEX_SHADER, vertex),
-            (glow::FRAGMENT_SHADER, fragment),
-        ] {
-            let s = gl.create_shader(stage)?;
-            gl.shader_source(s, source);
-            gl.compile_shader(s);
-            if !gl.get_shader_compile_status(s) {
-                return Err(gl.get_shader_info_log(s));
-            }
-            gl.attach_shader(program, s);
-            shaders.push(s);
-        }
-        gl.link_program(program);
-        for s in shaders {
-            gl.detach_shader(program, s);
-            gl.delete_shader(s);
-        }
-        if !gl.get_program_link_status(program) {
-            return Err(gl.get_program_info_log(program));
-        }
-        Ok(program)
+fn link_with(gl: &impl OpenGlEs, vertex: &str, fragment: &str) -> Result<u32, String> {
+    let program = gl.create_program();
+    if program == 0 {
+        return Err("no program object".into());
     }
+    let mut shaders = Vec::new();
+    for (stage, source) in [
+        (gles::VERTEX_SHADER, vertex),
+        (gles::FRAGMENT_SHADER, fragment),
+    ] {
+        let s = gl.create_shader(stage);
+        gl.shader_source(s, &[source.as_bytes()]);
+        gl.compile_shader(s);
+        if !platform::compiled(gl, s) {
+            return Err(platform::shader_log(gl, s));
+        }
+        gl.attach_shader(program, s);
+        shaders.push(s);
+    }
+    gl.link_program(program);
+    for s in shaders {
+        gl.detach_shader(program, s);
+        gl.delete_shader(s);
+    }
+    if !platform::linked(gl, program) {
+        return Err(platform::program_log(gl, program));
+    }
+    Ok(program)
 }
 
 /// What the stored depth of `format` is read as: the scale of [`DepthRead::scale`] and the bytes each

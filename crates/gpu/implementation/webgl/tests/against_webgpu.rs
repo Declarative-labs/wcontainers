@@ -12,7 +12,8 @@ mod kit;
 
 use against::{COMPARISONS, Reference};
 use std::path::PathBuf;
-use wcontainers_gpu_webgl::Gl;
+/// The back end on the OpenGL ES crate's direct implementation.
+type Gl = wcontainers_gpu_webgl::Gl<wcontainers_opengl_es_direct::OpenGlEsContext>;
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn webgl(off: &[&str]) -> Gl {
@@ -20,7 +21,11 @@ fn webgl(off: &[&str]) -> Gl {
         || PathBuf::from(r"C:\wc\tools\angle-mozangle-0.7.1"),
         PathBuf::from,
     );
-    let b = Gl::on_angle(&dir, off).expect("ANGLE's OpenGL ES 3.0 context");
+    let b = <Gl as wcontainers_gpu::StandaloneGpu>::new(wcontainers_gpu_webgl::GlConfig {
+        egl: Some(dir.clone()),
+        off: off.iter().map(|name| name.to_string()).collect(),
+    })
+    .expect("an OpenGL ES 3.0 context of the EGL library in WEBGL_ANGLE_DIR");
     assert!(b.last_log().is_empty(), "{}", b.last_log());
     b
 }

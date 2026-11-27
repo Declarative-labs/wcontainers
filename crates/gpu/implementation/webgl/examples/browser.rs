@@ -217,9 +217,6 @@ pub fn suite_test(name: &str, off: &str, seed: u32, cases: u32) -> Result<(), Js
     Ok(())
 }
 
-/// Runs the chosen test. A plain export, which the page calls through `WebAssembly.promising` so the
-/// back end's waits can suspend it. A failing test panics: the page gets the message through
-/// `window.panicked` and the module traps.
 /// Why routes of the chosen test ran nothing (a feature absent, a format without the use), empty
 /// when every route ran.
 #[wasm_bindgen]
@@ -227,8 +224,11 @@ pub fn suite_not_run() -> String {
     checks::take_not_run()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn suite_run() {
+/// Runs the chosen test. It takes and returns nothing, so its export is the plain WebAssembly function,
+/// which the page calls through `WebAssembly.promising` so the back end's waits can suspend it. A failing
+/// test panics: the page gets the message through `window.panicked` and the module traps.
+#[wasm_bindgen]
+pub fn suite_run() {
     if let Some(test) = CHOSEN.take() {
         test();
     }

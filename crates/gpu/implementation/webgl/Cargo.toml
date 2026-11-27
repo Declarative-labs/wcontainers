@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-gpu-webgl"
-description = "The WebGL 2 back end of the wcontainers graphics interface, on glow; natively on ANGLE for tests."
+description = "The WebGL 2 back end of the wcontainers graphics interface, on the OpenGL ES crate's trait; natively on an EGL library's OpenGL ES 3 for tests."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,21 +12,22 @@ path = "implementation.rs"
 
 [dependencies]
 wcontainers-gpu = { path = "../.." }
+wcontainers-egl = { path = "../../../egl" }
+wcontainers-opengl-es = { path = "../../../opengl-es" }
 bcdec_rs = "0.2.1"
-glow = "0.18.0"
 half = "2.7.1"
 naga = { workspace = true, features = ["glsl-out"] }
 rangemap = "1.8.0"
 # Also turns a format's number back into the format (`Format::deserialize`), as the interface's own tests do.
 serde = { version = "1.0.228", features = ["derive"] }
 
+# Natively: the OpenGL ES crate's direct implementation, over the EGL crate's.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-khronos-egl = { version = "6.0.0", features = ["dynamic"] }
+wcontainers-egl-direct = { path = "../../../egl/implementation/direct" }
+wcontainers-opengl-es-direct = { path = "../../../opengl-es/implementation/direct" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3.84"
-wasm-bindgen = "0.2.130"
-web-sys = { version = "0.3.107", features = ["WebGl2RenderingContext", "console"] }
+web-sys = { version = "0.3.107", features = ["console"] }
 
 [dev-dependencies]
 anyhow = "1.0.100"
@@ -52,7 +53,9 @@ wcontainers-test-window = { path = "../../../test-window" }
 wcontainers-test-window-win32 = { path = "../../../test-window/implementation/win32" }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-web-sys = { version = "0.3.107", features = ["HtmlCanvasElement", "console"] }
+js-sys = "0.3.84"
+wasm-bindgen = "0.2.130"
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement", "WebGl2RenderingContext", "console"] }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 # The WebGPU back end on the browser's WebGPU, for the per-draw cost measured against it.
 wcontainers-gpu-webgpu = { path = "../webgpu" }

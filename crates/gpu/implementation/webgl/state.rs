@@ -2,7 +2,6 @@
 //! when the block is made. A block is applied only when its handle differs from the last one applied,
 //! and then only the values that differ from what GL holds are set.
 
-use glow::HasContext;
 use wcontainers_gpu::{
     MAX_COLOR_TARGETS, resource::CompareFn, state::BlendDesc, state::BlendFactor, state::BlendOp,
     state::CullMode, state::DepthStencilDesc, state::FillMode, state::FrontFace,
@@ -12,7 +11,8 @@ use wcontainers_gpu::{
 };
 
 use crate::format;
-use crate::platform::Platform;
+use wcontainers_opengl_es::OpenGlEs;
+use wcontainers_opengl_es::constants as gles;
 
 /// What GL holds now, for the values blocks and draws set.
 #[derive(Clone, Debug, PartialEq)]
@@ -55,14 +55,14 @@ impl GlValues {
             targets: [GlTarget::OFF; MAX_COLOR_TARGETS],
             alpha_to_coverage: false,
             depth_test: false,
-            depth_func: glow::LESS,
+            depth_func: gles::LESS,
             depth_mask: true,
             stencil_test: false,
-            stencil_func: [(glow::ALWAYS, 0, 0xff); 2],
-            stencil_op: [[glow::KEEP; 3]; 2],
+            stencil_func: [(gles::ALWAYS, 0, 0xff); 2],
+            stencil_op: [[gles::KEEP; 3]; 2],
             stencil_write_mask: 0xff,
             cull: None,
-            front_face: glow::CCW,
+            front_face: gles::CCW,
             polygon_offset: None,
             line_offset: false,
             fill_lines: false,
@@ -74,7 +74,7 @@ impl GlValues {
             scissor: [i32::MIN; 4],
             blend_color: [0.0; 4],
             clip_depth,
-            provoking: glow::LAST_VERTEX_CONVENTION,
+            provoking: gles::LAST_VERTEX_CONVENTION,
         }
     }
 }
@@ -85,18 +85,13 @@ macro_rules! set_if {
         let value = $value;
         if $field != value {
             $field = value;
-            #[allow(unused_unsafe)]
-            // SAFETY: plain GL state calls on the current context.
-            unsafe {
-                $set(value)
-            };
+            $set(value);
         }
     }};
 }
 
-fn enable(gl: &glow::Context, cap: u32, on: bool) {
-    // SAFETY: plain GL state calls on the current context.
-    unsafe { if on { gl.enable(cap) } else { gl.disable(cap) } }
+fn enable(gl: &impl OpenGlEs, cap: u32, on: bool) {
+    if on { gl.enable(cap) } else { gl.disable(cap) }
 }
 
 /// One colour target's blending and write mask.
@@ -112,8 +107,8 @@ impl GlTarget {
     /// GL's initial values: no blending, every channel written.
     pub(crate) const OFF: GlTarget = GlTarget {
         on: false,
-        equation: [glow::FUNC_ADD; 2],
-        func: [glow::ONE, glow::ZERO, glow::ONE, glow::ZERO],
+        equation: [gles::FUNC_ADD; 2],
+        func: [gles::ONE, gles::ZERO, gles::ONE, gles::ZERO],
         mask: [true; 4],
     };
 
@@ -189,42 +184,33 @@ fn all_targets<T: PartialEq + Copy>(
 }
 
 /// Sets every target to `t` by GL's calls for all targets, only where they differ.
-pub(crate) fn uniform(gl: &glow::Context, v: &mut GlValues, t: &GlTarget) {
-    all_targets(v, t.on, |x| &mut x.on, |on| enable(gl, glow::BLEND, on));
+pub(crate) fn uniform(gl: &impl OpenGlEs, v: &mut GlValues, t: &GlTarget) {
+    all_targets(v, t.on, |x| &mut x.on, |on| enable(gl, gles::BLEND, on));
     if t.on {
-        // SAFETY: a plain GL state call on the current context.
         all_targets(
             v,
             t.equation,
             |x| &mut x.equation,
-            |e| unsafe { gl.blend_equation_separate(e[0], e[1]) },
+            |e| gl.blend_equation_separate(e[0], e[1]),
         );
-        // SAFETY: a plain GL state call on the current context.
         all_targets(
             v,
             t.func,
             |x| &mut x.func,
-            |f| unsafe { gl.blend_func_separate(f[0], f[1], f[2], f[3]) },
+            |f| gl.blend_func_separate(f[0], f[1], f[2], f[3]),
         );
     }
-    // SAFETY: a plain GL state call on the current context.
     all_targets(
         v,
         t.mask,
         |x| &mut x.mask,
-        |m| unsafe { gl.color_mask(m[0], m[1], m[2], m[3]) },
+        |m| gl.color_mask(m[0], m[1], m[2], m[3]),
     );
 }
 
 /// Applies `b`, leaving unwritten the channels of `unwritten`, [`format::CHANNELS`] bits a target
 /// from the first, each from red.
-pub(crate) fn blend(
-    gl: &glow::Context,
-    v: &mut GlValues,
-    b: &GlBlend,
-    platform: &Platform,
-    unwritten: u32,
-) {
+pub(crate) fn blend(gl: &impl OpenGlEs, v: &mut GlValues, b: &GlBlend, unwritten: u32) {
     let masked;
     let (targets, same) = if unwritten == 0 {
         (&b.targets, b.same)
@@ -246,17 +232,24 @@ pub(crate) fn blend(
         // OES_draw_buffers_indexed, which `create_blend` or `begin_pass` asked for.
         for (i, (t, x)) in targets.iter().zip(&mut v.targets).enumerate() {
             let i = i as u32;
-            set_if!(x.on, t.on, |on| platform.enable_i(glow::BLEND, i, on));
+            set_if!(x.on, t.on, |on| if on {
+                gl.enablei_oes(gles::BLEND, i)
+            } else {
+                gl.disablei_oes(gles::BLEND, i)
+            });
             if t.on {
-                set_if!(x.equation, t.equation, |e| platform.blend_equation_i(i, e));
-                set_if!(x.func, t.func, |f| platform.blend_func_i(i, f));
+                set_if!(x.equation, t.equation, |e: [u32; 2]| gl
+                    .blend_equation_separatei_oes(i, e[0], e[1]));
+                set_if!(x.func, t.func, |f: [u32; 4]| gl
+                    .blend_func_separatei_oes(i, f[0], f[1], f[2], f[3]));
             }
-            set_if!(x.mask, t.mask, |m| platform.color_mask_i(i, m));
+            set_if!(x.mask, t.mask, |m: [bool; 4]| gl
+                .color_maski_oes(i, m[0], m[1], m[2], m[3]));
         }
     }
     set_if!(v.alpha_to_coverage, b.alpha_to_coverage, |on| enable(
         gl,
-        glow::SAMPLE_ALPHA_TO_COVERAGE,
+        gles::SAMPLE_ALPHA_TO_COVERAGE,
         on
     ));
 }
@@ -297,16 +290,18 @@ impl GlDepthStencil {
 }
 
 /// The depth and stencil block, with the draw's stencil reference (one for both faces, as WebGL
-/// requires).
+/// requires). Err names what is missing where the faces' compare or operations differ: the OpenGL ES
+/// crate has neither glStencilFuncSeparate nor glStencilOpSeparate yet (NEEDED-FROM-API-CRATES.md), so
+/// only both faces at once can be set.
 pub(crate) fn depth_stencil(
-    gl: &glow::Context,
+    gl: &impl OpenGlEs,
     v: &mut GlValues,
     d: &GlDepthStencil,
     reference: u8,
-) {
+) -> Result<(), &'static str> {
     set_if!(v.depth_test, d.depth_func.is_some(), |on| enable(
         gl,
-        glow::DEPTH_TEST,
+        gles::DEPTH_TEST,
         on
     ));
     if let Some(f) = d.depth_func {
@@ -316,25 +311,24 @@ pub(crate) fn depth_stencil(
     set_if!(v.depth_mask, d.depth_mask, |on| gl.depth_mask(on));
     set_if!(v.stencil_test, d.stencil.is_some(), |on| enable(
         gl,
-        glow::STENCIL_TEST,
+        gles::STENCIL_TEST,
         on
     ));
     if let Some(s) = &d.stencil {
-        for (i, gl_face) in [glow::FRONT, glow::BACK].into_iter().enumerate() {
-            let func = (s.compare[i], reference, s.read_mask);
-            set_if!(v.stencil_func[i], func, |f: (u32, u8, u8)| gl
-                .stencil_func_separate(
-                    gl_face,
-                    f.0,
-                    i32::from(f.1),
-                    u32::from(f.2)
-                ));
-            set_if!(v.stencil_op[i], s.ops[i], |o: [u32; 3]| gl
-                .stencil_op_separate(gl_face, o[0], o[1], o[2]));
+        if s.compare[0] != s.compare[1] || s.ops[0] != s.ops[1] {
+            return Err(
+                "faces of differing stencil compare or operations (glStencilFuncSeparate, glStencilOpSeparate)",
+            );
         }
+        let func = (s.compare[0], reference, s.read_mask);
+        set_if!(v.stencil_func, [func; 2], |f: [(u32, u8, u8); 2]| gl
+            .stencil_func(f[0].0, i32::from(f[0].1), u32::from(f[0].2)));
+        set_if!(v.stencil_op, [s.ops[0]; 2], |o: [[u32; 3]; 2]| gl
+            .stencil_op(o[0][0], o[0][1], o[0][2]));
         set_if!(v.stencil_write_mask, s.write_mask, |m: u8| gl
             .stencil_mask(u32::from(m)));
     }
+    Ok(())
 }
 
 /// A raster block as the GL values it stands for.
@@ -363,29 +357,29 @@ impl GlRaster {
         GlRaster {
             cull: match d.cull {
                 CullMode::None => None,
-                CullMode::Front => Some(glow::FRONT),
-                CullMode::Back => Some(glow::BACK),
+                CullMode::Front => Some(gles::FRONT),
+                CullMode::Back => Some(gles::BACK),
             },
-            front_face: if ccw { glow::CCW } else { glow::CW },
+            front_face: if ccw { gles::CCW } else { gles::CW },
             polygon_offset: (bias != 0.0 || slope != 0.0).then_some((slope, bias, clamp)),
             fill_lines: d.fill == FillMode::Line,
             depth_clamp: !d.depth_clip,
             scissor_test: d.scissor,
             clip_depth: (!flipped).then_some(if d.depth_minus_one {
-                glow::NEGATIVE_ONE_TO_ONE
+                gles::NEGATIVE_ONE_TO_ONE_EXT
             } else {
-                glow::ZERO_TO_ONE
+                gles::ZERO_TO_ONE_EXT
             }),
             provoking: match d.provoking {
-                ProvokingVertex::First => glow::FIRST_VERTEX_CONVENTION,
-                ProvokingVertex::Last => glow::LAST_VERTEX_CONVENTION,
+                ProvokingVertex::First => gles::FIRST_VERTEX_CONVENTION,
+                ProvokingVertex::Last => gles::LAST_VERTEX_CONVENTION,
             },
         }
     }
 
     /// The vertex whose flat values the block's primitives take.
     pub fn provoking(&self) -> ProvokingVertex {
-        if self.provoking == glow::FIRST_VERTEX_CONVENTION {
+        if self.provoking == gles::FIRST_VERTEX_CONVENTION {
             ProvokingVertex::First
         } else {
             ProvokingVertex::Last
@@ -393,66 +387,75 @@ impl GlRaster {
     }
 }
 
-pub(crate) fn raster(gl: &glow::Context, v: &mut GlValues, r: &GlRaster, platform: &Platform) {
+pub(crate) fn raster(gl: &impl OpenGlEs, v: &mut GlValues, r: &GlRaster) {
     if v.cull != r.cull {
         match r.cull {
             Some(face) => {
                 if v.cull.is_none() {
-                    enable(gl, glow::CULL_FACE, true);
+                    enable(gl, gles::CULL_FACE, true);
                 }
-                // SAFETY: a plain GL state call.
-                unsafe { gl.cull_face(face) };
+                gl.cull_face(face);
             }
-            None => enable(gl, glow::CULL_FACE, false),
+            None => enable(gl, gles::CULL_FACE, false),
         }
         v.cull = r.cull;
     }
     set_if!(v.front_face, r.front_face, |f| gl.front_face(f));
     if v.polygon_offset != r.polygon_offset {
         if v.polygon_offset.is_none() || r.polygon_offset.is_none() {
-            enable(gl, glow::POLYGON_OFFSET_FILL, r.polygon_offset.is_some());
+            enable(gl, gles::POLYGON_OFFSET_FILL, r.polygon_offset.is_some());
         }
         match r.polygon_offset {
             // EXT_polygon_offset_clamp, which `create_raster` asked for.
             Some((factor, units, clamp)) if clamp != 0.0 => {
-                platform.polygon_offset_clamp(factor, units, clamp)
+                let _ = gl.polygon_offset_clamp_ext(factor, units, clamp);
             }
-            // SAFETY: a plain GL state call.
-            Some((factor, units, _)) => unsafe { gl.polygon_offset(factor, units) },
+            Some((factor, units, _)) => gl.polygon_offset(factor, units),
             None => {}
         }
         v.polygon_offset = r.polygon_offset;
     }
     // WEBGL_polygon_mode, which `create_raster` asked for when a block draws lines; edges take the
     // offset as filled polygons do in Direct3D.
-    set_if!(v.fill_lines, r.fill_lines, |lines| platform
-        .polygon_mode(if lines { glow::LINE } else { glow::FILL }));
+    set_if!(v.fill_lines, r.fill_lines, |lines| polygon_mode(
+        gl,
+        if lines {
+            gles::LINE_ANGLE
+        } else {
+            gles::FILL_ANGLE
+        }
+    ));
     let line_offset = r.fill_lines && r.polygon_offset.is_some();
     set_if!(v.line_offset, line_offset, |on| enable(
         gl,
-        glow::POLYGON_OFFSET_LINE,
+        gles::POLYGON_OFFSET_LINE_ANGLE,
         on
     ));
     // EXT_depth_clamp, which `create_raster` asked for when a block clamps.
     set_if!(v.depth_clamp, r.depth_clamp, |on| enable(
         gl,
-        glow::DEPTH_CLAMP,
+        gles::DEPTH_CLAMP_EXT,
         on
     ));
     set_if!(v.scissor_test, r.scissor_test, |on| enable(
         gl,
-        glow::SCISSOR_TEST,
+        gles::SCISSOR_TEST,
         on
     ));
     if let Some(depth) = r.clip_depth {
-        set_if!(v.clip_depth, depth, |depth| platform.clip_control(
-            gl,
-            glow::UPPER_LEFT,
-            depth
-        ));
+        set_if!(v.clip_depth, depth, |depth| {
+            let _ = gl.clip_control_ext(gles::UPPER_LEFT_EXT, depth);
+        });
     }
-    set_if!(v.provoking, r.provoking, |mode| platform
-        .provoking_vertex(gl, mode));
+    set_if!(v.provoking, r.provoking, |mode| {
+        let _ = gl.provoking_vertex_angle(mode);
+    });
+}
+
+/// Fills polygons (`FILL_ANGLE`) or draws their edges (`LINE_ANGLE`), for both faces
+/// (WEBGL_polygon_mode).
+fn polygon_mode(gl: &impl OpenGlEs, mode: u32) {
+    let _ = gl.polygon_mode_angle(gles::FRONT_AND_BACK, mode);
 }
 
 /// A vertex layout block as the attribute pointers it stands for.
@@ -521,23 +524,23 @@ impl GlLayout {
 
 /// The state of a draw of the back end's own into the viewport `rect`: no blending, tests or culling.
 /// The caller opens the write masks and the scissor.
-pub(crate) fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platform: &Platform) {
-    all_targets(v, false, |t| &mut t.on, |on| enable(gl, glow::BLEND, on));
-    set_if!(v.fill_lines, false, |_| platform.polygon_mode(glow::FILL));
+pub(crate) fn plain(gl: &impl OpenGlEs, v: &mut GlValues, rect: [i32; 4]) {
+    all_targets(v, false, |t| &mut t.on, |on| enable(gl, gles::BLEND, on));
+    set_if!(v.fill_lines, false, |_| polygon_mode(gl, gles::FILL_ANGLE));
     clip_distances(gl, v, 0);
     set_if!(v.alpha_to_coverage, false, |on| enable(
         gl,
-        glow::SAMPLE_ALPHA_TO_COVERAGE,
+        gles::SAMPLE_ALPHA_TO_COVERAGE,
         on
     ));
-    set_if!(v.depth_test, false, |on| enable(gl, glow::DEPTH_TEST, on));
+    set_if!(v.depth_test, false, |on| enable(gl, gles::DEPTH_TEST, on));
     set_if!(v.stencil_test, false, |on| enable(
         gl,
-        glow::STENCIL_TEST,
+        gles::STENCIL_TEST,
         on
     ));
     if v.cull.is_some() {
-        enable(gl, glow::CULL_FACE, false);
+        enable(gl, gles::CULL_FACE, false);
         v.cull = None;
     }
     set_if!(v.viewport, rect, |r: [i32; 4]| gl
@@ -546,70 +549,69 @@ pub(crate) fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platfo
 
 /// Enables clip distances 0 to `n` and no others: GL leaves a distance a program does not write
 /// undefined while it is enabled.
-pub(crate) fn clip_distances(gl: &glow::Context, v: &mut GlValues, n: u8) {
+pub(crate) fn clip_distances(gl: &impl OpenGlEs, v: &mut GlValues, n: u8) {
     let held = v.clip_distances;
     for i in n.min(held)..n.max(held) {
-        enable(gl, glow::CLIP_DISTANCE0 + u32::from(i), i < n);
+        enable(gl, crate::platform::CLIP_DISTANCE0 + u32::from(i), i < n);
     }
     v.clip_distances = n;
 }
 
 /// Opens every channel of every target's write mask.
-pub(crate) fn open_masks(gl: &glow::Context, v: &mut GlValues) {
-    // SAFETY: a plain GL state call.
+pub(crate) fn open_masks(gl: &impl OpenGlEs, v: &mut GlValues) {
     all_targets(
         v,
         [true; 4],
         |t| &mut t.mask,
-        |m| unsafe { gl.color_mask(m[0], m[1], m[2], m[3]) },
+        |m| gl.color_mask(m[0], m[1], m[2], m[3]),
     );
 }
 
 pub(crate) fn mode(t: Topology) -> u32 {
     match t {
-        Topology::PointList => glow::POINTS,
-        Topology::LineList => glow::LINES,
-        Topology::LineStrip => glow::LINE_STRIP,
-        Topology::TriangleList => glow::TRIANGLES,
-        Topology::TriangleStrip => glow::TRIANGLE_STRIP,
-        Topology::TriangleFan => glow::TRIANGLE_FAN,
-        Topology::LineLoop => glow::LINE_LOOP,
+        Topology::PointList => gles::POINTS,
+        Topology::LineList => gles::LINES,
+        Topology::LineStrip => gles::LINE_STRIP,
+        Topology::TriangleList => gles::TRIANGLES,
+        Topology::TriangleStrip => gles::TRIANGLE_STRIP,
+        Topology::TriangleFan => gles::TRIANGLE_FAN,
+        Topology::LineLoop => gles::LINE_LOOP,
     }
 }
 
 pub(crate) fn compare(f: CompareFn) -> u32 {
     match f {
-        CompareFn::Never => glow::NEVER,
-        CompareFn::Less => glow::LESS,
-        CompareFn::Equal => glow::EQUAL,
-        CompareFn::LessEqual => glow::LEQUAL,
-        CompareFn::Greater => glow::GREATER,
-        CompareFn::NotEqual => glow::NOTEQUAL,
-        CompareFn::GreaterEqual => glow::GEQUAL,
-        CompareFn::Always => glow::ALWAYS,
+        CompareFn::Never => gles::NEVER,
+        CompareFn::Less => gles::LESS,
+        CompareFn::Equal => gles::EQUAL,
+        CompareFn::LessEqual => gles::LEQUAL,
+        CompareFn::Greater => gles::GREATER,
+        CompareFn::NotEqual => gles::NOTEQUAL,
+        CompareFn::GreaterEqual => gles::GEQUAL,
+        CompareFn::Always => gles::ALWAYS,
     }
 }
 
 fn stencil(op: StencilOp) -> u32 {
     match op {
-        StencilOp::Keep => glow::KEEP,
-        StencilOp::Zero => glow::ZERO,
-        StencilOp::Replace => glow::REPLACE,
-        StencilOp::IncrementClamp => glow::INCR,
-        StencilOp::DecrementClamp => glow::DECR,
-        StencilOp::Invert => glow::INVERT,
-        StencilOp::IncrementWrap => glow::INCR_WRAP,
-        StencilOp::DecrementWrap => glow::DECR_WRAP,
+        StencilOp::Keep => gles::KEEP,
+        StencilOp::Zero => gles::ZERO,
+        StencilOp::Replace => gles::REPLACE,
+        StencilOp::IncrementClamp => gles::INCR,
+        StencilOp::DecrementClamp => gles::DECR,
+        StencilOp::Invert => gles::INVERT,
+        StencilOp::IncrementWrap => gles::INCR_WRAP,
+        StencilOp::DecrementWrap => gles::DECR_WRAP,
     }
 }
 
 fn op(o: BlendOp) -> u32 {
     match o {
-        BlendOp::Add => glow::FUNC_ADD,
-        BlendOp::Subtract => glow::FUNC_SUBTRACT,
-        BlendOp::ReverseSubtract => glow::FUNC_REVERSE_SUBTRACT,
-        BlendOp::Min => glow::MIN,
-        BlendOp::Max => glow::MAX,
+        BlendOp::Add => gles::FUNC_ADD,
+        BlendOp::Subtract => gles::FUNC_SUBTRACT,
+        BlendOp::ReverseSubtract => gles::FUNC_REVERSE_SUBTRACT,
+        BlendOp::Min => gles::MIN,
+        BlendOp::Max => gles::MAX,
     }
 }
 
@@ -628,25 +630,25 @@ pub(crate) fn second_source(f: BlendFactor) -> bool {
 /// asked for.
 pub(crate) fn factor(f: BlendFactor) -> u32 {
     match f {
-        BlendFactor::Zero => glow::ZERO,
-        BlendFactor::One => glow::ONE,
-        BlendFactor::Src => glow::SRC_COLOR,
-        BlendFactor::OneMinusSrc => glow::ONE_MINUS_SRC_COLOR,
-        BlendFactor::SrcAlpha => glow::SRC_ALPHA,
-        BlendFactor::OneMinusSrcAlpha => glow::ONE_MINUS_SRC_ALPHA,
-        BlendFactor::Dst => glow::DST_COLOR,
-        BlendFactor::OneMinusDst => glow::ONE_MINUS_DST_COLOR,
-        BlendFactor::DstAlpha => glow::DST_ALPHA,
-        BlendFactor::OneMinusDstAlpha => glow::ONE_MINUS_DST_ALPHA,
-        BlendFactor::SrcAlphaSaturated => glow::SRC_ALPHA_SATURATE,
-        BlendFactor::Constant => glow::CONSTANT_COLOR,
-        BlendFactor::OneMinusConstant => glow::ONE_MINUS_CONSTANT_COLOR,
-        BlendFactor::ConstantAlpha => glow::CONSTANT_ALPHA,
-        BlendFactor::OneMinusConstantAlpha => glow::ONE_MINUS_CONSTANT_ALPHA,
-        BlendFactor::Src1 => glow::SRC1_COLOR,
-        BlendFactor::OneMinusSrc1 => glow::ONE_MINUS_SRC1_COLOR,
-        BlendFactor::Src1Alpha => glow::SRC1_ALPHA,
-        BlendFactor::OneMinusSrc1Alpha => glow::ONE_MINUS_SRC1_ALPHA,
+        BlendFactor::Zero => gles::ZERO,
+        BlendFactor::One => gles::ONE,
+        BlendFactor::Src => gles::SRC_COLOR,
+        BlendFactor::OneMinusSrc => gles::ONE_MINUS_SRC_COLOR,
+        BlendFactor::SrcAlpha => gles::SRC_ALPHA,
+        BlendFactor::OneMinusSrcAlpha => gles::ONE_MINUS_SRC_ALPHA,
+        BlendFactor::Dst => gles::DST_COLOR,
+        BlendFactor::OneMinusDst => gles::ONE_MINUS_DST_COLOR,
+        BlendFactor::DstAlpha => gles::DST_ALPHA,
+        BlendFactor::OneMinusDstAlpha => gles::ONE_MINUS_DST_ALPHA,
+        BlendFactor::SrcAlphaSaturated => gles::SRC_ALPHA_SATURATE,
+        BlendFactor::Constant => gles::CONSTANT_COLOR,
+        BlendFactor::OneMinusConstant => gles::ONE_MINUS_CONSTANT_COLOR,
+        BlendFactor::ConstantAlpha => gles::CONSTANT_ALPHA,
+        BlendFactor::OneMinusConstantAlpha => gles::ONE_MINUS_CONSTANT_ALPHA,
+        BlendFactor::Src1 => crate::platform::SRC1_COLOR,
+        BlendFactor::OneMinusSrc1 => crate::platform::ONE_MINUS_SRC1_COLOR,
+        BlendFactor::Src1Alpha => crate::platform::SRC1_ALPHA,
+        BlendFactor::OneMinusSrc1Alpha => crate::platform::ONE_MINUS_SRC1_ALPHA,
     }
 }
 
@@ -666,51 +668,51 @@ pub(crate) fn conversion(f: VertexFormat) -> u32 {
 fn attribute(f: VertexFormat) -> (i32, u32, bool, bool) {
     use VertexFormat as V;
     let (n, ty, norm, int) = match f {
-        V::Uint8x1 | V::Uint8x2 | V::Uint8x3 | V::Uint8x4 => (0, glow::UNSIGNED_BYTE, false, true),
-        V::Sint8x1 | V::Sint8x2 | V::Sint8x3 | V::Sint8x4 => (0, glow::BYTE, false, true),
+        V::Uint8x1 | V::Uint8x2 | V::Uint8x3 | V::Uint8x4 => (0, gles::UNSIGNED_BYTE, false, true),
+        V::Sint8x1 | V::Sint8x2 | V::Sint8x3 | V::Sint8x4 => (0, gles::BYTE, false, true),
         V::Unorm8x1 | V::Unorm8x2 | V::Unorm8x3 | V::Unorm8x4 => {
-            (0, glow::UNSIGNED_BYTE, true, false)
+            (0, gles::UNSIGNED_BYTE, true, false)
         }
-        V::Snorm8x1 | V::Snorm8x2 | V::Snorm8x3 | V::Snorm8x4 => (0, glow::BYTE, true, false),
+        V::Snorm8x1 | V::Snorm8x2 | V::Snorm8x3 | V::Snorm8x4 => (0, gles::BYTE, true, false),
         V::Uint16x1 | V::Uint16x2 | V::Uint16x3 | V::Uint16x4 => {
-            (0, glow::UNSIGNED_SHORT, false, true)
+            (0, gles::UNSIGNED_SHORT, false, true)
         }
-        V::Sint16x1 | V::Sint16x2 | V::Sint16x3 | V::Sint16x4 => (0, glow::SHORT, false, true),
+        V::Sint16x1 | V::Sint16x2 | V::Sint16x3 | V::Sint16x4 => (0, gles::SHORT, false, true),
         V::Unorm16x1 | V::Unorm16x2 | V::Unorm16x3 | V::Unorm16x4 => {
-            (0, glow::UNSIGNED_SHORT, true, false)
+            (0, gles::UNSIGNED_SHORT, true, false)
         }
-        V::Snorm16x1 | V::Snorm16x2 | V::Snorm16x3 | V::Snorm16x4 => (0, glow::SHORT, true, false),
+        V::Snorm16x1 | V::Snorm16x2 | V::Snorm16x3 | V::Snorm16x4 => (0, gles::SHORT, true, false),
         V::Float16x1 | V::Float16x2 | V::Float16x3 | V::Float16x4 => {
-            (0, glow::HALF_FLOAT, false, false)
+            (0, gles::HALF_FLOAT, false, false)
         }
-        V::Float32x1 | V::Float32x2 | V::Float32x3 | V::Float32x4 => (0, glow::FLOAT, false, false),
+        V::Float32x1 | V::Float32x2 | V::Float32x3 | V::Float32x4 => (0, gles::FLOAT, false, false),
         V::Uint32x1 | V::Uint32x2 | V::Uint32x3 | V::Uint32x4 => {
-            (0, glow::UNSIGNED_INT, false, true)
+            (0, gles::UNSIGNED_INT, false, true)
         }
-        V::Sint32x1 | V::Sint32x2 | V::Sint32x3 | V::Sint32x4 => (0, glow::INT, false, true),
-        V::Unorm10_10_10_2 => (4, glow::UNSIGNED_INT_2_10_10_10_REV, true, false),
+        V::Sint32x1 | V::Sint32x2 | V::Sint32x3 | V::Sint32x4 => (0, gles::INT, false, true),
+        V::Unorm10_10_10_2 => (4, gles::UNSIGNED_INT_2_10_10_10_REV, true, false),
         // Read as bytes or one word and turned into their values in the program (`conversion`).
-        V::Bgra8Unorm => (4, glow::UNSIGNED_BYTE, true, false),
+        V::Bgra8Unorm => (4, gles::UNSIGNED_BYTE, true, false),
         // Its three bytes as `Unorm8x3`'s, so the fourth component reads one.
         V::Bgrx8Unorm => return attribute(V::Unorm8x3),
-        V::Uint10_10_10_2 | V::Float11_11_10 => (1, glow::UNSIGNED_INT, false, true),
+        V::Uint10_10_10_2 | V::Float11_11_10 => (1, gles::UNSIGNED_INT, false, true),
     };
     let components = if n != 0 {
         n
     } else {
         // The variants of each type run x1 to x4 in order.
         let base = match ty {
-            glow::UNSIGNED_BYTE if int => V::Uint8x1,
-            glow::BYTE if int => V::Sint8x1,
-            glow::UNSIGNED_BYTE => V::Unorm8x1,
-            glow::BYTE => V::Snorm8x1,
-            glow::UNSIGNED_SHORT if int => V::Uint16x1,
-            glow::SHORT if int => V::Sint16x1,
-            glow::UNSIGNED_SHORT => V::Unorm16x1,
-            glow::SHORT => V::Snorm16x1,
-            glow::HALF_FLOAT => V::Float16x1,
-            glow::FLOAT => V::Float32x1,
-            glow::UNSIGNED_INT => V::Uint32x1,
+            gles::UNSIGNED_BYTE if int => V::Uint8x1,
+            gles::BYTE if int => V::Sint8x1,
+            gles::UNSIGNED_BYTE => V::Unorm8x1,
+            gles::BYTE => V::Snorm8x1,
+            gles::UNSIGNED_SHORT if int => V::Uint16x1,
+            gles::SHORT if int => V::Sint16x1,
+            gles::UNSIGNED_SHORT => V::Unorm16x1,
+            gles::SHORT => V::Snorm16x1,
+            gles::HALF_FLOAT => V::Float16x1,
+            gles::FLOAT => V::Float32x1,
+            gles::UNSIGNED_INT => V::Uint32x1,
             _ => V::Sint32x1,
         };
         f as i32 - base as i32 + 1

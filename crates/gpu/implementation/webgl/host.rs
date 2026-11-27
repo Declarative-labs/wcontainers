@@ -24,7 +24,9 @@ pub(crate) fn kept(format: Format) -> bool {
 /// value (-128, or -32768 for 16-bit components), which a draw reads as the value above it.
 fn holds_minimum(format: Format, texels: &[u8]) -> bool {
     match crate::format::gl_format(format).map(|g| g.ty) {
-        Some(glow::SHORT) => texels.as_chunks::<2>().0.contains(&[0, 0x80]),
+        Some(wcontainers_opengl_es::constants::SHORT) => {
+            texels.as_chunks::<2>().0.contains(&[0, 0x80])
+        }
         _ => texels.contains(&0x80),
     }
 }

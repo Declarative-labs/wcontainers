@@ -208,7 +208,13 @@ fn rig_verdict(output: &rig::Output, bytes: Option<&[u8]>, out: &Path) -> Result
 
 fn angle(dir: &Path, out: &Path, off: &[&str]) -> Result<bool> {
     use wcontainers_gpu::Gpu;
-    let mut gl = wcontainers_gpu_webgl::Gl::on_angle(dir, off).map_err(anyhow::Error::msg)?;
+    let mut gl = <wcontainers_gpu_webgl::Gl<wcontainers_opengl_es_direct::OpenGlEsContext> as wcontainers_gpu::StandaloneGpu>::new(
+        wcontainers_gpu_webgl::GlConfig {
+            egl: Some(dir.to_path_buf()),
+            off: off.iter().map(|name| name.to_string()).collect(),
+        },
+    )
+    .map_err(anyhow::Error::msg)?;
     std::fs::create_dir_all(out)?;
     println!("renderer: {}", gl.renderer());
     let used: Vec<_> = gl.extensions().collect();

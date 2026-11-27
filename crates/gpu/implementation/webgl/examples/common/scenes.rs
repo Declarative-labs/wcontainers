@@ -2,8 +2,7 @@
 //! their programs written in WGSL. Each returns the target's texels, RGBA8, rows top first.
 
 use wcontainers_gpu::{
-    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
-    resource::*, shader::*, slow::*, state::*, *,
+    caps::*, draw::*, error::*, format::*, resource::*, shader::*, slow::*, state::*, *,
 };
 
 #[path = "../../../../../graphics-test/src/scene.rs"]

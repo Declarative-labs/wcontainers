@@ -1,7 +1,6 @@
 //! The capability list: what WebGL 2 and the context's extensions give, as far as this back end
 //! serves it. A feature WebGL 2 has whose route is not built yet is declared absent until it is.
 
-use glow::HasContext;
 use std::collections::BTreeSet;
 use wcontainers_gpu::{
     caps::AdapterInfo, caps::Caps, caps::Features, caps::FormatCaps, caps::FormatUse, caps::Limits,
@@ -9,6 +8,9 @@ use wcontainers_gpu::{
 };
 
 use crate::format::{self, FormatExtensions};
+use crate::platform;
+use wcontainers_opengl_es::OpenGlEs;
+use wcontainers_opengl_es::constants as gles;
 
 /// The format at index `i` of [`FormatCaps`] (its number, which serde's derive reads as the variant's
 /// position).
@@ -20,13 +22,12 @@ fn format_at(i: usize) -> Format {
 }
 
 pub(crate) fn caps(
-    gl: &glow::Context,
-    platform: &crate::platform::Platform,
+    gl: &impl OpenGlEs,
+    unusable_uniform_blocks: u32,
     ext: &BTreeSet<&'static str>,
     renderer: &str,
 ) -> Caps {
-    // SAFETY: plain queries of the current context.
-    let get = |name| unsafe { gl.get_parameter_i32(name) }.max(0) as u32;
+    let get = |name| platform::integer(gl, name).max(0) as u32;
     let mut features = Features::READ_BACK_NOW
         // GL's provoking vertex is the last; its rule for every topology is Direct3D 9's and OpenGL's.
         | Features::PROVOKING_VERTEX_LAST
@@ -83,20 +84,20 @@ pub(crate) fn caps(
     // CLIP_DISTANCE and CULL_DISTANCE stay absent although WEBGL_clip_cull_distance is there: with
     // the distances written and enabled, Chrome on the RTX 3080 clipped nothing (not found why).
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");
-    let units_vertex = get(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
-    let units_fragment = get(glow::MAX_TEXTURE_IMAGE_UNITS);
-    let blocks = get(glow::MAX_VERTEX_UNIFORM_BLOCKS).min(get(glow::MAX_FRAGMENT_UNIFORM_BLOCKS))
-        - platform.unusable_uniform_blocks();
-    let targets = get(glow::MAX_DRAW_BUFFERS).min(get(glow::MAX_COLOR_ATTACHMENTS));
-    let uniform_alignment = get(glow::UNIFORM_BUFFER_OFFSET_ALIGNMENT);
+    let units_vertex = get(gles::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
+    let units_fragment = get(gles::MAX_TEXTURE_IMAGE_UNITS);
+    let blocks = get(gles::MAX_VERTEX_UNIFORM_BLOCKS).min(get(gles::MAX_FRAGMENT_UNIFORM_BLOCKS))
+        - unusable_uniform_blocks;
+    let targets = get(gles::MAX_DRAW_BUFFERS).min(get(gles::MAX_COLOR_ATTACHMENTS));
+    let uniform_alignment = get(gles::UNIFORM_BUFFER_OFFSET_ALIGNMENT);
     let limits = Limits {
-        max_texture_2d: get(glow::MAX_TEXTURE_SIZE),
-        max_texture_cube: get(glow::MAX_CUBE_MAP_TEXTURE_SIZE),
-        max_texture_3d: get(glow::MAX_3D_TEXTURE_SIZE),
-        max_texture_layers: get(glow::MAX_ARRAY_TEXTURE_LAYERS),
-        // WebGL passes buffer sizes as GLsizeiptr, which glow takes as i32.
+        max_texture_2d: get(gles::MAX_TEXTURE_SIZE),
+        max_texture_cube: get(gles::MAX_CUBE_MAP_TEXTURE_SIZE),
+        max_texture_3d: get(gles::MAX_3D_TEXTURE_SIZE),
+        max_texture_layers: get(gles::MAX_ARRAY_TEXTURE_LAYERS),
+        // WebGL 2 implementations take buffer sizes up to the largest 32-bit signed number.
         max_buffer_size: i32::MAX as u64,
-        max_uniform_buffer_size: get(glow::MAX_UNIFORM_BLOCK_SIZE),
+        max_uniform_buffer_size: get(gles::MAX_UNIFORM_BLOCK_SIZE),
         max_storage_buffer_size: 0,
         uniform_buffers_per_stage: blocks,
         textures_per_stage: units_vertex.min(units_fragment),
@@ -104,13 +105,13 @@ pub(crate) fn caps(
         samplers_per_stage: units_vertex.min(units_fragment),
         storage_buffers_per_stage: 0,
         storage_textures_per_stage: 0,
-        vertex_streams: get(glow::MAX_VERTEX_ATTRIBS),
-        vertex_attributes: get(glow::MAX_VERTEX_ATTRIBS),
+        vertex_streams: get(gles::MAX_VERTEX_ATTRIBS),
+        vertex_attributes: get(gles::MAX_VERTEX_ATTRIBS),
         // WebGL's vertexAttribPointer takes strides up to 255.
         max_vertex_stride: 255,
         color_targets: targets,
         color_bytes_per_sample: targets * 16,
-        inter_stage_slots: get(glow::MAX_VARYING_VECTORS),
+        inter_stage_slots: get(gles::MAX_VARYING_VECTORS),
         min_uniform_offset_alignment: uniform_alignment,
         min_storage_offset_alignment: uniform_alignment,
         buffer_copy_alignment: 1,
@@ -123,20 +124,18 @@ pub(crate) fn caps(
         max_dispatch: 0,
         max_point_size: {
             let mut range = [1.0; 2];
-            // SAFETY: a plain query of two floats.
-            unsafe { gl.get_parameter_f32_slice(glow::ALIASED_POINT_SIZE_RANGE, &mut range) };
+            gl.get_floatv(gles::ALIASED_POINT_SIZE_RANGE, &mut range);
             range[1]
         },
         // Lines are drawn 1 wide (WIDE_LINES is absent), whatever range GL has.
         max_line_width: 1.0,
         max_anisotropy: if anisotropic {
-            // SAFETY: a plain query the extension defines.
-            unsafe { gl.get_parameter_f32(glow::MAX_TEXTURE_MAX_ANISOTROPY_EXT) as u16 }
+            platform::float(gl, platform::MAX_TEXTURE_MAX_ANISOTROPY_EXT) as u16
         } else {
             1
         },
-        capture_buffers: get(glow::MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS),
-        capture_components: get(glow::MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS),
+        capture_buffers: get(gles::MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS),
+        capture_components: get(gles::MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS),
     };
     let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {
@@ -158,8 +157,7 @@ pub(crate) fn caps(
             formats.uses[i].intersects(targets),
             format::gl_format(format).filter(|g| g.class != snorm),
         ) {
-            formats.samples[i] |= platform
-                .sample_counts(gl, g.internal)
+            formats.samples[i] |= platform::sample_counts(gl, g.internal)
                 .into_iter()
                 .filter(|c| (2..=128).contains(c) && (*c as u32).is_power_of_two())
                 .fold(0, |bits, c| bits | c as u8);

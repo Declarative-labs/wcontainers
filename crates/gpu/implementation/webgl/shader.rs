@@ -1,9 +1,11 @@
 //! Shaders written as GLSL ES 3.00 by naga, and programs linked once per pair of them.
 
-use glow::HasContext;
+use crate::platform;
 use naga::back::glsl;
 use std::rc::Rc;
 use wcontainers_gpu::{caps::Features, error::GpuError, shader::ShaderModule, shader::ShaderStage};
+use wcontainers_opengl_es::OpenGlEs;
+use wcontainers_opengl_es::constants as gles;
 
 /// A (set, binding) pair: where a program reads a resource.
 pub(crate) type Slot = (u32, u32);
@@ -16,7 +18,7 @@ pub(crate) type Immediate = (String, u32, glsl::GlslUniformType);
 #[derive(Debug)]
 pub struct ShaderObj {
     pub id: u64,
-    pub raw: glow::Shader,
+    pub raw: u32,
     /// How many handles name it.
     pub handles: std::cell::Cell<u32>,
     pub text: Rc<ShaderText>,
@@ -66,7 +68,7 @@ pub(crate) type Pair = (Rc<ShaderObj>, Option<Rc<ShaderObj>>);
 #[derive(Debug)]
 pub struct ProgramObj {
     pub id: u64,
-    pub raw: glow::Program,
+    pub raw: u32,
     /// The shaders it links, until the link is read.
     pub shaders: std::cell::RefCell<Option<Pair>>,
     /// The shaders it was made from, whose sources capture programs compile again.
@@ -93,15 +95,15 @@ pub struct Linked {
     /// twin whose minimum level of detail is 0 where `.2` is set.
     pub units: Vec<(Slot, Option<Slot>, bool)>,
     /// Unit n's hidden size uniform (see [`sizes_from_uniforms`]), with the value it holds.
-    pub sizes: Vec<Option<(glow::UniformLocation, std::cell::Cell<[i32; 3]>)>>,
+    pub sizes: Vec<Option<(i32, std::cell::Cell<[i32; 3]>)>>,
     /// Uniform block binding point n reads the uniform buffer in this slot.
     pub blocks: Vec<Slot>,
     /// naga's `naga_vs_first_instance` (added to `gl_InstanceID`) and `naga_vs_base_vertex` (added to
     /// `gl_VertexID`), each with the value it holds.
-    pub first_instance: Option<(glow::UniformLocation, std::cell::Cell<u32>)>,
-    pub base_vertex: Option<(glow::UniformLocation, std::cell::Cell<u32>)>,
+    pub first_instance: Option<(i32, std::cell::Cell<u32>)>,
+    pub base_vertex: Option<(i32, std::cell::Cell<u32>)>,
     /// Each part of the immediates the program reads: its uniform, offset and type.
-    pub immediates: Vec<(glow::UniformLocation, u32, glsl::GlslUniformType)>,
+    pub immediates: Vec<(i32, u32, glsl::GlslUniformType)>,
     /// The immediates its uniforms hold.
     pub held: std::cell::RefCell<Vec<u8>>,
 }
@@ -1799,21 +1801,21 @@ fn sizes_from_uniforms(source: String, names: &[&str]) -> String {
 /// Starts compiling GLSL of `stage`. The compile status is read when its program links, so compiles
 /// can overlap.
 pub(crate) fn start_compile(
-    gl: &glow::Context,
+    gl: &impl OpenGlEs,
     stage: ShaderStage,
     source: &str,
-) -> Result<glow::Shader, GpuError> {
+) -> Result<u32, GpuError> {
     let kind = match stage {
-        ShaderStage::Vertex => glow::VERTEX_SHADER,
-        _ => glow::FRAGMENT_SHADER,
+        ShaderStage::Vertex => gles::VERTEX_SHADER,
+        _ => gles::FRAGMENT_SHADER,
     };
-    // SAFETY: plain GL calls on the current context.
-    unsafe {
-        let raw = gl.create_shader(kind).map_err(|_| GpuError::OutOfMemory)?;
-        gl.shader_source(raw, source);
-        gl.compile_shader(raw);
-        Ok(raw)
+    let raw = gl.create_shader(kind);
+    if raw == 0 {
+        return Err(GpuError::OutOfMemory);
     }
+    gl.shader_source(raw, &[source.as_bytes()]);
+    gl.compile_shader(raw);
+    Ok(raw)
 }
 
 /// The entry point's location outputs in location order, named as naga's GLSL writer names vertex
@@ -1869,12 +1871,12 @@ impl Capture {
 /// `convert` GL ES cannot read as stored (see [`convert_inputs`]). The new program captures as
 /// `program` does unless `capture` names how.
 pub(crate) fn relink(
-    gl: &glow::Context,
+    gl: &impl OpenGlEs,
     id: u64,
     program: &ProgramObj,
     capture: Option<Capture>,
     convert: u32,
-    empty_fragment: glow::Shader,
+    empty_fragment: u32,
 ) -> Result<ProgramObj, GpuError> {
     let capture = capture.or(program.capture);
     let (vertex, fragment) = &program.stages;
@@ -1900,17 +1902,25 @@ pub(crate) fn relink(
         Some(f) if capture.is_none_or(|c| c.rasterize) => Some(fresh(f, f.source.clone())?),
         _ => None,
     };
-    let names: Vec<&str> = v.outputs.iter().map(|(n, _)| n.as_str()).collect();
-    // SAFETY: plain GL calls on the current context; the shaders are alive.
-    let raw = unsafe {
-        let raw = gl.create_program().map_err(|_| GpuError::OutOfMemory)?;
+    let names: Vec<std::ffi::CString> = v
+        .outputs
+        .iter()
+        .map(|(n, _)| std::ffi::CString::new(n.as_str()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| GpuError::Invalid("webgl: an output name holding a zero byte"))?;
+    let names: Vec<&core::ffi::CStr> = names.iter().map(|n| n.as_c_str()).collect();
+    let raw = {
+        let raw = gl.create_program();
+        if raw == 0 {
+            return Err(GpuError::OutOfMemory);
+        }
         gl.attach_shader(raw, v.raw);
         gl.attach_shader(raw, f.as_ref().map_or(empty_fragment, |f| f.raw));
         if let Some(c) = capture {
             let mode = if c.separate {
-                glow::SEPARATE_ATTRIBS
+                gles::SEPARATE_ATTRIBS
             } else {
-                glow::INTERLEAVED_ATTRIBS
+                gles::INTERLEAVED_ATTRIBS
             };
             gl.transform_feedback_varyings(raw, &names, mode);
         }
@@ -1928,7 +1938,7 @@ pub(crate) fn relink(
 }
 
 /// A program whose link has started.
-fn started(id: u64, raw: glow::Program, stages: Pair, pair: (u64, u64)) -> ProgramObj {
+fn started(id: u64, raw: u32, stages: Pair, pair: (u64, u64)) -> ProgramObj {
     ProgramObj {
         id,
         raw,
@@ -1946,15 +1956,17 @@ fn started(id: u64, raw: glow::Program, stages: Pair, pair: (u64, u64)) -> Progr
 /// Starts linking a vertex and an optional fragment shader. A fragment-less program gets an empty
 /// fragment shader, since GLES links none without one.
 pub(crate) fn link(
-    gl: &glow::Context,
+    gl: &impl OpenGlEs,
     id: u64,
     vertex: &Rc<ShaderObj>,
     fragment: Option<&Rc<ShaderObj>>,
-    empty_fragment: glow::Shader,
+    empty_fragment: u32,
 ) -> Result<ProgramObj, GpuError> {
-    // SAFETY: plain GL calls on the current context; the shaders are alive.
-    let raw = unsafe {
-        let raw = gl.create_program().map_err(|_| GpuError::OutOfMemory)?;
+    let raw = {
+        let raw = gl.create_program();
+        if raw == 0 {
+            return Err(GpuError::OutOfMemory);
+        }
         gl.attach_shader(raw, vertex.raw);
         gl.attach_shader(raw, fragment.map_or(empty_fragment, |f| f.raw));
         gl.link_program(raw);
@@ -1970,88 +1982,81 @@ pub(crate) fn link(
 
 /// Reads a started link, waiting for it, then points each combined sampler at a unit and each uniform
 /// block at a binding point. Leaves the program in use. On failure the error carries GL's logs.
-pub(crate) fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String> {
+pub(crate) fn finish(gl: &impl OpenGlEs, program: &ProgramObj) -> Result<Linked, String> {
     let Some((vertex, fragment)) = program.shaders.borrow_mut().take() else {
         return Err("the link already failed".into());
     };
     let raw = program.raw;
-    // SAFETY: plain GL calls on the current context; the program and shaders are alive.
-    unsafe {
-        if !gl.get_program_link_status(raw) {
-            let mut log = gl.get_program_info_log(raw);
-            for s in core::iter::once(&vertex).chain(&fragment) {
-                if !gl.get_shader_compile_status(s.raw) {
-                    log.push_str(&gl.get_shader_info_log(s.raw));
-                    log.push_str(&s.source);
-                }
-            }
-            return Err(log);
-        }
-        gl.use_program(Some(raw));
-        let mut units = Vec::new();
-        let mut sizes = Vec::new();
-        let mut blocks: Vec<Slot> = Vec::new();
-        let mut immediates = Vec::new();
+    if !platform::linked(gl, raw) {
+        let mut log = platform::program_log(gl, raw);
         for s in core::iter::once(&vertex).chain(&fragment) {
-            for (name, offset, ty) in &s.immediates {
-                if let Some(location) = gl.get_uniform_location(raw, name) {
-                    immediates.push((location, *offset, *ty));
-                }
-            }
-            for Combined {
-                name,
-                texture,
-                sampler,
-                level_zero,
-            } in &s.textures
-            {
-                let location = gl.get_uniform_location(raw, name);
-                let size = gl
-                    .get_uniform_location(raw, &format!("{name}_size"))
-                    .map(|l| (l, std::cell::Cell::new([-1; 3])));
-                // A texture only sized has no sampler uniform left, but still takes a unit so its
-                // size uniform follows the bound view.
-                if location.is_none() && size.is_none() {
-                    continue;
-                }
-                if let Some(location) = &location {
-                    gl.uniform_1_i32(Some(location), units.len() as i32);
-                }
-                units.push((*texture, *sampler, *level_zero));
-                sizes.push(size);
-            }
-            for (name, slot) in &s.blocks {
-                if let Some(index) = gl.get_uniform_block_index(raw, name) {
-                    let point = match blocks.iter().position(|b| b == slot) {
-                        Some(p) => p,
-                        None => {
-                            blocks.push(*slot);
-                            blocks.len() - 1
-                        }
-                    };
-                    gl.uniform_block_binding(raw, index, point as u32);
-                }
+            if !platform::compiled(gl, s.raw) {
+                log.push_str(&platform::shader_log(gl, s.raw));
+                log.push_str(&s.source);
             }
         }
-        let uniform = |name| {
-            gl.get_uniform_location(raw, name)
-                .map(|l| (l, std::cell::Cell::new(0)))
-        };
-        Ok(Linked {
-            units,
-            sizes,
-            blocks,
-            first_instance: uniform(glsl::FIRST_INSTANCE_BINDING),
-            base_vertex: uniform(glsl::BASE_VERTEX_BINDING),
-            immediates,
-            held: Default::default(),
-        })
+        return Err(log);
     }
+    gl.use_program(raw);
+    let mut units = Vec::new();
+    let mut sizes = Vec::new();
+    let mut blocks: Vec<Slot> = Vec::new();
+    let mut immediates = Vec::new();
+    for s in core::iter::once(&vertex).chain(&fragment) {
+        for (name, offset, ty) in &s.immediates {
+            if let Some(location) = platform::location(gl, raw, name) {
+                immediates.push((location, *offset, *ty));
+            }
+        }
+        for Combined {
+            name,
+            texture,
+            sampler,
+            level_zero,
+        } in &s.textures
+        {
+            let location = platform::location(gl, raw, name);
+            let size = platform::location(gl, raw, &format!("{name}_size"))
+                .map(|l| (l, std::cell::Cell::new([-1; 3])));
+            // A texture only sized has no sampler uniform left, but still takes a unit so its
+            // size uniform follows the bound view.
+            if location.is_none() && size.is_none() {
+                continue;
+            }
+            if let Some(location) = location {
+                gl.uniform1i(location, units.len() as i32);
+            }
+            units.push((*texture, *sampler, *level_zero));
+            sizes.push(size);
+        }
+        for (name, slot) in &s.blocks {
+            if let Some(index) = platform::block_index(gl, raw, name) {
+                let point = match blocks.iter().position(|b| b == slot) {
+                    Some(p) => p,
+                    None => {
+                        blocks.push(*slot);
+                        blocks.len() - 1
+                    }
+                };
+                gl.uniform_block_binding(raw, index, point as u32);
+            }
+        }
+    }
+    let uniform = |name| platform::location(gl, raw, name).map(|l| (l, std::cell::Cell::new(0)));
+    Ok(Linked {
+        units,
+        sizes,
+        blocks,
+        first_instance: uniform(glsl::FIRST_INSTANCE_BINDING),
+        base_vertex: uniform(glsl::BASE_VERTEX_BINDING),
+        immediates,
+        held: Default::default(),
+    })
 }
 
 /// Sets the uniforms standing for the program's immediates from `bytes`, unless they hold them
 /// already. Bytes past the end of `bytes` read as zero, as GL's uniforms start. The program is in use.
-pub(crate) fn set_immediates(gl: &glow::Context, linked: &Linked, bytes: &[u8]) {
+pub(crate) fn set_immediates(gl: &impl OpenGlEs, linked: &Linked, bytes: &[u8]) {
     use glsl::{GlslScalarKind as Kind, GlslUniformType as Ty};
     let mut held = linked.held.borrow_mut();
     if linked.immediates.is_empty() || *held == bytes {
@@ -2066,72 +2071,68 @@ pub(crate) fn set_immediates(gl: &glow::Context, linked: &Linked, bytes: &[u8]) 
     };
     for (location, offset, ty) in &linked.immediates {
         let at = *offset as usize;
-        let l = Some(location);
-        // SAFETY: plain GL calls; the program is in use.
-        unsafe {
-            match *ty {
-                Ty::Scalar(s) | Ty::Vector { scalar: s, .. } => {
-                    let n = match *ty {
-                        Ty::Vector { size, .. } => size as usize,
-                        _ => 1,
-                    };
-                    let words: [[u8; 4]; 4] = core::array::from_fn(|i| word(at + 4 * i));
-                    match s.kind {
-                        Kind::Float => {
-                            let v = words.map(f32::from_le_bytes);
-                            let v = &v[..n];
-                            match n {
-                                1 => gl.uniform_1_f32_slice(l, v),
-                                2 => gl.uniform_2_f32_slice(l, v),
-                                3 => gl.uniform_3_f32_slice(l, v),
-                                _ => gl.uniform_4_f32_slice(l, v),
-                            }
+        let l = *location;
+        match *ty {
+            Ty::Scalar(s) | Ty::Vector { scalar: s, .. } => {
+                let n = match *ty {
+                    Ty::Vector { size, .. } => size as usize,
+                    _ => 1,
+                };
+                let words: [[u8; 4]; 4] = core::array::from_fn(|i| word(at + 4 * i));
+                match s.kind {
+                    Kind::Float => {
+                        let v = words.map(f32::from_le_bytes);
+                        let v = &v[..n];
+                        match n {
+                            1 => gl.uniform1fv(l, v),
+                            2 => gl.uniform2fv(l, v),
+                            3 => gl.uniform3fv(l, v),
+                            _ => gl.uniform4fv(l, v),
                         }
-                        Kind::Sint => {
-                            let v = words.map(i32::from_le_bytes);
-                            let v = &v[..n];
-                            match n {
-                                1 => gl.uniform_1_i32_slice(l, v),
-                                2 => gl.uniform_2_i32_slice(l, v),
-                                3 => gl.uniform_3_i32_slice(l, v),
-                                _ => gl.uniform_4_i32_slice(l, v),
-                            }
+                    }
+                    Kind::Sint => {
+                        let v = words.map(i32::from_le_bytes);
+                        let v = &v[..n];
+                        match n {
+                            1 => gl.uniform1iv(l, v),
+                            2 => gl.uniform2iv(l, v),
+                            3 => gl.uniform3iv(l, v),
+                            _ => gl.uniform4iv(l, v),
                         }
-                        Kind::Uint => {
-                            let v = words.map(u32::from_le_bytes);
-                            let v = &v[..n];
-                            match n {
-                                1 => gl.uniform_1_u32_slice(l, v),
-                                2 => gl.uniform_2_u32_slice(l, v),
-                                3 => gl.uniform_3_u32_slice(l, v),
-                                _ => gl.uniform_4_u32_slice(l, v),
-                            }
+                    }
+                    Kind::Uint => {
+                        let v = words.map(u32::from_le_bytes);
+                        let v = &v[..n];
+                        match n {
+                            1 => gl.uniform1uiv(l, v),
+                            2 => gl.uniform2uiv(l, v),
+                            3 => gl.uniform3uiv(l, v),
+                            _ => gl.uniform4uiv(l, v),
                         }
                     }
                 }
-                Ty::Matrix { columns, rows, .. } => {
-                    // Columns are vectors of `rows`, each aligned as such a vector; GL takes them packed.
-                    let (c, r) = (columns as usize, rows as usize);
-                    let stride = if r == 2 { 8 } else { 16 };
-                    let mut v = [0f32; 16];
-                    for col in 0..c {
-                        for row in 0..r {
-                            v[col * r + row] =
-                                f32::from_le_bytes(word(at + col * stride + 4 * row));
-                        }
+            }
+            Ty::Matrix { columns, rows, .. } => {
+                // Columns are vectors of `rows`, each aligned as such a vector; GL takes them packed.
+                let (c, r) = (columns as usize, rows as usize);
+                let stride = if r == 2 { 8 } else { 16 };
+                let mut v = [0f32; 16];
+                for col in 0..c {
+                    for row in 0..r {
+                        v[col * r + row] = f32::from_le_bytes(word(at + col * stride + 4 * row));
                     }
-                    let v = &v[..c * r];
-                    match (c, r) {
-                        (2, 2) => gl.uniform_matrix_2_f32_slice(l, false, v),
-                        (3, 3) => gl.uniform_matrix_3_f32_slice(l, false, v),
-                        (4, 4) => gl.uniform_matrix_4_f32_slice(l, false, v),
-                        (2, 3) => gl.uniform_matrix_2x3_f32_slice(l, false, v),
-                        (3, 2) => gl.uniform_matrix_3x2_f32_slice(l, false, v),
-                        (2, 4) => gl.uniform_matrix_2x4_f32_slice(l, false, v),
-                        (4, 2) => gl.uniform_matrix_4x2_f32_slice(l, false, v),
-                        (3, 4) => gl.uniform_matrix_3x4_f32_slice(l, false, v),
-                        _ => gl.uniform_matrix_4x3_f32_slice(l, false, v),
-                    }
+                }
+                let v = &v[..c * r];
+                match (c, r) {
+                    (2, 2) => gl.uniform_matrix2fv(l, false, v),
+                    (3, 3) => gl.uniform_matrix3fv(l, false, v),
+                    (4, 4) => gl.uniform_matrix4fv(l, false, v),
+                    (2, 3) => gl.uniform_matrix2x3fv(l, false, v),
+                    (3, 2) => gl.uniform_matrix3x2fv(l, false, v),
+                    (2, 4) => gl.uniform_matrix2x4fv(l, false, v),
+                    (4, 2) => gl.uniform_matrix4x2fv(l, false, v),
+                    (3, 4) => gl.uniform_matrix3x4fv(l, false, v),
+                    _ => gl.uniform_matrix4x3fv(l, false, v),
                 }
             }
         }
