@@ -482,8 +482,88 @@ comments (the model's key is needed to answer them). Logs: SCRATCH/kernel-port/k
 encodings), name_unanswered +3, the summary shape rules +8, comment rules +2,
 constant_defined_twice +1, summary_unanswered +1. Logs: SCRATCH/kernel-port/ks3/lint.
 
-### Next (mine, waiting on nothing)
-- python's SIGSEGV: find the faulting address and whether the kernel or the stand-in gives it.
-- The 24 LTP hangs: one test's output, to see whether the parent misses its child's end.
-- backend's arguments_taken_once and node: which seed or side runs past the bound.
-- sharedmap remapped: a stand-in suite case of `map_from` at an offset, for the executor track.
+### Next (superseded below)
+- python's SIGSEGV, the 24 LTP hangs, backend's arguments_taken_once, node, sharedmap remapped.
+
+## 2026-11-27: KS re-measured from fresh clones; the WebAssembly executor's container; the fixes
+
+His main is still `ac696ea19` (MEASURED: `git fetch` of his checkout, FETCH_HEAD an ancestor of the
+branch). All 91 files at the top of his interface folders are byte-identical to his main (MEASURED,
+`git diff --quiet` each); the three `interface.rs` not on his main (crates/kvm, linux-socket-options,
+wasmtime) are other tracks'.
+
+### Commits of this run
+- `c40255f01` merge of `origin/executor-wasmtime` 9802b9416 (normal, no conflict).
+- `517923bf4` the stand-in track's `AddressMap::insert` fix, judged right and taken: a mapping
+  placed over a file mapping unmaps the old mapping's shared view first, as `unmap` already did
+  (memory.rs). Without it `clear_used` zeroed through the view into the file's page cache and the
+  new anonymous page stayed a view of the file: ld.so's bss over libc's text tail made one page
+  shared by every process (glibc's locks, malloc state).
+- `d77525c9d` THE ORCHESTRATOR'S RULING on trapped system registers: a trapped `mrs` of the ID space
+  (op0 3, op1 0, CRn 0) is answered as Linux's emulation does (identification.rs: MIDR, MPIDR
+  bit 31, REVIDR 0, the ID_AA64* registers of the processor the kernel presents, RAZ for the
+  rest of the space it answers); the counter as before; every other trapped access is SIGILL,
+  ILL_ILLOPC. Also the WebAssembly executor's line: `to_processor` names the new
+  `process_state_controls` field (SSBS, DIT, TCO kept per thread).
+- `353987bad` THE HARNESS ON THE WEBASSEMBLY EXECUTOR, done properly: the `runtime` feature makes
+  `Back` the `WasmtimeExecutor` (driver.rs); every place only one executor has something is one
+  small function pair (`make_back`, `back_alongside`, `carry_refusals`, `last_instructions`,
+  `space_end`, the latter capping spaces at 4 GiB); counterclock loses its `runtime` ignore.
+  FOR THE RUNTIME TRACK: merge `kernel-port` at `b2594b6d9` (or `353987bad` and later); the
+  kernel line and the harness change are both in.
+- `b2594b6d9` backend's `arguments_taken_once`: `dup2`/`dup3` over a descriptor of a backend file
+  sent its FLUSH unwaited, so a save between send and answer dropped the request
+  (`backend_restored`) while the harness's server still owed the answer; every later answer then
+  belonged to a lost request and the call that waited never woke (MEASURED with a scratch trace:
+  seed 2, 7.6 million turns of the flipping thread, the main thread parked on `FUSE_GETATTR` 5,
+  2,000 flushes outstanding). Linux's `do_dup2` calls `filp_close`, which waits for the flush;
+  `dup3` now does too (as `close` already did), taking the slot's old file once and waiting on
+  later runs only.
+
+### Python's SIGSEGV: gone with the insert fix
+MEASURED with a scratch fault trace at `353987bad` (every SIGSEGV/SIGBUS the kernel sends printed
+with its address, pc and nearby mappings): `python3 /wc/system.py` with 2 saves and with none
+ends with exit 0 in 52 s and 50 s and sends no fault signal. At `b2594b6d9`, one seed
+(`SCHEDULE_SEEDS=1`): system program passes (42 s), language test modules pass (378 s), system
+test modules reach 2,400 s (open). INFERRED: the SIGSEGV was the shared bss page above.
+
+### KS at `353987bad` (MEASURED: fresh clone of the pushed tip, job kernel-port-ks4/20261127-060346-1299458, 06:03 to 07:44 UTC, load 9 to 170, three targets at a time, 4 test threads, 2,400 s per target)
+- clippy `--all-targets -D warnings` 0; rustfmt 0; kernel unit tests 34 passed; kernel
+  conformance on the stand-in 22 passed.
+- Harness 114 targets: 88 pass, 23 fail, 3 reach the bound (backend, node, python). Tests 351
+  passed, 33 failed, 8 ignored. Failing tests: fails16's 35 less the two inside the bounded backend
+  target.
+- LTP 30: 30 of 30 verdicts match (was 6).
+
+### KS at `b2594b6d9` (MEASURED: fresh clone of the pushed tip from the remote, job kernel-port-ks5/20261127-075806-1033943, 07:58 to 09:27 UTC, load 14 to 53, three targets at a time, 4 test threads, 2,400 s per target)
+- clippy `--all-targets --no-deps -D warnings` of the kernel and the harness 0; rustfmt `--check`
+  0; kernel unit tests 34 passed; the kernel's conformance suite on the stand-in 22 passed.
+- Harness 114 targets: 88 pass, 24 fail, 2 reach the bound (node, python). Tests 369 passed, 36
+  failed, 8 ignored. Failing: exactly fails16's 35, each in a finished target (backend now
+  finishes, 19 of 21 in 42 s, its 2 failures on the list), plus busybox `files`, a minute that
+  turned between the reference's `ls -la` and ours (08:28 against 08:29); it passed 3 of 3 when
+  run again at the same tip (MEASURED).
+- sharedmap 2 of 2 (`remapped_file_pages` passes now, with the insert fix).
+- LTP 30 to the end: 30 of 30 verdicts match the committed reference.
+- With the `runtime` feature (the WebAssembly executor at 9802b9416): hello 1 of 1, counterclock
+  2 of 2, busybox 3 passed, 1 failed, 1 ignored, the failure `system`, which fails the same way on
+  the stand-in and is on fails16 (`/proc/config.gz`, `/proc/sys` values).
+- The stand-in's own suite (executor track's): `next_state_after_an_error_executes_as_on_a_fresh_
+  source` fails and `execution_is_deterministic` passes 1,500 s, as at the last KS.
+- Logs: SCRATCH/kernel-port/ks5/out (whole.log, ks-suite/, ltp30.log, failed.txt), scripts in
+  ks5/scripts; ks4/out for the run before.
+
+### Left of KS
+- node: `start_up_matches_reference` (one save) does not finish in 600 s even without saves; a
+  profile (perf, 150 s) gives 66 percent in unicorn's `phys_page_set_level` and 27 percent in
+  `phys_page_compact`, under the stand-in's `Memory::run_turn` and `write_unicorn` (memory.rs,
+  executor track's): INFERRED, the stand-in's copy of shared pages into unicorn each turn rebuilds
+  unicorn's memory map. For the executor track.
+- python system test modules: one seed does not end in 2,400 s (the executor track saw the same at
+  5,400 s). Open, mine next.
+- KS IS NOT REACHED: node and python bounded.
+
+### Linter (MEASURED at `b2594b6d9`, no key): the kernel's own crates 31,496 (31,381 at the last
+run): magic_literal +65 and number_constant_without_link +6 (identification.rs's register fields),
+name_unanswered +8, summary_unanswered +1, the summary shape rules +34, grammar_unclear +1.
+Logs: SCRATCH/kernel-port/ks5/lint.
