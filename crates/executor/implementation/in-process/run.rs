@@ -27,6 +27,9 @@ use crate::memory::GUEST_PAGE;
 const FLOOR_PAGE: u64 = IN_PROCESS_ENTRIES & !(GUEST_PAGE - 1);
 /// The link register, which holds the address after a call into the floor.
 const LINK: usize = GENERAL - 1;
+/// The register page's address in the hardware a piece is entered with: none, since the run itself puts its frame's
+/// address there.
+const FRAME_SET_BY_THE_RUN: u64 = 0;
 /// The floor's window: none, since no run starts in it; its exits are reached only by a branch from a piece.
 const NO_WINDOW: core::ops::Range<u64> = 0..0;
 /// The words of the register page, then where the words after it start, in the frame's own words.
@@ -107,11 +110,6 @@ impl InProcessThread {
         })
     }
 
-    /// The address of the thread's register page: its frame's.
-    pub fn register_page(&self) -> u64 {
-        core::ptr::from_ref(&*self.frame) as u64
-    }
-
     /// Makes the thread go on from the guest's `state` at the host address `at`, a piece's first instruction for
     /// `way`; its vector registers and thread pointer stay as they are.
     pub fn enter(
@@ -123,7 +121,7 @@ impl InProcessThread {
         at: u64,
     ) {
         let (hardware, page, after) =
-            in_process::rejoin(way, state, page, float, self.register_page());
+            in_process::rejoin(way, state, page, float, FRAME_SET_BY_THE_RUN);
         self.set_hardware(&Interrupted { pc: at, ..hardware });
         self.set_page(&page);
         self.frame.words[AFTER_PAGE_AT..AFTER_PAGE_AT + AFTER_PAGE_WORDS].copy_from_slice(&after);
@@ -154,16 +152,11 @@ impl InProcessThread {
                 write,
                 alignment,
             } => {
-                // A translated piece branches only to its own instructions, the slot table and the floor, all aligned:
-                // an alignment fault at the pc is never one, and is an access like any other.
-                Exit::Taken(if alignment && address == self.frame.registers.sp {
-                    Taken::StackAlignment
-                } else {
-                    Taken::Access {
-                        alignment,
-                        fault: address,
-                        write,
-                    }
+                // The stop crate tells an alignment fault through the stack pointer by the access's operand.
+                Exit::Taken(Taken::Access {
+                    alignment,
+                    fault: address,
+                    write,
                 })
             }
             RunEnd::Raised(_) => Exit::Taken(Taken::Other),

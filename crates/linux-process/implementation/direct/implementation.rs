@@ -205,8 +205,23 @@ pub struct DirectFixedMapping {
 #[derive(Debug)]
 pub struct DirectInstructionMapping {
     file: OwnedFd,
+    #[cfg_attr(
+        not(target_arch = "aarch64"),
+        expect(
+            dead_code,
+            reason = "read by a run, which only ARM64 has; held for its drop"
+        )
+    )]
     mapping: DirectFixedMapping,
+    #[cfg_attr(
+        not(target_arch = "aarch64"),
+        expect(dead_code, reason = "read by a run, which only ARM64 has")
+    )]
     window: Range<u64>,
+    #[cfg_attr(
+        not(target_arch = "aarch64"),
+        expect(dead_code, reason = "read by a run, which only ARM64 has")
+    )]
     displaced: bool,
 }
 
@@ -824,6 +839,7 @@ fn signal_bit(signal: c_int) -> u64 {
 }
 
 /// The error the last call of this thread left.
+#[cfg(target_arch = "aarch64")]
 fn last_error() -> Errno {
     Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::INVAL)
 }

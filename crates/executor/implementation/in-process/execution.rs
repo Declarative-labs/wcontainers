@@ -56,6 +56,8 @@ const INSTRUCTION_AREA_BYTES: u64 = 1 << 40;
 /// tick of a kernel built with HZ at 1000, the slice of a Linux task that runs alone on its CPU
 /// (<https://github.com/torvalds/linux/blob/master/kernel/Kconfig.hz>).
 const SLICE: Duration = Duration::from_millis(1);
+/// The permissions under which a page may be read, so that a cache maintenance by address there does not fault.
+const READABLE: Permissions = Permissions::READ.union(Permissions::WRITE);
 /// The top byte of an address, which the chip ignores in an address of the lower half at EL0 (TCR_EL1.TBI0, as Linux
 /// sets it).
 const TAG: u64 = 0xff << 56;
@@ -223,9 +225,7 @@ impl BehaviorSource for InProcess {
         }
         let read_page = |page: u64| {
             let mut bytes = vec![0; GUEST_PAGE as usize];
-            if let Ok(from) = space.borrow(page..page + GUEST_PAGE) {
-                from.read(&mut bytes);
-            }
+            read_into(&space, page, &mut bytes);
             bytes
         };
         let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(*page)).collect();
@@ -501,6 +501,7 @@ impl<'run> Run<'run> {
             self.thread
                 .enter(way, &self.state, self.page.clone(), &self.float, piece.at);
             match self.run_piece(way, &piece, interruption) {
+                // A landing is no trap: an execution goes on from it, uncounted by the slicer.
                 Some(Trap::Landed) if !alone => {}
                 Some(trap) => return trap,
                 None => {}
@@ -524,8 +525,8 @@ impl<'run> Run<'run> {
             let taken = match self.thread.run(&loaded.mapping) {
                 Exit::Call(code) => Taken::Call(code),
                 Exit::Taken(taken) => taken,
-                // A stop that came after the interrupt it was sent for was taken: the run goes on as it was entered.
-                Exit::NotEntered if !interruption.requested.load(Ordering::Acquire) => continue,
+                // A stop with no interrupt asked (one that came after the interrupt it was sent for was taken) leaves
+                // the state where it stopped, and the run goes on from it.
                 Exit::NotEntered | Exit::Stopped => {
                     let asked = interruption.requested.swap(false, Ordering::AcqRel);
                     let memory = self.memory;
@@ -590,15 +591,12 @@ impl<'run> Run<'run> {
                         let word = word_at(self.memory, at.pc);
                         self.state = *at;
                         self.page = page;
-                        return Some(Trap::Ended(counter_read(word)));
+                        return Some(Trap::Ended(refused(word)));
                     }
                     Resolved::CodeChanged { address, at, .. } => {
                         self.state = *at;
                         self.page = page;
-                        let readable = self
-                            .memory
-                            .allowed(address)
-                            .intersects(Permissions::READ | Permissions::WRITE);
+                        let readable = self.memory.allowed(address).intersects(READABLE);
                         if !readable {
                             return Some(Trap::MemoryFault {
                                 address,
@@ -637,10 +635,9 @@ impl<'run> Run<'run> {
                 Trap::SystemCall(request)
             }
             Stop::Breakpoint(comment) => Trap::Ended(Exception::Breakpoint { comment }),
-            Stop::Illegal => Trap::Ended(illegal(word_at(self.memory, pc))),
-            Stop::Alignment(address) if address == pc => {
-                Trap::Ended(Exception::ProgramCounterAlignmentFault { address })
-            }
+            Stop::Illegal => Trap::Ended(refused(word_at(self.memory, pc))),
+            // A misaligned pc is found before a piece is entered, and a piece branches only to aligned addresses: an
+            // alignment stop is the stack pointer's.
             Stop::Alignment(_) => Trap::Ended(Exception::StackPointerAlignmentFault),
             Stop::MemoryFault { address, .. } => Trap::MemoryFault {
                 address: address | tag,
@@ -743,13 +740,13 @@ fn to_permissions(permission: PagePermission) -> Permissions {
             let data = match data_access {
                 DataAccess::Forbidden => Permissions::empty(),
                 DataAccess::ReadOnly => Permissions::READ,
-                DataAccess::ReadWrite => Permissions::READ | Permissions::WRITE,
+                DataAccess::ReadWrite => Permissions::READ.union(Permissions::WRITE),
             };
             let fetch = match instruction_fetch {
                 InstructionFetch::Forbidden => Permissions::empty(),
                 InstructionFetch::Allowed => Permissions::EXECUTE,
             };
-            data | fetch
+            data.union(fetch)
         }
     }
 }
@@ -786,33 +783,22 @@ fn abort(memory: &InProcessMemory, address: u64, access: Access) -> Exception {
     }
 }
 
-/// The exception of a read of the counter `word`, which the chip refuses at EL0 and the system answers.
-fn counter_read(word: u32) -> Exception {
-    trapped(word).unwrap_or(Exception::UndefinedInstruction)
-}
-
-/// The exception of an instruction the translation refused: the trap of a system register move the chip traps at EL0,
-/// else an undefined instruction.
-fn illegal(word: u32) -> Exception {
-    trapped(word).unwrap_or(Exception::UndefinedInstruction)
-}
-
-/// The trap of the system register move `word` where the chip traps it at EL0, as its instruction list says.
-fn trapped(word: u32) -> Option<Exception> {
-    let direction = match decode(word) {
-        Instruction::ReadSystem { .. } => AccessDirection::Read,
-        Instruction::WriteSystem { .. } => AccessDirection::Write,
-        _ => return None,
-    };
+/// The exception of the instruction `word`, which the chip refuses at EL0: the trap of a system register read EL1
+/// traps there (the counter's, which the system answers), as the instruction list says, else an undefined instruction.
+/// No system register write the decoder knows is one EL1 traps.
+fn refused(word: u32) -> Exception {
+    if !matches!(decode(word), Instruction::ReadSystem { .. }) {
+        return Exception::UndefinedInstruction;
+    }
     let mut processor = ZERO_PROCESSOR;
     match simulate_system_register_move(
         &mut processor,
         word,
-        direction,
+        AccessDirection::Read,
         NEOVERSE_V2_SYSTEM_REGISTERS,
     ) {
-        Err(trapped @ Exception::SystemAccessTrapped(_)) => Some(trapped),
-        Ok(()) | Err(_) => None,
+        Err(trapped @ Exception::SystemAccessTrapped(_)) => trapped,
+        Ok(()) | Err(_) => Exception::UndefinedInstruction,
     }
 }
 

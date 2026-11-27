@@ -509,8 +509,17 @@ pub fn maps_instructions_no_one_can_write(linux: impl LinuxProcess) {
     // The file it is mapped from is sealed: neither a write nor a second, writable mapping of it is allowed.
     let file = linux.instructions_file(&mapping);
     let seals = rustix::fs::fcntl_get_seals(file).expect("the file's seals");
-    assert!(seals.contains(rustix::fs::SealFlags::WRITE), "{seals:?}");
+    let sealed = rustix::fs::SealFlags::WRITE
+        | rustix::fs::SealFlags::SHRINK
+        | rustix::fs::SealFlags::GROW
+        | rustix::fs::SealFlags::SEAL;
+    assert!(seals.contains(sealed), "{seals:?}");
     assert_eq!(rustix::io::pwrite(file, &[0; 8], 0), Err(Errno::PERM));
+    assert_eq!(rustix::fs::ftruncate(file, 0), Err(Errno::PERM));
+    assert_eq!(
+        rustix::fs::ftruncate(file, 2 * code.len() as u64),
+        Err(Errno::PERM)
+    );
     let writable = memmap2::MmapOptions::new().len(code.len()).map_raw(&file);
     assert_eq!(
         writable.map_err(|error| error.raw_os_error()).err(),
