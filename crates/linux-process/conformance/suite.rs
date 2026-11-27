@@ -27,6 +27,72 @@ const WORD: u64 = 0x0123_4567_89ab_cdef;
 /// CTR_EL0's bit 31, which the architecture reserves as one.
 #[cfg(target_arch = "aarch64")]
 const CTR_EL0_RES1: u64 = 1 << 31;
+/// Where the test of bad addresses searches: apart from the test that checks its page is unmapped after a drop.
+const BAD_ADDRESS_SEARCH_START: usize = SEARCH_START * 7;
+/// Where the code tests search: apart from the others.
+const CODE_SEARCH_START: usize = SEARCH_START * 3;
+#[cfg(target_arch = "aarch64")]
+const RUN_SEARCH_START: usize = SEARCH_START * 5;
+/// The pages of code mapped.
+const CODE_PAGES: usize = 2;
+/// Code that changes the thread pointer, the rounding mode, the stack pointer, d8 and x19, then exits (Arm ARM, C6.2):
+/// `add x23, x23, #0x100` (the exit, from its own first address), `movz x5, #0x1234`, `msr tpidr_el0, x5`,
+/// `msr fpcr, x6`, `mov sp, x7`, `fmov d8, xzr`, `movz x19, #0`, `blr x23`.
+#[cfg(target_arch = "aarch64")]
+const CODE_TO_EXIT: [u32; 8] = [
+    0x9104_02f7,
+    0xd282_4685,
+    0xd51b_d045,
+    0xd51b_4406,
+    0x9100_00ff,
+    0x9e67_03e8,
+    0xd280_0013,
+    0xd63f_02e0,
+];
+/// Where that code's exit is, past its first address.
+#[cfg(target_arch = "aarch64")]
+const EXIT_AT: usize = 0x100;
+/// The registers it moves `MOVED` into, takes the rounding mode and the stack pointer from, zeroes (one a call
+/// keeps, d8 and x19), and the ones a run names: the exit's scratch x23, the frame's x28, the link x30.
+#[cfg(target_arch = "aarch64")]
+const MOVED_TO: usize = 5;
+#[cfg(target_arch = "aarch64")]
+const MOVED: u64 = 0x1234;
+#[cfg(target_arch = "aarch64")]
+const NEW_ROUNDING_FROM: usize = 6;
+#[cfg(target_arch = "aarch64")]
+const NEW_STACK_FROM: usize = 7;
+#[cfg(target_arch = "aarch64")]
+const ZEROED_VECTOR: usize = 8;
+#[cfg(target_arch = "aarch64")]
+const KEPT_BY_A_CALL: usize = 19;
+#[cfg(target_arch = "aarch64")]
+const EXIT_SCRATCH: usize = wcontainers_linux_process::EXIT_SCRATCH_REGISTER as usize;
+#[cfg(target_arch = "aarch64")]
+const FRAME: usize = wcontainers_linux_process::FRAME_REGISTER as usize;
+#[cfg(target_arch = "aarch64")]
+const LINK: usize = 30;
+#[cfg(target_arch = "aarch64")]
+const EXIT_BYTES: usize = wcontainers_linux_process::EXIT_BYTES;
+/// The code's stack pointers, which it never uses as addresses.
+#[cfg(target_arch = "aarch64")]
+const CODE_STACK: u64 = 0x10_0000;
+#[cfg(target_arch = "aarch64")]
+const NEW_STACK: u64 = 0x20_0000;
+/// FPCR's rounding mode toward zero (RMode, bits 23 and 22).
+#[cfg(target_arch = "aarch64")]
+const ROUND_TOWARD_ZERO: u64 = 0b11 << 22;
+/// The flags Z and C, and FPSR's QC and IOC.
+#[cfg(target_arch = "aarch64")]
+const FLAGS: u64 = 0x6000_0000;
+#[cfg(target_arch = "aarch64")]
+const STATUS: u64 = 0x0800_0001;
+
+std::thread_local! {
+    /// A thread-local the run test reads after its code changed the thread pointer.
+    static THREAD_OWN: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
 /// A process that waits until it is signalled.
 const WAITING_PROGRAM: &str = "sleep";
 const WAITING_SECONDS: &str = "30";
@@ -190,7 +256,7 @@ pub fn refuses_to_replace_a_mapping(linux: impl LinuxProcess) {
 /// Refuses lengths and addresses Linux refuses, with Linux's error.
 pub fn refuses_a_page_at_a_bad_address_or_length(linux: impl LinuxProcess) {
     let page = rustix::param::page_size();
-    let (address, mapping) = fixed_page(&linux);
+    let (address, mapping) = fixed_pages(&linux, BAD_ADDRESS_SEARCH_START, 1);
     drop(mapping);
     assert_eq!(
         linux.mmap_fixed_noreplace(address + 1, page).err(),
@@ -317,6 +383,132 @@ pub fn shares_words_through_a_file_that_cannot_shrink(linux: impl LinuxProcess) 
     );
 }
 
+/// Maps code where asked, readable and executable, which no one can write, even through `/proc/self/mem`; refuses
+/// what is not whole pages and a place already mapped; unmaps it on drop.
+pub fn maps_code_no_one_can_write(linux: impl LinuxProcess) {
+    let page = rustix::param::page_size();
+    let (address, held) = fixed_pages(&linux, CODE_SEARCH_START, CODE_PAGES);
+    drop(held);
+    let code: Vec<u8> = (0..CODE_PAGES * page).map(|k| k as u8).collect();
+    for (at, bytes) in [
+        (address + 1, &code[..]),
+        (address, &code[..page - 1]),
+        (address, &code[..0]),
+    ] {
+        assert_eq!(
+            linux.map_code(at, bytes).err(),
+            Some(Errno::INVAL),
+            "code of {} bytes at {at:#x}",
+            bytes.len()
+        );
+    }
+    let mapping = linux.map_code(address, &code).expect("the code is mapped");
+    assert_eq!(
+        linux.map_code(address, &code[..page]).err(),
+        Some(Errno::EXIST)
+    );
+    for index in 0..CODE_PAGES {
+        assert_eq!(
+            protection_of(address + index * page).as_deref(),
+            Some("r-xs")
+        );
+    }
+    assert_eq!(bytes_at(address, code.len()), code);
+    let memory = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/proc/self/mem")
+        .expect("the process's own memory");
+    let written = std::os::unix::fs::FileExt::write_at(&memory, &[0; 8], address as u64);
+    assert!(
+        written.is_err(),
+        "a write through /proc/self/mem: {written:?}"
+    );
+    assert_eq!(bytes_at(address, code.len()), code);
+    drop(mapping);
+    assert!(!is_mapped(address));
+}
+
+/// Runs code until it branches to an exit: the code starts with every register the frame gives it, x23 its first
+/// address and x28 the frame's; the frame then holds every register the code left; the thread's own registers, its
+/// thread pointer, rounding mode and the registers a call keeps, which the code changed, are as before.
+#[cfg(target_arch = "aarch64")]
+pub fn runs_code_until_an_exit_and_keeps_the_thread_s_own(linux: impl LinuxProcess + Sync) {
+    use wcontainers_linux_process::{Arm64Registers, RunFrame};
+    let page = rustix::param::page_size();
+    let (address, held) = fixed_pages(&linux, RUN_SEARCH_START, 1);
+    drop(held);
+    let mut code = vec![0_u8; page];
+    for (at, word) in (0..).step_by(size_of::<u32>()).zip(CODE_TO_EXIT) {
+        code[at..at + size_of::<u32>()].copy_from_slice(&word.to_le_bytes());
+    }
+    code[EXIT_AT..EXIT_AT + EXIT_BYTES].copy_from_slice(&linux.exit_code());
+    let _mapping = linux.map_code(address, &code).expect("the code is mapped");
+    let mut frame = RunFrame::default();
+    let mut registers = Arm64Registers::default();
+    for (r, value) in registers.x.iter_mut().enumerate() {
+        *value = WORD.rotate_left(r as u32);
+    }
+    for (r, value) in registers.v.iter_mut().enumerate() {
+        *value = u128::from(WORD.rotate_right(r as u32)) << 64 | r as u128;
+    }
+    registers.x[NEW_STACK_FROM] = NEW_STACK;
+    registers.x[NEW_ROUNDING_FROM] = ROUND_TOWARD_ZERO;
+    registers.sp = CODE_STACK;
+    registers.pc = address as u64;
+    registers.nzcv = FLAGS;
+    registers.fpsr = STATUS;
+    registers.fpcr = 0;
+    registers.tpidr_el0 = WORD;
+    frame.registers = registers;
+    frame.words = [WORD; wcontainers_linux_process::RUN_FRAME_WORDS];
+    THREAD_OWN.set(WORD);
+    let third = std::hint::black_box(1.0_f64) / std::hint::black_box(3.0_f64);
+    let exit = linux.run_code(&mut frame);
+    assert_eq!(THREAD_OWN.get(), WORD, "the thread's own thread-local");
+    assert_eq!(
+        std::hint::black_box(1.0_f64) / std::hint::black_box(3.0_f64),
+        third,
+        "the thread's rounding"
+    );
+    let exit_at = address as u64 + EXIT_AT as u64;
+    assert_eq!(exit, exit_at);
+    let left = frame.registers;
+    let mut wanted = registers;
+    wanted.x[EXIT_SCRATCH] = exit_at;
+    wanted.x[FRAME] = core::ptr::from_ref(&frame) as u64;
+    wanted.x[MOVED_TO] = MOVED;
+    wanted.x[KEPT_BY_A_CALL] = 0;
+    wanted.x[LINK] = address as u64 + (CODE_TO_EXIT.len() * size_of::<u32>()) as u64;
+    wanted.pc = wanted.x[LINK];
+    wanted.sp = NEW_STACK;
+    wanted.tpidr_el0 = MOVED;
+    wanted.fpcr = ROUND_TOWARD_ZERO;
+    wanted.v[ZEROED_VECTOR] = 0;
+    assert_eq!(left, wanted);
+    assert_eq!(
+        frame.words,
+        [WORD; wcontainers_linux_process::RUN_FRAME_WORDS]
+    );
+    // Again, on another thread, while this one runs it too.
+    std::thread::scope(|scope| {
+        let linux = &linux;
+        let runs: Vec<_> = (0..2)
+            .map(|_| {
+                scope.spawn(move || {
+                    let mut frame = RunFrame {
+                        registers,
+                        ..RunFrame::default()
+                    };
+                    (linux.run_code(&mut frame), frame.registers.sp)
+                })
+            })
+            .collect();
+        for run in runs {
+            assert_eq!(run.join().expect("the thread ends"), (exit_at, NEW_STACK));
+        }
+    });
+}
+
 /// Each new memory starts zeroed, and two are apart.
 pub fn makes_each_shared_memory_apart_and_zeroed(linux: impl LinuxProcess) {
     let first = linux
@@ -406,6 +598,17 @@ macro_rules! tests {
         #[test]
         fn shares_words_through_a_file_that_cannot_shrink() {
             $crate::shares_words_through_a_file_that_cannot_shrink($value);
+        }
+
+        #[test]
+        fn maps_code_no_one_can_write() {
+            $crate::maps_code_no_one_can_write($value);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn runs_code_until_an_exit_and_keeps_the_thread_s_own() {
+            $crate::runs_code_until_an_exit_and_keeps_the_thread_s_own($value);
         }
 
         #[test]
