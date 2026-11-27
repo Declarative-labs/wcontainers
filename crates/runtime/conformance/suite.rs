@@ -179,8 +179,8 @@ pub fn a_busy_background_process_does_not_keep_its_container_running<R: Runtime>
 /// It sleeps as long as a container that only exits took, so every runner is idle for a while before the end.
 pub fn a_sleeping_process_ends_its_container_after_its_sleep<R: Runtime>(subject: Subject<R>) {
     let seconds = time_to_exit(&subject).as_secs_f64();
-    let (mut container, _interrupter) =
-        made(&subject, shell(&format!("{SLEEP} {seconds}; exit {EXIT_CODE}")));
+    let script = format!("{SLEEP} {seconds}; exit {EXIT_CODE}");
+    let (mut container, _interrupter) = made(&subject, shell(&script));
     assert_eq!(container.run(), exited());
 }
 
