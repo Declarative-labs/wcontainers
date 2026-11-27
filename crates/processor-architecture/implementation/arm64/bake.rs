@@ -235,6 +235,10 @@ impl Bake for PreciseInstruction<Infallible> {
                 let instruction = instruction.bake(env);
                 quote!(wcontainers_processor_architecture_arm64::PreciseInstruction::Unimplemented(#instruction))
             }
+            Self::WithoutOptionalEncodings(documented) => {
+                let documented = documented.bake(env);
+                quote!(wcontainers_processor_architecture_arm64::PreciseInstruction::WithoutOptionalEncodings(#documented))
+            }
             Self::LevelSpecific(never) => match *never {},
         }
     }
