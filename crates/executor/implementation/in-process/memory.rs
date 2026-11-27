@@ -8,13 +8,15 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use rangemap::RangeMap;
 use rustix::fs::{FallocateFlags, MemfdFlags, SealFlags, SeekFrom};
 use rustix::io::Errno;
-use wcontainers_abi::{PAGE_SIZE, Permissions};
-use wcontainers_arm64::way::{IN_PROCESS_SLOTS, OUTSIDE, SLOT_BITS};
+use wcontainers_abi::Permissions;
+use wcontainers_arm64::Way;
+use wcontainers_arm64::mirror::SLOT_SHIFT;
+use wcontainers_arm64::way::{DISPLACED_SLOTS, IN_PROCESS_SLOTS, Kept, OUTSIDE, SLOT_BITS};
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
@@ -26,8 +28,12 @@ use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The guest addresses of every memory: its window, below the never mapped bytes.
 pub const WINDOW: Range<u64> = 0..OUTSIDE;
+/// The guest's pages: 4 KiB, as [Linux on ARM64](https://docs.kernel.org/arch/arm64/memory.html) gives them by default.
+pub const GUEST_PAGE: u64 = 1 << 12;
 /// The bytes a slot reserves: its window, then as many never mapped.
 const SLOT_BYTES: u64 = 1 << SLOT_BITS;
+/// The bytes of a slot's slot table: one slot for each of its host addresses.
+const SLOT_TABLE_BYTES: u64 = SLOT_BYTES << SLOT_SHIFT;
 /// The first slot a memory takes: slot 0's window, at host address 0, is no guest's.
 const FIRST_SLOT: u16 = 1;
 /// The most bytes copied between memory files in one call.
@@ -44,6 +50,10 @@ pub enum CreateMemoryError {
     Host(Errno),
 }
 
+/// Slot 0's slot table, held inaccessible for this process's life: no window is slot 0, so every jump displaced code
+/// makes faults there.
+static DISPLACED_SLOT_TABLE: OnceLock<Result<DirectFixedMapping, Errno>> = OnceLock::new();
+
 /// The slots of this process's pool, each one memory's window and the never mapped bytes after it.
 #[derive(Debug, Default)]
 pub struct InProcessPool {
@@ -56,9 +66,17 @@ impl InProcessPool {
     /// A pool with every slot free; refused on a host whose pages are not the guest's.
     pub fn new() -> Result<Arc<Self>, CreateMemoryError> {
         let page = rustix::param::page_size();
-        if page as u64 != PAGE_SIZE {
+        if page as u64 != GUEST_PAGE {
             return Err(CreateMemoryError::HostPageSize(page));
         }
+        // Displaced code's exits reach slot 0's table, which must stay unmapped, as each memory's own table.
+        DISPLACED_SLOT_TABLE
+            .get_or_init(|| {
+                DirectLinuxProcess
+                    .mmap_fixed_noreplace(DISPLACED_SLOTS as usize, SLOT_TABLE_BYTES as usize)
+            })
+            .as_ref()
+            .map_err(|error| CreateMemoryError::Host(*error))?;
         Ok(Arc::new(Self::default()))
     }
 
@@ -67,7 +85,7 @@ impl InProcessPool {
     pub fn create_memory(
         self: &Arc<Self>,
     ) -> Result<(InProcessMemory, InProcessPageTable), CreateMemoryError> {
-        let (slot, mut reserved) = self.reserve_slot()?;
+        let (slot, mut reserved, slots) = self.reserve_slot()?;
         let own = rustix::fs::memfd_create(
             "wcontainers in-process memory",
             MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
@@ -89,6 +107,7 @@ impl InProcessPool {
             .map_err(CreateMemoryError::Host)?;
         let window = Rc::new(RefCell::new(Window {
             reserved,
+            _slots: slots,
             own,
             shown: RangeMap::new(),
             permissions: RangeMap::new(),
@@ -105,23 +124,39 @@ impl InProcessPool {
         ))
     }
 
-    /// Reserves the first free slot nothing else of this process maps, and holds it.
-    fn reserve_slot(&self) -> Result<(u16, DirectFixedMapping), CreateMemoryError> {
+    /// Reserves the first free slot nothing else of this process maps, and its slot table, and holds them.
+    fn reserve_slot(
+        &self,
+    ) -> Result<(u16, DirectFixedMapping, DirectFixedMapping), CreateMemoryError> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         for slot in FIRST_SLOT..=IN_PROCESS_SLOTS {
             if held.contains(&slot) {
                 continue;
             }
             let base = u64::from(slot) << SLOT_BITS;
-            match self
+            // The slots of its addresses, held inaccessible: every jump of its code faults there and lands in the
+            // floor, and nothing else of this process can be mapped where its code jumps.
+            let table = Way::InProcess {
+                slot,
+                displaced: false,
+                kept: Kept::USUAL,
+            }
+            .slot_table();
+            let reserved = self
                 .linux
                 .mmap_fixed_noreplace(base as usize, SLOT_BYTES as usize)
-            {
-                Ok(reserved) => {
+                .and_then(|reserved| {
+                    let slots = self
+                        .linux
+                        .mmap_fixed_noreplace(table as usize, SLOT_TABLE_BYTES as usize)?;
+                    Ok((reserved, slots))
+                });
+            match reserved {
+                Ok((reserved, slots)) => {
                     held.insert(slot);
-                    return Ok((slot, reserved));
+                    return Ok((slot, reserved, slots));
                 }
-                // Something else of this process maps part of the slot.
+                // Something else of this process maps part of the slot or its table.
                 Err(Errno::EXIST) => {}
                 Err(other) => return Err(CreateMemoryError::Host(other)),
             }
@@ -172,6 +207,8 @@ struct Shown {
 struct Window {
     /// The slot's addresses, whose window shows the memory. Dropped before `slot`, so the slot is given back unmapped.
     reserved: DirectFixedMapping,
+    /// The slot table of those addresses, likewise.
+    _slots: DirectFixedMapping,
     /// The memory's own bytes, at their addresses; zero wherever a block is shown.
     own: OwnedFd,
     /// The pages that show a block; every other page shows the own file.
@@ -335,6 +372,16 @@ impl InProcessMemory {
     /// The slot of the pool the memory is in.
     pub fn slot(&self) -> u16 {
         self.window.borrow().slot.slot
+    }
+
+    /// What the guest may do at the address's page.
+    pub(crate) fn allowed(&self, address: u64) -> Permissions {
+        let window = self.window.borrow();
+        window
+            .permissions
+            .get(&address)
+            .copied()
+            .unwrap_or_else(Permissions::empty)
     }
 }
 
@@ -643,7 +690,7 @@ fn whole_pages(
     let length = addresses.end - addresses.start;
     let source = other_start..other_start.checked_add(length).ok_or(InvalidAddressError)?;
     inside(&source)?;
-    let whole = |at: u64| at.is_multiple_of(PAGE_SIZE);
+    let whole = |at: u64| at.is_multiple_of(GUEST_PAGE);
     if whole(addresses.start) && whole(length) && whole(other_start) {
         Ok(source)
     } else {
@@ -653,7 +700,7 @@ fn whole_pages(
 
 /// The pages the addresses touch.
 fn page_cover(range: &Range<u64>) -> Range<u64> {
-    range.start & !(PAGE_SIZE - 1)..range.end.next_multiple_of(PAGE_SIZE)
+    range.start & !(GUEST_PAGE - 1)..range.end.next_multiple_of(GUEST_PAGE)
 }
 
 /// Reads the file's bytes at `offset` into `into`, returning how many were read before a refusal or the file's end.

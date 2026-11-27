@@ -3,6 +3,8 @@
 //! section 5).
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub mod execution;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub mod memory;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-pub mod run;
+mod run;

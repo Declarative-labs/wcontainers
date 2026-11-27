@@ -12,32 +12,38 @@ publish = false
 path = "implementation.rs"
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+# The permissions, system calls and accesses the executor interface names.
 wcontainers-abi.workspace = true
-# Where each slot's window lies in the in-process way.
-wcontainers-arm64 = { path = "../../../arm64", default-features = false }
-# The memory interface each guest memory implements, and the bytes it lends.
+# Where each slot's window and slot table lie in the in-process way, and the guest's instructions decoded.
+wcontainers-arm64 = { path = "../../../arm64" }
+# The executor interface each part implements, the behavior source it extends, and the bytes a memory lends.
 wcontainers-executor = { path = "../.." }
+wcontainers-behavior-source = { path = "../../../behavior-source" }
 wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 wcontainers-byte-sink = { path = "../../../byte-sink" }
 wcontainers-byte-source = { path = "../../../byte-source" }
-# Memory files, their seals, holes and data, and reads and writes by position.
-rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "param"] }
+# The ARM64 processor state an execution runs from, its exceptions, and the memory a single instruction changed.
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+# The exception class of a run the host refused.
+aarch64-cpu = "12.0.0"
+# Guest code translated for the in-process way, and its position map.
+wcontainers-translator = { path = "../../../translator", features = ["native"] }
+wcontainers-guest-cpu = { path = "../../../guest-cpu" }
+# Memory files, their seals, holes and data, reads and writes by position, and the thread an execution runs on.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "param", "process", "thread"] }
 # Each memory's permissions and the shared blocks it shows, by range.
 rangemap = { version = "1.8.0", default-features = false }
 thiserror = { version = "2.0.21", default-features = false }
-# A slot's reserved addresses, and a file shown at fixed addresses inside them.
+# A slot's reserved addresses, a file shown at fixed addresses inside them, code mapped, and runs of it.
 wcontainers-linux-process = { path = "../../../linux-process" }
 wcontainers-linux-process-direct = { path = "../../../linux-process/implementation/direct" }
-# The guest state a run starts from and what its call into the floor comes to.
+# The guest state a run starts from and what its exceptions come to.
 wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
 # The open files the pool test holds, one a memory, past the usual soft limit.
 rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
-# The translated code the runs test, and the calls it makes into the floor.
-wcontainers-arm64 = { path = "../../../arm64" }
-wcontainers-translator = { path = "../../../translator", features = ["native"] }
-wcontainers-guest-cpu = { path = "../../../guest-cpu" }
 
 [lints]
 workspace = true

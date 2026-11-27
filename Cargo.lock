@@ -4673,11 +4673,13 @@ dependencies = [
 name = "wcontainers-executor-in-process"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "rangemap",
  "rustix",
  "thiserror",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-behavior-source",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-executor",
@@ -4685,6 +4687,8 @@ dependencies = [
  "wcontainers-guest-cpu",
  "wcontainers-linux-process",
  "wcontainers-linux-process-direct",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-translator",
  "wcontainers-volatile-bytes",
 ]

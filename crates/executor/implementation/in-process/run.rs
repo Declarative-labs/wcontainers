@@ -5,7 +5,6 @@
 use std::sync::OnceLock;
 
 use rustix::io::Errno;
-use wcontainers_abi::PAGE_SIZE;
 use wcontainers_arm64::Way;
 use wcontainers_arm64::thread_state::{PAGE, RegisterPage, SCRATCH};
 use wcontainers_arm64::way::{
@@ -20,8 +19,10 @@ use wcontainers_linux_process::{
 };
 use wcontainers_linux_process_direct::{DirectCodeMapping, DirectLinuxProcess, DirectRunThread};
 
+use crate::memory::GUEST_PAGE;
+
 /// The page the floor's entries are in.
-const FLOOR_PAGE: u64 = IN_PROCESS_ENTRIES & !(PAGE_SIZE - 1);
+const FLOOR_PAGE: u64 = IN_PROCESS_ENTRIES & !(GUEST_PAGE - 1);
 /// The link register, which holds the address after a call into the floor.
 const LINK: usize = GENERAL - 1;
 /// The words of the register page, then where the words after it start, in the frame's own words.
@@ -52,7 +53,7 @@ pub fn floor() -> Result<&'static Floor, Errno> {
     FLOOR
         .get_or_init(|| {
             let linux = DirectLinuxProcess;
-            let exits = linux.exit_code().repeat(PAGE_SIZE as usize / EXIT_BYTES);
+            let exits = linux.exit_code().repeat(GUEST_PAGE as usize / EXIT_BYTES);
             linux
                 .map_code(FLOOR_PAGE as usize, &exits)
                 .map(|exits| Floor { _exits: exits })
@@ -67,7 +68,7 @@ pub enum Exit {
     /// A call into the floor, with its code.
     Call(u16),
     /// An exit at no entry of the floor, which translated code never reaches.
-    Elsewhere(u64),
+    Elsewhere,
     /// The stop came before the code started: the thread is as it was entered.
     NotEntered,
     /// The stop came while the code ran, at the hardware's pc.
@@ -127,7 +128,7 @@ impl InProcessThread {
             RunEnd::Stopped => {
                 let registers = &mut self.frame.registers;
                 // Stopped in an exit before it changed a register: the call it was making, made.
-                if registers.pc & !(PAGE_SIZE - 1) == FLOOR_PAGE {
+                if registers.pc & !(GUEST_PAGE - 1) == FLOOR_PAGE {
                     let exit = registers.pc & !(PROCESS_ENTRY_BYTES - 1);
                     registers.pc = registers.x[LINK];
                     return call_at(exit);
@@ -242,6 +243,6 @@ fn call_at(exit: u64) -> Exit {
         .and_then(|offset| u16::try_from(offset / PROCESS_ENTRY_BYTES).ok())
     {
         Some(code) => Exit::Call(code),
-        None => Exit::Elsewhere(exit),
+        None => Exit::Elsewhere,
     }
 }
