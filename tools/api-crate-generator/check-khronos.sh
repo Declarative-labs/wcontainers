@@ -58,7 +58,7 @@ if has asan; then
     step "the suite under AddressSanitizer"
     RUSTFLAGS="-Zcrate-attr=feature(register_tool) -Zcrate-attr=register_tool(reviewable) -Zsanitizer=address -C force-frame-pointers=yes" \
         ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=$work/asan \
-        timeout 1800 cargo test -j "$jobs" -p wcontainers-opengl-es-direct --release --target x86_64-unknown-linux-gnu -- --test-threads=4 2>&1 |
+        timeout 1800 cargo test -j "$jobs" -p wcontainers-opengl-es-direct --release --target "$(rustc -vV | sed -n 's/^host: //p')" -- --test-threads=4 2>&1 |
         grep -E '^test |test result|panicked|ERROR: AddressSanitizer|SUMMARY|left|right' | head -60; echo "asan status ${PIPESTATUS[0]}"
 fi
 if has unsafe; then

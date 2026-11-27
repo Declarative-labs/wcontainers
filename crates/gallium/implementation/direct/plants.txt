@@ -7,7 +7,7 @@
 # with WCONTAINERS_MESA, WCONTAINERS_SPIRV_TOOLS and WCONTAINERS_CLANG set. Not covered yet (said, not silent): the
 # copy functions of the structures no served pointer takes (the 82 pointers not yet served), and wc_flat_pipe_rt_blend_state_from
 # and wc_flat_pipe_stencil_state_from, which no trampoline calls (their structures are copied inside their holders').
-test: cargo test -q --features hostile -p wcontainers-gallium-direct --test served && CFLAGS_x86_64_unknown_linux_gnu="-fsanitize=address -fno-omit-frame-pointer" ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 RUSTFLAGS="-Zcrate-attr=feature(register_tool) -Zcrate-attr=register_tool(reviewable) -Zsanitizer=address -C force-frame-pointers=yes" RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=$CARGO_TARGET_DIR/asan cargo test -q --features hostile -p wcontainers-gallium-direct --target x86_64-unknown-linux-gnu --test served
+test: cargo test -q --features hostile -p wcontainers-gallium-direct --test served && T=$(rustc -vV | sed -n 's/^host: //p') && export "CFLAGS_${T//-/_}=-fsanitize=address -fno-omit-frame-pointer" && ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 RUSTFLAGS="-Zcrate-attr=feature(register_tool) -Zcrate-attr=register_tool(reviewable) -Zsanitizer=address -C force-frame-pointers=yes" RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=$CARGO_TARGET_DIR/asan cargo test -q --features hostile -p wcontainers-gallium-direct --target $T --test served
 
 plant: flat.c pipe_blend_state out->independent_blend_enable dropped
 file: crates/gallium/implementation/direct/flat.c
