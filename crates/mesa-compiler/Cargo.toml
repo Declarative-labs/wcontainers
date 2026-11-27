@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-mesa-compiler"
+description = "Mesa's shader compiler, as our C bridge offers it, as a safe trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[lints]
+workspace = true
