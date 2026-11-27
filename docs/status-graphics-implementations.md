@@ -1853,6 +1853,106 @@ crate but the interface, which this run may not change); nir's four shared progr
 - Next: GI8 part B's sampler views and on (waits on nothing); D1's 70 lines onto the Direct3D 11 and DXGI traits
   with the Windows type-check (waits on nothing but the work); GI4 and the window question wait on the owner.
 
+## The seventeenth run (2026-11-27): tests that state the right value, a mutation tool, sampler views and program stages on the Gallium trait
+
+Logs: scratch graphics-implementations/r17 (job script r17/tools/r17-job.sh, never committed). The x86-64 machine
+went away mid-run (MEASURED: `x86-run: the x86-64 machine ... cannot be reached` at about 16:00), so every claim
+below is from ARM64 runs at pushed commits, except where x86-64 is named.
+
+### Commits (all pushed; tip ae59195bc before this page)
+
+2573a2888 (nir stand-in test), 6a5383aef (shared constants, unused usage), daae3bf0a (merge Direct3D 31013a964),
+ae8899d25 (merge API crates d2cd0e0c4), 05fdc939a and acbfc7b99 (suite and unit tests), 4bee9d28c (sampler views),
+114a09c1c (rustfmt), 6aa7a1c80 (nir `Received::new`), 32740c0f8 (program stages), ae59195bc (webgl handle test,
+checked subtraction).
+
+### (1) mesa.rs: every value it forwards stated exactly
+
+`crates/nir/tests/forwarded.rs` (21 tests): a stand-in Mesa compiler records every call with its arguments and
+answers values the test chose; each test states the one right record and result from the step's documentation and
+the bridge's enumerations (no `assert_ne`). MEASURED at 32740c0f8, ARM64: nir `--lib --test route --test
+hostile_compiler --test arguments --test forwarded` 77 passed. The check's 12 field plants, its 4 `assert_ne`
+survivors and 34 more (one per remaining forwarded field: StreamedOutput's six, streams_elsewhere, strides, every
+flag and bit set, generic_end, the GLSL name's seven fields, every reflected binding field, every position-transform,
+draw-setting, swizzle and sampler field, the three keys): 50 plants, 50 fail a test (exit 101), the unplanted run
+passes. cargo-mutants does not mutate struct-literal fields, so these plants are the coverage for them.
+
+### (2) Mutation tool (cargo-mutants 27.1.0, installed on the machines only, not in the lock)
+
+Each run copies the tree three times (`-j 3`, cargo `-j 4`), its test command the package's suite.
+
+| file | scope | mutants | caught | survived | not viable | not covered (why) |
+|---|---|---|---|---|---|---|
+| crates/nir/src/mesa.rs | whole file | 84 | 23 | 0 | 61 | struct fields: by the 50 plants above |
+| crates/gpu/implementation/webgl/{implementation,convert,depth}.rs | lines changed since 0f60a2f97 | 83 | 70 (9 by timeout) | 2 | 11 | the rest of the files (1,447 listed whole): unchanged code, time |
+| crates/gpu/implementation/webgpu/{fill,implementation}.rs | lines changed since 0f60a2f97 | 51 | 46 | 1 | 4 | the rest (628 listed whole): unchanged code, time |
+
+Survivors, each shown (MEASURED at ae59195bc and 32740c0f8, ARM64; x86-64 equal for webgpu at 05fdc939a):
+- webgpu fill.rs `RENDER_ATTACHMENT | COPY_SRC` to `^`: equivalent (two distinct flag bits: `|` and `^` are equal).
+- webgl depth.rs `colliding`'s cache test `==` to `!=`: equivalent (the mutant scans again and returns the same list).
+- webgl `own_equal_draw_into`'s depth-range reset: reached, but llvmpipe clamps `gl_FragDepth` to 0..1, not to the
+  depth range, so no run here tells it apart (the suite test a_24_bit_depth_copy_after_a_narrow_depth_range... passes
+  with and without it). It matters where written depth is clamped to the viewport (ANGLE on Direct3D 11).
+
+Not run through the tool: crates/gpu/conformance/suite.rs (the tests themselves); crates/opengl (the crate does
+not build under the workspace's `forbid` until its old files move, so no mutant compiles); the constant renames in
+webgpu draw.rs, memory.rs, blocks.rs, packed.rs, vertex.rs, probe.rs and webgl convert.rs (the same value from
+crates/gpu); format_methods.rs and resource_methods.rs (two constants and a string, no code). C or generated code:
+none changed by this track this run, so no plant list was needed.
+
+Fixed by the tool's survivors: tests of a 24-bit level and a texel off its origin, depth32float's floats at the
+24-bit words, an index of 0xffff without restart, a depth copy after a narrow depth range (suite, every back end);
+a never-made surface refused by configure and present, the comparison pass made once a format (webgpu unit tests);
+a destroyed query set refused by write_timestamp with `GpuError::GONE` (webgl tests/handles.rs). Removed as reached
+by nothing: the 0 guard of both depth scans' `e - 1` (webgpu: word 0 alone reads as 0; webgl: a checked subtraction),
+webgl's usage on its own single-sampled texture (read nowhere).
+
+### (3) The FIX items
+
+- webgpu implementation.rs:1502-1512 (render attachment for colliding Depth24 copies): removed (6a5383aef); a texture
+  without RENDER or COPY_DST holds only zero, and fill.rs reads it the plain way when it is not an attachment.
+- `UNORM24_BITS`, `UNORM24_MAX` are `Format`'s constants (crates/gpu/format_methods.rs), `GONE` is `GpuError::GONE`
+  (crates/gpu/resource_methods.rs); interface.rs untouched. MEASURED: the linter's constant_defined_twice for them in
+  our crates is gone (one left, in crates/direct3d-12/implementation/translated/tests/answers.rs, not ours).
+
+### (4) D1: stopped at the system library's constructor
+
+Merged 31013a964 (daae3bf0a, no conflict). The only way to a value implementing `Direct3D11` over the real d3d11.dll is
+`SystemDirect3D11::new(Library)`, an `unsafe fn` (direct/call.rs:30794); DXGI and Direct3D 12 the same. Our tests
+cannot call it without `unsafe`. Asked as code in NEEDED-FROM-API-CRATES.md (seventeenth run): a safe
+`SystemDirect3D11::system()` in each direct crate. MEASURED, the Windows type-check (the Direct3D track's status 0.6
+toolchain, copied as .gi-wintool, not committed): `cargo check --target x86_64-pc-windows-gnu --all-targets` for
+gpu-webgpu and shaders stops in graphics-test's build script ("the Windows SDK is not installed", build.rs:86): its
+HLSL is compiled by fxc and dxc, which Linux lacks. Shaders' tests also need the Direct3D 12 GPU address and
+descriptor lines (the Direct3D track's next items 1 and 2). Count moved: 0 (19 and 71 stay).
+
+### (5) GI8 part B (compile-only, both machines' builds of the trait)
+
+Sampler views (crates/opengl/src/views.rs: created from the resource and typed template, twins, texel buffers,
+layers, integer cube faces, given back on drop; set per stage with trailing slots emptied) and program stages
+(src/shaders.rs: each `create_*_state` takes the stage's received program, prepared once through
+`Received::new` and `prepare`; bound per stage, dropped with the last holder). MEASURED at ae59195bc, ARM64: opengl
+check errors 1,410 (1,403 unsafe lint errors in the old files and the bindings), the same as before: the new files add
+none. Queries, stream output, draw, blit and present not moved.
+
+### Claim run at ae59195bc (ARM64, r17/claim-at-ae59195bc-arm.log)
+
+check `--all-targets` exit 0: gpu, conformance, recording, trace, webgl, webgpu, shaders, egl, opengl-es and the
+mesa compiler crates; nir 47 errors (the corpus, glsl_buffers, glsl_reference and narrow targets' unsafe, D7, as
+before), opengl as above; no-Mesa nir and opengl 0. Tests: nir 77 passed; webgl 98 passed; opengl-es direct 18;
+webgpu on lavapipe 164 passed, 3 failed (BC decoder, 16-bit floats, the window read: as before), 4 ignored; shaders
+158 passed, 5 ignored; recording 359 passed. Clippy 0, rustfmt 0. Linter (da55b9d7): 119,776 in all (the merged API
+crates); ours: gpu 1,367, conformance 3,989, recording 1,026, trace 129, webgl 6,756, webgpu 2,896, nir 992, opengl
+3,931, shaders 4,715, shader-converters 254, test-window 47. Cargo.lock 832f07622182af5f, unchanged by the run.
+
+### Milestones
+
+- Reached: FIX (1) to (3) as above, with three survivors explained; GI8 part B's sampler views and program stages.
+- Not reached: D1 (the system constructor, the Windows SDK, the Direct3D 12 lines); the comparison pass limited to
+  colliding reads (item 6, not started).
+- Next: GI8 part B's queries (end_query handing back the active query), then stream output, draw, blit, present;
+  waits on nothing. D1 waits on the API track's `system()` constructors.
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
