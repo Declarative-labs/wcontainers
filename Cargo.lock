@@ -5820,6 +5820,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-translator-confinement"
+version = "0.1.0"
+dependencies = [
+ "fastrand",
+ "object 0.40.0",
+ "wcontainers-arm64",
+ "wcontainers-guest-cpu",
+ "wcontainers-translator",
+]
+
+[[package]]
 name = "wcontainers-translator-test"
 version = "0.1.0"
 dependencies = [

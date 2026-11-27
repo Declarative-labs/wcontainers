@@ -1,0 +1,24 @@
+[package]
+name = "wcontainers-translator-confinement"
+description = "Decides, over the bytes, whether the native output's instructions stay inside their own memory and make no system call."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "checker.rs"
+
+[dev-dependencies]
+# The measurement runs the checker over what the native translator emits for the in-process way.
+wcontainers-translator = { path = "../translator", features = ["native"] }
+wcontainers-arm64 = { path = "../arm64" }
+wcontainers-guest-cpu = { path = "../guest-cpu" }
+fastrand = "2.5.0"
+# The test programs' text, read from their ELF files.
+object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }
+
+[lints]
+workspace = true
