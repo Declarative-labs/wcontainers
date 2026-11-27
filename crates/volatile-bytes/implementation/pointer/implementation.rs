@@ -5,7 +5,6 @@
 mod proofs;
 
 use core::ffi::c_void;
-use core::ops::Range;
 use core::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 
 use wcontainers_byte_sink::ByteSink;
@@ -50,17 +49,12 @@ pub struct PointerBytes {
 }
 
 impl PointerBytes {
-    /// Returns a view of the bytes at the offsets from this view's start.
-    ///
-    /// PROVISIONAL: no interface declares how a view of a sub-range is made; README.md.
-    pub fn part(&self, offsets: Range<u64>) -> Option<PointerBytes> {
-        let (at, length) = part(self.length, offsets)?;
-        Some(PointerBytes { pointer: AtomicPtr::new(self.pointer.load(Relaxed).wrapping_add(at)), length })
-    }
-
-    /// Returns the address of the view's first byte, if the `count` bytes from it all lie inside the view.
-    fn bytes(&self, count: usize) -> Option<*mut u8> {
-        inside(self.length, count).map(|_| self.pointer.load(Relaxed))
+    /// Returns the address of the byte at the offset and how many bytes from it a buffer of `buffer` bytes takes, if
+    /// the offset lies inside the view or at its end.
+    fn at(&self, offset: u64, buffer: usize) -> Option<(*mut u8, usize)> {
+        let pointer = self.pointer.load(Relaxed);
+        let (address, count) = range(pointer.addr(), self.length, offset, buffer)?;
+        Some((pointer.with_addr(address), count))
     }
 }
 
@@ -72,34 +66,34 @@ impl StandaloneVolatileBytes for PointerBytes {
     }
 }
 
-/// Reads and writes from the view's start, as many bytes as the shorter of the view and the buffer holds.
+/// Reads and writes from an offset in the view, as many bytes as the shorter of the buffer and the rest of the view.
 impl VolatileBytes for PointerBytes {
     fn len(&self) -> u64 {
         self.length as u64
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
-        let count = into.len().min(self.length);
-        let Some(from) = self.bytes(count) else {
-            return 0;
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
+        let Some((from, count)) = self.at(offset, into.len()) else {
+            return usize::MIN;
         };
         #[expect(unsafe_code, reason = "the copy out of the bytes")]
-        // SAFETY: the `count` bytes from `from` lie inside the view (checked by `bytes`), which the promise of
-        // `PointerAndLength::new` keeps readable with no reference over them; so `into`, a reference, is not over them.
+        // SAFETY: the `count` bytes from `from` lie inside the view and `count` is at most `into`'s length (both checked
+        // by `range`); the promise of `PointerAndLength::new` keeps the view readable with no reference over it, so
+        // `into`, a reference, is not over them.
         unsafe {
             copy(into.as_mut_ptr(), from, count);
         }
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
-        let count = bytes.len().min(self.length);
-        let Some(to) = self.bytes(count) else {
-            return 0;
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
+        let Some((to, count)) = self.at(offset, bytes.len()) else {
+            return usize::MIN;
         };
         #[expect(unsafe_code, reason = "the copy into the bytes")]
-        // SAFETY: the `count` bytes from `to` lie inside the view (checked by `bytes`), which the promise of
-        // `PointerAndLength::new` keeps writable with no reference over them; so `bytes`, a reference, is not over them.
+        // SAFETY: the `count` bytes from `to` lie inside the view and `count` is at most `bytes`'s length (both checked
+        // by `range`); the promise of `PointerAndLength::new` keeps the view writable with no reference over it, so
+        // `bytes`, a reference, is not over them.
         unsafe {
             copy(to, bytes.as_ptr(), count);
         }
@@ -122,19 +116,13 @@ impl VolatileBytes for PointerBytes {
     }
 }
 
-/// Returns `count` if that many bytes lie inside `length` bytes.
-fn inside(length: usize, count: usize) -> Option<usize> {
-    (count <= length).then_some(count)
-}
-
-/// Returns the start and length of the bytes at `offsets` in a view of `length` bytes, if they lie inside it.
-fn part(length: usize, offsets: Range<u64>) -> Option<(usize, usize)> {
-    let begin = usize::try_from(offsets.start).ok()?;
-    let end = usize::try_from(offsets.end).ok()?;
-    if begin > end || end > length {
-        return None;
-    }
-    Some((begin, end - begin))
+/// Returns the address of the byte at `offset` in the `length` bytes from `address`, and the count of bytes from it a
+/// buffer of `buffer` bytes takes: the shorter of the buffer and the bytes from the offset to the end. None from an
+/// offset past the end, which takes no bytes. Every step is checked, so nothing wraps.
+fn range(address: usize, length: usize, offset: u64, buffer: usize) -> Option<(usize, usize)> {
+    let at = usize::try_from(offset).ok()?;
+    let left = length.checked_sub(at)?;
+    Some((address.checked_add(at)?, buffer.min(left)))
 }
 
 /// Copies `length` bytes from `from` to `to` with the C library's `memcpy`, called through a pointer the compiler cannot
