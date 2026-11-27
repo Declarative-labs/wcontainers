@@ -108,6 +108,8 @@ zstd = "0.13.5"
 # The runtime suite, run on the unicorn stand-in without its kernel test harness.
 wcontainers-runtime-conformance = { path = "../../conformance" }
 wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicorn", default-features = false }
+# The runtime suite, run on the WebAssembly executor.
+wcontainers-executor-wasmtime = { path = "../../../executor/implementation/wasmtime" }
 
 [[test]]
 name = "conformance"

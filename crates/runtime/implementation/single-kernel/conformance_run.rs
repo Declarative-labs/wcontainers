@@ -125,3 +125,25 @@ mod on_the_stand_in {
 
     wcontainers_runtime_conformance::tests!(subject());
 }
+
+/// The suite on the WebAssembly executor.
+mod on_wasmtime {
+    use std::sync::Arc;
+
+    use wcontainers_executor_wasmtime::{WasmtimeExecutor, WasmtimeTranslatorConfig};
+
+    /// Returns the runtime on wasmtime, whose runners' executors translate as the kernel's does.
+    ///
+    /// Every executor of the process shares one engine, so a space one makes runs on any other.
+    fn subject() -> wcontainers_runtime_conformance::Subject<super::LocalRuntime<WasmtimeExecutor>>
+    {
+        let translator = WasmtimeTranslatorConfig::default();
+        super::subject(
+            Arc::new(|config: &WasmtimeTranslatorConfig| WasmtimeExecutor::new(*config)),
+            Arc::new(move |_: &WasmtimeExecutor| WasmtimeExecutor::new(translator)),
+            translator,
+        )
+    }
+
+    wcontainers_runtime_conformance::tests!(subject());
+}
