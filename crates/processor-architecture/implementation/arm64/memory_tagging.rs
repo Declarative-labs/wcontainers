@@ -16,7 +16,7 @@ use crate::operand::RegisterThirtyOne;
 use crate::registers::{read_register, write_register};
 use crate::{
     AccessDirection, ConditionFlags, Exception, FaultStatus, GENERAL_PURPOSE_REGISTERS,
-    Instruction, PagePermission, PreciseInstruction, Processor,
+    Instruction, Nzcv, PagePermission, PreciseInstruction, Processor,
 };
 
 /// The bytes one allocation tag covers.
@@ -115,7 +115,8 @@ pub fn simulate_tag_operation<LevelSpecific>(
             ));
             let difference = first.wrapping_sub(second);
             if sets_flags {
-                processor.condition_flags = to_subtraction_flags(first, second, difference);
+                processor.condition_flags =
+                    Nzcv::from(to_subtraction_flags(first, second, difference));
             }
             (difference, RegisterThirtyOne::ZeroRegister)
         }

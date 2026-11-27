@@ -88,7 +88,8 @@ impl<LevelSpecific: PartialEq> ProcessorExpectation<LevelSpecific> {
             .zip(&expected.general_purpose_registers)
             .zip(&self.uncompared.general_purpose_registers)
             .all(|((value, wanted), uncompared)| (value ^ wanted) & !uncompared == 0)
-            && (observed.condition_flags.bits() ^ expected.condition_flags.bits())
+            && (ConditionFlags::from(observed.condition_flags).bits()
+                ^ ConditionFlags::from(expected.condition_flags).bits())
                 & !self.uncompared.condition_flags.bits()
                 == 0
             && observed.stack_pointer == expected.stack_pointer

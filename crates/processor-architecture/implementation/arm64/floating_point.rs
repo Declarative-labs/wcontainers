@@ -9,7 +9,7 @@
 
 use core::convert::Infallible;
 
-use crate::condition_flags::{CONDITIONS, ConditionFlags};
+use crate::condition_flags::{CONDITIONS, ConditionFlags, Nzcv};
 use crate::integer::low_ones;
 use crate::operand::{Operand, OperandAccess, RegisterThirtyOne, RegisterWidth};
 use crate::registers::{read_register, write_register};
@@ -49,6 +49,8 @@ const SCALE: crate::encoding::Field = crate::encoding::Field::new(10, 6);
 /// format keeps, so that one rounding of it with its sticky remainder is exact.
 const QUOTIENT_EXTRA_BITS: u32 = u64::BITS - 1;
 
+vstd::prelude::verus! {
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Precision {
     Half,
@@ -57,6 +59,8 @@ pub enum Precision {
     /// [BFloat16](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPRoundBF): single precision's exponent with seven fraction bits.
     BFloat16,
 }
+
+} // verus!
 
 impl Precision {
     pub const fn to_bits(self) -> u32 {
@@ -1000,7 +1004,7 @@ pub fn simulate_floating_point<LevelSpecific>(
         destination,
         condition,
         fbits,
-        processor.condition_flags,
+        ConditionFlags::from(processor.condition_flags),
         &mut context,
     );
     match (result, destination) {
@@ -1022,7 +1026,7 @@ pub fn simulate_floating_point<LevelSpecific>(
                 RegisterThirtyOne::ZeroRegister,
             );
         }
-        (Outcome::Flags(flags), _) => processor.condition_flags = flags,
+        (Outcome::Flags(flags), _) => processor.condition_flags = Nzcv::from(flags),
         (Outcome::ValueAndFlags(value, flags), Some(Destination::General { number, width })) => {
             write_register(
                 processor,
@@ -1030,7 +1034,7 @@ pub fn simulate_floating_point<LevelSpecific>(
                 value & width.to_mask(),
                 RegisterThirtyOne::ZeroRegister,
             );
-            processor.condition_flags = flags;
+            processor.condition_flags = Nzcv::from(flags);
         }
         (Outcome::ValueAndFlags(..), _) => {
             panic!("{operation:?} writes a general-purpose register and the flags")

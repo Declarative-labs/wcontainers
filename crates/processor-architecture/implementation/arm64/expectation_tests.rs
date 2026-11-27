@@ -81,7 +81,7 @@ fn uncompared_bits_of_a_register_and_nzcv_are_left_out() {
     let mut expected = ProcessorExpectation::new(ZERO_PROCESSOR);
     let mut observed = ZERO_PROCESSOR;
     observed.general_purpose_registers[5] = 0x1234;
-    observed.condition_flags = crate::ConditionFlags::ZERO;
+    observed.condition_flags = crate::Nzcv::from(crate::ConditionFlags::ZERO);
     assert!(!expected.is_met_by(&observed));
     expected.uncompared.general_purpose_registers[5] = 0xFFFF;
     assert!(!expected.is_met_by(&observed));

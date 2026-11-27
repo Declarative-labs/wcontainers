@@ -151,7 +151,7 @@ pub fn simulate_branch<LevelSpecific>(
             } else {
                 condition
             };
-            let taken = CONDITIONS[condition as usize].holds(processor.condition_flags);
+            let taken = CONDITIONS[condition as usize].holds_in(processor.condition_flags);
             (None, None, taken.then(|| address.wrapping_add(offset)))
         }
         (O::CompareAndBranch(branch_when), &[value, offset]) => {

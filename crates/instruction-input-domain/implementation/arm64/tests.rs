@@ -264,9 +264,13 @@ fn read_operand(
                 },
             ))
         }
-        OperandType::ConditionFlags | OperandType::WrittenConditionFlags => Some(
-            OperandValue::ConditionFlags(state.processor.condition_flags),
-        ),
+        OperandType::ConditionFlags | OperandType::WrittenConditionFlags => {
+            Some(OperandValue::ConditionFlags(
+                wcontainers_processor_architecture_arm64::ConditionFlags::from(
+                    state.processor.condition_flags,
+                ),
+            ))
+        }
         OperandType::AccessPlacement
         | OperandType::ScalableStructurePlacement
         | OperandType::ElementPlacement => {

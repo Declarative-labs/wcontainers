@@ -387,7 +387,7 @@ pub fn simulate_integer<LevelSpecific>(
         width,
         kept,
         read.sources(),
-        processor.condition_flags,
+        ConditionFlags::from(processor.condition_flags),
     )?;
     if let (Some(result), Some((number, thirty_one))) = (outcome.result, read.destination) {
         let thirty_one = if crate::planted::any(&[402, 420]) {
@@ -410,13 +410,13 @@ pub fn simulate_integer<LevelSpecific>(
             && let (IntegerOperation::AddWithCarry(_), &[first, second]) =
                 (operation, read.sources())
         {
-            let carry = processor.condition_flags.contains(ConditionFlags::CARRY);
+            let carry = processor.condition_flags.carry;
             value = first + second + u64::from(carry);
         }
         write_register(processor, number, value, thirty_one);
     }
     if let Some(flags) = outcome.flags {
-        processor.condition_flags = flags;
+        processor.condition_flags = Nzcv::from(flags);
     }
     Ok(())
 }

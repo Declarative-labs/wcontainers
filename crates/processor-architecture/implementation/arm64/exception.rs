@@ -1,3 +1,7 @@
+use vstd::prelude::*;
+
+verus! {
+
 /// A synchronous exception, with the instruction that raised it still at the program counter, except a supervisor
 /// call, which leaves the program counter at the instruction after it, as ELR_EL1 holds it.
 ///
@@ -40,7 +44,10 @@ pub enum Exception {
 
 impl Exception {
     /// Whether the exception is taken after its instruction, so that it returns to the next one.
-    pub const fn is_taken_after_instruction(self) -> bool {
+    pub const fn is_taken_after_instruction(self) -> (taken: bool)
+        ensures
+            taken == self is SupervisorCall,
+    {
         matches!(self, Self::SupervisorCall { .. })
     }
 }
@@ -98,3 +105,5 @@ pub enum SmeTrapCode {
     /// The instruction is legal only in streaming mode.
     NotInStreamingMode,
 }
+
+} // verus!

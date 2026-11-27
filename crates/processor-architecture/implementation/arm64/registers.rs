@@ -5,31 +5,44 @@ use vstd::prelude::*;
 use crate::operand::RegisterThirtyOne;
 use crate::{GENERAL_PURPOSE_REGISTERS, Processor};
 
-pub fn is_general_purpose(number: u32) -> bool {
+verus! {
+
+pub fn is_general_purpose(number: u32) -> (general_purpose: bool)
+    ensures
+        general_purpose == (number < GENERAL_PURPOSE_REGISTERS),
+{
     (number as usize) < GENERAL_PURPOSE_REGISTERS
 }
 
+/// The value of register `number` of the processor, with 31 the zero register or the stack pointer.
 pub fn read_register<LevelSpecific>(
     processor: &Processor<LevelSpecific>,
     number: u32,
     thirty_one: RegisterThirtyOne,
-) -> u64 {
-    // VERUS: `Processor` holds `ConditionFlags`, which Verus cannot read, so the registers it holds are passed.
-    register_value(
-        &processor.general_purpose_registers,
-        processor.stack_pointer,
-        number,
-        thirty_one,
-    )
+) -> (value: u64)
+    ensures
+        value == register_read(processor.general_purpose_registers@, processor.stack_pointer, number as nat, thirty_one),
+{
+    register_value(&processor.general_purpose_registers, processor.stack_pointer, number, thirty_one)
 }
 
+/// Writes register `number` of the processor, with 31 nothing or the stack pointer, as the operand names it; changes
+/// nothing else.
 pub fn write_register<LevelSpecific>(
     processor: &mut Processor<LevelSpecific>,
     number: u32,
     value: u64,
     thirty_one: RegisterThirtyOne,
-) {
-    // VERUS: `Processor` holds `ConditionFlags`, which Verus cannot read, so the registers it holds are passed.
+)
+    ensures
+        final(processor).general_purpose_registers@ == register_file_written(old(processor).general_purpose_registers@, number as nat, value),
+        final(processor).stack_pointer == stack_pointer_written(old(processor).stack_pointer, number as nat, value, thirty_one),
+        *final(processor) == (Processor {
+            general_purpose_registers: final(processor).general_purpose_registers,
+            stack_pointer: final(processor).stack_pointer,
+            ..*old(processor)
+        }),
+{
     set_register_value(
         &mut processor.general_purpose_registers,
         &mut processor.stack_pointer,
@@ -39,7 +52,15 @@ pub fn write_register<LevelSpecific>(
     );
 }
 
-verus! {
+/// X0 to X30 after a write of register `number`, which for 31 leaves them.
+pub open spec fn register_file_written(registers: Seq<u64>, number: nat, value: u64) -> Seq<u64> {
+    if number < registers.len() { registers.update(number as int, value) } else { registers }
+}
+
+/// The stack pointer after a write of register `number`, which only 31 naming it changes.
+pub open spec fn stack_pointer_written(stack_pointer: u64, number: nat, value: u64, thirty_one: RegisterThirtyOne) -> u64 {
+    if number >= GENERAL_PURPOSE_REGISTERS && thirty_one == RegisterThirtyOne::StackPointer { value } else { stack_pointer }
+}
 
 /// What a read of register `number` gives, as [X\[\]](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-registers#impl-aarch64.X.read.2)
 /// and [SP\[\]](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-registers#impl-aarch64.SP.read.0)

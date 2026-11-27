@@ -236,7 +236,9 @@ pub(crate) fn to_fingerprint(
     general_purpose_registers.hash(&mut hasher);
     stack_pointer.hash(&mut hasher);
     program_counter.hash(&mut hasher);
-    condition_flags.bits().hash(&mut hasher);
+    wcontainers_processor_architecture_arm64::ConditionFlags::from(*condition_flags)
+        .bits()
+        .hash(&mut hasher);
     vector_registers.hash(&mut hasher);
     predicate_registers.hash(&mut hasher);
     first_fault_register.hash(&mut hasher);

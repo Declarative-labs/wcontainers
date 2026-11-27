@@ -25,7 +25,7 @@ use wcontainers_processor_architecture::{
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::system_register::PROCESS_STATE_CONTROLS;
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, ExclusiveMonitor, INSTRUCTION_SIZE, InstructionFetch,
+    Arm64, ConditionFlags, DataAccess, ExclusiveMonitor, INSTRUCTION_SIZE, InstructionFetch, Nzcv,
     PagePermission, Processor, User,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
@@ -1476,9 +1476,8 @@ fn to_registers(processor: &Processor<()>) -> Registers {
         stack_pointer: processor.stack_pointer,
         program_counter: processor.program_counter,
         // Only NZCV, SSBS, DIT and TCO: any other bit would put EL0 in another state, which the handler does not expect.
-        saved_program_status: u64::from(
-            ConditionFlags::from_bits_truncate(processor.condition_flags.bits()).bits(),
-        ) | (processor.process_state_controls & PROCESS_STATE_CONTROL_BITS)
+        saved_program_status: u64::from(ConditionFlags::from(processor.condition_flags).bits())
+            | (processor.process_state_controls & PROCESS_STATE_CONTROL_BITS)
             | el0.value,
         software_thread_id: processor.software_thread_id,
         floating_point_control: processor.floating_point_control,
@@ -1543,7 +1542,9 @@ fn to_processor(
         program_counter: registers.program_counter,
         // NZCV, SSBS, DIT and TCO sit at the same bits of SPSR_EL1; the rest of EL0's PSTATE is not part of the processor
         // yet.
-        condition_flags: ConditionFlags::from_bits_truncate(registers.saved_program_status as u32),
+        condition_flags: Nzcv::from(ConditionFlags::from_bits_truncate(
+            registers.saved_program_status as u32,
+        )),
         process_state_controls: registers.saved_program_status & PROCESS_STATE_CONTROL_BITS,
         vector_registers: registers.vector,
         predicate_registers: array::from_fn(|number| registers.predicate[number]),

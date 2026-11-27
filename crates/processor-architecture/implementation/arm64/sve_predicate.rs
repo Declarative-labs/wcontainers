@@ -13,7 +13,7 @@ use crate::sve::{
     decode_count, is_active, read_element, read_predicate_element, test_predicate, to_element_bits,
     to_integer, write_predicate_element, write_predicate_truth,
 };
-use crate::{ConditionFlags, Exception, Instruction, Processor};
+use crate::{ConditionFlags, Exception, Instruction, Nzcv, Processor};
 
 /// The pattern of PTRUE.
 const PATTERN: Field = Field::new(5, 5);
@@ -772,7 +772,7 @@ pub(crate) fn simulate_predicate<LevelSpecific>(
                     & width_mask
             };
             let terminates = (read(RN5) == read(RM5)) == equal;
-            let mut flags = processor.condition_flags;
+            let mut flags = ConditionFlags::from(processor.condition_flags);
             let carry = flags.contains(ConditionFlags::CARRY);
             flags.set(ConditionFlags::NEGATIVE, terminates);
             flags.set(
@@ -862,7 +862,7 @@ pub(crate) fn simulate_predicate<LevelSpecific>(
         }
     };
     if let Some(flags) = flags {
-        processor.condition_flags = flags;
+        processor.condition_flags = Nzcv::from(flags);
     }
     Ok(())
 }

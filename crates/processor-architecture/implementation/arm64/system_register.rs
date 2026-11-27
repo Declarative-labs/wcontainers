@@ -3,7 +3,7 @@
 //! and its EL0 access rules.
 
 use crate::Processor;
-use crate::condition_flags::ConditionFlags;
+use crate::condition_flags::{ConditionFlags, Nzcv};
 use crate::encoding::{Field, RT};
 use crate::exception::{AccessDirection, Exception, SystemAccess};
 use crate::operand::RegisterThirtyOne;
@@ -369,7 +369,7 @@ pub fn simulate_system_register_move<LevelSpecific>(
         }
         // The value and NZCV are undecided; the expectation compares neither.
         (A::RandomNumber, AccessDirection::Read) => {
-            processor.condition_flags = ConditionFlags::empty();
+            processor.condition_flags = Nzcv::from(ConditionFlags::empty());
             0
         }
         (A::Trapped, _) | (A::ReadTrapped, AccessDirection::Read) => return Err(trapped()),
@@ -382,9 +382,11 @@ pub fn simulate_system_register_move<LevelSpecific>(
         },
         (A::Held(register), AccessDirection::Read) => match register {
             HeldRegister::ConditionFlags if crate::planted::is(428) => {
-                u64::from(processor.condition_flags.bits() >> 28)
+                u64::from(ConditionFlags::from(processor.condition_flags).bits() >> 28)
             }
-            HeldRegister::ConditionFlags => u64::from(processor.condition_flags.bits()),
+            HeldRegister::ConditionFlags => {
+                u64::from(ConditionFlags::from(processor.condition_flags).bits())
+            }
             HeldRegister::FloatingPointControl => processor.floating_point_control,
             HeldRegister::FloatingPointStatus => processor.floating_point_status,
             HeldRegister::SoftwareThreadId => processor.software_thread_id,
@@ -398,7 +400,8 @@ pub fn simulate_system_register_move<LevelSpecific>(
             let value = read_register(processor, number, RegisterThirtyOne::ZeroRegister);
             match register {
                 HeldRegister::ConditionFlags => {
-                    processor.condition_flags = ConditionFlags::from_bits_truncate(value as u32);
+                    processor.condition_flags =
+                        Nzcv::from(ConditionFlags::from_bits_truncate(value as u32));
                 }
                 HeldRegister::FloatingPointControl => {
                     processor.floating_point_control = value & choices.floating_point_control_bits;

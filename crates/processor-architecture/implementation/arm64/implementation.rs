@@ -69,7 +69,7 @@ pub use behavior::{
     MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
     StoreOfBaseWithWriteback, VectorLength, VectorLengthReading, WaitForInterruptBehavior,
 };
-pub use condition_flags::{CONDITIONS, Condition, ConditionFlags};
+pub use condition_flags::{CONDITIONS, Condition, ConditionFlags, Nzcv};
 pub use core_identity::CoreIdentity;
 pub use documented::{
     DocumentedInstruction, DocumentedOperation, to_documented_operation, to_implicit_inputs,
@@ -93,12 +93,12 @@ vstd::prelude::verus! {
 
 /// X0 to X30; the encoding's number after the last names the zero register or the stack pointer.
 pub const GENERAL_PURPOSE_REGISTERS: usize = 31;
-
-} // verus!
 /// V0 to V31.
 pub const VECTOR_REGISTERS: usize = 32;
 /// P0 to P15, the SVE predicate registers.
 pub const PREDICATE_REGISTERS: usize = 16;
+
+} // verus!
 
 /// What every privilege level has, and what `Level` adds to it.
 ///
@@ -199,17 +199,6 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
     }
 }
 
-/// The local [exclusive monitor](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-exclusive#:~:text=IsExclusiveLocal), which a load exclusive sets and a store
-/// exclusive or CLREX opens: state the chip keeps that no program reads.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ExclusiveMonitor {
-    Open,
-    /// Marks the reservation granule holding the address a load exclusive read.
-    Exclusive {
-        address: u64,
-    },
-}
-
 /// The instructions every privilege level has, then those `Level` adds.
 pub struct Instructions<Level: PrivilegeLevel> {
     every_level: vec::IntoIter<Instruction<Level::PrivilegedInstruction>>,
@@ -226,6 +215,19 @@ impl<Level: PrivilegeLevel> Iterator for Instructions<Level> {
     }
 }
 
+vstd::prelude::verus! {
+
+/// The local [exclusive monitor](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-exclusive#:~:text=IsExclusiveLocal), which a load exclusive sets and a store
+/// exclusive or CLREX opens: state the chip keeps that no program reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExclusiveMonitor {
+    Open,
+    /// Marks the reservation granule holding the address a load exclusive read.
+    Exclusive {
+        address: u64,
+    },
+}
+
 /// The registers every privilege level has, the exception its last instruction raised, and what one level adds.
 ///
 /// The SVE registers are those of a 128-bit vector length: each Z register is its vector register, and each
@@ -239,7 +241,8 @@ pub struct Processor<LevelSpecific> {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
     pub stack_pointer: u64,
     pub program_counter: u64,
-    pub condition_flags: ConditionFlags,
+    /// PSTATE.NZCV.
+    pub condition_flags: Nzcv,
     /// V0 to V31, which are Z0 to Z31 at a 128-bit vector length.
     pub vector_registers: [u128; VECTOR_REGISTERS],
     /// P0 to P15.
@@ -263,25 +266,6 @@ pub struct Processor<LevelSpecific> {
     pub level_specific: LevelSpecific,
 }
 
-/// Every register zero, the condition flags clear, the exclusive monitor open and no exception, at a level that adds no
-/// state.
-pub const ZERO_PROCESSOR: Processor<()> = Processor {
-    general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
-    stack_pointer: 0,
-    program_counter: 0,
-    condition_flags: ConditionFlags::empty(),
-    vector_registers: [0; VECTOR_REGISTERS],
-    predicate_registers: [0; PREDICATE_REGISTERS],
-    first_fault_register: 0,
-    floating_point_control: 0,
-    floating_point_status: 0,
-    software_thread_id: 0,
-    process_state_controls: 0,
-    exclusive_monitor: ExclusiveMonitor::Open,
-    exception: None,
-    level_specific: (),
-};
-
 /// What the running program may do with a page; memory that was never given a permission is unmapped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PagePermission {
@@ -304,6 +288,33 @@ pub enum InstructionFetch {
     Forbidden,
     Allowed,
 }
+
+} // verus!
+
+// VERUS: Verus has no specification of an array repeat expression, so this constant stays outside `verus!`.
+/// Every register zero, the condition flags clear, the exclusive monitor open and no exception, at a level that adds no
+/// state.
+pub const ZERO_PROCESSOR: Processor<()> = Processor {
+    general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
+    stack_pointer: 0,
+    program_counter: 0,
+    condition_flags: Nzcv {
+        negative: false,
+        zero: false,
+        carry: false,
+        overflow: false,
+    },
+    vector_registers: [0; VECTOR_REGISTERS],
+    predicate_registers: [0; PREDICATE_REGISTERS],
+    first_fault_register: 0,
+    floating_point_control: 0,
+    floating_point_status: 0,
+    software_thread_id: 0,
+    process_state_controls: 0,
+    exclusive_monitor: ExclusiveMonitor::Open,
+    exception: None,
+    level_specific: (),
+};
 
 /// An instruction with one behavior for every case the manual leaves open or a chip does its own way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -261,10 +261,13 @@ fn add_shifts_arithmetically_wraps_and_keeps_the_flags() {
     let mut before = to_state(word, READ_WRITE, READ_WRITE);
     before.processor.general_purpose_registers[1] = 1;
     before.processor.general_purpose_registers[2] = SIGN_BIT;
-    before.processor.condition_flags = ConditionFlags::CARRY;
+    before.processor.condition_flags = Nzcv::from(ConditionFlags::CARRY);
     let (after, _) = run(to_documented(Instruction::AddShiftedRegister64), before);
     assert_eq!(after.general_purpose_registers[0], 0);
-    assert_eq!(after.condition_flags, ConditionFlags::CARRY);
+    assert_eq!(
+        ConditionFlags::from(after.condition_flags),
+        ConditionFlags::CARRY
+    );
 }
 
 #[test]
@@ -310,7 +313,7 @@ fn adds_sets_overflow_and_negative() {
     let (after, _) = run(to_documented(Instruction::AddsShiftedRegister64), before);
     assert_eq!(after.general_purpose_registers[0], SIGN_BIT);
     assert_eq!(
-        after.condition_flags,
+        ConditionFlags::from(after.condition_flags),
         ConditionFlags::NEGATIVE | ConditionFlags::OVERFLOW
     );
 }
@@ -324,11 +327,11 @@ fn adds_sets_zero_and_carry() {
     let mut before = to_state(word, READ_WRITE, READ_WRITE);
     before.processor.general_purpose_registers[1] = u64::MAX;
     before.processor.general_purpose_registers[2] = 1;
-    before.processor.condition_flags = ConditionFlags::NEGATIVE;
+    before.processor.condition_flags = Nzcv::from(ConditionFlags::NEGATIVE);
     let (after, _) = run(to_documented(Instruction::AddsShiftedRegister64), before);
     assert_eq!(after.general_purpose_registers[0], 0);
     assert_eq!(
-        after.condition_flags,
+        ConditionFlags::from(after.condition_flags),
         ConditionFlags::ZERO | ConditionFlags::CARRY
     );
 }
@@ -350,13 +353,13 @@ fn csel_selects_by_its_condition() {
         let mut before = to_state(word, READ_WRITE, READ_WRITE);
         before.processor.general_purpose_registers[1] = 11;
         before.processor.general_purpose_registers[2] = 22;
-        before.processor.condition_flags = flags;
+        before.processor.condition_flags = Nzcv::from(flags);
         let (after, _) = run(to_documented(Instruction::Csel64), before);
         assert_eq!(
             after.general_purpose_registers[0], selected,
             "condition {condition}"
         );
-        assert_eq!(after.condition_flags, flags);
+        assert_eq!(ConditionFlags::from(after.condition_flags), flags);
     }
 }
 
@@ -785,7 +788,7 @@ fn run_documented(
     for &(number, value) in registers {
         before.processor.general_purpose_registers[number] = value;
     }
-    before.processor.condition_flags = flags;
+    before.processor.condition_flags = Nzcv::from(flags);
     run(to_documented(instruction), before).0
 }
 
@@ -1097,7 +1100,10 @@ fn flag_instructions_compare_or_insert() {
         &[(1, 5), (2, 5)],
         ConditionFlags::empty(),
     );
-    assert_eq!(unequal.condition_flags, ConditionFlags::CARRY);
+    assert_eq!(
+        ConditionFlags::from(unequal.condition_flags),
+        ConditionFlags::CARRY
+    );
     let equal = run_documented(
         Instruction::Ccmp64,
         &[(RN, 1), (RM, 2), (NZCV, 0b0010), (COND, 0)],
@@ -1105,7 +1111,7 @@ fn flag_instructions_compare_or_insert() {
         ConditionFlags::ZERO,
     );
     assert_eq!(
-        equal.condition_flags,
+        ConditionFlags::from(equal.condition_flags),
         ConditionFlags::ZERO | ConditionFlags::CARRY
     );
     // rmif x1, #4, #0b1000
@@ -1116,7 +1122,7 @@ fn flag_instructions_compare_or_insert() {
         ConditionFlags::CARRY,
     );
     assert_eq!(
-        rmif.condition_flags,
+        ConditionFlags::from(rmif.condition_flags),
         ConditionFlags::NEGATIVE | ConditionFlags::CARRY
     );
     let setf8 = run_documented(
@@ -1126,7 +1132,7 @@ fn flag_instructions_compare_or_insert() {
         ConditionFlags::CARRY,
     );
     assert_eq!(
-        setf8.condition_flags,
+        ConditionFlags::from(setf8.condition_flags),
         ConditionFlags::NEGATIVE | ConditionFlags::CARRY | ConditionFlags::OVERFLOW
     );
 }
@@ -1289,7 +1295,9 @@ fn loads_extend_index_and_write_back() {
 
 #[test]
 fn flag_conversions_follow_the_manual() {
-    let flags = |instruction, before| run_documented(instruction, &[], &[], before).condition_flags;
+    let flags = |instruction, before| {
+        ConditionFlags::from(run_documented(instruction, &[], &[], before).condition_flags)
+    };
     assert_eq!(
         flags(Instruction::Cfinv, ConditionFlags::CARRY),
         ConditionFlags::empty()
@@ -1391,7 +1399,7 @@ fn a_random_number_read_leaves_its_register_and_nzcv_undecided() {
         );
         let mut observed = expected.processor.clone();
         observed.general_purpose_registers[5] = 0x1234;
-        observed.condition_flags = ConditionFlags::ZERO;
+        observed.condition_flags = Nzcv::from(ConditionFlags::ZERO);
         assert_eq!(
             Arm64::<User>::meets_expectations(&observed, expected),
             undecided
@@ -1450,7 +1458,7 @@ fn equality_and_clone_of_processors_permissions_and_instructions_are_identity() 
     let one_field: [fn(&mut Processor<()>); 7] = [
         |processor| processor.stack_pointer = u64::MAX,
         |processor| processor.program_counter = u64::MAX,
-        |processor| processor.condition_flags = ConditionFlags::all(),
+        |processor| processor.condition_flags = Nzcv::from(ConditionFlags::all()),
         |processor| processor.floating_point_control = u64::MAX,
         |processor| processor.floating_point_status = u64::MAX,
         |processor| processor.software_thread_id = u64::MAX,

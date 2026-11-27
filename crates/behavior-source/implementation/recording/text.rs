@@ -23,8 +23,8 @@ use std::convert::Infallible;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, FaultStatus, Instruction,
-    InstructionFetch, PagePermission, Processor, SmeTrapCode, SystemAccess, User, WaitInstruction,
-    ZERO_PROCESSOR,
+    InstructionFetch, Nzcv, PagePermission, Processor, SmeTrapCode, SystemAccess, User,
+    WaitInstruction, ZERO_PROCESSOR,
 };
 
 use crate::RecordedCase;
@@ -332,7 +332,10 @@ fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
     let named = [
         ("sp", format!("{stack_pointer:#x}")),
         ("pc", format!("{program_counter:#x}")),
-        ("nzcv", format!("{:#x}", condition_flags.bits())),
+        (
+            "nzcv",
+            format!("{:#x}", ConditionFlags::from(*condition_flags).bits()),
+        ),
         ("fpcr", format!("{floating_point_control:#x}")),
         ("fpsr", format!("{floating_point_status:#x}")),
         ("tpidr_el0", format!("{software_thread_id:#x}")),
@@ -376,7 +379,8 @@ fn from_fields(mut processor: Processor<()>, fields: &str) -> Option<Processor<(
             "sp" => processor.stack_pointer = from_hex_number(value)?,
             "pc" => processor.program_counter = from_hex_number(value)?,
             "nzcv" => {
-                processor.condition_flags = ConditionFlags::from_bits(from_hex_number(value)?)?
+                processor.condition_flags =
+                    Nzcv::from(ConditionFlags::from_bits(from_hex_number(value)?)?)
             }
             "fpcr" => processor.floating_point_control = from_hex_number(value)?,
             "fpsr" => processor.floating_point_status = from_hex_number(value)?,

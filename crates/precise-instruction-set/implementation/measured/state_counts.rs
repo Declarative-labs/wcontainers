@@ -39,7 +39,12 @@ impl Hash {
         for value in [
             processor.stack_pointer,
             processor.program_counter,
-            u64::from(processor.condition_flags.bits()),
+            u64::from(
+                wcontainers_processor_architecture_arm64::ConditionFlags::from(
+                    processor.condition_flags,
+                )
+                .bits(),
+            ),
             processor.floating_point_control,
             processor.floating_point_status,
             processor.software_thread_id,

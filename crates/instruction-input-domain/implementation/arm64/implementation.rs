@@ -56,7 +56,7 @@ use wcontainers_processor_architecture_arm64::system_register::{
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
-    INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
+    INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction, Nzcv,
     PagePermission, Processor, StructureInstruction, User, VECTOR_REGISTERS, VIRTUAL_ADDRESS_BITS,
     ZERO_PROCESSOR, to_implicit_inputs, writes_condition_flags,
 };
@@ -1066,7 +1066,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     let OperandValue::ConditionFlags(flags) = operand else {
                         reject_mismatch(operand_type, operand)
                     };
-                    processor.condition_flags = flags;
+                    processor.condition_flags = Nzcv::from(flags);
                 }
                 OperandType::Comparand { field, pair, .. } => {
                     let OperandValue::Comparison(chosen) = operand else {

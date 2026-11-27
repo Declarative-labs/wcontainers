@@ -11,7 +11,7 @@ use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
-    INSTRUCTION_SIZE, InstructionFetch, PagePermission, User, ZERO_PROCESSOR,
+    INSTRUCTION_SIZE, InstructionFetch, Nzcv, PagePermission, User, ZERO_PROCESSOR,
 };
 
 use crate::guest_layout::{HANDLER_HALF, linear};
@@ -69,7 +69,7 @@ pub(crate) fn to_state(
     let mut processor = ZERO_PROCESSOR;
     processor.program_counter = CODE;
     processor.general_purpose_registers[1] = address;
-    processor.condition_flags = flags;
+    processor.condition_flags = Nzcv::from(flags);
     ExecutionState {
         processor,
         memory_mutations: vec![
@@ -136,13 +136,17 @@ fn words_outside_the_ten_instructions_end_in_a_named_result() {
         let after = to_after(&mut chip, before);
         println!(
             "{word:x?}: {:x?}, flags {:?}",
-            after.processor.exception, after.processor.condition_flags
+            after.processor.exception,
+            ConditionFlags::from(after.processor.condition_flags)
         );
         assert!(after.processor.exception.is_some());
         assert_eq!(class(after.processor.exception), expected, "{word:x?}");
     }
     let after = to_after(&mut chip, to_state(BREAKPOINT, DATA, every_bit));
-    assert_eq!(after.processor.condition_flags, ConditionFlags::all());
+    assert_eq!(
+        ConditionFlags::from(after.processor.condition_flags),
+        ConditionFlags::all()
+    );
     assert_eq!(
         after.processor.exception,
         Some(Exception::Breakpoint { comment: 0 })

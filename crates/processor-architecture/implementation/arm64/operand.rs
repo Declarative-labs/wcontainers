@@ -9,6 +9,8 @@ use crate::floating_point::Precision;
 #[cfg(verus_keep_ghost)]
 use crate::pseudocode::ones;
 
+verus! {
+
 /// One operand of an instruction's assembler syntax, as far as its encoding is modeled.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Operand {
@@ -107,8 +109,6 @@ pub enum Operand {
     Unmodeled,
 }
 
-verus! {
-
 /// Where a load or store's address is, and what it writes back to its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indexing {
@@ -178,15 +178,11 @@ pub enum RegisterThirtyOne {
     StackPointer,
 }
 
-} // verus!
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OperandAccess {
     Read,
     Written,
 }
-
-verus! {
 
 /// Whether a shifted register may rotate, which the arithmetic instructions leave unallocated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
