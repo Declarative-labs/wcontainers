@@ -3,6 +3,7 @@
 //! [ARM64 instructions Linux lets user space run](https://docs.kernel.org/arch/arm64/cpu-feature-registers.html).
 #![cfg(target_os = "linux")]
 
+use std::ops::Range;
 use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
@@ -21,17 +22,20 @@ pub struct PredicatesAfterSystemCall {
     pub ffr: [u8; LARGEST_PREDICATE_BYTES],
 }
 
-/// The general register that holds a run's [`RunFrame`] while its code runs: x28.
+/// The general register that holds a run's [`RunFrame`] while its instructions run: x28.
 #[cfg(target_arch = "aarch64")]
 pub const FRAME_REGISTER: u8 = 28;
-/// The general register that holds the code's first address as a run starts, and that an exit keeps in the frame
-/// before it uses it: x23.
+/// The general register that holds the address of a run's first instruction as it starts, and that an exit keeps in
+/// the frame before it uses it: x23.
 #[cfg(target_arch = "aarch64")]
 pub const EXIT_SCRATCH_REGISTER: u8 = 23;
-/// The bytes of one exit's instructions, [`LinuxProcess::exit_code`].
+/// The general register a run sets to the first address of its mapping's window: x24.
+#[cfg(target_arch = "aarch64")]
+pub const WINDOW_BASE_REGISTER: u8 = 24;
+/// The bytes of one exit's instructions, [`LinuxProcess::exit_instructions`].
 #[cfg(target_arch = "aarch64")]
 pub const EXIT_BYTES: usize = 16;
-/// The words of a [`RunFrame`] its code owns.
+/// The words of a [`RunFrame`] its instructions own.
 #[cfg(target_arch = "aarch64")]
 pub const RUN_FRAME_WORDS: usize = 32;
 /// The words of a [`RunFrame`] a run owns.
@@ -60,21 +64,26 @@ pub struct Arm64Registers {
     pub tpidr_el0: u64,
 }
 
-/// The signal that stops a run on the thread it is sent to with [`LinuxProcess::tgkill`], wherever its code is.
+/// The signal that stops a run on the thread it is sent to with [`LinuxProcess::tgkill`], wherever its instructions are.
 #[cfg(target_arch = "aarch64")]
 pub const RUN_STOP_SIGNAL: Signal = Signal::USR1;
 
-/// How a run of code ended, as [`LinuxProcess::run_code`] returns it.
+/// How a run of instructions ended, as [`LinuxProcess::run_instructions`] returns it.
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunEnd {
-    /// The code branched with link to the exit at this address.
+    /// The instructions branched with link to the exit at this address.
     Exit(u64),
-    /// [`RUN_STOP_SIGNAL`] came before the code started: the frame's registers are those it would have started with.
+    /// Nothing ran: the frame's `pc` is not an instruction of the mapping, or its stack pointer is outside the
+    /// mapping's window for instructions that are not displaced.
+    Refused,
+    /// [`RUN_STOP_SIGNAL`] came before the instructions started: the frame's registers are those they would have
+    /// started with.
     NotEntered,
-    /// [`RUN_STOP_SIGNAL`] came while the code ran: the frame holds its registers, `pc` the instruction not yet run.
+    /// [`RUN_STOP_SIGNAL`] came while the instructions ran: the frame holds their registers, `pc` the instruction not
+    /// yet run.
     Stopped,
-    /// An access by the code faulted: the frame holds its registers, `pc` the faulting instruction.
+    /// An access by the instructions faulted: the frame holds their registers, `pc` the faulting instruction.
     Fault {
         /// The address the host reports, its tag cleared.
         address: u64,
@@ -82,24 +91,25 @@ pub enum RunEnd {
         /// Whether the access faulted for its alignment.
         alignment: bool,
     },
-    /// An instruction of the code raised the signal (an undefined instruction, a breakpoint), at the frame's `pc`.
+    /// An instruction raised the signal (an undefined instruction, a breakpoint), at the frame's `pc`.
     Raised(Signal),
 }
 
-/// What one run of code holds: words its code reads and writes through [`FRAME_REGISTER`], the words of the run, and
-/// the registers it starts with and leaves.
+/// What one run of instructions holds: words they read and write through [`FRAME_REGISTER`], the words of the run,
+/// and the registers they start with and leave.
 #[cfg(target_arch = "aarch64")]
 #[repr(C, align(16))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunFrame {
-    /// The code's own words: [`FRAME_REGISTER`] holds their address while it runs.
+    /// The instructions' own words: [`FRAME_REGISTER`] holds their address while they run.
     pub words: [u64; RUN_FRAME_WORDS],
     /// The run's own words: what an exit found in [`EXIT_SCRATCH_REGISTER`] and x30, where the exits go, the stack and
     /// the signal stack of the thread that runs, and how the run ended. Nothing they hold before a run means anything.
     pub exit: [u64; RUN_EXIT_WORDS],
-    /// The registers the code starts with, but [`EXIT_SCRATCH_REGISTER`] (its first address, `pc`) and
-    /// [`FRAME_REGISTER`] (this frame's address); then the registers it left at its exit, `pc` and x30 the address
-    /// after its branch to the exit, x28 this frame's address.
+    /// The registers the instructions start with, but [`EXIT_SCRATCH_REGISTER`] (the first one's address, `pc`),
+    /// [`WINDOW_BASE_REGISTER`] (the window's first address) and [`FRAME_REGISTER`] (this frame's address); then the
+    /// registers they left at their exit, `pc` and x30 the address after their branch to the exit, x28 this frame's
+    /// address.
     pub registers: Arm64Registers,
 }
 
@@ -114,10 +124,11 @@ pub trait LinuxProcess {
     type FixedMapping;
     /// Memory shared with other processes through its file, seen here as atomic words, unmapped on drop.
     type SharedWords;
-    /// Code this process runs, at an address it chose, which no one can write; unmapped on drop.
-    type CodeMapping;
-    /// The thread that made it, ready to run code: its own signal stack and every other signal blocked, both as they
-    /// were again on drop.
+    /// Instructions this process runs, at an address it chose, which no one can write, with the window of memory
+    /// they were made for; unmapped on drop.
+    type InstructionMapping;
+    /// The thread that made it, ready to run instructions: its own signal stack and every other signal blocked, both
+    /// as they were again on drop.
     #[cfg(target_arch = "aarch64")]
     type RunThread;
 
@@ -137,7 +148,7 @@ pub trait LinuxProcess {
     /// [shared mapping](https://man7.org/linux/man-pages/man2/mmap.2.html) of the file's bytes from `file_offset`, with
     /// the protection; its other pages stay, and its drop unmaps these too. `EINVAL` where the pages are not whole
     /// pages inside it; `EPERM` for an executable protection, since bytes another party writes never run as this
-    /// process's code.
+    /// process's instructions.
     fn map_file_within(
         &self,
         mapping: &mut Self::FixedMapping,
@@ -158,22 +169,32 @@ pub trait LinuxProcess {
         protection: ProtFlags,
     ) -> Result<(), Errno>;
 
-    /// Maps `code` [at the address](https://man7.org/linux/man-pages/man2/mmap.2.html), readable and executable, from a
-    /// [memory file](https://man7.org/linux/man-pages/man2/memfd_create.2.html) of its bytes sealed against every
-    /// write first, so that no one can change them; never replaces a mapping. `EINVAL` where the address or the
-    /// length is not whole pages or the length is 0; `EEXIST` where something is mapped there; `ENOSYS` from a Linux
-    /// older than 4.17.
-    fn map_code(&self, address: usize, code: &[u8]) -> Result<Self::CodeMapping, Errno>;
+    /// Maps `instructions` [at the address](https://man7.org/linux/man-pages/man2/mmap.2.html), readable and
+    /// executable, from a [memory file](https://man7.org/linux/man-pages/man2/memfd_create.2.html) of their bytes
+    /// sealed against every write first, so that no one can change them; never replaces a mapping. They were made for
+    /// the host addresses `window`, and run with their stack pointer inside it unless they are `displaced`. `EINVAL`
+    /// where the address or the length is not whole pages or the length is 0; `EEXIST` where something is mapped
+    /// there; `ENOSYS` from a Linux older than 4.17.
+    fn map_instructions(
+        &self,
+        address: usize,
+        instructions: &[u8],
+        window: Range<u64>,
+        displaced: bool,
+    ) -> Result<Self::InstructionMapping, Errno>;
 
-    /// Returns the sealed memory file the code is mapped from.
-    fn code_file<'code>(&self, code: &'code Self::CodeMapping) -> BorrowedFd<'code>;
+    /// Returns the sealed memory file the instructions are mapped from.
+    fn instructions_file<'mapping>(
+        &self,
+        instructions: &'mapping Self::InstructionMapping,
+    ) -> BorrowedFd<'mapping>;
 
-    /// The instructions of an exit: code run by [`Self::run_code`] that branches with link (`blr`) to a copy of them,
-    /// [`FRAME_REGISTER`] holding its frame, ends the run there.
+    /// The instructions of an exit: instructions run by [`Self::run_instructions`] that branch with link (`blr`) to a
+    /// copy of them, [`FRAME_REGISTER`] holding their frame, end the run there.
     #[cfg(target_arch = "aarch64")]
-    fn exit_code(&self) -> [u8; EXIT_BYTES];
+    fn exit_instructions(&self) -> [u8; EXIT_BYTES];
 
-    /// Prepares this thread to run code: an [alternate signal stack](https://man7.org/linux/man-pages/man2/sigaltstack.2.html)
+    /// Prepares this thread to run instructions: an [alternate signal stack](https://man7.org/linux/man-pages/man2/sigaltstack.2.html)
     /// of its own, which every signal of a run is taken on, this process's handlers of a run (installed once), and
     /// every signal blocked but a run's (an access fault, an undefined instruction, a breakpoint, [`RUN_STOP_SIGNAL`]),
     /// by the [raw mask](https://man7.org/linux/man-pages/man2/rt_sigprocmask.2.html), which reaches the two signals
@@ -181,17 +202,26 @@ pub trait LinuxProcess {
     #[cfg(target_arch = "aarch64")]
     fn prepare_run_thread(&self) -> Result<Self::RunThread, Errno>;
 
-    /// Runs the code at the frame's `registers.pc` on the prepared thread, with every register from the frame as
-    /// [`RunFrame::registers`] says, until it branches with link to an exit ([`Self::exit_code`]), faults, raises a
-    /// signal or is stopped; then the frame holds the registers it left, and the thread's own are as before.
+    /// Runs the mapping's instructions from the frame's `registers.pc` on the prepared thread, with every register from
+    /// the frame as [`RunFrame::registers`] says, [`WINDOW_BASE_REGISTER`] the window's first address, until they
+    /// branch with link to an exit ([`Self::exit_instructions`]), fault, raise a signal or are stopped; then the frame
+    /// holds the registers they left, and the thread's own are as before. Refuses (`RunEnd::Refused`, nothing run) a
+    /// `pc` that is not an instruction of the mapping, and a stack pointer outside the window (its top byte ignored, as
+    /// the chip ignores it) for instructions that are not displaced.
     ///
-    /// The caller keeps the code to this, which no type can check: it reads and writes no memory but the mappings made
-    /// for it and the frame's [`RunFrame::words`]; its stack is its own, whatever its stack pointer holds; it makes no
-    /// system call; it may change the general and vector registers, NZCV, FPSR, FPCR and TPIDR_EL0, and no other
-    /// register user space can write (TPIDR2_EL0, SVCR, DIT, SSBS, TCO, the SVE bits above each vector's 128); and
-    /// [`FRAME_REGISTER`] holds the frame's address at each of its instructions.
+    /// The caller keeps the instructions to this, which no type here can check yet: they are the translator's for
+    /// the mapping's window, entered at a piece's first instruction or where a run of it stopped; so they read and
+    /// write no memory but the mappings made for them and the frame's [`RunFrame::words`]; their stack is their own,
+    /// whatever their stack pointer holds; they make no system call; they may change the general and vector registers,
+    /// NZCV, FPSR, FPCR and TPIDR_EL0, and no other register user space can write (TPIDR2_EL0, SVCR, DIT, SSBS, TCO,
+    /// the SVE bits above each vector's 128); and [`FRAME_REGISTER`] holds the frame's address at each of them.
     #[cfg(target_arch = "aarch64")]
-    fn run_code(&self, thread: &mut Self::RunThread, frame: &mut RunFrame) -> RunEnd;
+    fn run_instructions(
+        &self,
+        thread: &mut Self::RunThread,
+        instructions: &Self::InstructionMapping,
+        frame: &mut RunFrame,
+    ) -> RunEnd;
 
     /// Makes a sealed [memory file](https://man7.org/linux/man-pages/man2/memfd_create.2.html) of the length, which
     /// cannot shrink, and maps it shared; `EINVAL` for an empty one, which mmap(2) refuses.
