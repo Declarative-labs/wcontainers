@@ -3120,8 +3120,8 @@ fn a_process_is_inspected_while_another_holds_its_memory_open() {
 fn a_process_is_inspected_while_another_traces_it() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let hooks = Box::new(Inspections(seen.clone()));
-    let run = try_guest("tracedinspected", &[], Some(hooks), 1, None)
-        .expect("an outcome on our kernel");
+    let run =
+        try_guest("tracedinspected", &[], Some(hooks), 1, None).expect("an outcome on our kernel");
     assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
     let first = driver::FIRST_PROCESS;
     assert_eq!(
