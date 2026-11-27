@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 #[path = "../../../nir/mesa/meson_build.rs"]
 mod meson_build;
-use meson_build::{CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, mesa_flags, source_folder};
+use meson_build::{ASSIGN, CFG, CHECK_CFG, MESA_VARIABLE, RERUN_IF_CHANGED, RERUN_IF_ENV_CHANGED, RUSTC_ENV, mesa_flags, source_folder};
 
 /// The glue's C and its header.
 const FLAT_SOURCE: &str = "flat.c";
@@ -18,6 +18,9 @@ const HOSTILE_FEATURE: &str = "CARGO_FEATURE_HOSTILE";
 const GLUE_LIBRARY: &str = "wcontainers_gallium_direct_glue";
 /// The Gallium file whose defines and C standard the glue's C takes from Mesa's compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
+/// The variable that carries the glue's compile flags to tests/layouts.rs, and what separates them.
+const CLANG_ARGS: &str = "WC_GALLIUM_CLANG_ARGS";
+const ARGUMENT_SEPARATOR: &str = "\u{1f}";
 /// Folders of the Mesa tree, each under both its source and its build folder (generated headers).
 const INCLUDES: &[&str] = &["include", "src", "src/gallium/include", "src/gallium/auxiliary", "src/util"];
 
@@ -39,9 +42,13 @@ fn main() {
     if env::var_os(HOSTILE_FEATURE).is_some() {
         glue.file(CALLER_SOURCE);
     }
-    for flag in mesa_flags(&build, FLAGS_FROM) {
+    let flags = mesa_flags(&build, FLAGS_FROM);
+    for flag in &flags {
         glue.flag(flag);
     }
+    // The same flags for the layouts test's clang (the independent count of Mesa's fields), one separator apart.
+    let clang_args: Vec<String> = includes.iter().map(|folder| format!("-I{}", folder.display())).chain(flags).collect();
+    println!("{RUSTC_ENV}{CLANG_ARGS}{ASSIGN}{}", clang_args.join(ARGUMENT_SEPARATOR));
     glue.compile(GLUE_LIBRARY);
     println!("{CFG}");
 }
