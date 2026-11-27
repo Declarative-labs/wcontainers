@@ -369,13 +369,20 @@ fn one_permission_change_across_window_ends_gives_each_window_its_place() {
 }
 
 #[test]
-fn many_pages_of_window_0_given_leave_every_other_window_unplaced() {
-    // The window table lies just before the permission table, so many pages' permissions sit beside its entries.
+fn pages_of_window_0_given_and_taken_back_leave_every_other_window_unplaced() {
+    // The window table lies just before the permission table, so pages' permission bytes sit beside its entries: those
+    // of the first pages and of many pages, given and taken back, leave zeros there.
     let (mut executor, memory, mut table) = with_code(&[LOAD]);
-    let many = 0x1000_0000..0x2000_0000;
-    writable_range(&mut table, many.clone());
-    for window in [0x4100, 0x5000, 0xFFFF] {
-        let address = window * WINDOW + many.start + PAGE_SIZE;
+    for pages in [u64::MIN..LOWEST_ADDRESS, 0x1000_0000..0x2000_0000] {
+        writable_range(&mut table, pages.clone());
+        table
+            .set_permissions(pages, Permissions::empty())
+            .expect("pages of the space");
+    }
+    // A page of window 0 with the low bits of each address below is allowed, so landing in window 0 would not fault.
+    writable(&mut table, LOW_PAGE);
+    for window in [0x4100, 0x5000, 0xFFFF, 1 << 16] {
+        let address = window * WINDOW + LOW_PAGE;
         let (_, handler) = run(&mut executor, &memory, address);
         assert_eq!(
             handler.fault,
