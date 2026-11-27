@@ -13,6 +13,7 @@ use wcontainers_translator::{LookAhead, NativeRequest, translate_instructions};
 const COPY: &str = include_str!("../statement/copy.rs");
 const ACCESS: &str = include_str!("../statement/access.rs");
 const INDEXED: &str = include_str!("../statement/indexed.rs");
+const STACK: &str = include_str!("../statement/stack.rs");
 
 /// The guest registers the translator names as they are: every one but the withheld.
 const DIRECT: [u32; 26] = [
@@ -130,6 +131,10 @@ fn guest_of(pin: &Pin) -> (u32, u16, u64, bool) {
                 number(&a[4]),
             );
             return (instruction, slot, guest, displaced);
+        }
+        "stepped_at" => {
+            let (slot, guest, displaced) = at(1);
+            return (stack_step(number(&a[0])), slot, guest, displaced);
         }
         other => panic!("no translator call for pins of {other}"),
     };
@@ -268,6 +273,19 @@ fn indexed_access(n: u32, t: u32, store: bool, pre: bool, imm: i64, slot: u64) -
     .concat()
 }
 
+/// `sub sp, sp, #k`, shifted by 12 for a k of 4096 or more (Arm ARM, add/subtract immediate).
+fn stack_step(k: i64) -> u32 {
+    if k < 4096 {
+        0xd100_03ff | (k as u32) << 10
+    } else {
+        0xd140_03ff | ((k / 4096) as u32) << 10
+    }
+}
+/// The step's piece (stack.rs `stepped`): the step, the probe `ldr wzr, [sp]`, the exit.
+fn stepped(k: i64, slot: u64) -> Vec<u32> {
+    [vec![stack_step(k), 0xb940_03ff], exit_words(slot)].concat()
+}
+
 /// The shape the proofs give a pin, from the functions above.
 fn shape_of(pin: &Pin) -> Vec<u32> {
     let a = &pin.arguments;
@@ -285,12 +303,13 @@ fn shape_of(pin: &Pin) -> Vec<u32> {
             number(&a[4]),
             exit,
         ),
+        "stepped_at" => stepped(number(&a[0]), exit),
         other => panic!("no shape for pins of {other}"),
     }
 }
 
 fn all_pins() -> Vec<Pin> {
-    [pins(COPY), pins(ACCESS), pins(INDEXED)].concat()
+    [pins(COPY), pins(ACCESS), pins(INDEXED), pins(STACK)].concat()
 }
 
 #[test]
@@ -304,6 +323,8 @@ fn every_pin_of_the_proofs_is_what_the_translator_emits() {
             &["byte_access_at"; 2],
             &["wide_access_at"; 2],
             &["indexed_access_at"; 6],
+            &["copied_at"; 2],
+            &["stepped_at"; 2],
         ]
         .concat()
     );
@@ -417,5 +438,50 @@ fn a_register_only_integer_instruction_s_piece_is_the_word_and_the_exit() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn a_stack_access_s_piece_is_the_word_and_the_exit() {
+    // Through `sp` with an immediate (Arm ARM, load/store register unsigned offset, unscaled, pre- and post-index;
+    // load/store pair offset, pre- and post-index), the largest offsets either way among them, up to 16 bytes.
+    let words = [
+        0xf940_07e0, // ldr x0, [sp, #8]
+        0xf97f_ffe0, // ldr x0, [sp, #32760]
+        0xb900_07e5, // str w5, [sp, #4]
+        0x3940_03e0, // ldrb w0, [sp]
+        0x7900_07e0, // strh w0, [sp, #2]
+        0x3dff_ffe0, // ldr q0, [sp, #65520]
+        0x3dbf_ffe0, // str q0, [sp, #65520]
+        0xf850_03e0, // ldur x0, [sp, #-256]
+        0xf81f_03fe, // stur x30, [sp, #-16]
+        0xf850_0fe0, // ldr x0, [sp, #-256]!
+        0xf810_07e0, // str x0, [sp], #-256
+        0xa9bf_7bfd, // stp x29, x30, [sp, #-16]!
+        0xa8c1_7bfd, // ldp x29, x30, [sp], #16
+        0xa940_07e0, // ldp x0, x1, [sp]
+        0xa920_07e0, // stp x0, x1, [sp, #-512]
+    ];
+    // A pair of quadwords (32 bytes) gets page probes first, a piece not proven yet.
+    for word in words {
+        for slot in [1, 3, 2047] {
+            assert_eq!(
+                translated(word, slot, GUEST, false),
+                copied(word, exit_slot(slot, GUEST + 4, false)),
+                "{word:#010x} slot {slot}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_stack_step_a_probe_alone_keeps_in_reach_is_the_step_the_probe_and_the_exit() {
+    let steps = (1..4096).chain((1..=15).map(|j| j << 12));
+    for k in steps {
+        assert_eq!(
+            translated(stack_step(k), 3, GUEST, false),
+            stepped(k, exit_slot(3, GUEST + 4, false)),
+            "sub sp, sp, #{k}"
+        );
     }
 }

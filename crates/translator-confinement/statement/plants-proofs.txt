@@ -18,3 +18,7 @@ indexed.rs @@ indexed-without-below @@         a.below >= 256,\n @@         a.be
 indexed.rs @@ indexed-access-past-slot @@ |m: Machine| (m.x[23] + off) % two_to_64(), 8) @@ |m: Machine| (m.x[23] + off + 0x1_0000_0000) % two_to_64(), 8)
 indexed.rs @@ indexed-base-moved-to-frame @@         registers(n, t, store) && n != 24 && n != 28,\n @@         registers(n, t, store) && n != 24,\n
 indexed.rs @@ indexed-claims-false @@         a.length == if store { 100int } else { 96int },\n    ensures\n @@         a.length == if store { 100int } else { 96int },\n    ensures\n        false,\n
+stack.rs @@ stack-without-below @@         a.below >= 1024 && !a.displaced,\n @@         a.below >= 0 && !a.displaced,\n
+stack.rs @@ step-without-below @@         a.below >= k && !a.displaced,\n @@         a.below >= 0 && !a.displaced,\n
+stack.rs @@ stack-claims-false @@         a.length == 20,\n    ensures\n @@         a.length == 20,\n    ensures\n        false,\n
+stack.rs @@ step-claims-false @@         a.length == 24,\n    ensures\n @@         a.length == 24,\n    ensures\n        false,\n
