@@ -50,6 +50,9 @@ origin/executor-wasmtime ddbcf4ab3 (b13147f46), both without conflict; the lock 
 (MEASURED, `git diff --name-only ac696ea19 HEAD`: only crates/kvm, crates/linux-socket-options and crates/wasmtime
 interface.rs differ, and none of the three is on his main).
 
+2026-11-27 (evening): his main FETCH_HEAD ac696ea19 already merged (`git merge-base --is-ancestor`, MEASURED); no other
+branch merged this run.
+
 ## RT0: done (results in SCRATCH/runtime-restart/results-main, results-agents)
 
 ## RT1: built; bar NOT met: the linter (the earlier line here that called it met but for the linter was wrong)
@@ -422,6 +425,84 @@ a runner is left):
 Linter (`cargo reviewable check`, reviewable-rust da55b9d7, x86-64, no model key; MEASURED): the new test module adds only
 `summary_unanswered` findings (11, one per new summary: no key, so nothing was asked); no `magic_literal` or other rule.
 
+### The check's six surviving plants, and the kernel call taken out (2026-11-27, evening)
+
+The check of 6011f8560 found six plants in the stop code that no test caught. Each is now either tested against the
+interface-only double or removed:
+- A (`stop` without `notify_all`: a runner waiting idle when another finishes) and B (`interrupt` without `notify_all`: two
+  idle runners and an interrupt): `a_finish_wakes_a_runner_that_waits_idle` and `an_interrupt_wakes_runners_that_wait_idle`.
+  The idle poll is an hour, so a runner left asleep is seen at the 30 s bound.
+- F (a finish after a panic replaces it): `a_finish_after_a_panic_ends_the_container_as_panicked`. The right value is
+  `Panicked`: its documentation says "A host thread ended inside a run, so the kernel can no longer be run".
+- C and D (`end_runs` without its kernel call, or without its loop): REMOVED. Nothing in the kernel interface makes the
+  call do anything a caller can see (READ, crates/kernel/interface.rs at his main ac696ea19): `suspend_tasks` "Takes the
+  given tasks out of this kernel instance atomically, ... returning each one that is still executing on it". With no
+  task that is nothing, and no sentence says a call ends a runner's `run`. That was a property of this one kernel's
+  lock. `Interrupter::interrupt` promises only that it "interrupts a container's run, idempotently", not that the run has
+  ended when it returns. So the runtime now ends a run only through the executions (`RunnerStops::stop`, which stays in
+  force until every runner is back) and its own condition variable. The `inside` count, `call_kernel` and the kernel held
+  in an `Arc` went with it. `drive` keeps the `leaving` check: an end asked after that check still ends the run, because
+  the executions stay ended until `resume`.
+
+The check's non-blocking points, fixed in the same commit:
+- O (a later finish replaces an earlier one): `stop` now says "the first finish stands", tested by `the_first_finish_stands`.
+- P (`Suspended` ends the runner): `a_suspended_runner_is_run_again`.
+- M (the idle wait ignores `until`): the double's system has a clock that stands at zero and keeps the warnings it is told
+  of. Four tests check the idle wait against `IDLE_WITHOUT_WAKE`'s documentation ("run again before the time the kernel
+  gave"; its detail is now documented as the idle poll in nanoseconds). The tests are
+  `an_idle_runner_is_run_again_at_the_time_it_was_given`,
+  `an_idle_runner_run_again_at_the_idle_poll_itself_is_not_early` (no warning),
+  `an_idle_runner_with_no_time_is_run_again_after_the_idle_poll_and_told` (count 1) and
+  `an_idle_runner_whose_time_is_past_the_idle_poll_is_run_again_early_and_told` (count 2).
+- Also new: `a_run_after_an_interrupt_runs_the_runners_again`, `a_container_that_panicked_is_not_run_again` (one run in
+  all), and `the_idle_polls_are_told_again_only_when_they_grew`.
+- The merge message that names b2594b6d9 for kernel-port's f02018c89 stays: changing it would need a force push.
+
+The double's runners now take one step per run (finish behind a gate, run until ended then answer, idle or suspend at
+once, panic). The interrupting thread waits at most the run bound and says whether it interrupted, so a runner that
+never runs fails the test instead of hanging it.
+
+Bar at 04b3b47e2 (pushed; MEASURED, jobs rt3-bar/20261127-211509-2545588 ARM64 load 98-188 and 20261127-211448-2705185
+x86-64 load 15-22; the product code is the same as at 455d9d2cf, where the same bar ran on both machines first, jobs
+20261127-191429-2052753 and 20261127-191447-279957):
+
+| | ARM64 | x86-64 |
+|---|---|---|
+| `cargo metadata --locked`; rustfmt `--check`, three packages | 0; 0 | 0; 0 |
+| check, clippy `-D warnings --all-targets`, three packages; clippy single-kernel `--no-default-features` | 0, 0; 0 | 0, 0; 0 |
+| single-kernel unit tests; policy tests | 30 of 30; 13 of 13 | 30 of 30; 13 of 13 |
+| the 16 double-kernel tests, three rounds | 16 of 16 each | 16 of 16 each |
+| runtime suite on the stand-in and on wasmtime, 1 runner and 4, three rounds each | 10 of 10 every time | 10 of 10 every time |
+
+Mutation testing (MEASURED): cargo-mutants 27.1.0, installed on the machine only (not in any lock file), over runners.rs,
+`--in-place`, tests `cargo test -p wcontainers-runtime-single-kernel --lib`. Results:
+- At 04b3b47e2 on x86-64 (job rt3-plants/20261127-210442-856298) and at 204b70c60 on ARM64 (rt3-mut/20261127-200534-3370248):
+  "21 mutants tested: 14 caught, 7 unviable", 0 missed, 0 timeouts.
+- The 7 unviable ones replace `system`, both `run`s and `lock` with values that do not compile (no `Default` for
+  `StopReason`, `&S`, `MutexGuard`).
+- The first round at 455d9d2cf had two timeouts (`drive` and `leaving` made to do nothing hung the interrupting thread);
+  the bounded interrupting thread turned both into caught.
+- Outcomes: SCRATCH/runtime-restart/rt3-results/mutants.out.
+
+The check's six plants plus O, P and M, as sed lines in the machine's copy (MEASURED, x86-64, same job at 04b3b47e2):
+
+| Plant | Exit | Fails |
+|---|---|---|
+| A: `stop` without `notify_all` | 101 | `a_finish_wakes_a_runner_that_waits_idle` (30 s bound) |
+| B: `interrupt` without `notify_all` | 101 | `an_interrupt_wakes_runners_that_wait_idle` (30 s bound) |
+| F: `Some(_) => true` | 101 | `a_finish_after_a_panic_ends_the_container_as_panicked` |
+| O: a later finish replaces an earlier one | 101 | `the_first_finish_stands` |
+| P: `Suspended => return` | 101 | `a_suspended_runner_is_run_again` |
+| M: the idle wait ignores `until` | 101 | the two tests of a runner given a time |
+| C, D | | the code is gone |
+
+F and O survived once at 204b70c60, because the second runner could see the end before it ran. Both tests now start the
+second runner before the first ends.
+
+Linter (`cargo reviewable check`, reviewable-rust da55b9d7, x86-64, no model key; MEASURED, job rt3-plants/20261127-204532-3596183):
+in single-kernel's runners.rs, beyond `summary_unanswered` and `name_unanswered` (no key, so nothing was asked), there are
+only the three findings it had before: `public_outside_interface` (`RunInterrupter`) and `conformance_not_run` ×2.
+
 ### RT2's remainder, measured (2026-11-27)
 
 The look-ahead switch is committed: tools/runtime-modes/la-switch.sh (852859ad5). In a throwaway copy it makes the harness's
@@ -497,9 +578,9 @@ with the reference too (INFERRED: the same cause).
 3. Kernel track: the 21 errors measured in single-kernel were main's old copy of the crate; kernel-port has since merged
    this branch and this branch merged kernel-port 36bf10eed back; both build (MEASURED above).
 4. Kernel track: done on kernel-port (789862313): running.rs fills the processor's predicate fields.
-5. Kernel track (and question 3 of the brief): the runner leaves `run` only while one of the kernel's calls waits for its
-   lock, so an embedder's interrupt needs a call that does nothing (`suspend_tasks(&[])`); an execution interrupt that
-   ends `run` as `Interrupted` when the embedder asks (as at d176769a7) would let the runtime drop that loop.
+5. Kernel track: the runtime no longer calls `suspend_tasks(&[])` to make runners leave `run` (2026-11-27 evening; the
+   interface promises nothing of it). A runner must return once its execution is ended through the executor's
+   interrupter, and today's kernel does so within a tick.
 6. Kernel track: done on kernel-port 353987bad (merged here): running.rs fills `process_state_controls`.
 7. Kernel track (harness): with `--features runtime`, 27 tests panic at driver.rs:486 "this host's kernel runs on the
    stand-in" (away 12, edges 7, taskend 7, outside 1), and embedder, round_trips and repeats do not build (E0308 x5,
