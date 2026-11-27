@@ -15,10 +15,27 @@ pub mod flat;
 pub mod held;
 
 #[cfg(mesa)]
-#[expect(unsafe_code, reason = "flat.c defines wc_flat_size and wc_flat_layout as declared here, each reading nothing")]
+#[expect(unsafe_code, reason = "flat.c defines wc_flat_size, wc_flat_layout and wc_value as declared here, each reading nothing")]
 unsafe extern "C" {
     fn wc_flat_size(which: u32) -> usize;
     fn wc_flat_layout(which: u32, what: u32) -> usize;
+    fn wc_value(which: u32) -> i64;
+}
+
+/// Whether every declared value of the trait (values.rs, the generator's reading of the headers) is the value C
+/// computes from Mesa's headers; the first that is not, with both. Returns how many were compared.
+#[cfg(mesa)]
+pub fn values_agree() -> Result<usize, (&'static str, i64, i64)> {
+    let values = flat::values();
+    for (which, (name, value)) in (0_u32..).zip(&values) {
+        #[expect(unsafe_code, reason = "flat.c: wc_value takes a number and returns a constant of Mesa's headers, reading and writing nothing")]
+        // SAFETY: a plain call of our own C function with a number.
+        let c_value = unsafe { wc_value(which) };
+        if c_value != *value {
+            return Err((name, c_value, *value));
+        }
+    }
+    Ok(values.len())
 }
 
 /// One field of a flat form as the generator wrote it (flat.rs's FIELDS).

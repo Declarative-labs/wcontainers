@@ -14,6 +14,7 @@ mod gallium;
 mod gallium_glue;
 mod gallium_interface;
 mod gallium_layouts;
+mod gallium_values;
 mod khronos;
 mod layout;
 mod mapping;

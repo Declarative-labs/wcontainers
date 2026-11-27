@@ -15,7 +15,7 @@ use crate::cheader::{CFunction, CParam, Header};
 use crate::gallium::{COUNTED, Entry, PLAN, Role};
 
 /// The first line of every file written.
-const HEADER: &str = "// Written by tools/api-crate-generator from Mesa 26.3.1's Gallium headers (p_defines.h, p_state.h, p_screen.h, p_context.h, u_transfer_helper.h) and the plan in src/gallium.rs. Do not edit.\n";
+const HEADER: &str = "// Written by tools/api-crate-generator from Mesa 26.3.1's Gallium headers (p_defines.h, p_state.h, p_screen.h, p_context.h, u_transfer_helper.h; blend.h, shader_enums.h, u_formats.h and the build's u_format_gen.h for the values) and the plan in src/gallium.rs. Do not edit.\n";
 
 /// The C handle of each kind's objects, as Mesa passes it inside plain data.
 pub(crate) const HANDLE_KINDS: &[(&str, &str)] = &[
@@ -103,6 +103,23 @@ const NULLABLE: &[(&str, &str, &str)] = &[
     // condition; its method for an EndOnlyQuery always has one.
     ("render_condition", "query", "NULL ends the condition (main/condrender.c:99, st_cb_readpixels.c:148)"),
 ];
+
+/// Parameters declared `unsigned` that hold an enumeration's values (READ at each in Mesa 26.3.1's headers): each
+/// takes that enumeration's type in the trait.
+const PARAM_VALUES: &[(&str, &str, &str, &str)] = &[
+    ("create_query", "query_type", "pipe_query_type", "PIPE_QUERY_x (p_context.h:253, the values of enum pipe_query_type)"),
+    ("buffer_map", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (p_context.h:920)"),
+    ("buffer_subdata", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (p_context.h:979)"),
+    ("texture_subdata", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (p_context.h:987)"),
+    ("transfer_map", "usage", "pipe_map_flags", "a combination of PIPE_MAP_x (u_transfer_helper.h, as pipe_context's)"),
+    ("flush", "flags", "pipe_flush_flags", "PIPE_FLUSH_x (p_context.h:840, the values of enum pipe_flush_flags)"),
+];
+
+/// The trait's type of a parameter `PARAM_VALUES` names.
+fn param_value(header: &Header, pointer: &str, param: &str) -> Option<String> {
+    let (_, _, enumeration, _) = PARAM_VALUES.iter().find(|(p, name, _, _)| *p == pointer && *name == param)?;
+    header.value_type(enumeration).map(|(ty, _)| ty)
+}
 
 fn nullable(pointer: &str, param: &str) -> bool {
     NULLABLE.iter().any(|(p, name, _)| *p == pointer && *name == param)
@@ -221,6 +238,9 @@ impl Structures<'_> {
         if let Ok(number) = array.parse() {
             return Some(number);
         }
+        if let Some(known) = self.header.known_numbers.get(array) {
+            return usize::try_from(*known).ok();
+        }
         let mut value = self.defines.get(array)?.trim().trim_start_matches('(').trim_end_matches(')').to_string();
         for _ in 0..4 {
             if let Ok(number) = value.parse() {
@@ -237,7 +257,9 @@ impl Structures<'_> {
         let base = base.as_str();
         let mut ty = match field.pointers {
             0 => {
-                if let Some(ty) = number(base) {
+                if let Some((ty, _)) = self.header.field_value_type(structure, &field.name).or_else(|| self.header.value_type(base)) {
+                    ty
+                } else if let Some(ty) = number(base) {
                     ty.to_string()
                 } else if let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union ")) {
                     if inner == "pipe_color_union" || (self.header.unions.iter().any(|union| union == inner) && !inner.contains('.')) {
@@ -412,6 +434,8 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             continue;
         }
         let param_text = match (base, param.pointers) {
+            (_, 0) if param_value(header, entry.pointer, &param.name).is_some() => format!("{name}: {}", param_value(header, entry.pointer, &param.name).unwrap_or_default()),
+            (b, 0) if header.value_type(b).is_some() => format!("{name}: {}", header.value_type(b).map(|(ty, _)| ty).unwrap_or_default()),
             (b, 0) if number(b).is_some() => {
                 // A count is its list's length, unless the list may be NULL (then None unbinds that many slots).
                 let list_nullable = function.params[at + 1..].iter().any(|later| later.pointers >= 1 && nullable(entry.pointer, &later.name));
@@ -543,7 +567,10 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
                 Some((from, to)) => format!("Result<{}, {}>", kind_type(to, screen), kind_type(from, screen)),
                 None => "bool".to_string(),
             },
-            (b, 0) => number(b).ok_or_else(|| format!("{}: returns {b}", entry.pointer))?.to_string(),
+            (b, 0) => match header.value_type(b) {
+                Some((ty, _)) => ty,
+                None => number(b).ok_or_else(|| format!("{}: returns {b}", entry.pointer))?.to_string(),
+            },
             (b, n) => return Err(format!("{}: returns {b} with {n} pointers", entry.pointer)),
         };
     }
@@ -552,7 +579,12 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
 
 pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Result<String, String> {
     crate::gallium::check(in_scope, &crate::cheader::read(texts))?;
-    let header = crate::cheader::read(texts);
+    let mut header = crate::cheader::read(texts);
+    let values = crate::gallium_values::collect(&header)?;
+    header.value_types = values.types();
+    header.known_numbers = values.known.clone();
+    header.field_value_types = values.field_types(&header.field_families);
+    let header = header;
     let mut structures = Structures { header: &header, written: BTreeSet::new(), text: String::new(), unmapped: Vec::new(), defines: header.defines.clone() };
     let mut screen_methods = String::new();
     let mut context_methods = String::new();
@@ -595,12 +627,25 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
             }
         }
     }
+    // The fields the driver fills once (G5), each a method changing Mesa's defaults in place.
+    for filled in crate::gallium::FILLED {
+        structures.write(filled.structure);
+        let name = type_name(filled.structure);
+        let stage = if filled.by_stage { "stage: values::MesaShaderStage, " } else { "" };
+        let of_stage = if filled.by_stage { ", one by shader stage (MESA_SHADER_*, up to MESA_SHADER_MESH_STAGES)" } else { "" };
+        let _ = writeln!(
+            screen_methods,
+            "    /// Mesa's `pipe_screen.{}`{of_stage}, filled once when the screen is made and read from then on (first at {}): `caps`\n    /// holds {} for the implementation to change.\n    fn {}(&self, {stage}caps: &mut {name});\n",
+            filled.field, filled.reader, filled.defaults, filled.field
+        );
+        methods += 1;
+    }
     failures.extend(structures.unmapped.iter().cloned());
     if !failures.is_empty() {
         return Err(format!("GALLIUM INTERFACE FAILED {}:\n  {}", failures.len(), failures.join("\n  ")));
     }
     let mut interface = String::from(HEADER);
-    interface.push_str("//! Gallium, the driver interface Mesa's OpenGL calls in our driver, as safe traits: `Gallium` (the screen) and\n//! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa\n//! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only\n//! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received\n//! program of that stage. Plain data is owned, each object it names a reference of its kind. A kind Mesa counts\n//! (Resource, Fence, SamplerView, StreamOutputTarget) is passed as an `Arc` of it: an implementation keeps one past\n//! the call by cloning the handle, and the object ends where its last handle is dropped. Declared values are\n//! `u32`, checked by the glue.\n\nuse std::sync::Arc;\n\n");
+    interface.push_str("//! Gallium, the driver interface Mesa's OpenGL calls in our driver, as safe traits: `Gallium` (the screen) and\n//! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa\n//! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only\n//! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received\n//! program of that stage. Plain data is owned, each object it names a reference of its kind. A kind Mesa counts\n//! (Resource, Fence, SamplerView, StreamOutputTarget) is passed as an `Arc` of it: an implementation keeps one past\n//! the call by cloning the handle, and the object ends where its last handle is dropped. Declared values are\n//! `u32`, checked by the glue.\n\nuse std::sync::Arc;\n\npub mod values;\n\n");
     let _ = writeln!(interface, "{}", structures.text);
     interface.push_str("/// A resource's bytes mapped for the CPU: the implementation's mapping and the bytes, a copy the glue lends Mesa until the unmap.\n#[derive(Debug)]\npub struct Mapped<Mapping> {\n    /// The implementation's mapping, given back at the unmap.\n    pub mapping: Mapping,\n    /// The mapped bytes as the implementation has them.\n    pub bytes: Vec<u8>,\n    /// Bytes from one row to the next.\n    pub stride: u32,\n    /// Bytes from one layer to the next.\n    pub layer_stride: u64,\n}\n\n");
     let kinds: Vec<&str> = crate::gallium::KINDS.iter().map(|(kind, _)| *kind).filter(|kind| *kind != "Screen").collect();
@@ -615,12 +660,20 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     interface.push_str("}\n");
     let crate_folder = out.join("crates").join("gallium");
     std::fs::create_dir_all(&crate_folder).map_err(|error| error.to_string())?;
-    let glue_report = crate::gallium_glue::generate(&header, &structures.written, &crate_folder)?;
+    let glue_report = crate::gallium_glue::generate(&header, &structures.written, &values, &crate_folder)?;
     std::fs::write(crate_folder.join("interface.rs"), &interface).map_err(|error| error.to_string())?;
+    std::fs::write(crate_folder.join("values.rs"), crate::gallium_values::rust(&values, HEADER)).map_err(|error| error.to_string())?;
     std::fs::write(
         crate_folder.join("Cargo.toml"),
         "[package]\nname = \"wcontainers-gallium\"\ndescription = \"Gallium, the driver interface Mesa's OpenGL calls, as safe traits.\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\nlicense.workspace = true\nrepository.workspace = true\npublish = false\n\n[lib]\npath = \"interface.rs\"\n\n[dependencies]\nwcontainers-mesa-compiler = { path = \"../mesa-compiler\" }\n\n[lints]\nworkspace = true\n",
     )
     .map_err(|error| error.to_string())?;
-    Ok(format!("GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields\n{glue_report}", structures.written.len(), kinds.len() + 1, FIELDS_LEFT_OUT.len()))
+    let value_count: usize = values.enumerations.iter().map(|enumeration| enumeration.values.len()).sum::<usize>() + values.loose.len();
+    Ok(format!(
+        "GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields; values: {} enumerations, {value_count} values\n{glue_report}",
+        structures.written.len(),
+        kinds.len() + 1,
+        FIELDS_LEFT_OUT.len(),
+        values.enumerations.len()
+    ))
 }

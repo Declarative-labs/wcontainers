@@ -47,6 +47,39 @@ pub struct Header {
     /// Every member declaration naming several fields (`float min_lod, max_lod;`): the structure and the names, each a
     /// field of its own. Before 2026-11-27 the reader kept only the last name of such a declaration.
     pub several_names: Vec<(String, Vec<String>)>,
+    /// Every enumeration's enumerators with the expression each is given (None where it takes the one before plus
+    /// one), in order; an anonymous enumeration is named `anonymous` with its place (`anonymous 3`), a `typedef enum
+    /// { ... } name;` by its typedef name, and `enum ENUM_PACKED mesa_prim` by its tag.
+    pub enumerators: Vec<(String, Enumerators)>,
+    /// Each define's whole text after its name (`(PIPE_FACE_FRONT | PIPE_FACE_BACK)`), for a define without arguments.
+    pub define_texts: BTreeMap<String, String>,
+    /// The type an API crate gives a C type that names one of its declared values (`enum pipe_format` to
+    /// `values::Format`), with the number it holds; filled by that crate's writer after reading.
+    pub value_types: BTreeMap<String, (String, &'static str)>,
+    /// Every enumerator and define whose value the API crate's writer evaluated, for array lengths such as
+    /// `MESA_SHADER_MESH_STAGES` (`(MESA_SHADER_MESH + 1)`).
+    pub known_numbers: BTreeMap<String, i64>,
+    /// Fields declared `unsigned` whose comment names the values they hold (`unsigned func:3; /**< PIPE_FUNC_x */`):
+    /// the structure, the field and the values' common prefix (`PIPE_FUNC_`).
+    pub field_families: Vec<(String, String, String)>,
+    /// The type an API crate gives such a field, by (structure, field), with its number; filled by that crate's writer.
+    pub field_value_types: BTreeMap<(String, String), (String, &'static str)>,
+}
+
+/// An enumeration's enumerators, each with the expression it is given (None: the one before plus one).
+pub type Enumerators = Vec<(String, Option<String>)>;
+
+impl Header {
+    /// The API crate's type of a C type naming one of its declared values, with its number.
+    /// The API crate's type of a field declared `unsigned` whose comment names its values.
+    pub fn field_value_type(&self, structure: &str, field: &str) -> Option<(String, &'static str)> {
+        self.field_value_types.get(&(structure.to_string(), field.to_string())).cloned()
+    }
+
+    pub fn value_type(&self, base: &str) -> Option<(String, &'static str)> {
+        let name = base.trim_start_matches("const ").trim().trim_start_matches("enum ").trim();
+        self.value_types.get(name).cloned()
+    }
 }
 
 impl Header {
@@ -64,7 +97,7 @@ impl Header {
 }
 
 /// The text without comments, preprocessor lines (the defines kept apart) and `extern "C"` braces.
-fn clean(text: &str, defines: &mut BTreeMap<String, String>) -> String {
+fn clean(text: &str, defines: &mut BTreeMap<String, String>, define_texts: &mut BTreeMap<String, String>) -> String {
     let mut out = String::new();
     let mut rest = text;
     while !rest.is_empty() {
@@ -80,6 +113,9 @@ fn clean(text: &str, defines: &mut BTreeMap<String, String>) -> String {
             rest = characters.as_str();
         }
     }
+    // A backslash at a line's end continues it (a define over several lines, p_defines.h:178): the lines are one, as
+    // the preprocessor joins them before anything else; else the continuation would be read as code.
+    let out = out.replace("\\\r\n", " ").replace("\\\n", " ");
     let mut kept = String::new();
     // The conditionals' branches kept: a stack of (this branch kept, a branch of this conditional taken).
     let mut branches: Vec<(bool, bool)> = Vec::new();
@@ -117,6 +153,11 @@ fn clean(text: &str, defines: &mut BTreeMap<String, String>) -> String {
             let mut words = define.split_whitespace();
             if let (Some(name), Some(value)) = (words.next(), words.next()) {
                 defines.insert(name.to_string(), value.to_string());
+                // A define with arguments (`NAME(x)`) has no value of its own.
+                if !name.contains('(') {
+                    let text = define.trim_start().strip_prefix(name).unwrap_or_default().trim();
+                    define_texts.insert(name.to_string(), text.to_string());
+                }
             }
             continue;
         }
@@ -209,7 +250,8 @@ fn declaration(text: &str) -> CParam {
 pub fn read(texts: &[String]) -> Header {
     let mut header = Header::default();
     for text in texts {
-        let cleaned = clean(text, &mut header.defines);
+        header.field_families.extend(field_families(text));
+        let cleaned = clean(text, &mut header.defines, &mut header.define_texts);
         let mut rest = cleaned.as_str();
         loop {
             rest = rest.trim_start();
@@ -249,11 +291,32 @@ pub fn read(texts: &[String]) -> Header {
             };
             let head = rest[..open].trim().to_string();
             let close = matching_brace(rest, open);
+            let rest_before = rest;
             let body = &rest[open + 1..close];
             // A definition ends at the semicolon after its body; a function's body (a header's `static inline`) at
             // its brace.
             let defines_a_type = ["struct", "union", "enum", "typedef"].iter().any(|word| head.starts_with(word));
             rest = if defines_a_type { rest[close..].split_once(';').map_or("", |(_, after)| after) } else { rest.get(close + 1..).unwrap_or("") };
+            let enum_head = head.strip_prefix("typedef ").unwrap_or(&head);
+            if enum_head == "enum" || enum_head.starts_with("enum ") {
+                let enumerators: Vec<(String, Option<String>)> = body
+                    .split(',')
+                    .filter_map(|item| {
+                        let (name, value) = item.split_once('=').map_or((item, None), |(name, value)| (name, Some(value.trim().to_string())));
+                        let name = name.trim();
+                        (!name.is_empty()).then(|| (name.to_string(), value))
+                    })
+                    .collect();
+                // The tag, else the typedef's name (between the closing brace and the semicolon), else its place.
+                let tag = enum_head.trim_start_matches("enum").split_whitespace().last().map(str::to_string);
+                let typedef = if head.starts_with("typedef ") {
+                    rest_before.get(close + 1..).and_then(|after| after.split(';').next()).map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
+                } else {
+                    None
+                };
+                let name = tag.or(typedef).unwrap_or_else(|| format!("anonymous {}", header.enumerators.len()));
+                header.enumerators.push((name, enumerators));
+            }
             if let Some(name) = head.strip_prefix("enum ") {
                 let values = body.split(',').map(|v| v.split('=').next().unwrap_or_default().trim().to_string()).filter(|v| !v.is_empty()).collect();
                 header.enumerations.insert(name.trim().to_string(), values);
@@ -267,6 +330,42 @@ pub fn read(texts: &[String]) -> Header {
         }
     }
     header
+}
+
+/// The `unsigned` fields of the text whose comment names the values they hold, by a scan of its lines before the
+/// comments are dropped: the structure each sits in (the innermost named one around it), its name, and the prefix the
+/// comment names (`PIPE_FUNC_` of `/**< PIPE_FUNC_x */`).
+fn field_families(text: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut stack: Vec<Option<String>> = Vec::new();
+    let mut named: Option<String> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let (code, comment) = trimmed.split_once("/*").map_or((trimmed, ""), |(code, comment)| (code.trim(), comment));
+        if let Some(name) = code.strip_prefix("struct ").or_else(|| code.strip_prefix("union ")).map(|rest| rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or_default()) {
+            named = (!name.is_empty() && !code.ends_with(';')).then(|| name.to_string());
+        }
+        for character in code.chars() {
+            match character {
+                '{' => stack.push(named.take()),
+                '}' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        let Some(declared) = code.strip_prefix("unsigned ").and_then(|rest| rest.strip_suffix(';')) else { continue };
+        let name = declared.split(':').next().unwrap_or_default().trim();
+        let Some(at) = comment.find("PIPE_") else { continue };
+        let prefix: String = comment[at..].chars().take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_').collect();
+        if let Some(structure) = stack.iter().rev().flatten().next()
+            && !name.is_empty()
+            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            out.push((structure.clone(), name.to_string(), prefix));
+        }
+    }
+    out
 }
 
 /// The place of the brace closing the one at `open`.
@@ -539,5 +638,20 @@ mod tests {
         .collect();
         assert_eq!(fields, expected);
         assert_eq!(header.several_names.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod continued {
+    use super::read;
+
+    /// A define continued over lines takes the next statement with it no more (p_defines.h:178 hid `enum
+    /// pipe_map_flags`); a field's comment naming its values is read with the structure it sits in.
+    #[test]
+    fn a_continued_define_hides_nothing() {
+        let header = read(&["#define BOTH (A | \\\n   B)\nenum flags\n{\n   FLAG_A = 1,\n};\nstruct s\n{\n   unsigned func:3;   /**< PIPE_FUNC_x */\n};\n".to_string()]);
+        assert_eq!(header.define_texts.get("BOTH").map(String::as_str), Some("(A |     B)"));
+        assert!(header.enumerators.iter().any(|(name, values)| name == "flags" && values.len() == 1));
+        assert_eq!(header.field_families, vec![("s".to_string(), "func".to_string(), "PIPE_FUNC_".to_string())]);
     }
 }

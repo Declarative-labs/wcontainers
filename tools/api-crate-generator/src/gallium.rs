@@ -180,6 +180,29 @@ pub const PLAN: &[Entry] = &[
     Entry { structure: "u_transfer_vtbl", pointer: "transfer_flush_region", roles: &[Role::Reads(&["Mapping"])], caller: "gallium/auxiliary/util/u_inlines.h:589" },
 ];
 
+/// A field of `struct pipe_screen` the driver fills once, when the screen is made, and Mesa reads from then on (not a
+/// pointer): each a method of the screen's trait that changes Mesa's defaults in place.
+pub struct Filled {
+    /// The field of pipe_screen.
+    pub field: &'static str,
+    /// Its structure.
+    pub structure: &'static str,
+    /// Whether it is an array by shader stage (`shader_caps[MESA_SHADER_MESH_STAGES]`): the method takes the stage.
+    pub by_stage: bool,
+    /// What it holds before the implementation changes it.
+    pub defaults: &'static str,
+    /// The first place in Mesa that reads it (file:line under src/).
+    pub reader: &'static str,
+}
+
+/// The fields the driver fills (G5 of the implementations track: screen.rs `fill_caps`, `fill_shader_caps`,
+/// `fill_compute_caps`). `nir_options` is the Mesa compiler's, filled by the glue; `transfer_helper` the glue's own.
+pub const FILLED: &[Filled] = &[
+    Filled { field: "caps", structure: "pipe_caps", by_stage: false, defaults: "Mesa's defaults, as u_init_pipe_screen_caps sets them (gallium/auxiliary/util/u_screen.c:41)", reader: "mesa/state_tracker/st_extensions.c:136" },
+    Filled { field: "shader_caps", structure: "pipe_shader_caps", by_stage: true, defaults: "zero (Mesa sets no default)", reader: "mesa/state_tracker/st_atom_atomicbuf.c:74" },
+    Filled { field: "compute_caps", structure: "pipe_compute_caps", by_stage: false, defaults: "zero (Mesa sets no default)", reader: "mesa/state_tracker/st_extensions.c:1741" },
+];
+
 /// Checks the plan against the list of pointers in scope and the headers' census, and prints it by kind: every pointer
 /// in scope placed once, each found in its structure, every kind made and given back by some pointer.
 pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String> {
