@@ -7,6 +7,7 @@ use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
 
 verus! {
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait DistinguishingStateGenerator<Architecture: ProcessorArchitecture> {
     /// The states generated for the instruction, in order.
     spec fn states(&self, instruction: Architecture::Instruction) -> Seq<ExecutionState<'static, Architecture>>;

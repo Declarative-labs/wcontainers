@@ -30,6 +30,7 @@ mod trusted_tests;
 verus! {
 
 /// One processor architecture, as a program running on it sees it.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ProcessorArchitecture: Sized + Clone {
     /// All stateful components of the processor.
     type ProcessorState: Clone + Eq;
@@ -194,6 +195,7 @@ pub open spec fn receives<Architecture: ProcessorArchitecture, Sink: MemorySink<
         #[trigger] after.applied_to(memory) == apply_all(before.applied_to(memory), changes)
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Simulator<Architecture: ProcessorArchitecture> {
     #[allow(
         reviewable::explicit_shared_error,
@@ -249,6 +251,7 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
 }
 
 // VERUS: no contract on what a closure has received, so the memory hook is a trait.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait MemorySink<Architecture: ProcessorArchitecture> {
     /// The memory after every change the sink has received, applied in order to the given memory.
     spec fn applied_to(&self, memory: Memory<Architecture::PagePermission>) -> Memory<Architecture::PagePermission>;

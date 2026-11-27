@@ -6,6 +6,7 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 verus! {
 
 /// One choice of behavior for every instruction of an architecture.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait PreciseInstructionSet<Architecture: ProcessorArchitecture>: Sized {
     /// The behavior this set gives the instruction.
     spec fn behavior(&self, instruction: Architecture::Instruction) -> Architecture::PreciseInstruction;

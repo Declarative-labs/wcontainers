@@ -9,6 +9,7 @@ verus! {
 /// The stateful parts and instructions of a processor that one privilege level has beyond the unprivileged ones.
 ///
 /// An unprivileged instruction is expected to behave the same at every privilege level.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait PrivilegeLevel {
     /// The stateful parts of the processor that only this level has.
     type PrivilegedProcessorSubset: Clone + Eq;

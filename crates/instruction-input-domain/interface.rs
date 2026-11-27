@@ -21,6 +21,7 @@ use trusted::product;
 
 verus! {
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait InstructionInputDomain<Architecture: ProcessorArchitecture>: Sized {
     /// The type of one input of an instruction, which does not depend on the types of its other inputs.
     type OperandType: Copy + Eq;
