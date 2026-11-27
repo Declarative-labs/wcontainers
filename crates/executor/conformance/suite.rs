@@ -3,6 +3,7 @@
 //! The guests the suite runs are written for ARM64, the one architecture an executor runs today: the architecture's
 //! interface has no way to place a value in a register or to name a system call instruction.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::fmt::{Debug, Write};
@@ -33,6 +34,7 @@ use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
     ExecutionState, ExecutionStateExpectation, MemoryDelta, ProcessorArchitecture, Simulator,
 };
+use wcontainers_processor_architecture_arm64::{DataAccess, InstructionFetch, PagePermission};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 mod arm64;
@@ -82,6 +84,8 @@ const RETURNED: u64 = u64::MAX;
 const STORED: u64 = u32::MAX as u64;
 /// How many times the counting guest counts down: millions, so that interrupts from another thread come while it runs.
 const COUNT: u64 = u32::MAX as u64 >> u8::BITS;
+/// How many times a guest that must end before its slice does counts down: once.
+const SHORT_COUNT: u64 = 1;
 /// How many times the guest an interrupt ends counts down: seconds of work, so that it ends by the interrupt.
 const LONG_COUNT: u64 = u32::MAX as u64;
 /// How long the interrupting thread waits between interrupts: one tick of a kernel built with HZ at 1000.
@@ -93,6 +97,8 @@ const FIRST_PATTERN: u8 = u8::MIN;
 const SECOND_PATTERN: u8 = FIRST_PATTERN + 1;
 const THIRD_PATTERN: u8 = SECOND_PATTERN + 1;
 const FOURTH_PATTERN: u8 = THIRD_PATTERN + 1;
+/// The tag of the tagged load's address: a top byte other than zero at both its halves.
+const TAG: u64 = 0xA5 << 56;
 /// What a list of no memory changes is described as.
 const NO_CHANGE: &str = "memory unchanged";
 const CHANGE_SEPARATOR: &str = "; ";
@@ -338,13 +344,14 @@ where
     assert_eq!(stopped, guest.start, "the state execute returned");
 }
 
-/// Checks that an interrupt raised after its execution ended reaches neither it nor the next execution.
+/// Checks that an interrupt raised after its execution ended reaches neither it nor the next execution, each short
+/// enough to end before its slice does.
 pub fn interrupt_after_the_end_does_nothing<Chip>(mut executor: Chip)
 where
     Chip: Executor<Architecture = arm64::Chip>,
 {
     let (memory, mut table) = create_memory(&executor);
-    let guest = arm64::build_count_down(CODE, COUNT);
+    let guest = arm64::build_count_down(CODE, SHORT_COUNT);
     place(&memory, &mut table, &guest);
     let mut first = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let mut last = None;
@@ -370,6 +377,97 @@ where
     assert_eq!(
         stopped, guest.finished,
         "the state the next execution returned"
+    );
+}
+
+/// Checks that each direct branch to itself, run as one instruction, ends after it with the state it leaves.
+pub fn branch_to_itself_runs_once_alone<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    for (instruction, word, start) in arm64::build_branches_to_themselves(CODE) {
+        let before = ExecutionState {
+            processor: start.clone(),
+            memory_mutations: vec![
+                MemoryDelta::PermissionAssignment {
+                    addresses: page(CODE),
+                    permission: PagePermission::Mapped {
+                        data_access: DataAccess::ReadOnly,
+                        instruction_fetch: InstructionFetch::Allowed,
+                    },
+                },
+                MemoryDelta::ValueAssignment {
+                    start: CODE,
+                    bytes: Cow::Owned(word.to_le_bytes().to_vec()),
+                },
+            ],
+        };
+        let Ok(after) = executor.execute_single_instruction(before) else {
+            panic!("the executor refused {instruction:?} to itself");
+        };
+        assert_eq!(
+            after.processor,
+            arm64::after_branch_to_itself(instruction, &start),
+            "the state {instruction:?} to itself ended at"
+        );
+    }
+}
+
+/// Checks that a guest that never traps is stopped at the end of the executor's slice, given to the handler as an
+/// interrupt, which ends it when answered terminate.
+pub fn slice_ends_a_guest_that_never_traps<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_endless(CODE);
+    place(&memory, &mut table, &guest);
+    let mut handler =
+        Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>).terminating_at_interrupts();
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
+    handler.assert_no_trap();
+    assert_eq!(
+        handler.interrupts, 1,
+        "the interrupts the handler was given"
+    );
+    assert_eq!(stopped, guest.finished, "the state execute returned");
+}
+
+/// Checks that a read of the counter ends execute at the read with the trap of it, for the system to answer, and calls
+/// no handler.
+pub fn counter_read_ends_execute_at_the_read<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_counter_read(CODE);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
+    handler.assert_no_trap();
+    assert_eq!(stopped, guest.finished, "the state execute returned");
+}
+
+/// Checks that a load through a tagged address of a page that allows nothing gives the handler the address its page is
+/// at and, answered terminate, ends at the load with the address the chip reports, its tag kept.
+pub fn fault_through_a_tagged_address_keeps_the_tag_in_the_state<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let (memory, mut table) = create_memory(&executor);
+    let tagged = DATA | TAG;
+    let guest = arm64::build_load(CODE, tagged, STORED);
+    place(&memory, &mut table, &guest);
+    let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+    let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut handler);
+    assert_eq!(
+        handler.memory_faults,
+        [(DATA, Access::Read)],
+        "the memory faults the handler was given"
+    );
+    assert!(
+        arm64::is_abort_through_tag(&guest, tagged, &stopped),
+        "execute returned {stopped:?} for a load through {tagged:#x}"
     );
 }
 
@@ -1226,6 +1324,26 @@ macro_rules! tests {
         #[test]
         fn interrupt_after_the_end_does_nothing() {
             $crate::interrupt_after_the_end_does_nothing($executor);
+        }
+
+        #[test]
+        fn branch_to_itself_runs_once_alone() {
+            $crate::branch_to_itself_runs_once_alone($executor);
+        }
+
+        #[test]
+        fn slice_ends_a_guest_that_never_traps() {
+            $crate::slice_ends_a_guest_that_never_traps($executor);
+        }
+
+        #[test]
+        fn counter_read_ends_execute_at_the_read() {
+            $crate::counter_read_ends_execute_at_the_read($executor);
+        }
+
+        #[test]
+        fn fault_through_a_tagged_address_keeps_the_tag_in_the_state() {
+            $crate::fault_through_a_tagged_address_keeps_the_tag_in_the_state($executor);
         }
 
         #[test]

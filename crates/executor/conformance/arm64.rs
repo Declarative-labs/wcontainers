@@ -6,15 +6,21 @@ use wcontainers_abi::{
 use wcontainers_processor_architecture_arm64::encoding::{
     Field, FixedBits, IMM12, IMM16, RD, RN, RT,
 };
-use wcontainers_processor_architecture_arm64::{
-    AccessDirection, Arm64, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction, Processor, User,
-    ZERO_PROCESSOR,
+use wcontainers_processor_architecture_arm64::system_register::{
+    SYSTEM_REGISTER, SystemRegisterEncoding,
 };
+use wcontainers_processor_architecture_arm64::{
+    AccessDirection, Arm64, ConditionFlags, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
+    Processor, SystemAccess, User, ZERO_PROCESSOR,
+};
+
+use wcontainers_processor_architecture::ProcessorArchitecture;
 
 use crate::{FirstTrap, Guest};
 
-/// The architecture the guests are written for.
+/// The architecture the guests are written for, and its instructions.
 pub(crate) type Chip = Arm64<User>;
+type ChipInstruction = <Chip as ProcessorArchitecture>::Instruction;
 
 /// The first argument register of a system call and its result register, x0.
 ///
@@ -65,6 +71,26 @@ const BRANCH_OFFSET: Field = Field {
     lowest_bit: 5,
     width: 19,
 };
+/// The register a branch tests, the first argument's, and the link register a branch with link writes.
+const TESTED_REGISTER: usize = FIRST_ARGUMENT_REGISTER as usize;
+const LINK_REGISTER: usize = 30;
+/// A value of the tested register whose every bit, the lowest a bit test tests, is clear, and one whose lowest is set.
+const ALL_CLEAR: u64 = u64::MIN;
+const LOWEST_SET: u64 = 1;
+
+/// [CNTVCT_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CNTVCT-EL0--Counter-timer-Virtual-Count-Register),
+/// the counter a guest reads the time from.
+const VIRTUAL_COUNTER: SystemRegisterEncoding = SystemRegisterEncoding::new(3, 3, 14, 0, 2);
+/// MRS with no register named, its L bit set: a read.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register->
+const SYSTEM_REGISTER_READ: FixedBits = FixedBits {
+    mask: 0xFFF0_0000,
+    value: 0xD530_0000,
+};
+/// The register the counter reading guest reads into: neither the first nor zero, so that its number is seen.
+const COUNTER_READ_REGISTER: u32 = VALUE_REGISTER;
+
 /// UDF, permanently undefined, with its immediate in its low half.
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UDF--Permanently-undefined->
@@ -225,4 +251,117 @@ fn to_code(words: &[u32]) -> Vec<u8> {
 fn stopped_by(mut processor: Processor<()>, exception: Exception) -> Processor<()> {
     processor.exception = Some(exception);
     processor
+}
+
+/// Returns each direct branch with an offset of zero: its word, and the state that takes it, every other register zero.
+///
+/// Each word is its instruction's fixed bits, so its offset is zero, its register the first, its condition EQ and its
+/// tested bit the lowest.
+pub(crate) fn build_branches_to_themselves(
+    code: u64,
+) -> Vec<(ChipInstruction, u32, Processor<()>)> {
+    let taken_by = |instruction: ChipInstruction| -> (u64, ConditionFlags) {
+        match instruction {
+            Instruction::Cbnz32 | Instruction::Cbnz64 | Instruction::Tbnz => {
+                (LOWEST_SET, ConditionFlags::empty())
+            }
+            Instruction::BCond => (ALL_CLEAR, ConditionFlags::ZERO),
+            _ => (ALL_CLEAR, ConditionFlags::empty()),
+        }
+    };
+    [
+        Instruction::B,
+        Instruction::Bl,
+        Instruction::BCond,
+        Instruction::Cbz32,
+        Instruction::Cbz64,
+        Instruction::Cbnz32,
+        Instruction::Cbnz64,
+        Instruction::Tbz,
+        Instruction::Tbnz,
+    ]
+    .into_iter()
+    .map(|instruction| {
+        let (tested, flags) = taken_by(instruction);
+        let mut start = start_at(code);
+        start.general_purpose_registers[TESTED_REGISTER] = tested;
+        start.condition_flags = flags;
+        (instruction, instruction.to_fixed_bits().value, start)
+    })
+    .collect()
+}
+
+/// Returns the state a branch to itself from `start` ends at: the same, but for the link a branch with link writes.
+pub(crate) fn after_branch_to_itself(
+    instruction: ChipInstruction,
+    start: &Processor<()>,
+) -> Processor<()> {
+    let mut after = start.clone();
+    if instruction == Instruction::Bl {
+        after.general_purpose_registers[LINK_REGISTER] =
+            start.program_counter.wrapping_add(INSTRUCTION_SIZE);
+    }
+    after
+}
+
+/// Returns a guest that branches to itself for ever.
+pub(crate) fn build_endless(code: u64) -> Guest<Chip> {
+    let start = start_at(code);
+    Guest {
+        code: to_code(&[Instruction::B.to_fixed_bits().value]),
+        finished: start.clone(),
+        start,
+    }
+}
+
+/// Returns a guest that reads the virtual counter and reaches a breakpoint, finished at the read with the trap the
+/// chip takes at EL0, where the system answers the read.
+pub(crate) fn build_counter_read(code: u64) -> Guest<Chip> {
+    let start = start_at(code);
+    let read = SYSTEM_REGISTER_READ.value
+        | SYSTEM_REGISTER.to_bits(VIRTUAL_COUNTER.to_field())
+        | RT.to_bits(COUNTER_READ_REGISTER);
+    let breakpoint = Instruction::Brk.to_fixed_bits().value | IMM16.to_bits(u32::from(IMMEDIATE));
+    let trapped = Exception::SystemAccessTrapped(SystemAccess {
+        op0: VIRTUAL_COUNTER.op0 as u8,
+        op1: VIRTUAL_COUNTER.op1 as u8,
+        crn: VIRTUAL_COUNTER.crn as u8,
+        crm: VIRTUAL_COUNTER.crm as u8,
+        op2: VIRTUAL_COUNTER.op2 as u8,
+        rt: COUNTER_READ_REGISTER as u8,
+        direction: AccessDirection::Read,
+    });
+    Guest {
+        code: to_code(&[read, breakpoint]),
+        finished: stopped_by(start.clone(), trapped),
+        start,
+    }
+}
+
+/// Returns whether the guest, a load through a tagged address, stopped at the load with the chip's abort of it: the
+/// address with its whole tag, or with the tag's low half alone, as a chip that keeps only those bits reports it.
+pub(crate) fn is_abort_through_tag(
+    guest: &Guest<Chip>,
+    tagged: u64,
+    stopped: &Processor<()>,
+) -> bool {
+    /// The tag's high half, bits 63:60 of the address.
+    const TAG_HIGH: u64 = 0xF << 60;
+    [tagged, tagged & !TAG_HIGH].into_iter().any(|address| {
+        [
+            FaultStatus::TranslationFaultLevel3,
+            FaultStatus::PermissionFaultLevel3,
+        ]
+        .into_iter()
+        .any(|status| {
+            stopped_by(
+                guest.start.clone(),
+                Exception::DataAbort {
+                    status,
+                    access: AccessDirection::Read,
+                    address,
+                },
+            ) == *stopped
+        })
+    })
 }
