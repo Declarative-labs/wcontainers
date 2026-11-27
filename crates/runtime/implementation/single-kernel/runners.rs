@@ -573,7 +573,10 @@ mod tests {
     fn a_finish_ends_a_runner_that_runs_until_its_execution_is_ended() {
         let setup = setup(
             vec![
-                vec![Step::Finishes(ProcessEnd::Exited { code: 0 }, Gate::Running(1))],
+                vec![Step::Finishes(
+                    ProcessEnd::Exited { code: 0 },
+                    Gate::Running(1),
+                )],
                 vec![Step::RunsThenInterrupted],
             ],
             LONG_POLL,
@@ -585,7 +588,10 @@ mod tests {
     fn a_finish_ends_a_runner_that_answers_idle_once_its_execution_is_ended() {
         let setup = setup(
             vec![
-                vec![Step::Finishes(ProcessEnd::Exited { code: 0 }, Gate::Running(1))],
+                vec![Step::Finishes(
+                    ProcessEnd::Exited { code: 0 },
+                    Gate::Running(1),
+                )],
                 vec![Step::RunsThenIdle],
             ],
             LONG_POLL,
@@ -626,18 +632,18 @@ mod tests {
             vec![idle_then_running.clone(), idle_then_running],
             LONG_POLL,
         );
-        let interrupting = interrupt_when(
-            setup.interrupter,
-            setup.board,
-            Gate::IdledThenSettled(2),
-        );
+        let interrupting =
+            interrupt_when(setup.interrupter, setup.board, Gate::IdledThenSettled(2));
         assert_eq!(stopped(setup.container), Some(StopReason::Interrupted));
         interrupting.join().expect("the interrupting thread");
     }
 
     #[test]
     fn a_run_after_an_interrupt_runs_the_runners_again() {
-        let setup = setup(vec![vec![Step::RunsThenInterrupted, FINISHES_NOW]], LONG_POLL);
+        let setup = setup(
+            vec![vec![Step::RunsThenInterrupted, FINISHES_NOW]],
+            LONG_POLL,
+        );
         let interrupting = interrupt_when(setup.interrupter, setup.board, Gate::Running(1));
         let (first, container) = run_bounded(setup.container).expect("the first run ends");
         interrupting.join().expect("the interrupting thread");
@@ -649,7 +655,10 @@ mod tests {
     fn a_panic_after_a_finish_ends_the_container_as_panicked() {
         let setup = setup(
             vec![
-                vec![Step::Finishes(ProcessEnd::Exited { code: 0 }, Gate::Running(1))],
+                vec![Step::Finishes(
+                    ProcessEnd::Exited { code: 0 },
+                    Gate::Running(1),
+                )],
                 vec![Step::RunsThenPanics],
             ],
             LONG_POLL,
@@ -736,7 +745,11 @@ mod tests {
     #[test]
     fn an_idle_runner_whose_time_is_past_the_idle_poll_is_run_again_early_and_told() {
         let setup = setup(
-            vec![vec![Step::Idles(Some(LONG_POLL)), Step::Idles(Some(LONG_POLL)), FINISHES_NOW]],
+            vec![vec![
+                Step::Idles(Some(LONG_POLL)),
+                Step::Idles(Some(LONG_POLL)),
+                FINISHES_NOW,
+            ]],
             SHORT_POLL,
         );
         assert_eq!(stopped(setup.container), Some(FINISHED));
@@ -753,7 +766,11 @@ mod tests {
     #[test]
     fn the_idle_polls_are_told_again_only_when_they_grew() {
         let setup = setup(
-            vec![vec![Step::RunsThenInterrupted, Step::Idles(None), FINISHES_NOW]],
+            vec![vec![
+                Step::RunsThenInterrupted,
+                Step::Idles(None),
+                FINISHES_NOW,
+            ]],
             SHORT_POLL,
         );
         let interrupting = interrupt_when(
