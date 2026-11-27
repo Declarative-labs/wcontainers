@@ -11,6 +11,7 @@ mod cheader;
 mod mesacompiler;
 mod emit;
 mod gallium;
+mod gallium_glue;
 mod gallium_interface;
 mod khronos;
 mod layout;

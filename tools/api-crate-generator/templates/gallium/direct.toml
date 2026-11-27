@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-gallium-direct"
+description = "Gallium through Mesa's C ABI: the glue serving Mesa's calls into a driver with any implementation of wcontainers-gallium's traits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+# The glue's C (flat.c, flat.h) is generated beside the Rust; build.rs compiles it against the pinned Mesa when
+# WCONTAINERS_MESA names its build.
+build = "build.rs"
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-gallium = { path = "../.." }
+
+[build-dependencies]
+cc = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# An outside API's direct crate: it denies unsafe code, so that each use is marked with the fact it rests on.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

@@ -12,13 +12,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::cheader::{CFunction, CParam, Header};
-use crate::gallium::{Entry, PLAN, Role};
+use crate::gallium::{COUNTED, Entry, PLAN, Role};
 
 /// The first line of every file written.
 const HEADER: &str = "// Written by tools/api-crate-generator from Mesa 26.3.1's Gallium headers (p_defines.h, p_state.h, p_screen.h, p_context.h, u_transfer_helper.h) and the plan in src/gallium.rs. Do not edit.\n";
 
 /// The C handle of each kind's objects, as Mesa passes it inside plain data.
-const HANDLE_KINDS: &[(&str, &str)] = &[
+pub(crate) const HANDLE_KINDS: &[(&str, &str)] = &[
     ("struct pipe_resource", "Resource"),
     ("struct pipe_stream_output_target", "StreamOutputTarget"),
     ("struct pipe_context", "Context"),
@@ -47,7 +47,6 @@ const FIELDS_LEFT_OUT: &[(&str, &str, &str)] = &[
     ("pipe_sampler_view", "context", "the context the view is made on: the method's receiver"),
     ("pipe_sampler_view", "texture", "the resource viewed: create_sampler_view's own parameter"),
     ("pipe_stream_output_target", "reference", "Mesa's count: the glue's"),
-    ("pipe_draw_info.index", "user", "client memory as indices: refused, the driver reports no user index buffers (PIPE_CAP has_user_indices false)"),
     ("pipe_grid_info", "input", "kernel input of OpenCL's frontend, which our driver does not serve (st/mesa passes none)"),
     ("pipe_grid_info", "globals", "global buffers of OpenCL's frontend (none from st/mesa)"),
     ("pipe_grid_info", "num_globals", "the count of `globals`, left out with it"),
@@ -59,12 +58,36 @@ const FIELDS_LEFT_OUT: &[(&str, &str, &str)] = &[
     ("pipe_compute_state", "prog", "the program: the method's received program"),
     ("pipe_compute_state", "error_message", "a text the driver allocates for Mesa: the glue writes none"),
     ("pipe_vertex_buffer.buffer", "user", "client memory as a vertex buffer: refused, the driver reports no user vertex buffers"),
-    ("pipe_constant_buffer", "user_buffer", "client memory as a constant buffer: refused, the driver reports no user constant buffers"),
 ];
+
+/// Fields holding client memory that Mesa may pass whatever the driver reports, each carried as the bytes read during
+/// the call (the glue copies them: their length from the call, as given), with the reason it cannot be refused.
+const CLIENT_MEMORY: &[(&str, &str, &str)] = &[
+    (
+        "pipe_draw_info.index",
+        "user",
+        "the indices in client memory, when `has_user_indices`: from index 0 to the end of the furthest draw (start plus count, times index_size). No capability turns them off: st/mesa sets has_user_indices whenever no element buffer is bound (main/draw.c:1662, 2043; MEASURED on llvmpipe)",
+    ),
+    (
+        "pipe_constant_buffer",
+        "user_buffer",
+        "the constants in client memory, `buffer_size` bytes from `buffer_offset`. st/mesa uploads its own when the driver reports prefer_real_buffer_in_constbuf0 (u_inlines.h:749, st_atom_constbuf.c:124), but Mesa's blitter, a helper the driver calls, passes its clear color so (u_blitter.c:1607, 2501, 2939)",
+    ),
+];
+
+pub(crate) fn client_memory(structure: &str, field: &str) -> Option<&'static str> {
+    CLIENT_MEMORY.iter().find(|(s, f, _)| *s == structure && *f == field).map(|(_, _, reason)| *reason)
+}
+
+/// The handle of an object of a kind as plain data and the methods name it: a counted kind's `Arc`, which the
+/// implementation may clone to keep, any other by reference for the call.
+fn handle(kind: &str, ty: &str) -> String {
+    if COUNTED.contains(&kind) { format!("Arc<{ty}>") } else { ty.to_string() }
+}
 
 /// A field's declared type: the header reader gives a second declarator of one declaration (`float min_lod, max_lod;`)
 /// the first's name with its type (`float min_lod,`), dropped here.
-fn declared_type(base: &str) -> String {
+pub(crate) fn declared_type(base: &str) -> String {
     let base = base.trim_start_matches("const ").trim();
     match base.rsplit_once(' ') {
         Some((ty, last)) if last.ends_with(',') => ty.to_string(),
@@ -101,7 +124,7 @@ fn counts_the_list_before(function: &CFunction, at: usize) -> bool {
 }
 
 /// The number type of a C scalar.
-fn number(base: &str) -> Option<&'static str> {
+pub(crate) fn number(base: &str) -> Option<&'static str> {
     Some(match base {
         "unsigned" | "uint32_t" | "uint" | "unsigned int" => "u32",
         "int" | "int32_t" => "i32",
@@ -120,7 +143,7 @@ fn number(base: &str) -> Option<&'static str> {
 }
 
 /// `pipe_draw_info.index` to `DrawInfoIndex`; a name Rust's prelude has (`pipe_box`) keeps the `Pipe`.
-fn type_name(c: &str) -> String {
+pub(crate) fn type_name(c: &str) -> String {
     let bare = c.trim_start_matches("struct ").trim_start_matches("union ").trim_start_matches("pipe_");
     let name: String = bare
         .split(['.', '_'])
@@ -141,19 +164,22 @@ fn type_name(c: &str) -> String {
 }
 
 /// A Rust keyword gets a trailing underscore.
-fn field_name(c: &str) -> String {
+pub(crate) fn field_name(c: &str) -> String {
     crate::names::escaped(c.to_string())
 }
 
 /// The kinds a structure's handles name, in the order met (its type parameters).
-fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>, depth: usize) {
+pub(crate) fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>, depth: usize) {
     let Some(fields) = header.structures.get(name) else { return };
     for field in fields {
         if left_out(name, &field.name).is_some() {
             continue;
         }
         let base = field.base.trim_start_matches("const ").trim();
-        if field.pointers == 1 && let Some((_, kind)) = HANDLE_KINDS.iter().find(|(handle, _)| *handle == base) {
+        if field.pointers == 1
+            && client_memory(name, &field.name).is_none()
+            && let Some((_, kind)) = HANDLE_KINDS.iter().find(|(handle, _)| *handle == base)
+        {
             if !out.contains(kind) {
                 out.push(kind);
             }
@@ -166,7 +192,7 @@ fn kinds_named(name: &str, header: &Header, out: &mut Vec<&'static str>, depth: 
     }
 }
 
-fn left_out(structure: &str, field: &str) -> Option<&'static str> {
+pub(crate) fn left_out(structure: &str, field: &str) -> Option<&'static str> {
     FIELDS_LEFT_OUT.iter().find(|(s, f, _)| *s == structure && *f == field).map(|(_, _, reason)| *reason)
 }
 
@@ -228,8 +254,9 @@ impl Structures<'_> {
                     return None;
                 }
             }
+            1 if client_memory(structure, &field.name).is_some() => "Option<&'a [u8]>".to_string(),
             1 => match HANDLE_KINDS.iter().find(|(handle, _)| *handle == base) {
-                Some((_, kind)) => format!("Option<&'a {kind}>"),
+                Some((_, kind)) => format!("Option<&'a {}>", handle(kind, kind)),
                 None => {
                     self.unmapped.push(format!("{structure}.{}: {base}*", field.name));
                     return None;
@@ -275,7 +302,8 @@ impl Structures<'_> {
             }
             let Some(ty) = self.field_type(name, field) else { continue };
             let bits = field.bits.as_ref().map(|bits| format!(" ({bits} bits in C: a value past them is refused)")).unwrap_or_default();
-            let _ = writeln!(body, "    /// The `{}` of `{name}`{bits}.\n    pub {}: {ty},", field.name, field_name(&field.name));
+            let memory = client_memory(name, &field.name).map(|reason| format!(": {reason}")).unwrap_or_default();
+            let _ = writeln!(body, "    /// The `{}` of `{name}`{bits}{memory}.\n    pub {}: {ty},", field.name, field_name(&field.name));
         }
         let what = if union { "union" } else { "struct" };
         let union_note = if union { " A union in C: the glue fills the one member the structure around it selects, the others zero." } else { "" };
@@ -327,6 +355,11 @@ fn kind_type(kind: &str, screen: bool) -> String {
     if screen { format!("Self::{kind}") } else { format!("<Self::Screen as Gallium>::{kind}") }
 }
 
+/// A kind's handle in a method: `Arc<..>` for a counted kind.
+fn handle_type(kind: &str, screen: bool) -> String {
+    handle(kind, &kind_type(kind, screen))
+}
+
 /// The handles' type parameters of an owned structure in a method.
 fn owned_in_method(name: &str, header: &Header, screen: bool) -> String {
     let mut kinds = Vec::new();
@@ -347,7 +380,7 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
     let made_kind = || {
         entry.roles.iter().find_map(|role| match role {
             Role::Makes(kinds) => Some(kind.unwrap_or(kinds[0])),
-            Role::Turns(_, to) => Some(*to),
+            Role::Turns(_, to) | Role::TurnsOrGivesBack(_, to) => Some(*to),
             _ => None,
         })
     };
@@ -402,9 +435,9 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             ("void", 2) | ("struct pipe_sampler_view" | "struct pipe_stream_output_target", 2) => {
                 let k = entry.roles.iter().find_map(|role| if let Role::Binds(of) = role { Some(*of) } else { None }).ok_or("slots of no kind")?;
                 if nullable(entry.pointer, &param.name) {
-                    format!("{name}: Option<&[Option<&{}>]>", kind_type(k, screen))
+                    format!("{name}: Option<&[Option<&{}>]>", handle_type(k, screen))
                 } else {
-                    format!("{name}: &[Option<&{}>]", kind_type(k, screen))
+                    format!("{name}: &[Option<&{}>]", handle_type(k, screen))
                 }
             }
             ("struct pipe_fence_handle", 2) => {
@@ -419,11 +452,14 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
                     format!("{name}: &{}, written: &[u8]", kind_type("Mapping", screen))
                 }
             }
-            ("struct pipe_fence_handle", 1) => format!("{name}: &{}", kind_type("Fence", screen)),
+            ("struct pipe_fence_handle", 1) => format!("{name}: &{}", handle_type("Fence", screen)),
             ("struct pipe_context", 1) => format!("{name}: Option<&{}>", kind_type("Context", screen)),
             ("struct pipe_query", 1) => {
                 let gives = entry.roles.iter().any(|role| matches!(role, Role::GivesBack(_)));
-                let turns = entry.roles.iter().find_map(|role| if let Role::Turns(from, _) = role { Some(*from) } else { None });
+                let turns = entry.roles.iter().find_map(|role| match role {
+                    Role::Turns(from, _) | Role::TurnsOrGivesBack(from, _) => Some(*from),
+                    _ => None,
+                });
                 match (turns, kind) {
                     (Some(from), None) => format!("{name}: {}", kind_type(from, screen)),
                     (Some(_), Some(k)) | (None, Some(k)) if gives => format!("{name}: {}", kind_type(k, screen)),
@@ -436,24 +472,16 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
                 format!("{name}: &{}", owned_in_method("pipe_resource", header, screen))
             }
             ("struct pipe_resource", 1) => {
-                if entry.roles.iter().any(|role| matches!(role, Role::GivesBack(_))) {
-                    format!("{name}: {}", kind_type("Resource", screen))
-                } else {
-                    format!("{name}: &{}", kind_type("Resource", screen))
-                }
+                format!("{name}: &{}", handle_type("Resource", screen))
             }
             ("struct pipe_sampler_view", 1) if is_const => {
                 structures.write("pipe_sampler_view");
                 format!("{name}: &{}", owned_in_method("pipe_sampler_view", header, screen))
             }
             ("struct pipe_sampler_view", 1) => {
-                if entry.roles.iter().any(|role| matches!(role, Role::GivesBack(_))) {
-                    format!("{name}: {}", kind_type("SamplerView", screen))
-                } else {
-                    format!("{name}: &{}", kind_type("SamplerView", screen))
-                }
+                format!("{name}: &{}", handle_type("SamplerView", screen))
             }
-            ("struct pipe_stream_output_target", 1) => format!("{name}: {}", kind_type("StreamOutputTarget", screen)),
+            ("struct pipe_stream_output_target", 1) => format!("{name}: &{}", handle_type("StreamOutputTarget", screen)),
             ("struct pipe_shader_state" | "struct pipe_compute_state", 1) => {
                 let shader = made_kind().ok_or("a program for no shader kind")?;
                 let received = SHADERS.iter().find(|(kind, _)| *kind == shader).map(|(_, received)| *received).ok_or("no received program")?;
@@ -507,6 +535,10 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
                 let to = made_kind().unwrap_or("Query");
                 format!("Option<{}>", kind_type(to, screen))
             }
+            ("bool", 0) => match entry.roles.iter().find_map(|role| if let Role::TurnsOrGivesBack(from, to) = role { Some((*from, *to)) } else { None }) {
+                Some((from, to)) => format!("Result<{}, {}>", kind_type(to, screen), kind_type(from, screen)),
+                None => "bool".to_string(),
+            },
             (b, 0) => number(b).ok_or_else(|| format!("{}: returns {b}", entry.pointer))?.to_string(),
             (b, n) => return Err(format!("{}: returns {b} with {n} pointers", entry.pointer)),
         };
@@ -524,7 +556,8 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     let mut methods = 0;
     for entry in PLAN {
         // A count is the kind's Clone and Drop, kept by the glue.
-        if entry.roles.iter().all(|role| matches!(role, Role::Counts(_))) {
+        // A pointer Mesa's own function fills, or the same function as another, is the direct crate's, not a method.
+        if entry.roles.iter().all(|role| matches!(role, Role::Counts(_) | Role::MesaFills(_) | Role::SameAs(_))) {
             continue;
         }
         let Some(function) = header.callbacks.get(entry.structure).and_then(|callbacks| callbacks.iter().find(|function| function.name == entry.pointer)) else {
@@ -557,13 +590,13 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
         return Err(format!("GALLIUM INTERFACE FAILED {}:\n  {}", failures.len(), failures.join("\n  ")));
     }
     let mut interface = String::from(HEADER);
-    interface.push_str("//! Gallium, the driver interface Mesa's OpenGL calls in our driver, as safe traits: `Gallium` (the screen) and\n//! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa\n//! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only\n//! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received\n//! program of that stage. Plain data is owned, each object it names a reference of its kind. Declared values are\n//! `u32`, checked by the glue.\n\n");
+    interface.push_str("//! Gallium, the driver interface Mesa's OpenGL calls in our driver, as safe traits: `Gallium` (the screen) and\n//! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa\n//! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only\n//! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received\n//! program of that stage. Plain data is owned, each object it names a reference of its kind. A kind Mesa counts\n//! (Resource, Fence, SamplerView, StreamOutputTarget) is passed as an `Arc` of it: an implementation keeps one past\n//! the call by cloning the handle, and the object ends where its last handle is dropped. Declared values are\n//! `u32`, checked by the glue.\n\nuse std::sync::Arc;\n\n");
     let _ = writeln!(interface, "{}", structures.text);
     interface.push_str("/// A resource's bytes mapped for the CPU: the implementation's mapping and the bytes, a copy the glue lends Mesa until the unmap.\n#[derive(Debug)]\npub struct Mapped<Mapping> {\n    /// The implementation's mapping, given back at the unmap.\n    pub mapping: Mapping,\n    /// The mapped bytes as the implementation has them.\n    pub bytes: Vec<u8>,\n    /// Bytes from one row to the next.\n    pub stride: u32,\n    /// Bytes from one layer to the next.\n    pub layer_stride: u64,\n}\n\n");
     let kinds: Vec<&str> = crate::gallium::KINDS.iter().map(|(kind, _)| *kind).filter(|kind| *kind != "Screen").collect();
     let _ = writeln!(interface, "/// The screen: the library Mesa's frontend loads, holding the kinds of its objects.\npub trait Gallium: Sized {{\n    /// The shader compiler the programs come from.\n    type Compiler: wcontainers_mesa_compiler::MesaCompiler;\n");
     for (kind, what) in crate::gallium::KINDS.iter().filter(|(kind, _)| *kind != "Screen") {
-        let bound = if *kind == "Context" { ": GalliumContext<Screen = Self>" } else if *kind == "Fence" { ": Clone" } else { "" };
+        let bound = if *kind == "Context" { ": GalliumContext<Screen = Self>" } else { "" };
         let _ = writeln!(interface, "    /// {}{}.\n    type {kind}{bound};\n", what[..1].to_uppercase(), &what[1..]);
     }
     interface.push_str(&screen_methods);
@@ -572,11 +605,12 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
     interface.push_str("}\n");
     let crate_folder = out.join("crates").join("gallium");
     std::fs::create_dir_all(&crate_folder).map_err(|error| error.to_string())?;
+    let glue_report = crate::gallium_glue::generate(&header, &structures.written, &crate_folder)?;
     std::fs::write(crate_folder.join("interface.rs"), &interface).map_err(|error| error.to_string())?;
     std::fs::write(
         crate_folder.join("Cargo.toml"),
         "[package]\nname = \"wcontainers-gallium\"\ndescription = \"Gallium, the driver interface Mesa's OpenGL calls, as safe traits.\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\nlicense.workspace = true\nrepository.workspace = true\npublish = false\n\n[lib]\npath = \"interface.rs\"\n\n[dependencies]\nwcontainers-mesa-compiler = { path = \"../mesa-compiler\" }\n\n[lints]\nworkspace = true\n",
     )
     .map_err(|error| error.to_string())?;
-    Ok(format!("GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields\n", structures.written.len(), kinds.len() + 1, FIELDS_LEFT_OUT.len()))
+    Ok(format!("GALLIUM INTERFACE: {methods} methods, {} structures, {} kinds; left out {} fields\n{glue_report}", structures.written.len(), kinds.len() + 1, FIELDS_LEFT_OUT.len()))
 }

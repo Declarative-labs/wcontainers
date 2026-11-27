@@ -2,9 +2,13 @@
 //!
 //! The lengths the metadata does not give, hand-written beside the generator (each an exception line of src/api.rs):
 //! how many bytes the C side may touch in a resource's subresource, from its description, by the one table of
-//! formats (dxgiformat.h). Both glues use the same rules: the serving glue copies that many initial bytes and lends a
-//! copy of ours that long; the calling glue refuses initial bytes shorter than that and views that many of the
-//! system's mapped bytes. Every length is computed with checked arithmetic and is at most the largest resource.
+//! formats (dxgiformat.h), as Microsoft documents the layouts: D3D11_SUBRESOURCE_DATA (initial bytes), UpdateSubresource
+//! and D3D11_BOX (uploads), D3D11_MAPPED_SUBRESOURCE (mapped bytes). Uploads and initial bytes: the calling glue refuses
+//! fewer bytes than the rule, the serving glue copies exactly that many. Mapped bytes have two rules: the calling glue
+//! views only what the documentation lets a program view of the system's memory (`mapped_length_*`), and the serving
+//! glue lends a copy of ours of at least that, raised to whole rows and slices at the pitches it tells the C side
+//! (`lent_length_*`), which programs fill whole. Each rule is tested against lengths_reference.rs, which shares no code
+//! with this file. Every length is computed with checked arithmetic and is at most the largest resource.
 
 #![allow(dead_code, reason = "a slice of the API holds some of the shapes")]
 
@@ -145,41 +149,86 @@ fn subresource_extent(
     )
 }
 
-/// Returns the texels an upload's box covers in a subresource of `full` texels: the box's sides, or the whole
-/// subresource for none; none for a box past the subresource's sides; zero sides for an empty box, which uploads nothing.
+/// The texels an upload's box covers in a subresource, as its edges: from `left`, `top` and `front` up to but not
+/// including `right`, `bottom` and `back`.
+#[derive(Clone, Copy)]
+struct Region {
+    left: u32,
+    top: u32,
+    front: u32,
+    right: u32,
+    bottom: u32,
+    back: u32,
+}
+
+/// Returns the texels an upload's box covers in a subresource of `full` texels: the box, or the whole subresource for
+/// none; none for a box past the subresource's sides; an empty region for an empty box, which uploads nothing.
 ///
 /// <https://learn.microsoft.com/windows/win32/api/d3d11/ns-d3d11-d3d11_box>
 fn region_of(
     full: (u32, u32, u32),
     region: Option<&direct3d_11::structures::Box>,
-) -> Option<(u32, u32, u32)> {
+) -> Option<Region> {
     let Some(region) = region else {
-        return Some(full);
+        return Some(Region {
+            left: 0,
+            top: 0,
+            front: 0,
+            right: full.0,
+            bottom: full.1,
+            back: full.2,
+        });
     };
     if region.right > full.0 || region.bottom > full.1 || region.back > full.2 {
         return None;
     }
     if region.left >= region.right || region.top >= region.bottom || region.front >= region.back {
-        return Some((0, 0, 0));
+        return Some(Region {
+            left: 0,
+            top: 0,
+            front: 0,
+            right: 0,
+            bottom: 0,
+            back: 0,
+        });
     }
-    Some((
-        region.right - region.left,
-        region.bottom - region.top,
-        region.back - region.front,
-    ))
+    Some(Region {
+        left: region.left,
+        top: region.top,
+        front: region.front,
+        right: region.right,
+        bottom: region.bottom,
+        back: region.back,
+    })
 }
 
-/// Returns the bytes an upload of `region` texels reads at the pitches: zero for an empty box.
+/// Returns how many blocks of `side` texels the texels from `start` up to `end` touch: a box that does not start or end
+/// on a block's edge still reads every block it touches.
+fn blocks_touched(start: u32, end: u32, side: u32) -> u64 {
+    u64::from(end.div_ceil(side)) - u64::from(start / side)
+}
+
+/// Returns the bytes an upload of `region` reads at the pitches: every row of blocks the region touches, every slice;
+/// zero for an empty region; none for a format the table does not cover.
 fn upload_extent(
     format: directx_graphics_infrastructure::enumerations::Format,
-    region: (u32, u32, u32),
+    region: Region,
     row_pitch: u32,
     depth_pitch: u32,
 ) -> Option<usize> {
-    if region.0 == 0 {
+    if region.right == 0 {
         return Some(0);
     }
-    subresource_extent(format, region, row_pitch, depth_pitch)
+    let block = block(format)?;
+    let row_bytes = blocks_touched(region.left, region.right, block.width) * u64::from(block.bytes);
+    let rows = blocks_touched(region.top, region.bottom, block.height);
+    extent(
+        row_bytes,
+        rows,
+        row_pitch,
+        u64::from(region.back - region.front),
+        depth_pitch,
+    )
 }
 
 /// d3d11.h: a texture's side, slices, samples and the most bits of each flag word it declares.
@@ -287,16 +336,27 @@ pub(crate) fn within_served_bound_buffer(
     within_served_bound(usize::try_from(desc.byte_width).ok(), length)
 }
 
-/// Returns the length of a buffer's mapped bytes: its byte width, for its one subresource, and at least the pitches
-/// the implementation gave, which the C side is told and fills.
+/// Returns the length of a buffer's mapped bytes the C side may view: its byte width, for its one subresource (the
+/// pitches the system gives a buffer are at least that and say nothing more).
 pub(crate) fn mapped_length_buffer(
+    desc: &direct3d_11::structures::BufferDesc,
+    subresource: u32,
+    _row_pitch: u32,
+    _depth_pitch: u32,
+) -> Option<usize> {
+    initial_length_buffer(desc, usize::try_from(subresource).ok()?, 0, 0)
+}
+
+/// Returns the length of the memory the serving glue lends for a mapped buffer: its byte width, raised to the pitches
+/// the implementation gave, which the C side is told and may fill whole.
+pub(crate) fn lent_length_buffer(
     desc: &direct3d_11::structures::BufferDesc,
     subresource: u32,
     row_pitch: u32,
     depth_pitch: u32,
 ) -> Option<usize> {
     at_least_pitches(
-        initial_length_buffer(desc, usize::try_from(subresource).ok()?, 0, 0)?,
+        mapped_length_buffer(desc, subresource, row_pitch, depth_pitch)?,
         row_pitch,
         depth_pitch,
     )
@@ -314,8 +374,8 @@ pub(crate) fn upload_length_buffer(
     if subresource != 0 {
         return None;
     }
-    let (bytes, _, _) = region_of((desc.byte_width, 1, 1), region)?;
-    usize::try_from(bytes)
+    let region = region_of((desc.byte_width, 1, 1), region)?;
+    usize::try_from(region.right - region.left)
         .ok()
         .filter(|length| *length <= most_bytes())
 }
@@ -401,20 +461,34 @@ pub(crate) fn initial_length_texture_1d(
     subresource_extent(desc.format, size_texture_1d(desc, index)?, pitch, 0)
 }
 
-/// Returns the length of a 1D texture subresource's mapped bytes: one row, and at least the pitches the system gave.
+/// Returns the length of a 1D texture subresource's mapped bytes the C side may view: one row.
 pub(crate) fn mapped_length_texture_1d(
+    desc: &direct3d_11::structures::Texture1DDesc,
+    subresource: u32,
+    row_pitch: u32,
+    _depth_pitch: u32,
+) -> Option<usize> {
+    subresource_extent(
+        desc.format,
+        size_texture_1d(desc, usize::try_from(subresource).ok()?)?,
+        row_pitch,
+        0,
+    )
+}
+
+/// Returns the length of the memory the serving glue lends for a mapped 1D texture subresource: one row, raised to the
+/// pitches the implementation gave, which the C side is told and may fill whole.
+pub(crate) fn lent_length_texture_1d(
     desc: &direct3d_11::structures::Texture1DDesc,
     subresource: u32,
     row_pitch: u32,
     depth_pitch: u32,
 ) -> Option<usize> {
-    let rows = subresource_extent(
-        desc.format,
-        size_texture_1d(desc, usize::try_from(subresource).ok()?)?,
+    at_least_pitches(
+        mapped_length_texture_1d(desc, subresource, row_pitch, depth_pitch)?,
         row_pitch,
-        0,
-    )?;
-    at_least_pitches(rows, row_pitch, depth_pitch)
+        depth_pitch,
+    )
 }
 
 /// Returns the length of the bytes an upload into a subresource of the texture reads: the box's rows of blocks (the whole
@@ -535,21 +609,33 @@ pub(crate) fn initial_length_texture_2d(
     subresource_extent(desc.format, size_texture_2d(desc, index)?, pitch, 0)
 }
 
-/// Returns the length of a 2D texture subresource's mapped bytes: its rows at the pitch, and at least the pitches the
-/// system gave, which programs fill whole.
+/// Returns the length of a 2D texture subresource's mapped bytes the C side may view: its rows of blocks at the row
+/// pitch, the last row its packed bytes (the depth pitch of a 2D texture is not used).
 pub(crate) fn mapped_length_texture_2d(
+    desc: &direct3d_11::structures::Texture2DDesc,
+    subresource: u32,
+    row_pitch: u32,
+    _depth_pitch: u32,
+) -> Option<usize> {
+    subresource_extent(
+        desc.format,
+        size_texture_2d(desc, usize::try_from(subresource).ok()?)?,
+        row_pitch,
+        0,
+    )
+}
+
+/// Returns the length of the memory the serving glue lends for a mapped 2D texture subresource: every row whole at the
+/// row pitch, raised to the depth pitch the implementation gave, which programs may fill whole.
+pub(crate) fn lent_length_texture_2d(
     desc: &direct3d_11::structures::Texture2DDesc,
     subresource: u32,
     row_pitch: u32,
     depth_pitch: u32,
 ) -> Option<usize> {
-    let rows = subresource_extent(
-        desc.format,
-        size_texture_2d(desc, usize::try_from(subresource).ok()?)?,
-        row_pitch,
-        0,
-    )?;
-    at_least_pitches(rows, row_pitch, depth_pitch)
+    let size = size_texture_2d(desc, usize::try_from(subresource).ok()?)?;
+    let viewed = mapped_length_texture_2d(desc, subresource, row_pitch, depth_pitch)?;
+    whole_slices(desc.format, size, viewed, row_pitch, depth_pitch)
 }
 
 /// Returns the length of the bytes an upload into a subresource of the texture reads: the box's rows of blocks (the whole
@@ -669,20 +755,33 @@ pub(crate) fn initial_length_texture_3d(
     )
 }
 
-/// Returns the length of a 3D texture subresource's mapped bytes: its slices and rows at the pitches the system gave.
+/// Returns the length of a 3D texture subresource's mapped bytes the C side may view: its slices at the depth pitch, its
+/// rows of blocks at the row pitch, the last row its packed bytes.
 pub(crate) fn mapped_length_texture_3d(
     desc: &direct3d_11::structures::Texture3DDesc,
     subresource: u32,
     row_pitch: u32,
     depth_pitch: u32,
 ) -> Option<usize> {
-    let slices = subresource_extent(
+    subresource_extent(
         desc.format,
         size_texture_3d(desc, usize::try_from(subresource).ok()?)?,
         row_pitch,
         depth_pitch,
-    )?;
-    at_least_pitches(slices, row_pitch, depth_pitch)
+    )
+}
+
+/// Returns the length of the memory the serving glue lends for a mapped 3D texture subresource: every row whole at the
+/// row pitch and every slice whole at the depth pitch the implementation gave, which programs may fill whole.
+pub(crate) fn lent_length_texture_3d(
+    desc: &direct3d_11::structures::Texture3DDesc,
+    subresource: u32,
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    let size = size_texture_3d(desc, usize::try_from(subresource).ok()?)?;
+    let viewed = mapped_length_texture_3d(desc, subresource, row_pitch, depth_pitch)?;
+    whole_slices(desc.format, size, viewed, row_pitch, depth_pitch)
 }
 
 /// Returns the length of the bytes an upload into a subresource of the texture reads: the box's slices and rows of
@@ -728,6 +827,28 @@ fn padded_extent(
         .checked_mul(u64::from(height.div_ceil(block.height).max(1)))?
         .checked_mul(u64::from(depth.max(1)))?;
     usize::try_from(all).ok().filter(|all| *all <= most_bytes())
+}
+
+/// Returns `viewed` raised to every row of the subresource whole at `row_pitch` (with every slice but the last at
+/// `depth_pitch`) and to every slice whole at `depth_pitch`, if within the largest resource.
+fn whole_slices(
+    format: directx_graphics_infrastructure::enumerations::Format,
+    (_, height, depth): (u32, u32, u32),
+    viewed: usize,
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    let block = block(format)?;
+    let slices = u64::from(depth.max(1));
+    let rows = u64::from(height.div_ceil(block.height).max(1));
+    let whole_rows = u64::from(depth_pitch)
+        .checked_mul(slices - 1)?
+        .checked_add(u64::from(row_pitch).checked_mul(rows)?)?;
+    let whole_slices = u64::from(depth_pitch).checked_mul(slices)?;
+    let length = usize::try_from(whole_rows.max(whole_slices))
+        .ok()?
+        .max(viewed);
+    (length <= most_bytes()).then_some(length)
 }
 
 /// Returns `length` raised to the pitches the system gave, which programs fill whole, if within the largest resource.

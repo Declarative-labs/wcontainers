@@ -9,9 +9,9 @@ use std::time::Instant;
 use wcontainers_component_object_model::structures::Hmodule;
 use wcontainers_direct3d_11::Direct3D11 as _;
 use wcontainers_direct3d_11::enumerations::CreateDeviceFlag;
-use wcontainers_direct3d_11_direct_c_caller::{
-    CALLED, CASES, COUNTED, EXPORT_NAMES, UNREACHABLE, hostile_exports, run,
-};
+mod caller;
+
+use caller::{CALLED, CASES, COUNTED, EXPORT_NAMES, UNREACHABLE, hostile_exports, run};
 use wcontainers_direct3d_11_hostile::{self as hostile, Lie, Objects, Site, Way, When};
 use wcontainers_direct3d_common::enumerations::{DriverType, FeatureLevel};
 

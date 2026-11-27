@@ -548,11 +548,24 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
             (name.clone(), listed.iter().find(|(listed, _)| *listed == interface).map_or("", |(_, why)| *why))
         })
         .collect();
-    let folder = crates.join(g.apis[d3d11].folder).join("implementation").join("direct").join("c-caller");
-    std::fs::create_dir_all(folder.join("tests")).map_err(|error| format!("{}: {error}", folder.display()))?;
+    // The C caller is the direct crate's own integration test (tests/c_caller), its C compiled by the direct crate's
+    // build.rs only under the `c-caller` feature, which the suite's job turns on: the root manifest is not changed.
+    let direct = crates.join(g.apis[d3d11].folder).join("implementation").join("direct");
+    let folder = direct.join("tests").join("c_caller");
+    std::fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     std::fs::write(folder.join("caller.c"), c).map_err(|error| error.to_string())?;
-    std::fs::write(folder.join("build.rs"), include_str!("../harness/c-caller/build.rs")).map_err(|error| error.to_string())?;
-    std::fs::write(folder.join("tests").join("c_caller.rs"), include_str!("../harness/c-caller/c_caller.rs")).map_err(|error| error.to_string())?;
+    std::fs::write(direct.join("build.rs"), include_str!("../harness/c-caller/build.rs")).map_err(|error| error.to_string())?;
+    let main = include_str!("../harness/c-caller/c_caller.rs").replace("use wcontainers_direct3d_11_direct_c_caller::", "mod caller;\n\nuse caller::");
+    std::fs::write(folder.join("main.rs"), main).map_err(|error| error.to_string())?;
+    // The exactly sized C caller and stand-in system (tests/exact), for the whole API: they need every shape's rules and
+    // the reference (lengths_reference.rs), which a slice does not have.
+    let sliced_here = !g.apis[d3d11].only.is_empty();
+    if !sliced_here {
+        let exact = direct.join("tests").join("exact");
+        std::fs::create_dir_all(&exact).map_err(|error| format!("{}: {error}", exact.display()))?;
+        std::fs::write(exact.join("exact.c"), include_str!("../templates/direct3d-11-direct/exact.c")).map_err(|error| error.to_string())?;
+        std::fs::write(exact.join("main.rs"), format!("//! {HEADER}\n//!\n{}", include_str!("../templates/direct3d-11-direct/exact.rs"))).map_err(|error| error.to_string())?;
+    }
     // lib.rs: the one entry into C, and the exports of the hostile implementation in C's order.
     let mut lib = String::new();
     let _ = writeln!(lib, "//! {HEADER}\n//!\n//! The hostile C caller (src/glue_c_caller.rs): caller.c calls every entry of every table and every export with raw");
@@ -597,28 +610,40 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     let _ = writeln!(lib, "    if exports.len() != EXPORTS {{\n        return None;\n    }}\n    let mut counts = [0_u64; {}];\n    let mut reached = vec![0_u64; CASES.len() + EXPORT_NAMES.len()];", COUNTED.len());
     let _ = writeln!(lib, "    #[expect(unsafe_code, reason = \"the hostile C caller's entry, given our own serving glue's exports and room for its counts\")]\n    // SAFETY: `hostile_c_run` reads `count` words at `exports`, each the address of an export of the serving glue in the\n    // order caller.c's EXPORTS names them (`hostile_exports`), writes COUNTED's length of words at `report`, and writes\n    // `reached_count` words at `reached`, which it first checks to be its cases and exports.");
     let _ = writeln!(lib, "    let status = unsafe {{ hostile_c_run(seed, calls, threads, exports.as_ptr(), exports.len(), counts.as_mut_ptr(), reached.as_mut_ptr(), reached.len()) }};\n    (status == 0).then_some(Counted {{ counts, reached }})\n}}");
-    std::fs::write(folder.join("lib.rs"), lib).map_err(|error| error.to_string())?;
-    let mut manifest = format!(
-        "[package]\nname = \"{}-direct-c-caller\"\ndescription = \"The generated hostile C caller over every table of the serving glue, for tests only.\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\npath = \"lib.rs\"\n\n[dependencies]\n",
-        package(g.apis[d3d11])
-    );
+    std::fs::write(folder.join("caller.rs"), lib).map_err(|error| error.to_string())?;
+    // The direct crate's manifest: the feature, cc only under it, the tests' own crates, and the two tests needing it.
+    let manifest_path = direct.join("Cargo.toml");
+    let mut manifest = std::fs::read_to_string(&manifest_path).map_err(|error| error.to_string())?;
+    let mut dev = Vec::new();
     for (api, spec) in g.apis.iter().enumerate() {
-        if served.contains(&api) {
-            let _ = writeln!(manifest, "{}-direct = {{ path = \"../../../../{}/implementation/direct\" }}", package(spec), spec.folder);
+        if served.contains(&api) && api != d3d11 {
+            dev.push(format!("{}-direct = {{ path = \"../../../{}/implementation/direct\" }}", package(spec), spec.folder));
         }
     }
-    let _ = writeln!(manifest, "{}-hostile = {{ path = \"../../hostile\" }}", package(g.apis[d3d11]));
+    dev.push(format!("{}-hostile = {{ path = \"../hostile\" }}", package(g.apis[d3d11])));
     for &api in served.iter().filter(|&&api| own_library(api)) {
-        let _ = writeln!(manifest, "{}-hostile = {{ path = \"../../../../{}/implementation/hostile\" }}", package(g.apis[api]), g.apis[api].folder);
+        dev.push(format!("{}-hostile = {{ path = \"../../../{}/implementation/hostile\" }}", package(g.apis[api]), g.apis[api].folder));
     }
-    let _ = writeln!(manifest, "\n[dev-dependencies]\n{}-hostile = {{ path = \"../../hostile\" }}\n{} = {{ path = \"../../..\" }}", package(g.apis[d3d11]), package(g.apis[d3d11]));
+    dev.push(format!("{} = {{ path = \"../..\" }}", package(g.apis[d3d11])));
     for spec in g.apis.iter() {
         if spec.folder != "direct3d-11" {
-            let _ = writeln!(manifest, "{} = {{ path = \"../../../../{}\" }}", package(spec), spec.folder);
+            dev.push(format!("{} = {{ path = \"../../../{}\" }}", package(spec), spec.folder));
         }
     }
-    manifest.push_str("\n[build-dependencies]\ncc = \"1\"\n\n# Test scaffolding that calls C: it denies unsafe code and marks each use.\n[lints.rust]\nunsafe_code = \"deny\"\nunsafe_op_in_unsafe_fn = \"deny\"\n\n[lints.clippy]\ntype_complexity = \"allow\"\n\n# A workspace of its own, inside the direct crate's folder: the repository's members are `crates/*/implementation/*`,\n# so the repository's cargo commands never build it; its tests run from this folder.\n[workspace]\n");
-    std::fs::write(folder.join("Cargo.toml"), manifest).map_err(|error| error.to_string())?;
+    if !sliced_here {
+        dev.push(format!("{}-recorder = {{ path = \"../recorder\" }}", package(g.apis[d3d11])));
+    }
+    let mut tests = String::from("\n[[test]]\nname = \"c_caller\"\npath = \"tests/c_caller/main.rs\"\nrequired-features = [\"c-caller\"]\n");
+    if !sliced_here {
+        tests.push_str("\n[[test]]\nname = \"exact\"\npath = \"tests/exact/main.rs\"\nrequired-features = [\"c-caller\"]\n");
+    }
+    let section = format!(
+        "\n[features]\n# The C tests (tests/c_caller, tests/exact): build.rs compiles their C only with this feature, which the suite's job\n# turns on.\nc-caller = [\"dep:cc\"]\n\n[build-dependencies]\ncc = {{ version = \"1\", optional = true }}\n{tests}"
+    );
+    let at = manifest.find("\n# A C boundary").unwrap_or(manifest.len());
+    manifest.insert_str(at, &section);
+    manifest = crate::emit::with_dev_dependencies(&manifest, &dev);
+    std::fs::write(&manifest_path, manifest).map_err(|error| error.to_string())?;
     let mut line = format!(
         "C CALLER: {} interfaces; {} cases and {} exports written ({called} entries and exports); {} cases no object the caller can hold answers, excluded by name (src/api.rs), every other case and export must be reached at run time or its test fails\n",
         plan.interfaces.len(),

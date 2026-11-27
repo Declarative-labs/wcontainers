@@ -1769,10 +1769,16 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
                 std::fs::write(&path, text).map_err(|error| format!("{name}: {error}"))?;
             }
             let manifest = direct.join("Cargo.toml");
-            let mut text = std::fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
-            let at = text.find("\n# A C boundary").unwrap_or(text.len());
-            text.insert_str(at, "\n[dev-dependencies]\nwcontainers-byte-sink = { path = \"../../../byte-sink\" }\nwcontainers-byte-source = { path = \"../../../byte-source\" }\nwcontainers-volatile-bytes = { path = \"../../../volatile-bytes\" }\nwcontainers-direct3d-common = { path = \"../../../direct3d-common\" }\nwcontainers-directx-graphics-infrastructure = { path = \"../../../directx-graphics-infrastructure\" }\n");
-            std::fs::write(&manifest, text).map_err(|error| error.to_string())?;
+            let text = std::fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
+            let dev = [
+                "wcontainers-byte-sink = { path = \"../../../byte-sink\" }",
+                "wcontainers-byte-source = { path = \"../../../byte-source\" }",
+                "wcontainers-volatile-bytes = { path = \"../../../volatile-bytes\" }",
+                "wcontainers-direct3d-common = { path = \"../../../direct3d-common\" }",
+                "wcontainers-directx-graphics-infrastructure = { path = \"../../../directx-graphics-infrastructure\" }",
+            ]
+            .map(String::from);
+            std::fs::write(&manifest, with_dev_dependencies(&text, &dev)).map_err(|error| error.to_string())?;
         }
         let mut glued = writer.glued.borrow().clone();
         glued.sort();
@@ -1880,4 +1886,25 @@ fn format_written(out: &Path) -> Result<(), String> {
         .status()
         .map_err(|error| format!("rustfmt: {error}"))?;
     if status.success() { Ok(()) } else { Err(format!("rustfmt: {status}")) }
+}
+
+/// Adds each line of `dev` to a manifest's `[dev-dependencies]` (made before its lint tables when it has none), leaving
+/// out a package the manifest already names in `[dependencies]` or `[dev-dependencies]`.
+pub(crate) fn with_dev_dependencies(manifest: &str, dev: &[String]) -> String {
+    let named = |line: &str| line.split(' ').next().unwrap_or_default().to_string();
+    let present: BTreeSet<String> = manifest.lines().filter(|line| line.contains("= {") || line.contains("= \"")).map(named).collect();
+    let mut seen = BTreeSet::new();
+    let added: Vec<&String> = dev.iter().filter(|line| !present.contains(&named(line)) && seen.insert(named(line))).collect();
+    if added.is_empty() {
+        return manifest.to_string();
+    }
+    let lines: String = added.iter().map(|line| format!("{line}\n")).collect();
+    let mut text = manifest.to_string();
+    if let Some(at) = text.find("[dev-dependencies]\n") {
+        text.insert_str(at + "[dev-dependencies]\n".len(), &lines);
+    } else {
+        let at = text.find("\n# A C boundary").unwrap_or(text.len());
+        text.insert_str(at, &format!("\n[dev-dependencies]\n{lines}"));
+    }
+    text
 }

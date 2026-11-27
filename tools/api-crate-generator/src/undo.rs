@@ -117,6 +117,8 @@ const REASONS: &[(Match, &[Reliance])] = &[
     (Match::Contains("the C attack"), &[Reliance::StandIn]),
     (Match::Contains("check-2's C games"), &[Reliance::StandIn]),
     (Match::Contains("the hostile C caller's"), &[Reliance::StandIn, Reliance::Layout]),
+    (Match::Contains("the calling glue over exact.c's stand-in"), &[Reliance::StandIn, Reliance::LibraryExport, Reliance::Layout]),
+    (Match::Contains("exact.c"), &[Reliance::StandIn, Reliance::Layout]),
     (Match::Contains("our own serving glue's exports"), &[Reliance::LibraryExport, Reliance::Layout]),
     (Match::Contains("an older interface of the kind"), &[Reliance::Layout, Reliance::LiveObject]),
 ];

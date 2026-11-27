@@ -5323,8 +5323,9 @@ impl<A: direct3d_11::Direct3D11> UnknownFound<A> {
     }
 }
 
-/// The bytes the C side may touch in memory Map lends for a subresource of `resource` whose rows start `row_pitch`
-/// apart and slices `depth_pitch` apart, by the shape's rule from its description; none for a shape no rule covers.
+/// The bytes of the system's memory Map lends that the calling glue views, for a subresource of `resource` whose rows
+/// start `row_pitch` apart and slices `depth_pitch` apart, by the shape's rule from its description; none for a shape no
+/// rule covers.
 pub(crate) fn mapped_length<A: direct3d_11::Direct3D11>(
     resource: &direct3d_11::ResourceRef<'_, A>,
     subresource: u32,
@@ -5359,7 +5360,8 @@ pub(crate) fn mapped_length<A: direct3d_11::Direct3D11>(
     }
 }
 
-/// `mapped_length` for one of our resources: from the description it was made with, when the glue recorded one.
+/// The bytes the serving glue lends for a subresource of one of our resources mapped at the implementation's pitches:
+/// whole rows and slices, from the description it was made with, when the glue recorded one.
 pub(crate) fn mapped_length_found<A: direct3d_11::Direct3D11>(
     resource: &ResourceRefFound<A>,
     subresource: u32,
@@ -5374,7 +5376,7 @@ pub(crate) fn mapped_length_found<A: direct3d_11::Direct3D11>(
                     || direct3d_11::Buffer::get_desc(found.value()),
                     |recorded| recorded.0,
                 );
-            crate::lengths::mapped_length_buffer(&desc, subresource, row_pitch, depth_pitch).filter(
+            crate::lengths::lent_length_buffer(&desc, subresource, row_pitch, depth_pitch).filter(
                 |length| crate::lengths::within_served_bound_buffer(&desc, subresource, *length),
             )
         }
@@ -5385,7 +5387,7 @@ pub(crate) fn mapped_length_found<A: direct3d_11::Direct3D11>(
                     || direct3d_11::Texture1D::get_desc(found.value()),
                     |recorded| recorded.0,
                 );
-            crate::lengths::mapped_length_texture_1d(&desc, subresource, row_pitch, depth_pitch)
+            crate::lengths::lent_length_texture_1d(&desc, subresource, row_pitch, depth_pitch)
                 .filter(|length| {
                     crate::lengths::within_served_bound_texture_1d(&desc, subresource, *length)
                 })
@@ -5397,7 +5399,7 @@ pub(crate) fn mapped_length_found<A: direct3d_11::Direct3D11>(
                     || direct3d_11::Texture2D::get_desc(found.value()),
                     |recorded| recorded.0,
                 );
-            crate::lengths::mapped_length_texture_2d(&desc, subresource, row_pitch, depth_pitch)
+            crate::lengths::lent_length_texture_2d(&desc, subresource, row_pitch, depth_pitch)
                 .filter(|length| {
                     crate::lengths::within_served_bound_texture_2d(&desc, subresource, *length)
                 })
@@ -5409,7 +5411,7 @@ pub(crate) fn mapped_length_found<A: direct3d_11::Direct3D11>(
                     || direct3d_11::Texture3D::get_desc(found.value()),
                     |recorded| recorded.0,
                 );
-            crate::lengths::mapped_length_texture_3d(&desc, subresource, row_pitch, depth_pitch)
+            crate::lengths::lent_length_texture_3d(&desc, subresource, row_pitch, depth_pitch)
                 .filter(|length| {
                     crate::lengths::within_served_bound_texture_3d(&desc, subresource, *length)
                 })
