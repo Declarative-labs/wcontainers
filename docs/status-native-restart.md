@@ -1155,3 +1155,154 @@ the handler"; the slot table's pages (map_code within a reservation) for pieces 
 
 For the owner, still open (written above): may a behavior source say which addresses a state's memory may use
 (`BehaviorSource::addresses()`)?
+
+## Form I's faults, stops and executor (run of 2026-11-27, third)
+
+### Start (MEASURED: `git fetch` of his checkout, `git merge-base --is-ancestor`, `git diff --quiet`)
+
+His main is still ac696ea19 and already inside (ancestor: 0); every owner `crates/*/interface.rs` is byte-identical to
+it. The four interface files his main lacks (kvm, hypervisor-framework, linux-process, linux-socket-options) are the
+tracks' API crates.
+
+### The check's weak tests, planted again (MEASURED, mutants in job native-ri3-mut on Graviton4)
+
+- Rounding: both run tests now compute 1/10, which rounds to 0x3fb999999999999a to nearest and one unit lower toward
+  zero, and read FPCR itself back (`LinuxProcess::read_fpcr`, one marked line) before and after; the guest's mode in
+  the runs is toward zero. Mutant: FPCR's restore (`msr fpcr, x9`) deleted: `runs_code_until_an_exit_and_keeps_the_thread_s_own`
+  FAILED (exit 101).
+- Write seal: `maps_code_no_one_can_write` now also takes the code's file (`LinuxProcess::code_file`) and expects the
+  seal listed, a write refused (`EPERM`) and a second, writable shared mapping of the file refused (`EPERM`, memmap2's
+  safe `map_raw`). Mutant: `SealFlags::WRITE` removed: the test FAILED (exit 101). An `mprotect` of the mapping itself
+  has no test: no safe call reaches it from a test under `forbid`.
+
+### The UNSOUND mark (the orchestrator's ruling)
+
+- `InProcessThread::enter` and `run` are private to the executor crate: module `run` is no longer public, and the
+  executor (below) is its only caller. No safe public method of the executor runs code a caller names.
+- `LinuxProcess::run_code` keeps its one UNSOUND mark. Its obligation is written in its doc and in the mark: the code
+  reads and writes no memory but the mappings made for it and the frame's own words; its stack is its own, whatever its
+  stack pointer holds; it makes no system call; it changes the general and vector registers, NZCV, FPSR, FPCR and
+  TPIDR_EL0 and no other register user space can write (TPIDR2_EL0, SVCR, DIT, SSBS, TCO, the SVE bits above 128);
+  x28 holds the frame at each of its instructions.
+- For the owner (policy, not a design change here): may a safe method of an outside API crate run machine code its
+  caller names, or must it take a value only the translator can make? Today: a safe method, marked UNSOUND.
+
+### RI's third step: signal stack, handlers, raw mask (commits 00a7791bd, 45bdc04f0)
+
+In `crates/linux-process` (`direct`, each use one marked block):
+- `prepare_run_thread()` gives a `RunThread` (not `Send`): a signal stack of its own (a guard page, then a record
+  page at the stack's bottom, then at least 256 KiB, or 8 times AT_MINSIGSTKSZ), the run's handlers installed once per
+  process (SIGSEGV, SIGBUS, SIGILL, SIGTRAP with `SA_ONSTACK | SA_NODEFER`, the stop `RUN_STOP_SIGNAL` = SIGUSR1 with
+  `SA_ONSTACK`, each blocking the stop), and every signal blocked but those and SIGFPE by the raw `rt_sigprocmask`,
+  which reaches 32 and 33. Its drop puts the earlier stack and mask back. `EBUSY` for a second one on a thread.
+- `run_code(&mut RunThread, &mut RunFrame) -> RunEnd`: `Exit(address)`, `NotEntered`, `Stopped`, `Fault { address,
+  write, alignment }`, `Raised(signal)`. The run writes into the record where its parts lie, then the frame; the
+  handler finds the record by the signal stack's address the kernel hands it (never through the thread pointer, which
+  may be the guest's; it touches no thread-local and sets no errno). A stop before the code starts ends the run
+  `NotEntered` (also one that came before the run); in the code, `Stopped` with every register; in an exit or the
+  run's own saving, it waits for the next run; a fault in the code ends the run with ESR's WnR from the frame's record
+  and BUS_ADRALN for alignment; a fault anywhere else goes back to the handler the process had before.
+- In-process `run`: a stop inside a floor entry before it changed a register is the call it was making; an alignment
+  fault at sp or pc is `Taken::StackAlignment` / `JumpAlignment`; every other fault `Taken::Access`; the mark, a guest
+  fault and an unmapped slot each end the run as `Taken::Access`.
+
+Tests (linux-process suite, now 18): faults of a load and a store at an unmapped page, a load through a misaligned sp,
+a branch to a misaligned address, `udf`, `brk` (registers at the instruction, the thread's own kept; an exclusive load
+of a misaligned address did not fault on Graviton4, so it is not used); a stop from another thread while code runs
+`b .` with its sp pointing into this process's memory (a pattern), at an unmapped page and at 0; a stop before the run;
+the mask (`SigBlk` of `/proc/thread-self/status`: all but the eight, 32 and 33 among the blocked; another thread's
+unchanged; back after the drop; `EBUSY`).
+Mutants (MEASURED): stop handler without `SA_ONSTACK`: the stop test FAILED (the pattern was written); no signal stack
+at all: the test binary died of SIGSEGV; the mask not set: the mask test FAILED.
+
+### The executor and its interrupter (commits c11e93117, 1c22d1349)
+
+`execution.rs`: `InProcess` implements `Executor` and `BehaviorSource`; `InProcessExecution::run` is a loop of
+"run until the next trap, then ask the handler" (`Run::until_trap`, `ask_handler`), so a synchronous `run_until_trap`
+is a small change. The reference path: every guest instruction is a piece of its own (`LookAhead::None`), translated
+for the in-process way, cached by slot, displacement, address and instruction word, and mapped sealed in a code area;
+no slot table page is mapped, so every exit faults in the slot table and lands. Each slot's slot table (2^35 bytes)
+and displaced code's (slot 0's) are reserved inaccessible, so nothing else of the process can be mapped where code
+jumps. `InProcessInterrupter` asks before the next entry and sends the stop to the thread; a slicer ends a slice of
+1 ms with no trap or translation as an interrupt. A fault's tag comes from the access's operand (the in-process way
+drops it before the host access, so no host fault reports it).
+
+Tests (in-process, run 9, memory 10, slots 1), all through the executor: system call and its return; two memories;
+1,000 executions keep the thread's own (thread-local, FPCR, a tenth); faults (read of a page that allows nothing, write
+of a read-only page, a jump to a page without execute; retry after the handler allows the page); **every access form
+outside its window is stopped**: 18 forms (ldr base, immediate, unscaled negative, register, shifted register,
+sign-extended word, pre- and post-index, ldp, ldrb, str, stp, ld1, st1, ldxr, stxr, ldar, a load through sp) at 4
+targets each (the other memory's data by its host offset, this window's guard, 2^40, below 0): 72 stopped, each a
+fault at the guest's address, the other memory's data unchanged; signals while guest code runs with a hostile guest
+sp (into its own writable page holding a pattern, into a page it may not touch, outside its window): the pattern is
+untouched; sp moved out and back in; an interrupt before the run; the slot tables held inaccessible.
+The outside test found a real fault: a vector structure store outside the window was given to the handler as a read
+(fixed: `SimdMemory { load: false }` is a store).
+Mutants (MEASURED): fault handlers without `SA_ONSTACK`: the run binary died of SIGSEGV; the vector store read: FAILED;
+displaced code not run displaced: hangs (timeout 300 s, exit 124); the request not taken before entry: hangs (124);
+the slot table not reserved: FAILED.
+
+The executor suite (`conformance_run.rs`, against the Neoverse V2 recording, MEASURED): 25 cases pass, among them
+the slice, a branch to itself alone, a fault through a tagged address, a counter read, interrupts answered continue.
+Fail: `agrees_with_precise_instruction_set` and `behavior_source::measured_behavior_agrees_with_the_source` fail in
+the recording's own measurement ("an instruction shows no one known behavior"), the two form P's bar skips too;
+`interrupt_after_the_end_does_nothing`: the reference path's one fault per instruction makes even one count down
+outlast the 1 ms slice. `behavior_source::execute_agrees_with_execute_in_place` and `execution_is_deterministic` did
+not finish in 30 minutes at that speed. Linking pieces through slot table pages is what removes both.
+
+### Off the legacy `abi` crate
+
+`PAGE_SIZE` is gone from in-process (its own `GUEST_PAGE`, with its link). `Permissions`, `Access` and
+`SystemCallRequest` stay: his executor interface names them (`PageTable::set_permissions`, `TrapHandler`).
+
+### The bar at the pushed 1c22d1349 (MEASURED, Linux 7.0.0-1018-aws, rustc 1.99.0, 12 jobs)
+
+Crates: linux-process (interface, direct, conformance), in-process, host-process, its zygote, arm64-stop. Tests skip
+`behavior_source`, `agrees_with_precise_instruction_set`, `interrupt_after_the_end` and `interrupts_answered_continue`
+(the names above; the last two also skip form P's copies, which passed at b796f5c04: 43 binaries, 175 passed, 0
+failed, 6 ignored, job 20261127-133632).
+- Graviton4 (job native-ri3 20261127-150123, load 82 to 103): `cargo fmt --check` 0; clippy `--all-targets -D warnings`
+  0; form I and linux-process five times in a row, each time suite 23, run 9, memory 10, slots 1, linux-process 18
+  passed, 0 failed; all tests exit 0, 44 binaries, 195 passed, 0 failed, 6 ignored.
+- Xeon (job 20261127-150128): clippy 0; tests exit 0, 77 passed, 0 failed, 2 ignored (form I is ARM64 only).
+
+### Linter (MEASURED: `cargo reviewable check` from reviewable-rust da55b9d7 built on the machine, no model key, so the
+naming and summary questions are unanswered; findings in linux-process and in-process)
+
+At d19523a8c (before this run): 566. At 1c22d1349: 875. By rule at 1c22d1349: magic_literal 288, number_constant_without_link
+86, summary_not_one_line 84, name_unanswered 80, summary_unanswered 75, function_summary_not_third_person 68,
+public_outside_interface 52, summary_too_long 42, conformance_not_run 30, constant_defined_twice 25,
+summary_not_one_sentence 16, conformance_untested_method 8, comment_too_long 5, interface_item 4,
+summary_starts_with_name 4, hook_name 2, implementation_folder 2, verb_not_first 2, comment_budget_exceeded 1,
+trait_not_implemented 1. Most magic literals are the run's assembly offsets and the tests' instruction encodings. Not
+cleaned this run.
+
+### Security (MEASURED: the root manifest's command, `git grep -nw unsafe <rev> -- '<folder>/*.rs' | grep -vE ...`)
+
+| Crate | unsafe lines d19523a8c | 1c22d1349 |
+|---|---|---|
+| linux-process (all in `direct`) | 12 | 25 |
+| in-process | 0 | 0 |
+| host-process | 0 | 0 |
+| host-process-zygote | 0 | 0 (its 2 marks unchanged) |
+| arm64-stop | 0 | 0 |
+
+The 13 new blocks, each marked with its reason: the signal stack's map, its guard, its record, the stack and raw
+mask set, their restore on drop, the handlers' install, the earlier handler put back, the handler's five (its
+arguments as references, the fault address, the frame's records, the stack's record, the running frame), and
+`read_fpcr`. Plus the naked run's attribute, under the module's one UNSOUND mark (unchanged in number). No lint table
+lowered, no exclusion; every crate keeps `[lints] workspace = true` but `direct`'s existing deny table. New
+dependencies: none from outside (in-process now uses aarch64-cpu, already in the lock, and our crates; the
+linux-process conformance crate uses memmap2, already in the lock). Hostile-guest tests: in_process_attacks passed in
+the bar; on form I itself the outside-window test (72 accesses, 18 forms) and the hostile-stack signal test pass.
+
+### RI's bar, state
+
+Item 1 (exactness at window edges, seeded): not yet on form I. Item 2: two I memories apart and every access form
+stopped at the other's data (above); a P memory beside them waits. Item 3 holds. Item 4 (cost) waits on linked
+pieces. Item 5: the executor suite runs on I (25 pass; three fail as above); kernel, busybox and differential tests
+wait on X2, X3. Item 6 waits on the same. Item 7: unsafe only in linux-process `direct`, each marked, one UNSOUND.
+
+Next, waiting on no other track: slot table pages (code mapped within the reserved table, one sealed page per 256
+slots, each slot unlinked when its line is announced changed or its page loses execute), so pieces link and the
+suite's count-down cases finish; then look-ahead beyond one instruction, and the window-edge exactness test.
