@@ -252,6 +252,7 @@ impl ProcessorArchitecture for X86_64 {
             && observed.xcr0 == expectation.xcr0
             && observed.xinuse == expectation.xinuse
             && observed.xsave_tracking == expectation.xsave_tracking
+            && observed.pasid == expectation.pasid
             && (observed.flags.bits() ^ expectation.flags.bits()) & !expectation.nondeterministic_flags.bits() == 0
     }
 }
@@ -313,6 +314,9 @@ pub struct Processor {
     pub xinuse: u64,
     /// What XSAVEOPT's modified optimization knows of the last XRSTOR this program ran; `None` where it skips nothing.
     pub xsave_tracking: Option<XsaveTracking>,
+    /// IA32_PASID's PASID where its valid bit is set, which Linux gives only a thread bound to a device; `None` as Linux
+    /// starts a program.
+    pub pasid: Option<u32>,
 }
 
 /// The PKRU Linux starts a program with.
@@ -392,6 +396,7 @@ pub struct ProcessorExpectation {
     pub xcr0: u64,
     pub xinuse: u64,
     pub xsave_tracking: Option<XsaveTracking>,
+    pub pasid: Option<u32>,
     /// The flags the state before does not decide, as UMWAIT's and TPAUSE's CF, which are not compared.
     pub nondeterministic_flags: Flags,
 }
@@ -421,14 +426,15 @@ impl Processor {
             xcr0: self.xcr0,
             xinuse: self.xinuse,
             xsave_tracking: self.xsave_tracking,
+            pasid: self.pasid,
             nondeterministic_flags: Flags::empty(),
         }
     }
 }
 
 /// Every register zero, the flags clear, MXCSR at its default, no exception, the data segments null, CS Linux's and
-/// PKRU Linux's; XCR0 Linux's, the x87, SSE, AVX and PKRU components in use and the AVX-512 ones not, and no XRSTOR
-/// tracked.
+/// PKRU Linux's; XCR0 Linux's, the x87, SSE, AVX and PKRU components in use and the AVX-512 ones not, no XRSTOR
+/// tracked and no PASID.
 pub const ZERO_PROCESSOR: Processor = Processor {
     general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
     instruction_pointer: 0,
@@ -449,6 +455,7 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     xcr0: LINUX_XCR0,
     xinuse: xsave::LEGACY_AND_KEY_COMPONENTS,
     xsave_tracking: None,
+    pasid: None,
 };
 
 /// What the running program may do with a page; memory that was never given a permission is unmapped.
@@ -590,4 +597,6 @@ pub enum PreciseInstruction {
         instruction: Instruction,
         behavior: xsave::StateBehavior,
     },
+    /// UMONITOR as the manual gives it: #GP(0) for a non-canonical address, else the faults a read of its byte raises.
+    MonitorFaultsAsRead(Instruction),
 }
