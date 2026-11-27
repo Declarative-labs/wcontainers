@@ -30,6 +30,16 @@ mod accumulator_machine {
     include!(concat!(env!("OUT_DIR"), "/accumulator-machine.rs"));
 }
 
+/// The samples of x86-64 cores, as `tools/collect-observations` wrote them.
+#[cfg(test)]
+mod x86_64 {
+    use wcontainers_processor_architecture_x86_64::{CoreIdentity, X86_64};
+
+    type Sample = crate::BakedSample<X86_64, CoreIdentity>;
+
+    include!(concat!(env!("OUT_DIR"), "/x86-64.rs"));
+}
+
 /// Each instruction of a sample with the behavior its kind of core shows.
 pub struct CollectedPreciseInstructionSet<Architecture: ProcessorArchitecture> {
     measurements: Vec<(Architecture::Instruction, Architecture::PreciseInstruction)>,
@@ -64,3 +74,5 @@ impl<Architecture: ProcessorArchitecture> PreciseInstructionSet<Architecture>
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod x86_64_tests;

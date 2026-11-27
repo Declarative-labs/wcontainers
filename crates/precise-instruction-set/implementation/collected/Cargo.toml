@@ -42,6 +42,15 @@ wcontainers-distinguishing-state-generator-input-domain = { path = "../../../dis
 wcontainers-instruction-input-domain-accumulator-machine = { path = "../../../instruction-input-domain/implementation/accumulator-machine" }
 wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
 wcontainers-processor-architecture-accumulator-machine = { path = "../../../processor-architecture/implementation/accumulator-machine", features = ["bake"] }
+wcontainers-processor-architecture-x86-64 = { path = "../../../processor-architecture/implementation/x86-64" }
+
+# The chip whose fresh measurement the x86-64 test compares with its baked sample.
+[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.dev-dependencies]
+wcontainers-behavior-source-kvm-single-step-x86-64 = { path = "../../../behavior-source/implementation/kvm-single-step-x86-64" }
+wcontainers-distinguishing-state-generator-x86-64 = { path = "../../../distinguishing-state-generator/implementation/x86-64" }
+wcontainers-instruction-input-domain-x86-64 = { path = "../../../instruction-input-domain/implementation/x86-64" }
+wcontainers-processor-cores = { path = "../../../processor-cores" }
+wcontainers-processor-cores-linux = { path = "../../../processor-cores/implementation/linux" }
 
 [lints]
 workspace = true
