@@ -953,7 +953,7 @@ IDENTICAL; SAME AS WRITTEN; `cargo check --all-targets` 0 and the wasm32 check o
 AddressSanitizer; plants **171 CAUGHT, 15 MISSED, 0 BROKEN, 206 LISTED** (the 15 the ones of the table above,
 unchanged); fuzzing 3 seeds x 10M over Mesa and 3 x 10M over the lying library, each status 0, no report; lines naming
 `unsafe`: egl direct 95, opengl-es direct 802 (792 before: the two stencil methods' marks and the owning drop's
-comments), webgl 0, every other 0; marks 361. Linter on the two crates: 2,228 findings (magic_literal 1,274,
+comments), webgl 0, every other 0; marks 361. Linter on the two crates: 2,197 findings (magic_literal 1,274,
 summary_unanswered 227 and name_unanswered 226 the model rule sets with no key on the machine, public_outside_interface
 216 the `refusals`, `owning` and egl direct's `Binding`: the layout question).
 
