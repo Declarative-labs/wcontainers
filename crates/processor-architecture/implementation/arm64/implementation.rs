@@ -12,6 +12,8 @@ use core::convert::Infallible;
 use core::marker::PhantomData;
 use core::ops::Range;
 
+#[cfg(verus_keep_ghost)]
+use vstd::std_specs::cmp::PartialEqSpec;
 use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
@@ -237,7 +239,8 @@ pub enum ExclusiveMonitor {
 /// TODO: temporary placeholder until the rest of the state every level has is designed: TPIDRRO_EL0 and TPIDR2_EL0;
 /// PSTATE's BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA and ZT0; FPMR;
 /// GCSPR_EL0.
-#[derive(Clone, PartialEq, Eq, Debug)]
+// VERUS: no specification of a derived `Clone` of a generic struct, so `Clone` is written out below.
+#[derive(PartialEq, Eq, Debug)]
 pub struct Processor<LevelSpecific> {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
     pub stack_pointer: u64,
@@ -268,7 +271,7 @@ pub struct Processor<LevelSpecific> {
 }
 
 /// What the running program may do with a page; memory that was never given a permission is unmapped.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, vstd::prelude::StructuralEq)]
 pub enum PagePermission {
     Unmapped,
     Mapped {
@@ -277,17 +280,78 @@ pub enum PagePermission {
     },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, vstd::prelude::StructuralEq)]
 pub enum DataAccess {
     Forbidden,
     ReadOnly,
     ReadWrite,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, vstd::prelude::StructuralEq)]
 pub enum InstructionFetch {
     Forbidden,
     Allowed,
+}
+
+impl<LevelSpecific: Clone> Clone for Processor<LevelSpecific> {
+    /// Every register copied, and the level's own state cloned.
+    fn clone(&self) -> (cloned: Self)
+        ensures
+            cloned == (Processor { level_specific: cloned.level_specific, ..*self }),
+            vstd::pervasive::cloned(self.level_specific, cloned.level_specific),
+    {
+        Processor {
+            general_purpose_registers: self.general_purpose_registers,
+            stack_pointer: self.stack_pointer,
+            program_counter: self.program_counter,
+            condition_flags: self.condition_flags,
+            vector_registers: self.vector_registers,
+            predicate_registers: self.predicate_registers,
+            first_fault_register: self.first_fault_register,
+            floating_point_control: self.floating_point_control,
+            floating_point_status: self.floating_point_status,
+            software_thread_id: self.software_thread_id,
+            process_state_controls: self.process_state_controls,
+            exclusive_monitor: self.exclusive_monitor,
+            exception: self.exception,
+            level_specific: self.level_specific.clone(),
+        }
+    }
+}
+
+/// `==` on page permissions and on instructions holds exactly for the same value, where it does on the instructions the
+/// level adds: what `ProcessorArchitecture::equality_is_identity` states of `Arm64<Level>`.
+pub proof fn lemma_equality_is_identity<LevelSpecific: PartialEq>()
+    requires
+        vstd::laws_eq::obeys_concrete_eq::<LevelSpecific>(),
+    ensures
+        vstd::laws_eq::obeys_concrete_eq::<PagePermission>(),
+        vstd::laws_eq::obeys_concrete_eq::<Instruction<LevelSpecific>>(),
+{
+    reveal(vstd::laws_eq::obeys_concrete_eq);
+    assert forall|first: Instruction<LevelSpecific>, second: Instruction<LevelSpecific>|
+        <Instruction<LevelSpecific> as PartialEqSpec>::eq_spec(&first, &second) <==> first == second by {
+        if let (Instruction::LevelSpecific(a), Instruction::LevelSpecific(b)) = (first, second) {
+            assert(<LevelSpecific as PartialEqSpec>::eq_spec(&a, &b) <==> a == b);
+        }
+    }
+}
+
+/// A processor's clone is the same value, where a clone of the level's own state is: what
+/// `ProcessorArchitecture::clone_is_identity` states of `Arm64<Level>`.
+pub proof fn lemma_clone_is_identity<LevelSpecific: Clone>()
+    requires
+        vstd::pervasive::obeys_clone_eq::<LevelSpecific>(),
+    ensures
+        vstd::pervasive::obeys_clone_eq::<Processor<LevelSpecific>>(),
+{
+    assert forall|first: Processor<LevelSpecific>, second: Processor<LevelSpecific>|
+        #[trigger] vstd::pervasive::cloned(first, second) implies first == second by {
+        if vstd::pervasive::strictly_cloned(first, second) {
+            assert(vstd::pervasive::cloned(first.level_specific, second.level_specific));
+            assert(first.level_specific == second.level_specific);
+        }
+    }
 }
 
 } // verus!

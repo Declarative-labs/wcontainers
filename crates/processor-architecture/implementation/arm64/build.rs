@@ -183,12 +183,12 @@ fn main() {
         .expect("writing to a string succeeds");
         variants.push(name.to_owned());
     }
-    let mut out = String::new();
+    let mut out = String::from("vstd::prelude::verus! {\n\n");
     writeln!(
         out,
         "/// An A64 [instruction variant](https://developer.arm.com/documentation/ddi0487/mc/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-1-About-the-A64-instruction-set#:~:text=each%20syntax%20is%20an%20instruction%20variant), \
          as `list/a64-instructions.tsv` lists it.\n\
-         #[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub enum Instruction<LevelSpecific> {{"
+         #[derive(Copy, Eq, Debug)]\npub enum Instruction<LevelSpecific> {{"
     )
     .expect("writing to a string succeeds");
     for name in &variants {
@@ -198,6 +198,8 @@ fn main() {
         "    /// MRS of CTR_EL0.\n    ///\n    /// TODO: temporary placeholder until `Mrs` is modeled with every system register it reads.\n    \
          MrsCtrEl0,\n    LevelSpecific(LevelSpecific),\n}\n\n",
     );
+    write_instruction_equality(&mut out, &variants);
+    out.push_str("} // verus!\n\n");
     let count = variants.len();
     writeln!(
         out,
@@ -231,7 +233,11 @@ fn main() {
          fn bake(&self, env: &databake::CrateEnv) -> databake::TokenStream {\n        \
          env.insert(env!(\"CARGO_CRATE_NAME\"));\n        match *self {\n",
     );
-    for name in variants.iter().map(String::as_str).chain([UNLISTED_VARIANT]) {
+    for name in variants
+        .iter()
+        .map(String::as_str)
+        .chain([UNLISTED_VARIANT])
+    {
         writeln!(
             out,
             "            Self::{name} => {{\n                \
@@ -245,6 +251,76 @@ fn main() {
     let path =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join(GENERATED);
     std::fs::write(path, out).expect("the generated list is writable");
+}
+
+/// How many variants one function of `==` on `Instruction` compares: Verus's check of a single match over every variant
+/// overflows its stack and exceeds its resource limit.
+const EQUALITY_GROUP: usize = 64;
+
+/// Writes `Clone` and `==` on `Instruction` with their specifications: a clone is the same value; `==` holds for the same
+/// variant, and for a level's own instructions, where theirs `==` does.
+fn write_instruction_equality(out: &mut String, variants: &[String]) {
+    out.push_str(
+        "// VERUS: no specification of a derived `Clone` of a generic enum, so `Clone` copies, as every level's own\n\
+         // instructions are `Copy`.\n\
+         impl<LevelSpecific: Copy> Clone for Instruction<LevelSpecific> {\n    \
+         fn clone(&self) -> (cloned: Self)\n        ensures\n            cloned == *self,\n    {\n        *self\n    }\n}\n\n\
+         #[cfg(verus_keep_ghost)]\n\
+         impl<LevelSpecific: PartialEq> vstd::std_specs::cmp::PartialEqSpecImpl for Instruction<LevelSpecific> {\n    \
+         open spec fn obeys_eq_spec() -> bool {\n        \
+         <LevelSpecific as vstd::std_specs::cmp::PartialEqSpec>::obeys_eq_spec()\n    }\n\n    \
+         /// The same variant, and for a level's own instructions, their `==`.\n    \
+         open spec fn eq_spec(&self, other: &Self) -> bool {\n        \
+         match (self, other) {\n            \
+         (Self::LevelSpecific(first), Self::LevelSpecific(second)) =>\n                \
+         <LevelSpecific as vstd::std_specs::cmp::PartialEqSpec>::eq_spec(first, second),\n            \
+         _ => *self == *other,\n        }\n    }\n}\n\n\
+         // VERUS: no specification of a derived `PartialEq` of a generic enum, so the variants are compared in groups,\n\
+         // each in a function of its own.\n\
+         impl<LevelSpecific: PartialEq> PartialEq for Instruction<LevelSpecific> {\n    \
+         fn eq(&self, other: &Self) -> bool {\n        match self {\n",
+    );
+    let all: Vec<&str> = variants
+        .iter()
+        .map(String::as_str)
+        .chain([UNLISTED_VARIANT])
+        .collect();
+    let groups: Vec<&[&str]> = all.chunks(EQUALITY_GROUP).collect();
+    for (index, group) in groups.iter().enumerate() {
+        let pattern: Vec<String> = group.iter().map(|name| format!("Self::{name}")).collect();
+        writeln!(
+            out,
+            "            {} => self.is_same_in_group_{index}(other),",
+            pattern.join(" | ")
+        )
+        .expect("writing to a string succeeds");
+    }
+    out.push_str(
+        "            Self::LevelSpecific(first) => match other {\n                \
+         Self::LevelSpecific(second) => first == second,\n                \
+         _ => false,\n            },\n        }\n    }\n}\n\n\
+         impl<LevelSpecific> Instruction<LevelSpecific> {\n",
+    );
+    for (index, group) in groups.iter().enumerate() {
+        let tests: Vec<String> = group.iter().map(|name| format!("self is {name}")).collect();
+        writeln!(
+            out,
+            "    /// Whether the other instruction is the same variant as this one, which is in group {index}.\n    \
+             fn is_same_in_group_{index}(&self, other: &Self) -> (same: bool)\n        requires\n            {},\n        \
+             ensures\n            same == (*self == *other),\n    {{\n        match self {{",
+            tests.join(" || ")
+        )
+        .expect("writing to a string succeeds");
+        for name in group.iter() {
+            writeln!(
+                out,
+                "            Self::{name} => matches!(other, Self::{name}),"
+            )
+            .expect("writing to a string succeeds");
+        }
+        out.push_str("            _ => false,\n        }\n    }\n\n");
+    }
+    out.push_str("}\n\n");
 }
 
 /// Reads `name@high:low[,high:low]=meaning; ...`, leaving out the bits the manual says should hold a value.
