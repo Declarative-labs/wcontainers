@@ -46,6 +46,8 @@ mod resources;
 #[cfg(mesa)]
 mod screen;
 #[cfg(mesa)]
+mod shaders;
+#[cfg(mesa)]
 mod state;
 #[cfg(mesa)]
 mod states;

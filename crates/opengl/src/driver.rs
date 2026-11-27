@@ -31,7 +31,9 @@ use crate::resources::{self, Mapping, Resource};
 use crate::screen::{DRIVER_NAME, whole};
 use crate::state::Stage;
 use crate::states::{self, Blend, DepthStencil, Elements, Raster, Retired, Sampler, retire};
+use crate::shaders::{self, Shader};
 use crate::views::{self, SamplerView};
+use wcontainers_nir::mesa::Staged;
 
 /// A kind of the Gallium trait whose calls are not yet moved onto it: no value of it is ever made,
 /// so every call taking one cannot be made, and every call making one is refused.
@@ -112,6 +114,8 @@ struct Set<B: Gpu> {
     samplers: [Vec<Option<Arc<Sampler<B>>>>; Stage::ALL.len()],
     /// Each stage's sampler views, by slot.
     views: [Vec<Option<Arc<SamplerView<B>>>>; Stage::ALL.len()],
+    /// Each stage's bound program.
+    shaders: [Option<Arc<Shader>>; Stage::ALL.len()],
     blend_color: [u32; states::COLOR_CHANNELS],
     stencil_ref: [u8; 2],
     sample_mask: u32,
@@ -133,6 +137,7 @@ impl<B: Gpu> Default for Set<B> {
             elements: None,
             samplers: std::array::from_fn(|_| vec![None; PIPE_MAX_SAMPLERS as usize]),
             views: std::array::from_fn(|_| vec![None; PIPE_MAX_SHADER_SAMPLER_VIEWS as usize]),
+            shaders: Default::default(),
             blend_color: [0; states::COLOR_CHANNELS],
             stencil_ref: [0; 2],
             sample_mask: u32::MAX,
@@ -266,12 +271,12 @@ impl<B: HostWindows> Gallium for Driver<B> {
     type Rasterizer = Arc<Raster<B>>;
     type Sampler = Arc<Sampler<B>>;
     type VertexElements = Arc<Elements<B>>;
-    type VertexShader = Unmoved;
-    type FragmentShader = Unmoved;
-    type GeometryShader = Unmoved;
-    type TessControlShader = Unmoved;
-    type TessEvaluationShader = Unmoved;
-    type ComputeShader = Unmoved;
+    type VertexShader = Arc<Shader>;
+    type FragmentShader = Arc<Shader>;
+    type GeometryShader = Arc<Shader>;
+    type TessControlShader = Arc<Shader>;
+    type TessEvaluationShader = Arc<Shader>;
+    type ComputeShader = Arc<Shader>;
     type SamplerView = SamplerView<B>;
     type StreamOutputTarget = Unmoved;
     type Query = Unmoved;
@@ -396,26 +401,20 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.set.borrow_mut().blend = state.cloned();
     }
 
-    fn bind_compute_state(&self, state: Option<&Unmoved>) {
-        if let Some(state) = state {
-            match *state {}
-        }
+    fn bind_compute_state(&self, state: Option<&Arc<Shader>>) {
+        self.set.borrow_mut().shaders[Stage::Compute as usize] = state.cloned();
     }
 
     fn bind_depth_stencil_alpha_state(&self, state: Option<&Arc<DepthStencil<B>>>) {
         self.set.borrow_mut().depth_stencil = state.cloned();
     }
 
-    fn bind_fs_state(&self, state: Option<&Unmoved>) {
-        if let Some(state) = state {
-            match *state {}
-        }
+    fn bind_fs_state(&self, state: Option<&Arc<Shader>>) {
+        self.set.borrow_mut().shaders[Stage::Fragment as usize] = state.cloned();
     }
 
-    fn bind_gs_state(&self, state: Option<&Unmoved>) {
-        if let Some(state) = state {
-            match *state {}
-        }
+    fn bind_gs_state(&self, state: Option<&Arc<Shader>>) {
+        self.set.borrow_mut().shaders[Stage::Geometry as usize] = state.cloned();
     }
 
     fn bind_rasterizer_state(&self, state: Option<&Arc<Raster<B>>>) {
@@ -447,26 +446,20 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         });
     }
 
-    fn bind_tcs_state(&self, state: Option<&Unmoved>) {
-        if let Some(state) = state {
-            match *state {}
-        }
+    fn bind_tcs_state(&self, state: Option<&Arc<Shader>>) {
+        self.set.borrow_mut().shaders[Stage::TessControl as usize] = state.cloned();
     }
 
-    fn bind_tes_state(&self, state: Option<&Unmoved>) {
-        if let Some(state) = state {
-            match *state {}
-        }
+    fn bind_tes_state(&self, state: Option<&Arc<Shader>>) {
+        self.set.borrow_mut().shaders[Stage::TessEvaluation as usize] = state.cloned();
     }
 
     fn bind_vertex_elements_state(&self, state: Option<&Arc<Elements<B>>>) {
         self.set.borrow_mut().elements = state.cloned();
     }
 
-    fn bind_vs_state(&self, state: Option<&Unmoved>) {
-        if let Some(state) = state {
-            match *state {}
-        }
+    fn bind_vs_state(&self, state: Option<&Arc<Shader>>) {
+        self.set.borrow_mut().shaders[Stage::Vertex as usize] = state.cloned();
     }
 
     fn blit(&self, _: &BlitInfo<'_, Resource<B>>) {
@@ -644,10 +637,10 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn create_compute_state(
         &self,
-        _: <Compiled as MesaCompiler>::ReceivedCompute,
+        program: <Compiled as MesaCompiler>::ReceivedCompute,
         _: &ComputeState,
-    ) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_compute_state"))
+    ) -> Option<Arc<Shader>> {
+        self.call(None, || Some(shaders::create(Staged::Compute(program))))
     }
 
     fn create_depth_stencil_alpha_state(
@@ -666,18 +659,18 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn create_fs_state(
         &self,
-        _: <Compiled as MesaCompiler>::ReceivedFragment,
+        program: <Compiled as MesaCompiler>::ReceivedFragment,
         _: &ShaderState,
-    ) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_fs_state"))
+    ) -> Option<Arc<Shader>> {
+        self.call(None, || Some(shaders::create(Staged::Fragment(program))))
     }
 
     fn create_gs_state(
         &self,
-        _: <Compiled as MesaCompiler>::ReceivedGeometry,
+        program: <Compiled as MesaCompiler>::ReceivedGeometry,
         _: &ShaderState,
-    ) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_gs_state"))
+    ) -> Option<Arc<Shader>> {
+        self.call(None, || Some(shaders::create(Staged::Geometry(program))))
     }
 
     fn create_query(&self, _: values::QueryType, _: u32) -> Option<Unmoved> {
@@ -733,18 +726,18 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn create_tcs_state(
         &self,
-        _: <Compiled as MesaCompiler>::ReceivedTessControl,
+        program: <Compiled as MesaCompiler>::ReceivedTessControl,
         _: &ShaderState,
-    ) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_tcs_state"))
+    ) -> Option<Arc<Shader>> {
+        self.call(None, || Some(shaders::create(Staged::TessControl(program))))
     }
 
     fn create_tes_state(
         &self,
-        _: <Compiled as MesaCompiler>::ReceivedTessEvaluation,
+        program: <Compiled as MesaCompiler>::ReceivedTessEvaluation,
         _: &ShaderState,
-    ) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_tes_state"))
+    ) -> Option<Arc<Shader>> {
+        self.call(None, || Some(shaders::create(Staged::TessEvaluation(program))))
     }
 
     fn create_vertex_elements_state(&self, elements: &[VertexElement]) -> Option<Arc<Elements<B>>> {
@@ -760,10 +753,10 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn create_vs_state(
         &self,
-        _: <Compiled as MesaCompiler>::ReceivedVertex,
+        program: <Compiled as MesaCompiler>::ReceivedVertex,
         _: &ShaderState,
-    ) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_vs_state"))
+    ) -> Option<Arc<Shader>> {
+        self.call(None, || Some(shaders::create(Staged::Vertex(program))))
     }
 
     /// The state goes when its last holder drops it: a bound state stays until unbound.
@@ -771,20 +764,23 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         drop(state);
     }
 
-    fn delete_compute_state(&self, state: Unmoved) {
-        match state {}
+    /// The program goes when its last holder drops it: a bound program stays until unbound.
+    fn delete_compute_state(&self, state: Arc<Shader>) {
+        drop(state);
     }
 
     fn delete_depth_stencil_alpha_state(&self, state: Arc<DepthStencil<B>>) {
         drop(state);
     }
 
-    fn delete_fs_state(&self, state: Unmoved) {
-        match state {}
+    /// The program goes when its last holder drops it: a bound program stays until unbound.
+    fn delete_fs_state(&self, state: Arc<Shader>) {
+        drop(state);
     }
 
-    fn delete_gs_state(&self, state: Unmoved) {
-        match state {}
+    /// The program goes when its last holder drops it: a bound program stays until unbound.
+    fn delete_gs_state(&self, state: Arc<Shader>) {
+        drop(state);
     }
 
     fn delete_rasterizer_state(&self, state: Arc<Raster<B>>) {
@@ -795,20 +791,23 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         drop(state);
     }
 
-    fn delete_tcs_state(&self, state: Unmoved) {
-        match state {}
+    /// The program goes when its last holder drops it: a bound program stays until unbound.
+    fn delete_tcs_state(&self, state: Arc<Shader>) {
+        drop(state);
     }
 
-    fn delete_tes_state(&self, state: Unmoved) {
-        match state {}
+    /// The program goes when its last holder drops it: a bound program stays until unbound.
+    fn delete_tes_state(&self, state: Arc<Shader>) {
+        drop(state);
     }
 
     fn delete_vertex_elements_state(&self, state: Arc<Elements<B>>) {
         drop(state);
     }
 
-    fn delete_vs_state(&self, state: Unmoved) {
-        match state {}
+    /// The program goes when its last holder drops it: a bound program stays until unbound.
+    fn delete_vs_state(&self, state: Arc<Shader>) {
+        drop(state);
     }
 
     /// The context's states go with it; a destroyed context's reset is forgotten.
