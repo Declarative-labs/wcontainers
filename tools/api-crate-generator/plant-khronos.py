@@ -134,6 +134,7 @@ SHARED_GL = [
     ("fence-context-shared", "if fence.context != self.number {", "if false {"),
     ("context-lost", "if self.binding.enter() {", "if { let _ = self.binding.enter(); true } {"),
     ("count-must-divide-shared", "if by == 0 || !length.is_multiple_of(by) {", "if by == 0 {"),
+    ("extensions-bounded", ".unwrap_or(0).min(MOST_EXTENSIONS);", ".unwrap_or(0);"),
 ]
 
 SHARED_EGL = [
@@ -150,6 +151,7 @@ SHARED_EGL = [
 ]
 
 LISTED_SHARED = [
+    ("extensions-bounded", "a library answering more extensions than 4096: Mesa answers its few hundred; the fuzzing's lying library answers up to 2^31 (a run without the bound does not end)"),
     ("egl-gate", "a destroy runs while no other call of the library is in flight (the gate): a race, which no single-threaded test makes"),
     ("egl-config-of-this-display", "EGL gives one default display per library (eglGetDisplay of EGL_DEFAULT_DISPLAY only): no test holds two displays of one library"),
     ("egl-held-of-this-display", "as egl-config-of-this-display"),

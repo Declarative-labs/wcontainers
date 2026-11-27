@@ -18,6 +18,7 @@ const TEMPLATES: write::Templates = write::Templates {
     gl_direct_test: include_str!("../../templates/khronos/opengl-es-direct-test.rs"),
     gl_suite: include_str!("../../templates/khronos/opengl-es-suite.rs"),
     gl_suite_manifest: include_str!("../../templates/khronos/opengl-es-suite.toml"),
+    fake: include_str!("../../templates/khronos/fake-egl.c"),
 };
 
 fn read(path: &str, api: &str) -> Result<registry::Registry, String> {

@@ -69,6 +69,28 @@ fn make<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, attributes: &[i32]) -> Made<
     Made { egl: library, display, context, gl }
 }
 
+/// `make` for a library that may lie: no answer is checked, and None when a context cannot be had.
+fn reach<E: Egl, G: OnEgl<E>>(library: &E) -> Option<(E::Display, E::Context, G)> {
+    let display = library.get_display()?;
+    library.initialize(&display)?;
+    let _ = library.bind_api(egl::OPENGL_ES_API.cast_unsigned());
+    let mut configs = vec![None; 8];
+    library.choose_config(&display, &[egl::SURFACE_TYPE, egl::PBUFFER_BIT, egl::RENDERABLE_TYPE, egl::OPENGL_ES3_BIT, egl::NONE], &mut configs)?;
+    let config = configs.into_iter().flatten().next()?;
+    let context = library.create_context(&display, &config, None, &CONTEXT_ES3)?;
+    let surface = library.create_pbuffer_surface(&display, &config, &[egl::WIDTH, SIDE, egl::HEIGHT, SIDE, egl::NONE])?;
+    let gl = G::new(library, &display, &context, Some(&surface), Some(&surface))?;
+    Some((display, context, gl))
+}
+
+/// `reach`, tried until it gives a context (a lying library refuses some of the calls at random), with the library
+/// loaded once.
+fn reached<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) -> Made<E, G> {
+    let library = (0..1000).find_map(|_| E::load(folder)).expect("EGL loads");
+    let (display, context, gl) = (0..1000).find_map(|_| reach::<E, G>(&library)).expect("a context within 1000 tries");
+    Made { egl: library, display, context, gl }
+}
+
 fn compiled<G: OpenGlEs>(gl: &G, kind: u32, source: &str) -> u32 {
     let shader = gl.create_shader(kind);
     gl.shader_source(shader, &[source.as_bytes()]);
@@ -806,6 +828,195 @@ pub fn every_method_is_called<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, rounds
     assert!(gl.get_string(gl::VERSION).is_some_and(|version| version.starts_with(b"OpenGL ES 3")));
 }
 
+/// The next value of a seeded sequence (xorshift): the fuzzing's only source of choice, so a seed replays a run.
+fn next(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+/// One of the values, picked by the sequence.
+fn chosen<T: Clone>(values: &[T], state: &mut u64) -> Option<T> {
+    if values.is_empty() {
+        return None;
+    }
+    let at = usize::try_from(next(state) % u64::try_from(values.len()).unwrap_or(1)).unwrap_or(0);
+    values.get(at).cloned()
+}
+
+/// The attribute lists a hostile caller gives EGL: well formed, a key with no value, no EGL_NONE, empty, keys EGL
+/// refuses, values out of range.
+const LISTS: [&[i32]; 7] = [
+    &[egl::NONE],
+    &[],
+    &[egl::RED_SIZE],
+    &[egl::WIDTH, 1, egl::HEIGHT, 1],
+    &[egl::CONTEXT_MAJOR_VERSION, 3, egl::NONE],
+    &[0x7FFF_FFFF, -1, egl::NONE],
+    &[egl::WIDTH, -1, egl::HEIGHT, i32::MAX, egl::NONE, 5],
+];
+
+/// The EGL methods the fuzzing calls.
+const EGL_METHODS: u64 = 15;
+/// Of every 1024 calls, how many are EGL's (each may make a context, which is slow on a real library).
+const EGL_SHARE: u64 = 8;
+/// The most contexts and surfaces the fuzzing keeps; past it, it destroys the oldest.
+const KEPT: usize = 8;
+
+/// EGL's handles a hostile caller holds: its own, another library's, and destroyed ones.
+struct Handles<E: Egl> {
+    displays: Vec<E::Display>,
+    configs: Vec<E::Config>,
+    contexts: Vec<E::Context>,
+    surfaces: Vec<E::Surface>,
+}
+
+/// Calls EGL method `which` with handles and lists picked by the sequence; made handles join the pool.
+fn egl_call<E: Egl>(egl: &E, handles: &mut Handles<E>, which: u64, state: &mut u64) {
+    let Some(display) = chosen(&handles.displays, state) else { return };
+    let list = chosen(&LISTS, state).unwrap_or(&[]).to_vec();
+    let room = usize::try_from(next(state) % 12).unwrap_or(0);
+    match which {
+        0 => {
+            let _ = egl.bind_api(chosen(&[egl::OPENGL_ES_API.cast_unsigned(), 0, u32::MAX], state).unwrap_or(0));
+        }
+        1 => {
+            let mut configs = vec![None; room];
+            let _ = egl.choose_config(&display, &list, &mut configs);
+            handles.configs.extend(configs.into_iter().flatten().take(2));
+            handles.configs.truncate(4 * KEPT);
+        }
+        2 => {
+            if let Some(config) = chosen(&handles.configs, state) {
+                let share = if next(state).is_multiple_of(2) { chosen(&handles.contexts, state) } else { None };
+                if let Some(context) = egl.create_context(&display, &config, share.as_ref(), &list) {
+                    handles.contexts.push(context);
+                }
+            }
+        }
+        3 => {
+            if let Some(config) = chosen(&handles.configs, state)
+                && let Some(surface) = egl.create_pbuffer_surface(&display, &config, &list)
+            {
+                handles.surfaces.push(surface);
+            }
+        }
+        4 => {
+            if let Some(context) = chosen(&handles.contexts, state) {
+                let _ = egl.destroy_context(&display, &context);
+            }
+        }
+        5 => {
+            if let Some(surface) = chosen(&handles.surfaces, state) {
+                let _ = egl.destroy_surface(&display, &surface);
+            }
+        }
+        6 => {
+            if let Some(config) = chosen(&handles.configs, state) {
+                let _ = egl.get_config_attrib(&display, &config, chosen(&[egl::RED_SIZE, egl::NONE, 0, -1], state).unwrap_or(0));
+            }
+        }
+        7 => {
+            let _ = egl.get_display();
+        }
+        8 => {
+            let _ = egl.get_error();
+        }
+        9 => {
+            let _ = egl.initialize(&display);
+        }
+        10 => {
+            let draw = chosen(&handles.surfaces, state).filter(|_| next(state).is_multiple_of(2));
+            let read = chosen(&handles.surfaces, state).filter(|_| next(state).is_multiple_of(2));
+            let context = chosen(&handles.contexts, state).filter(|_| next(state).is_multiple_of(2));
+            let _ = egl.make_current(&display, draw.as_ref(), read.as_ref(), context.as_ref());
+        }
+        11 => {
+            let given = if next(state).is_multiple_of(2) { Some(&display) } else { None };
+            let _ = egl.query_string(given, chosen(&[egl::VENDOR, egl::EXTENSIONS, 0], state).unwrap_or(0));
+        }
+        12 => {
+            if let Some(surface) = chosen(&handles.surfaces, state) {
+                let _ = egl.query_surface(&display, &surface, chosen(&[egl::WIDTH, 0], state).unwrap_or(0));
+            }
+        }
+        13 => {
+            if let Some(surface) = chosen(&handles.surfaces, state) {
+                let _ = egl.swap_buffers(&display, &surface);
+            }
+        }
+        _ => {
+            let _ = egl.swap_interval(&display, chosen(&[0, 1, -1], state).unwrap_or(0));
+        }
+    }
+    // Past the most kept, the oldest are destroyed (and stay in no pool: the destroyed ones kept are those the
+    // calls above destroyed).
+    while handles.contexts.len() > KEPT {
+        let oldest = handles.contexts.remove(0);
+        let _ = egl.make_current(&display, None, None, None);
+        let _ = egl.destroy_context(&display, &oldest);
+    }
+    while handles.surfaces.len() > KEPT {
+        let oldest = handles.surfaces.remove(0);
+        let _ = egl.destroy_surface(&display, &oldest);
+    }
+}
+
+/// A hostile caller: `calls` calls picked by the seed over every OpenGL ES method (on two contexts, with this
+/// context's live fence, a deleted one and the other context's) and every EGL method (with this library's handles,
+/// another library's, and destroyed ones). Nothing may end the process; returns the calls made.
+pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64) -> u64 {
+    let mut state = seed | 1;
+    let made = reached::<E, G>(folder);
+    let other = reached::<E, G>(folder);
+    let live = made.gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+    let deleted = made.gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if let Some(fence) = &deleted {
+        made.gl.delete_sync(fence);
+    }
+    let others = other.gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
+    let fences: Vec<G::Fence> = [live, deleted, others].into_iter().flatten().collect();
+    let second = (0..1000).find_map(|_| E::load(folder)).expect("EGL loads again");
+    let second_display = (0..1000).find_map(|_| second.get_display()).expect("its display");
+    let _ = second.initialize(&second_display);
+    let mut second_configs = vec![None; 2];
+    let _ = second.choose_config(&second_display, &[egl::NONE], &mut second_configs);
+    let mut handles = Handles::<E> {
+        displays: vec![made.display.clone(), made.display.clone(), made.display.clone(), second_display],
+        configs: second_configs.into_iter().flatten().collect(),
+        contexts: Vec::new(),
+        surfaces: Vec::new(),
+    };
+    let mut own = vec![None; 4];
+    let _ = made.egl.choose_config(&made.display, &[egl::NONE], &mut own);
+    handles.configs.extend(own.into_iter().flatten());
+    let methods = u64::try_from(METHODS).unwrap_or(0);
+    for _ in 0..calls {
+        let picked = next(&mut state);
+        if picked % 1024 < EGL_SHARE {
+            egl_call(&made.egl, &mut handles, (picked >> 10) % EGL_METHODS, &mut state);
+            continue;
+        }
+        let gl = if (picked >> 10).is_multiple_of(4) { &other.gl } else { &made.gl };
+        let Some(fence) = chosen(&fences, &mut state) else { continue };
+        let which = usize::try_from((picked >> 12) % methods).unwrap_or(0);
+        call_one(gl, &fence, which, usize::try_from(next(&mut state) >> 1).unwrap_or(0));
+    }
+    let _ = made.egl.make_current(&made.display, None, None, None);
+    calls
+}
+
+/// Runs `fuzz` with the seed and call count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS name; nothing when
+/// they name none.
+pub fn fuzz_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) {
+    let number = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<u64>().ok());
+    if let (Some(seed), Some(calls)) = (number("WCONTAINERS_FUZZ_SEED"), number("WCONTAINERS_FUZZ_CALLS")) {
+        let made = fuzz::<E, G>(folder, seed, calls);
+        println!("FUZZ seed {seed} calls {made}");
+    }
+}
+
 #[macro_export]
 macro_rules! tests {
     ($egl:ty, $gl:ty, $folder:expr, $gl_refusals:expr, $egl_refusals:expr) => {
@@ -861,6 +1072,11 @@ macro_rules! tests {
         #[test]
         fn extensions_answer_only_when_named() {
             $crate::extensions_answer_only_when_named::<$egl, $gl>($folder.as_deref());
+        }
+
+        #[test]
+        fn fuzz_from_the_environment() {
+            $crate::fuzz_from_the_environment::<$egl, $gl>($folder.as_deref());
         }
 
         #[test]

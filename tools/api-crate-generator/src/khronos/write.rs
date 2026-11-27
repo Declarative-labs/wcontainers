@@ -921,6 +921,9 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], out:
         write(direct.join("calls.rs"), &write_calls(set, classified, registry)?)?;
         write(direct.join("Cargo.toml"), direct_manifest)?;
         if set.api == "gles2" {
+            let fakes = out.join("fakes").join(set.folder);
+            std::fs::create_dir_all(&fakes).map_err(|e| e.to_string())?;
+            write(fakes.join("fake_egl.c"), &write_fake(set, classified, templates.fake))?;
             let tests = direct.join("tests");
             std::fs::create_dir_all(&tests).map_err(|e| e.to_string())?;
             write(tests.join("conformance.rs"), &format!("{}{}", header(set), templates.gl_direct_test))?;
@@ -961,4 +964,136 @@ pub struct Templates {
     pub gl_direct_test: &'static str,
     pub gl_suite: &'static str,
     pub gl_suite_manifest: &'static str,
+    pub fake: &'static str,
+}
+
+// ----- The stand-in library the fuzzing runs on: every command reads and writes the most the registry lets it. -----
+
+/// The OpenGL ES commands the fake's template writes by hand: those whose state the glue asks about.
+const FAKE_BY_HAND: &[&str] = &[
+    "glBindBuffer", "glDeleteBuffers", "glGenBuffers", "glPixelStorei", "glGetIntegerv", "glGetVertexAttribiv", "glVertexAttribPointer",
+    "glVertexAttribIPointer", "glEnableVertexAttribArray", "glDisableVertexAttribArray", "glDrawArrays", "glDrawArraysInstanced",
+    "glDrawElementsInstanced", "glGetString", "glGetStringi", "glMapBufferRange", "glUnmapBuffer", "glFenceSync", "glGetError",
+];
+
+/// C's spelling of a type the entry points are declared with.
+fn c_of(rust: &str) -> String {
+    let scalar = |t: &str| -> &'static str {
+        match t {
+            "u32" => "uint32_t",
+            "i32" => "int32_t",
+            "u8" => "uint8_t",
+            "i8" => "int8_t",
+            "i16" => "int16_t",
+            "u16" => "uint16_t",
+            "f32" => "float",
+            "f64" => "double",
+            "i64" => "int64_t",
+            "u64" => "uint64_t",
+            "isize" => "intptr_t",
+            _ => "void",
+        }
+    };
+    match rust {
+        "*mut c_void" => "void *".to_string(),
+        "*const c_void" => "const void *".to_string(),
+        "*const *const u8" => "const uint8_t *const *".to_string(),
+        "*mut *mut c_void" => "void **".to_string(),
+        other => match (other.strip_prefix("*const "), other.strip_prefix("*mut ")) {
+            (Some(inner), _) => format!("const {} *", scalar(inner)),
+            (_, Some(inner)) => format!("{} *", scalar(inner)),
+            _ => scalar(other).to_string(),
+        },
+    }
+}
+
+/// The count parameter of the slice at `slice`, and the values per counted element.
+fn count_of(method: &Method, slice: usize) -> Option<(usize, usize)> {
+    method.parts.iter().enumerate().find_map(|(at, part)| match part {
+        Part::CountOf { slice: of, multiplier } if *of == slice => Some((at, *multiplier)),
+        Part::SizeOf { data } if *data == slice => Some((at, 1)),
+        _ => None,
+    })
+}
+
+fn fake_method(method: &Method) -> String {
+    let name = &method.command.name;
+    let types: Vec<String> = method.parts.iter().zip(&method.command.params).map(|(part, param)| c_of(&c_param_type(part, param))).collect();
+    let params: Vec<String> = types.iter().enumerate().map(|(at, ty)| format!("{ty} p{at}")).collect();
+    let ret = c_return_type(&method.ret, &method.command).map_or("void".to_string(), |r| c_of(&r));
+    let mut body = String::new();
+    for (at, part) in method.parts.iter().enumerate() {
+        let size = |elem: &Scalar| format!("sizeof({})", c_of(elem.c));
+        let counted = |bytes_each: String| {
+            count_of(method, at).map(|(count, by)| format!("if (p{count} > 0) fake_{{}}(\"{name}\", p{at}, (size_t)p{count} * {by} * {bytes_each});"))
+        };
+        let line = match part {
+            Part::SliceIn { elem } => counted(size(elem)).map(|l| l.replace("fake_{}", "fake_read")),
+            Part::BytesIn => counted("1".to_string()).map(|l| l.replace("fake_{}", "fake_read")),
+            Part::SliceOut { elem } => counted(size(elem)).map(|l| l.replace("fake_{}", "fake_write")),
+            Part::SingleOut(elem) => Some(format!("fake_write(\"{name}\", p{at}, {});", size(elem))),
+            Part::TextIn => Some(format!("fake_read_text(\"{name}\", p{at});")),
+            Part::TextsIn { lengths } => count_of(method, at).map(|(count, _)| {
+                let each = match lengths {
+                    Some(l) => format!(
+                        "fake_read(\"{name}\", &p{l}[k], sizeof *p{l}); if (p{l}[k] < 0) fake_read_text(\"{name}\", p{at}[k]); else fake_read(\"{name}\", p{at}[k], (size_t)p{l}[k]);"
+                    ),
+                    None => format!("fake_read_text(\"{name}\", p{at}[k]);"),
+                };
+                format!("for (int32_t k = 0; k < p{count}; k++) {{ fake_read(\"{name}\", &p{at}[k], sizeof *p{at}); {each} }}")
+            }),
+            Part::GuardedOut { elem, guard, .. } => Some(format!("fake_write(\"{name}\", p{at}, {guard} * {});", size(elem))),
+            Part::BoundedIn { elem, most } => Some(format!("fake_read(\"{name}\", p{at}, {most} * {});", size(elem))),
+            Part::PixelUnpack { width, height, depth, format, type_ } => Some(format!(
+                "if (!fake_unpack_bound()) fake_read(\"{name}\", p{at}, fake_transfer(p{width}, p{height}, {}, p{format}, p{type_}, 0));",
+                depth.map_or("0".to_string(), |d| format!("p{d}"))
+            )),
+            Part::PixelPack { width, height, format, type_ } => {
+                Some(format!("if (!fake_pack_bound()) fake_write(\"{name}\", p{at}, fake_transfer(p{width}, p{height}, 0, p{format}, p{type_}, 1));"))
+            }
+            Part::CompressedUnpack => count_of(method, at).map(|(size, _)| format!("if (!fake_unpack_bound() && p{size} > 0) fake_read(\"{name}\", p{at}, (size_t)p{size});")),
+            Part::OptionalBytes { size } => Some(format!("if (p{at} && p{size} > 0) fake_read(\"{name}\", p{at}, (size_t)p{size});")),
+            _ => None,
+        };
+        if let Some(line) = line {
+            let _ = writeln!(body, "    {line}");
+        }
+    }
+    let _ = writeln!(body, "    (void)fake_value();");
+    for at in 0..types.len() {
+        let _ = writeln!(body, "    (void)p{at};");
+    }
+    if ret != "void" {
+        let value = if ret.contains('*') { "fake_handle()".to_string() } else { format!("({ret})fake_value()") };
+        let _ = writeln!(body, "    return {value};");
+    }
+    format!("static {ret} fake_{name}({}) {{\n{body}}}\n", if params.is_empty() { "void".to_string() } else { params.join(", ") })
+}
+
+/// The fake's OpenGL ES part: each command not written by hand, and the table eglGetProcAddress answers from.
+fn write_fake(set: &Set, classified: &Classified, template: &str) -> String {
+    let mut text = format!(
+        "/* Written by tools/api-crate-generator from Khronos's gl.xml and egl.xml, pinned in src/khronos/write.rs, and its template\n * templates/khronos/fake-egl.c. Do not edit. */\n{template}\n/* ----- Every other OpenGL ES command of the set: the most its parameters reach, read or written. ----- */\n\n"
+    );
+    let mut table = Vec::new();
+    for method in &classified.methods {
+        let name = &method.command.name;
+        if !FAKE_BY_HAND.contains(&name.as_str()) {
+            text.push_str(&fake_method(method));
+            text.push('\n');
+        }
+        table.push(name.clone());
+    }
+    for (inside, _) in set.inside {
+        table.push((*inside).to_string());
+    }
+    table.sort();
+    table.dedup();
+    let entries: Vec<String> = table.iter().map(|name| format!("        {{\"{name}\", (void *)fake_{name}}},")).collect();
+    let _ = writeln!(
+        text,
+        "void *fake_gl_lookup(const char *name) {{\n    static const struct {{\n        const char *name;\n        void *address;\n    }} table[] = {{\n{}\n    }};\n    for (size_t at = 0; at < sizeof table / sizeof table[0]; at++)\n        if (strcmp(table[at].name, name) == 0) return table[at].address;\n    return NULL;\n}}",
+        entries.join("\n")
+    );
+    text
 }
