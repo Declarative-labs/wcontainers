@@ -725,6 +725,11 @@ impl Memory {
         }
     }
 
+    /// Returns whether the page, which shows no shared pages, may hold something other than zeros.
+    pub(crate) fn is_own_touched(&self, page: u64) -> bool {
+        self.touched.contains(page)
+    }
+
     /// Takes the addresses out of the shared ranges, splitting those at its ends, and returns the parts taken.
     ///
     /// The addresses taken read as whatever the space's own pages last held there; unicorn's copy stays until a remap.
@@ -956,7 +961,6 @@ impl Memory {
         }
         let last = high / PAGE_SIZE;
         let mut page = low / PAGE_SIZE;
-        let mut pieces = Vec::new();
         while page < last {
             let permissions = self.pages[to_index(page)];
             let run_start = page;
@@ -968,17 +972,32 @@ impl Memory {
                 continue;
             }
             let region = run_start * PAGE_SIZE..page * PAGE_SIZE;
+            let mut held = Vec::new();
+            self.list_held_bytes(region.clone(), &mut held);
+            // A region that refuses stores is mapped writable while its bytes are written, then closed: one rebuild of
+            // unicorn's memory map fewer than opening it after.
+            let opened = !held.is_empty() && !permissions.contains(Permissions::WRITE);
+            let mapped_as = if opened {
+                permissions | Permissions::WRITE
+            } else {
+                permissions
+            };
             self.unicorn
-                .mem_map(region.start, region.end - region.start, prot(permissions))
+                .mem_map(region.start, region.end - region.start, prot(mapped_as))
                 .expect("mapping a region in unicorn");
-            self.mapped.insert(region.start, (region.end, permissions));
+            self.mapped.insert(region.start, (region.end, mapped_as));
+            self.write_unicorn(&held);
+            if opened {
+                self.unicorn
+                    .mem_protect(region.start, region.end - region.start, prot(permissions))
+                    .expect("closing a region unicorn has to writes");
+                self.mapped.insert(region.start, (region.end, permissions));
+            }
             // Its guest may write the pages while it runs, which no touched bit would record.
             if permissions.contains(Permissions::WRITE) {
                 self.touched.touch(run_start..page);
             }
-            self.list_held_bytes(region, &mut pieces);
         }
-        self.write_unicorn(&pieces);
     }
 
     /// Copies the own pages unicorn maps over the region into host memory, before the region goes.
