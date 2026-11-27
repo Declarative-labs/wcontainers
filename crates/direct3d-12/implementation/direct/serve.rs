@@ -775,6 +775,38 @@ pub fn served<M: direct3d_12::Direct3D12>(module: M) -> crate::SystemDirect3D12 
     }
 }
 
+#[cfg(windows)]
+#[link(name = "d3d12")]
+#[expect(
+    unsafe_code,
+    reason = "d3d12.dll's own exports, declared with the parameters the metadata gives"
+)]
+unsafe extern "system" {
+    #[link_name = "D3D12CreateDevice"]
+    fn system_d_3d12_create_device(
+        adapter: Raw,
+        minimum_feature_level: i32,
+        riid: *const u8,
+        device: *mut Raw,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+impl crate::SystemDirect3D12 {
+    /// Returns the API over the system's d3d12.dll, linked by name: each entry is that library's own export of its
+    /// name, declared here with the parameters the metadata gives.
+    pub fn system() -> crate::SystemDirect3D12 {
+        let library = Library {
+            d_3d12_create_device: system_d_3d12_create_device,
+        };
+        #[expect(unsafe_code, reason = "d3d12.dll's own exports, linked by name above")]
+        // SAFETY: each entry of `library` is d3d12.dll's export of that name, declared above with the metadata's parameters.
+        unsafe {
+            crate::SystemDirect3D12::new(library)
+        }
+    }
+}
+
 /// `ID3D12CommandAllocator::Reset` as the C side calls it.
 ///
 /// # Safety
@@ -799,9 +831,19 @@ pub(crate) unsafe extern "system" fn command_allocator_reset<V: direct3d_12::Com
     guarded(E_FAIL.0, body)
 }
 
+/// How many calls reached an entry this serving glue refuses by its form, in the whole program.
+static REFUSALS_REACHED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Returns how many calls reached an entry this serving glue refuses by its form, in the whole program: none, where
+/// every caller is the calling glue, which refuses each such call itself.
+pub fn refusals_reached() -> usize {
+    REFUSALS_REACHED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// `ID3D12CommandList::GetType` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers zero.
+/// answers zero. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn command_list_get_type_refused(_this: Raw) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     Default::default()
 }
 
@@ -836,7 +878,7 @@ pub(crate) unsafe extern "system" fn command_queue_signal<V: direct3d_12::Comman
 }
 
 /// `ID3D12CommandQueue::UpdateTileMappings` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn command_queue_update_tile_mappings_refused(
     _this: Raw,
     _p0: Raw,
@@ -850,10 +892,11 @@ pub(crate) extern "system" fn command_queue_update_tile_mappings_refused(
     _p8: *mut u8,
     _p9: i32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12CommandQueue::CopyTileMappings` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn command_queue_copy_tile_mappings_refused(
     _this: Raw,
     _p0: Raw,
@@ -863,49 +906,56 @@ pub(crate) extern "system" fn command_queue_copy_tile_mappings_refused(
     _p4: *mut u8,
     _p5: i32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12CommandQueue::ExecuteCommandLists` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn command_queue_execute_command_lists_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12CommandQueue::SetMarker` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn command_queue_set_marker_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
     _p2: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12CommandQueue::BeginEvent` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn command_queue_begin_event_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
     _p2: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12CommandQueue::EndEvent` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
-pub(crate) extern "system" fn command_queue_end_event_refused(_this: Raw) {}
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
+pub(crate) extern "system" fn command_queue_end_event_refused(_this: Raw) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// `ID3D12CommandQueue::Wait` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn command_queue_wait_refused(_this: Raw, _p0: Raw, _p1: u64) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12CommandQueue::GetTimestampFrequency` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -917,6 +967,7 @@ pub(crate) unsafe extern "system" fn command_queue_get_timestamp_frequency_refus
     _this: Raw,
     p0: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12CommandQueue::GetTimestampFrequency: pFrequency, as the header declares it for the C side"
@@ -927,7 +978,7 @@ pub(crate) unsafe extern "system" fn command_queue_get_timestamp_frequency_refus
 }
 
 /// `ID3D12CommandQueue::GetClockCalibration` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -940,6 +991,7 @@ pub(crate) unsafe extern "system" fn command_queue_get_clock_calibration_refused
     p0: *mut u8,
     p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12CommandQueue::GetClockCalibration: pGpuTimestamp, as the header declares it for the C side"
@@ -956,7 +1008,7 @@ pub(crate) unsafe extern "system" fn command_queue_get_clock_calibration_refused
 }
 
 /// `ID3D12CommandQueue::GetDesc` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -968,6 +1020,7 @@ pub(crate) unsafe extern "system" fn command_queue_get_desc_refused(
     _this: Raw,
     p0: *mut u8,
 ) -> *mut u8 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12CommandQueue::GetDesc: RetVal, as the header declares it for the C side"
@@ -1020,7 +1073,7 @@ pub(crate) unsafe extern "system" fn descriptor_heap_get_desc<V: direct3d_12::De
 }
 
 /// `ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -1032,6 +1085,7 @@ pub(crate) unsafe extern "system" fn descriptor_heap_get_cpu_descriptor_handle_f
     _this: Raw,
     p0: *mut u8,
 ) -> *mut u8 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart: RetVal, as the header declares it for the C side"
@@ -1042,7 +1096,7 @@ pub(crate) unsafe extern "system" fn descriptor_heap_get_cpu_descriptor_handle_f
 }
 
 /// `ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -1054,6 +1108,7 @@ pub(crate) unsafe extern "system" fn descriptor_heap_get_gpu_descriptor_handle_f
     _this: Raw,
     p0: *mut u8,
 ) -> *mut u8 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart: RetVal, as the header declares it for the C side"
@@ -3180,13 +3235,14 @@ pub(crate) unsafe extern "system" fn device_create_query_heap<V: direct3d_12::De
 }
 
 /// `ID3D12Device::GetNodeCount` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers zero.
+/// answers zero. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_get_node_count_refused(_this: Raw) -> u32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     Default::default()
 }
 
 /// `ID3D12Device::CreateGraphicsPipelineState` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3200,6 +3256,7 @@ pub(crate) unsafe extern "system" fn device_create_graphics_pipeline_state_refus
     _p1: *mut u8,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::CreateGraphicsPipelineState: ppPipelineState, as the header declares it for the C side"
@@ -3210,7 +3267,7 @@ pub(crate) unsafe extern "system" fn device_create_graphics_pipeline_state_refus
 }
 
 /// `ID3D12Device::CreateComputePipelineState` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3224,6 +3281,7 @@ pub(crate) unsafe extern "system" fn device_create_compute_pipeline_state_refuse
     _p1: *mut u8,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::CreateComputePipelineState: ppPipelineState, as the header declares it for the C side"
@@ -3234,37 +3292,40 @@ pub(crate) unsafe extern "system" fn device_create_compute_pipeline_state_refuse
 }
 
 /// `ID3D12Device::CheckFeatureSupport` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_check_feature_support_refused(
     _this: Raw,
     _p0: i32,
     _p1: *mut u8,
     _p2: u32,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Device::CreateConstantBufferView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_create_constant_buffer_view_refused(
     _this: Raw,
     _p0: *mut u8,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Device::CreateShaderResourceView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_create_shader_resource_view_refused(
     _this: Raw,
     _p0: Raw,
     _p1: *mut u8,
     _p2: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Device::CreateUnorderedAccessView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_create_unordered_access_view_refused(
     _this: Raw,
     _p0: Raw,
@@ -3272,34 +3333,39 @@ pub(crate) extern "system" fn device_create_unordered_access_view_refused(
     _p2: *mut u8,
     _p3: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Device::CreateRenderTargetView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_create_render_target_view_refused(
     _this: Raw,
     _p0: Raw,
     _p1: *mut u8,
     _p2: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Device::CreateDepthStencilView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_create_depth_stencil_view_refused(
     _this: Raw,
     _p0: Raw,
     _p1: *mut u8,
     _p2: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Device::CreateSampler` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
-pub(crate) extern "system" fn device_create_sampler_refused(_this: Raw, _p0: *mut u8, _p1: u64) {}
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
+pub(crate) extern "system" fn device_create_sampler_refused(_this: Raw, _p0: *mut u8, _p1: u64) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// `ID3D12Device::CopyDescriptors` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_copy_descriptors_refused(
     _this: Raw,
     _p0: u32,
@@ -3310,10 +3376,11 @@ pub(crate) extern "system" fn device_copy_descriptors_refused(
     _p5: *mut u8,
     _p6: i32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Device::CopyDescriptorsSimple` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_copy_descriptors_simple_refused(
     _this: Raw,
     _p0: u32,
@@ -3321,10 +3388,11 @@ pub(crate) extern "system" fn device_copy_descriptors_simple_refused(
     _p2: u64,
     _p3: i32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Device::GetResourceAllocationInfo` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3339,6 +3407,7 @@ pub(crate) unsafe extern "system" fn device_get_resource_allocation_info_refused
     _p2: u32,
     _p3: *mut u8,
 ) -> *mut u8 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::GetResourceAllocationInfo: RetVal, as the header declares it for the C side"
@@ -3349,7 +3418,7 @@ pub(crate) unsafe extern "system" fn device_get_resource_allocation_info_refused
 }
 
 /// `ID3D12Device::GetCustomHeapProperties` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3363,6 +3432,7 @@ pub(crate) unsafe extern "system" fn device_get_custom_heap_properties_refused(
     _p1: u32,
     _p2: i32,
 ) -> *mut u8 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::GetCustomHeapProperties: RetVal, as the header declares it for the C side"
@@ -3373,7 +3443,7 @@ pub(crate) unsafe extern "system" fn device_get_custom_heap_properties_refused(
 }
 
 /// `ID3D12Device::CreateHeap` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3387,6 +3457,7 @@ pub(crate) unsafe extern "system" fn device_create_heap_refused(
     _p1: *mut u8,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::CreateHeap: ppvHeap, as the header declares it for the C side"
@@ -3397,7 +3468,7 @@ pub(crate) unsafe extern "system" fn device_create_heap_refused(
 }
 
 /// `ID3D12Device::CreatePlacedResource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3415,6 +3486,7 @@ pub(crate) unsafe extern "system" fn device_create_placed_resource_refused(
     _p5: *mut u8,
     p6: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::CreatePlacedResource: ppvResource, as the header declares it for the C side"
@@ -3425,7 +3497,7 @@ pub(crate) unsafe extern "system" fn device_create_placed_resource_refused(
 }
 
 /// `ID3D12Device::CreateReservedResource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3441,6 +3513,7 @@ pub(crate) unsafe extern "system" fn device_create_reserved_resource_refused(
     _p3: *mut u8,
     p4: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::CreateReservedResource: ppvResource, as the header declares it for the C side"
@@ -3451,7 +3524,7 @@ pub(crate) unsafe extern "system" fn device_create_reserved_resource_refused(
 }
 
 /// `ID3D12Device::CreateSharedHandle` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3467,6 +3540,7 @@ pub(crate) unsafe extern "system" fn device_create_shared_handle_refused(
     _p3: *const u8,
     p4: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::CreateSharedHandle: pHandle, as the header declares it for the C side"
@@ -3477,7 +3551,7 @@ pub(crate) unsafe extern "system" fn device_create_shared_handle_refused(
 }
 
 /// `ID3D12Device::OpenSharedHandle` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3491,6 +3565,7 @@ pub(crate) unsafe extern "system" fn device_open_shared_handle_refused(
     _p1: *mut u8,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::OpenSharedHandle: ppvObj, as the header declares it for the C side"
@@ -3501,7 +3576,7 @@ pub(crate) unsafe extern "system" fn device_open_shared_handle_refused(
 }
 
 /// `ID3D12Device::OpenSharedHandleByName` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3515,6 +3590,7 @@ pub(crate) unsafe extern "system" fn device_open_shared_handle_by_name_refused(
     _p1: u32,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::OpenSharedHandleByName: pNTHandle, as the header declares it for the C side"
@@ -3525,35 +3601,39 @@ pub(crate) unsafe extern "system" fn device_open_shared_handle_by_name_refused(
 }
 
 /// `ID3D12Device::MakeResident` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_make_resident_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Device::Evict` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_evict_refused(_this: Raw, _p0: u32, _p1: *mut u8) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Device::GetDeviceRemovedReason` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_get_device_removed_reason_refused(_this: Raw) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Device::SetStablePowerState` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_set_stable_power_state_refused(_this: Raw, _p0: i32) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Device::CreateCommandSignature` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3568,6 +3648,7 @@ pub(crate) unsafe extern "system" fn device_create_command_signature_refused(
     _p2: *mut u8,
     p3: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::CreateCommandSignature: ppvCommandSignature, as the header declares it for the C side"
@@ -3578,7 +3659,7 @@ pub(crate) unsafe extern "system" fn device_create_command_signature_refused(
 }
 
 /// `ID3D12Device::GetResourceTiling` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3596,6 +3677,7 @@ pub(crate) unsafe extern "system" fn device_get_resource_tiling_refused(
     _p5: u32,
     _p6: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::GetResourceTiling: pNumTilesForEntireResource, as the header declares it for the C side"
@@ -3617,7 +3699,7 @@ pub(crate) unsafe extern "system" fn device_get_resource_tiling_refused(
 }
 
 /// `ID3D12Device::GetAdapterLuid` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers the caller's pointer, zero bytes written through it.
+/// answers the caller's pointer, zero bytes written through it. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3629,6 +3711,7 @@ pub(crate) unsafe extern "system" fn device_get_adapter_luid_refused(
     _this: Raw,
     p0: *mut u8,
 ) -> *mut u8 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Device::GetAdapterLuid: RetVal, as the header declares it for the C side"
@@ -3639,7 +3722,7 @@ pub(crate) unsafe extern "system" fn device_get_adapter_luid_refused(
 }
 
 /// `ID3D12DeviceChild::GetDevice` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -3652,6 +3735,7 @@ pub(crate) unsafe extern "system" fn device_child_get_device_refused(
     _p0: *mut u8,
     p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12DeviceChild::GetDevice: ppvDevice, as the header declares it for the C side"
@@ -3714,8 +3798,9 @@ pub(crate) unsafe extern "system" fn fence_set_event_on_completion<V: direct3d_1
 }
 
 /// `ID3D12Fence::Signal` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn fence_signal_refused(_this: Raw, _p0: u64) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
@@ -4283,11 +4368,13 @@ pub(crate) unsafe extern "system" fn graphics_command_list_resolve_query_data<
 }
 
 /// `ID3D12GraphicsCommandList::ClearState` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
-pub(crate) extern "system" fn graphics_command_list_clear_state_refused(_this: Raw, _p0: Raw) {}
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
+pub(crate) extern "system" fn graphics_command_list_clear_state_refused(_this: Raw, _p0: Raw) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// `ID3D12GraphicsCommandList::CopyTextureRegion` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_copy_texture_region_refused(
     _this: Raw,
     _p0: *mut u8,
@@ -4297,19 +4384,21 @@ pub(crate) extern "system" fn graphics_command_list_copy_texture_region_refused(
     _p4: *mut u8,
     _p5: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::CopyResource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_copy_resource_refused(
     _this: Raw,
     _p0: Raw,
     _p1: Raw,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::CopyTiles` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_copy_tiles_refused(
     _this: Raw,
     _p0: Raw,
@@ -4319,10 +4408,11 @@ pub(crate) extern "system" fn graphics_command_list_copy_tiles_refused(
     _p4: u64,
     _p5: i32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::ResolveSubresource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_resolve_subresource_refused(
     _this: Raw,
     _p0: Raw,
@@ -4331,95 +4421,107 @@ pub(crate) extern "system" fn graphics_command_list_resolve_subresource_refused(
     _p3: u32,
     _p4: i32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::RSSetViewports` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_rs_set_viewports_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::RSSetScissorRects` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_rs_set_scissor_rects_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::OMSetBlendFactor` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_om_set_blend_factor_refused(
     _this: Raw,
     _p0: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::OMSetStencilRef` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_om_set_stencil_ref_refused(
     _this: Raw,
     _p0: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::ResourceBarrier` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_resource_barrier_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::ExecuteBundle` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
-pub(crate) extern "system" fn graphics_command_list_execute_bundle_refused(_this: Raw, _p0: Raw) {}
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
+pub(crate) extern "system" fn graphics_command_list_execute_bundle_refused(_this: Raw, _p0: Raw) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// `ID3D12GraphicsCommandList::SetComputeRootDescriptorTable` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_compute_root_descriptor_table_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_graphics_root_descriptor_table_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetComputeRoot32BitConstant` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_compute_root32_bit_constant_refused(
     _this: Raw,
     _p0: u32,
     _p1: u32,
     _p2: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_graphics_root32_bit_constant_refused(
     _this: Raw,
     _p0: u32,
     _p1: u32,
     _p2: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetComputeRoot32BitConstants` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_compute_root32_bit_constants_refused(
     _this: Raw,
     _p0: u32,
@@ -4427,10 +4529,11 @@ pub(crate) extern "system" fn graphics_command_list_set_compute_root32_bit_const
     _p2: *mut u8,
     _p3: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_graphics_root32_bit_constants_refused(
     _this: Raw,
     _p0: u32,
@@ -4438,92 +4541,102 @@ pub(crate) extern "system" fn graphics_command_list_set_graphics_root32_bit_cons
     _p2: *mut u8,
     _p3: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetComputeRootConstantBufferView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_compute_root_constant_buffer_view_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_graphics_root_constant_buffer_view_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetComputeRootShaderResourceView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_compute_root_shader_resource_view_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_graphics_root_shader_resource_view_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_compute_root_unordered_access_view_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_graphics_root_unordered_access_view_refused(
     _this: Raw,
     _p0: u32,
     _p1: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::IASetIndexBuffer` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_ia_set_index_buffer_refused(
     _this: Raw,
     _p0: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::IASetVertexBuffers` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_ia_set_vertex_buffers_refused(
     _this: Raw,
     _p0: u32,
     _p1: u32,
     _p2: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SOSetTargets` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_so_set_targets_refused(
     _this: Raw,
     _p0: u32,
     _p1: u32,
     _p2: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::OMSetRenderTargets` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_om_set_render_targets_refused(
     _this: Raw,
     _p0: u32,
@@ -4531,10 +4644,11 @@ pub(crate) extern "system" fn graphics_command_list_om_set_render_targets_refuse
     _p2: i32,
     _p3: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::ClearDepthStencilView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_clear_depth_stencil_view_refused(
     _this: Raw,
     _p0: u64,
@@ -4544,10 +4658,11 @@ pub(crate) extern "system" fn graphics_command_list_clear_depth_stencil_view_ref
     _p4: u32,
     _p5: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::ClearRenderTargetView` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_clear_render_target_view_refused(
     _this: Raw,
     _p0: u64,
@@ -4555,10 +4670,11 @@ pub(crate) extern "system" fn graphics_command_list_clear_render_target_view_ref
     _p2: u32,
     _p3: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_clear_unordered_access_view_uint_refused(
     _this: Raw,
     _p0: u64,
@@ -4568,10 +4684,11 @@ pub(crate) extern "system" fn graphics_command_list_clear_unordered_access_view_
     _p4: u32,
     _p5: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::ClearUnorderedAccessViewFloat` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_clear_unordered_access_view_float_refused(
     _this: Raw,
     _p0: u64,
@@ -4581,53 +4698,60 @@ pub(crate) extern "system" fn graphics_command_list_clear_unordered_access_view_
     _p4: u32,
     _p5: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::DiscardResource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_discard_resource_refused(
     _this: Raw,
     _p0: Raw,
     _p1: *mut u8,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetPredication` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_predication_refused(
     _this: Raw,
     _p0: Raw,
     _p1: u64,
     _p2: i32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::SetMarker` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_set_marker_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
     _p2: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::BeginEvent` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_begin_event_refused(
     _this: Raw,
     _p0: u32,
     _p1: *mut u8,
     _p2: u32,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12GraphicsCommandList::EndEvent` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
-pub(crate) extern "system" fn graphics_command_list_end_event_refused(_this: Raw) {}
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
+pub(crate) extern "system" fn graphics_command_list_end_event_refused(_this: Raw) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// `ID3D12GraphicsCommandList::ExecuteIndirect` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
+/// answers no result (nothing done). The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn graphics_command_list_execute_indirect_refused(
     _this: Raw,
     _p0: Raw,
@@ -4637,48 +4761,53 @@ pub(crate) extern "system" fn graphics_command_list_execute_indirect_refused(
     _p4: Raw,
     _p5: u64,
 ) {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ID3D12Object::GetPrivateData` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn object_get_private_data_refused(
     _this: Raw,
     _p0: *mut u8,
     _p1: *mut u8,
     _p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Object::SetPrivateData` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn object_set_private_data_refused(
     _this: Raw,
     _p0: *mut u8,
     _p1: u32,
     _p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Object::SetPrivateDataInterface` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn object_set_private_data_interface_refused(
     _this: Raw,
     _p0: *mut u8,
     _p1: Raw,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Object::SetName` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn object_set_name_refused(_this: Raw, _p0: *const u8) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12PipelineState::GetCachedBlob` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -4690,6 +4819,7 @@ pub(crate) unsafe extern "system" fn pipeline_state_get_cached_blob_refused(
     _this: Raw,
     p0: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12PipelineState::GetCachedBlob: ppBlob, as the header declares it for the C side"
@@ -4781,7 +4911,7 @@ pub(crate) unsafe extern "system" fn resource_get_desc<V: direct3d_12::Resource>
 }
 
 /// `ID3D12Resource::Map` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -4792,6 +4922,7 @@ pub(crate) unsafe extern "system" fn resource_map_refused(
     _p1: *mut u8,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Resource::Map: ppData, as the header declares it for the C side"
@@ -4802,13 +4933,14 @@ pub(crate) unsafe extern "system" fn resource_map_refused(
 }
 
 /// `ID3D12Resource::GetGPUVirtualAddress` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers zero.
+/// answers zero. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn resource_get_gpu_virtual_address_refused(_this: Raw) -> u64 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     Default::default()
 }
 
 /// `ID3D12Resource::WriteToSubresource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn resource_write_to_subresource_refused(
     _this: Raw,
     _p0: u32,
@@ -4817,11 +4949,12 @@ pub(crate) extern "system" fn resource_write_to_subresource_refused(
     _p3: u32,
     _p4: u32,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Resource::ReadFromSubresource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn resource_read_from_subresource_refused(
     _this: Raw,
     _p0: *mut u8,
@@ -4830,11 +4963,12 @@ pub(crate) extern "system" fn resource_read_from_subresource_refused(
     _p3: u32,
     _p4: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D12Resource::GetHeapProperties` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -4847,6 +4981,7 @@ pub(crate) unsafe extern "system" fn resource_get_heap_properties_refused(
     p0: *mut u8,
     p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3D12Resource::GetHeapProperties: pHeapProperties, as the header declares it for the C side"

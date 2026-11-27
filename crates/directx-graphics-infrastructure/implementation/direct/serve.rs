@@ -1851,6 +1851,48 @@ pub fn served<M: directx_graphics_infrastructure::DirectXGraphicsInfrastructure>
     }
 }
 
+#[cfg(windows)]
+#[link(name = "dxgi")]
+#[expect(
+    unsafe_code,
+    reason = "dxgi.dll's own exports, declared with the parameters the metadata gives"
+)]
+unsafe extern "system" {
+    #[link_name = "CreateDXGIFactory"]
+    fn system_create_dxgi_factory(riid: *const u8, factory: *mut Raw) -> i32;
+    #[link_name = "CreateDXGIFactory1"]
+    fn system_create_dxgi_factory1(riid: *const u8, factory: *mut Raw) -> i32;
+    #[link_name = "CreateDXGIFactory2"]
+    fn system_create_dxgi_factory2(flags: u32, riid: *const u8, factory: *mut Raw) -> i32;
+    #[link_name = "DXGIDeclareAdapterRemovalSupport"]
+    fn system_dxgi_declare_adapter_removal_support() -> i32;
+    #[link_name = "DXGIDisableVBlankVirtualization"]
+    fn system_dxgi_disable_v_blank_virtualization() -> i32;
+    #[link_name = "DXGIGetDebugInterface1"]
+    fn system_dxgi_get_debug_interface1(flags: u32, riid: *const u8, debug: *mut Raw) -> i32;
+}
+
+#[cfg(windows)]
+impl crate::SystemDirectXGraphicsInfrastructure {
+    /// Returns the API over the system's dxgi.dll, linked by name: each entry is that library's own export of its
+    /// name, declared here with the parameters the metadata gives.
+    pub fn system() -> crate::SystemDirectXGraphicsInfrastructure {
+        let library = Library {
+            create_dxgi_factory: system_create_dxgi_factory,
+            create_dxgi_factory1: system_create_dxgi_factory1,
+            create_dxgi_factory2: system_create_dxgi_factory2,
+            dxgi_declare_adapter_removal_support: system_dxgi_declare_adapter_removal_support,
+            dxgi_disable_v_blank_virtualization: system_dxgi_disable_v_blank_virtualization,
+            dxgi_get_debug_interface1: system_dxgi_get_debug_interface1,
+        };
+        #[expect(unsafe_code, reason = "dxgi.dll's own exports, linked by name above")]
+        // SAFETY: each entry of `library` is dxgi.dll's export of that name, declared above with the metadata's parameters.
+        unsafe {
+            crate::SystemDirectXGraphicsInfrastructure::new(library)
+        }
+    }
+}
+
 /// `IDXGIAdapter::EnumOutputs` as the C side calls it.
 ///
 /// # Safety
@@ -3029,14 +3071,24 @@ pub unsafe extern "system" fn device_get_gpu_thread_priority<
     guarded(E_FAIL.0, body)
 }
 
+/// How many calls reached an entry this serving glue refuses by its form, in the whole program.
+static REFUSALS_REACHED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Returns how many calls reached an entry this serving glue refuses by its form, in the whole program: none, where
+/// every caller is the calling glue, which refuses each such call itself.
+pub fn refusals_reached() -> usize {
+    REFUSALS_REACHED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// `IDXGIDevice::QueryResourceResidency` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn device_query_resource_residency_refused(
     _this: Raw,
     _p0: *mut u8,
     _p1: *mut u8,
     _p2: u32,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
@@ -4673,7 +4725,7 @@ pub unsafe extern "system" fn factory4_enum_warp_adapter<
 }
 
 /// `IDXGIFactory4::EnumAdapterByLuid` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -4687,6 +4739,7 @@ pub(crate) unsafe extern "system" fn factory4_enum_adapter_by_luid_refused(
     _p1: *mut u8,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "IDXGIFactory4::EnumAdapterByLuid: ppvAdapter, as the header declares it for the C side"
@@ -6034,7 +6087,7 @@ pub(crate) unsafe extern "system" fn info_queue_get_mute_debug_output<
 }
 
 /// `IDXGIInfoQueue::GetMessage` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn info_queue_get_message_refused(
     _this: Raw,
     _p0: component_object_model_direct::GuidAbi,
@@ -6042,68 +6095,75 @@ pub(crate) extern "system" fn info_queue_get_message_refused(
     _p2: *mut u8,
     _p3: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `IDXGIInfoQueue::AddStorageFilterEntries` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn info_queue_add_storage_filter_entries_refused(
     _this: Raw,
     _p0: component_object_model_direct::GuidAbi,
     _p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `IDXGIInfoQueue::GetStorageFilter` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn info_queue_get_storage_filter_refused(
     _this: Raw,
     _p0: component_object_model_direct::GuidAbi,
     _p1: *mut u8,
     _p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `IDXGIInfoQueue::PushStorageFilter` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn info_queue_push_storage_filter_refused(
     _this: Raw,
     _p0: component_object_model_direct::GuidAbi,
     _p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `IDXGIInfoQueue::AddRetrievalFilterEntries` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn info_queue_add_retrieval_filter_entries_refused(
     _this: Raw,
     _p0: component_object_model_direct::GuidAbi,
     _p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `IDXGIInfoQueue::GetRetrievalFilter` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn info_queue_get_retrieval_filter_refused(
     _this: Raw,
     _p0: component_object_model_direct::GuidAbi,
     _p1: *mut u8,
     _p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `IDXGIInfoQueue::PushRetrievalFilter` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn info_queue_push_retrieval_filter_refused(
     _this: Raw,
     _p0: component_object_model_direct::GuidAbi,
     _p1: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
@@ -6397,13 +6457,14 @@ pub unsafe extern "system" fn object_get_parent<V: directx_graphics_infrastructu
 }
 
 /// `IDXGIObject::GetPrivateData` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn object_get_private_data_refused(
     _this: Raw,
     _p0: *mut u8,
     _p1: *mut u8,
     _p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
@@ -7885,7 +7946,7 @@ pub(crate) unsafe extern "system" fn output_duplication_release_frame<
 }
 
 /// `IDXGIOutputDuplication::MapDesktopSurface` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -7897,6 +7958,7 @@ pub(crate) unsafe extern "system" fn output_duplication_map_desktop_surface_refu
     _this: Raw,
     p0: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "IDXGIOutputDuplication::MapDesktopSurface: pLockedRect, as the header declares it for the C side"
@@ -8115,7 +8177,7 @@ pub unsafe extern "system" fn resource1_create_subresource_surface<
 }
 
 /// `IDXGIResource1::CreateSharedHandle` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -8130,6 +8192,7 @@ pub(crate) unsafe extern "system" fn resource1_create_shared_handle_refused(
     _p2: *const u8,
     p3: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "IDXGIResource1::CreateSharedHandle: pHandle, as the header declares it for the C side"
@@ -8207,12 +8270,13 @@ pub unsafe extern "system" fn surface_unmap<V: directx_graphics_infrastructure::
 }
 
 /// `IDXGISurface::Map` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
 #[expect(unsafe_code, reason = "IDXGISurface::Map, which the C side calls")]
 pub(crate) unsafe extern "system" fn surface_map_refused(_this: Raw, p0: *mut u8, _p1: u32) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "IDXGISurface::Map: pLockedRect, as the header declares it for the C side"
@@ -9414,13 +9478,14 @@ pub unsafe extern "system" fn swap_chain1_get_rotation<
 }
 
 /// `IDXGISwapChain1::Present1` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn swap_chain1_present1_refused(
     _this: Raw,
     _p0: u32,
     _p1: u32,
     _p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
@@ -9800,7 +9865,7 @@ pub unsafe extern "system" fn swap_chain3_set_color_space1<
 }
 
 /// `IDXGISwapChain3::ResizeBuffers1` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn swap_chain3_resize_buffers1_refused(
     _this: Raw,
     _p0: u32,
@@ -9811,6 +9876,7 @@ pub(crate) extern "system" fn swap_chain3_resize_buffers1_refused(
     _p5: *mut u8,
     _p6: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 

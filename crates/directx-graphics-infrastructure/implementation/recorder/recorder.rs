@@ -1272,8 +1272,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedAdapter<A>
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -1614,8 +1615,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
             priority, flags
         ));
         record_arguments(format!(
-            "IDXGIDevice4::OfferResources1(resources=an object or the caller's bytes, priority={:?}, flags={:?})",
-            priority, flags
+            "IDXGIDevice4::OfferResources1(resources={:?}, priority={:?}, flags={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            priority,
+            flags
         ));
         Ok(())
     }
@@ -1628,10 +1634,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
     > {
         let _ = &resources;
         record("IDXGIDevice4::ReclaimResources1()".to_string());
-        record_arguments(
-            "IDXGIDevice4::ReclaimResources1(resources=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIDevice4::ReclaimResources1(resources={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
         Ok((0..2_u32)
             .map(|_| directx_graphics_infrastructure::enumerations::ReclaimResourceResults(53))
             .collect())
@@ -1658,7 +1667,11 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
             priority
         ));
         record_arguments(format!(
-            "IDXGIDevice2::OfferResources(resources=an object or the caller's bytes, priority={:?})",
+            "IDXGIDevice2::OfferResources(resources={:?}, priority={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
             priority
         ));
         Ok(())
@@ -1669,9 +1682,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
     ) -> Result<Vec<bool>, component_object_model::structures::HResult> {
         let _ = &resources;
         record("IDXGIDevice2::ReclaimResources()".to_string());
-        record_arguments(
-            "IDXGIDevice2::ReclaimResources(resources=an object or the caller's bytes)".to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIDevice2::ReclaimResources(resources={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
         Ok((0..2_u32).map(|_| true).collect())
     }
     fn enqueue_set_event(
@@ -1753,10 +1770,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
     > {
         let _ = &resources;
         record("IDXGIDevice::QueryResourceResidency()".to_string());
-        record_arguments(
-            "IDXGIDevice::QueryResourceResidency(resources=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIDevice::QueryResourceResidency(resources={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
         Err(E_NOTIMPL)
     }
     fn set_gpu_thread_priority(
@@ -1807,8 +1827,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -2437,8 +2458,11 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             h_wnd
         ));
         record_arguments(format!(
-            "IDXGIFactory2::CreateSwapChainForHwnd(device=an object or the caller's bytes, h_wnd={:?}, desc={:?}, fullscreen_desc={:?}, restrict_to_output=an object or the caller's bytes)",
-            h_wnd, desc, fullscreen_desc
+            "IDXGIFactory2::CreateSwapChainForHwnd(device=an object or the caller's bytes, h_wnd={:?}, desc={:?}, fullscreen_desc={:?}, restrict_to_output={:?})",
+            h_wnd,
+            desc,
+            fullscreen_desc,
+            restrict_to_output.is_some()
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2460,8 +2484,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
         let _ = &restrict_to_output;
         record("IDXGIFactory2::CreateSwapChainForCoreWindow()".to_string());
         record_arguments(format!(
-            "IDXGIFactory2::CreateSwapChainForCoreWindow(device=an object or the caller's bytes, window=an object or the caller's bytes, desc={:?}, restrict_to_output=an object or the caller's bytes)",
-            desc
+            "IDXGIFactory2::CreateSwapChainForCoreWindow(device=an object or the caller's bytes, window=an object or the caller's bytes, desc={:?}, restrict_to_output={:?})",
+            desc,
+            restrict_to_output.is_some()
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2586,8 +2611,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
         let _ = &restrict_to_output;
         record("IDXGIFactory2::CreateSwapChainForComposition()".to_string());
         record_arguments(format!(
-            "IDXGIFactory2::CreateSwapChainForComposition(device=an object or the caller's bytes, desc={:?}, restrict_to_output=an object or the caller's bytes)",
-            desc
+            "IDXGIFactory2::CreateSwapChainForComposition(device=an object or the caller's bytes, desc={:?}, restrict_to_output={:?})",
+            desc,
+            restrict_to_output.is_some()
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2720,8 +2746,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedFactory<A>
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -2919,8 +2946,10 @@ impl<A: Recorded> directx_graphics_infrastructure::FactoryMedia for RecordedFact
             h_surface
         ));
         record_arguments(format!(
-            "IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, restrict_to_output=an object or the caller's bytes)",
-            h_surface, desc
+            "IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, restrict_to_output={:?})",
+            h_surface,
+            desc,
+            restrict_to_output.is_some()
         ));
         Ok(RecordedSwapChain::new())
     }
@@ -2935,8 +2964,10 @@ impl<A: Recorded> directx_graphics_infrastructure::FactoryMedia for RecordedFact
             h_surface
         ));
         record_arguments(format!(
-            "IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, yuv_decode_buffers=an object or the caller's bytes, restrict_to_output=an object or the caller's bytes)",
-            h_surface, desc
+            "IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, yuv_decode_buffers=an object or the caller's bytes, restrict_to_output={:?})",
+            h_surface,
+            desc,
+            restrict_to_output.is_some()
         ));
         Ok(RecordedDecodeSwapChain::new())
     }
@@ -3702,8 +3733,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedKeyedMutex
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -4029,8 +4061,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
         let _ = &concerned_device;
         record("IDXGIOutput1::FindClosestMatchingMode1()".to_string());
         record_arguments(format!(
-            "IDXGIOutput1::FindClosestMatchingMode1(mode_to_match={:?}, concerned_device=an object or the caller's bytes)",
-            mode_to_match
+            "IDXGIOutput1::FindClosestMatchingMode1(mode_to_match={:?}, concerned_device={:?})",
+            mode_to_match,
+            concerned_device.is_some()
         ));
         Ok(directx_graphics_infrastructure::structures::ModeDesc1 {
             width: 9_u32,
@@ -4135,8 +4168,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         let _ = &concerned_device;
         record("IDXGIOutput::FindClosestMatchingMode()".to_string());
         record_arguments(format!(
-            "IDXGIOutput::FindClosestMatchingMode(mode_to_match={:?}, concerned_device=an object or the caller's bytes)",
-            mode_to_match
+            "IDXGIOutput::FindClosestMatchingMode(mode_to_match={:?}, concerned_device={:?})",
+            mode_to_match,
+            concerned_device.is_some()
         ));
         Ok(directx_graphics_infrastructure::structures::ModeDesc {
             width: 121_u32,
@@ -4301,8 +4335,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutput<A> 
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -4636,8 +4671,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutputDupl
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -5082,8 +5118,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedResource<A
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -5664,8 +5701,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSurface<A>
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -5912,8 +5950,16 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapCh
         let _ = &present_queue;
         record("IDXGISwapChain3::ResizeBuffers1()".to_string());
         record_arguments(format!(
-            "IDXGISwapChain3::ResizeBuffers1(width={:?}, height={:?}, format={:?}, swap_chain_flags={:?}, creation_node_mask={:?}, present_queue=an object or the caller's bytes)",
-            width, height, format, swap_chain_flags, creation_node_mask
+            "IDXGISwapChain3::ResizeBuffers1(width={:?}, height={:?}, format={:?}, swap_chain_flags={:?}, creation_node_mask={:?}, present_queue={:?})",
+            width,
+            height,
+            format,
+            swap_chain_flags,
+            creation_node_mask,
+            present_queue
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
         Err(E_NOTIMPL)
     }
@@ -6349,8 +6395,9 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
             fullscreen
         ));
         record_arguments(format!(
-            "IDXGISwapChain::SetFullscreenState(fullscreen={:?}, target=an object or the caller's bytes)",
-            fullscreen
+            "IDXGISwapChain::SetFullscreenState(fullscreen={:?}, target={:?})",
+            fullscreen,
+            target.is_some()
         ));
         Ok(())
     }
@@ -6654,8 +6701,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSwapChain<
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }

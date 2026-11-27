@@ -2928,8 +2928,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedAuthenticatedChannel<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -3060,8 +3061,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedBlendState<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -3183,8 +3185,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedBuffer<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -3216,8 +3219,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedBuffer<A> 
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -3791,8 +3795,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedClassInstance<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -3928,8 +3933,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedClassLinkage<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -4020,8 +4026,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedCommandList<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -4106,8 +4113,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedComputeShader<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -4209,8 +4217,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedCounter<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -4339,8 +4348,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedCryptoSession<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -4421,9 +4431,10 @@ impl<A: Recorded> direct3d_11::Debug for RecordedDebug<A> {
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &swap_chain;
         record("ID3D11Debug::SetSwapChain()".to_string());
-        record_arguments(
-            "ID3D11Debug::SetSwapChain(swap_chain=an object or the caller's bytes)".to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11Debug::SetSwapChain(swap_chain={:?})",
+            swap_chain.is_some()
+        ));
         Ok(())
     }
     fn get_swap_chain(&self) -> Result<Option<<Self::Api as directx_graphics_infrastructure::DirectXGraphicsInfrastructure>::SwapChain>, component_object_model::structures::HResult>{
@@ -4577,8 +4588,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDepthStencilState<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -4625,24 +4637,28 @@ impl<A: Recorded> direct3d_11::DepthStencilView for RecordedDepthStencilView<A> 
             view_dimension: direct3d_11::enumerations::DsvDimension(92),
             flags: 99_u32,
             anonymous: direct3d_11::structures::DepthStencilViewDescAnonymous {
-                texture_1d: direct3d_11::structures::Tex1DDsv { mip_slice: 0_u32 },
-                texture_1d_array: direct3d_11::structures::Tex1DArrayDsv {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                texture_1d: direct3d_11::structures::Tex1DDsv {
+                    mip_slice: 0x6d6c6b6a_u32,
                 },
-                texture_2d: direct3d_11::structures::Tex2DDsv { mip_slice: 0_u32 },
+                texture_1d_array: direct3d_11::structures::Tex1DArrayDsv {
+                    mip_slice: 0x6d6c6b6a_u32,
+                    first_array_slice: 0x71706f6e_u32,
+                    array_size: 0x75747372_u32,
+                },
+                texture_2d: direct3d_11::structures::Tex2DDsv {
+                    mip_slice: 0x6d6c6b6a_u32,
+                },
                 texture_2d_array: direct3d_11::structures::Tex2DArrayDsv {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    mip_slice: 0x6d6c6b6a_u32,
+                    first_array_slice: 0x71706f6e_u32,
+                    array_size: 0x75747372_u32,
                 },
                 texture_2dms: direct3d_11::structures::Tex2DmsDsv {
-                    unused_field_nothing_to_define: 0_u32,
+                    unused_field_nothing_to_define: 0x6d6c6b6a_u32,
                 },
                 texture_2dms_array: direct3d_11::structures::Tex2DmsArrayDsv {
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    first_array_slice: 0x6d6c6b6a_u32,
+                    array_size: 0x71706f6e_u32,
                 },
             },
         }
@@ -4702,8 +4718,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDepthStencilView<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -6805,8 +6822,9 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &class_linkage;
         record("ID3D11Device::CreateVertexShader()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateVertexShader(shader_bytecode={:?}, class_linkage=an object or the caller's bytes)",
-            shader_bytecode
+            "ID3D11Device::CreateVertexShader(shader_bytecode={:?}, class_linkage={:?})",
+            shader_bytecode,
+            class_linkage.is_some()
         ));
         Ok(RecordedVertexShader::new())
     }
@@ -6822,8 +6840,9 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &class_linkage;
         record("ID3D11Device::CreateGeometryShader()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateGeometryShader(shader_bytecode={:?}, class_linkage=an object or the caller's bytes)",
-            shader_bytecode
+            "ID3D11Device::CreateGeometryShader(shader_bytecode={:?}, class_linkage={:?})",
+            shader_bytecode,
+            class_linkage.is_some()
         ));
         Ok(RecordedGeometryShader::new())
     }
@@ -6848,8 +6867,12 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
             rasterized_stream
         ));
         record_arguments(format!(
-            "ID3D11Device::CreateGeometryShaderWithStreamOutput(shader_bytecode={:?}, so_declaration={:?}, buffer_strides={:?}, rasterized_stream={:?}, class_linkage=an object or the caller's bytes)",
-            shader_bytecode, so_declaration, buffer_strides, rasterized_stream
+            "ID3D11Device::CreateGeometryShaderWithStreamOutput(shader_bytecode={:?}, so_declaration={:?}, buffer_strides={:?}, rasterized_stream={:?}, class_linkage={:?})",
+            shader_bytecode,
+            so_declaration,
+            buffer_strides,
+            rasterized_stream,
+            class_linkage.is_some()
         ));
         Ok(RecordedGeometryShader::new())
     }
@@ -6865,8 +6888,9 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &class_linkage;
         record("ID3D11Device::CreatePixelShader()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreatePixelShader(shader_bytecode={:?}, class_linkage=an object or the caller's bytes)",
-            shader_bytecode
+            "ID3D11Device::CreatePixelShader(shader_bytecode={:?}, class_linkage={:?})",
+            shader_bytecode,
+            class_linkage.is_some()
         ));
         Ok(RecordedPixelShader::new())
     }
@@ -6882,8 +6906,9 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &class_linkage;
         record("ID3D11Device::CreateHullShader()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateHullShader(shader_bytecode={:?}, class_linkage=an object or the caller's bytes)",
-            shader_bytecode
+            "ID3D11Device::CreateHullShader(shader_bytecode={:?}, class_linkage={:?})",
+            shader_bytecode,
+            class_linkage.is_some()
         ));
         Ok(RecordedHullShader::new())
     }
@@ -6899,8 +6924,9 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &class_linkage;
         record("ID3D11Device::CreateDomainShader()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateDomainShader(shader_bytecode={:?}, class_linkage=an object or the caller's bytes)",
-            shader_bytecode
+            "ID3D11Device::CreateDomainShader(shader_bytecode={:?}, class_linkage={:?})",
+            shader_bytecode,
+            class_linkage.is_some()
         ));
         Ok(RecordedDomainShader::new())
     }
@@ -6916,8 +6942,9 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &class_linkage;
         record("ID3D11Device::CreateComputeShader()".to_string());
         record_arguments(format!(
-            "ID3D11Device::CreateComputeShader(shader_bytecode={:?}, class_linkage=an object or the caller's bytes)",
-            shader_bytecode
+            "ID3D11Device::CreateComputeShader(shader_bytecode={:?}, class_linkage={:?})",
+            shader_bytecode,
+            class_linkage.is_some()
         ));
         Ok(RecordedComputeShader::new())
     }
@@ -7547,8 +7574,9 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &data;
         record("ID3D11Device::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11Device::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11Device::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -7622,8 +7650,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -7854,10 +7883,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
     > {
         let _ = &resources;
         record("IDXGIDevice::QueryResourceResidency()".to_string());
-        record_arguments(
-            "IDXGIDevice::QueryResourceResidency(resources=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIDevice::QueryResourceResidency(resources={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
         Err(E_NOTIMPL)
     }
     fn set_gpu_thread_priority(
@@ -7920,7 +7952,11 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
             priority
         ));
         record_arguments(format!(
-            "IDXGIDevice2::OfferResources(resources=an object or the caller's bytes, priority={:?})",
+            "IDXGIDevice2::OfferResources(resources={:?}, priority={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
             priority
         ));
         Ok(())
@@ -7931,9 +7967,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
     ) -> Result<Vec<bool>, component_object_model::structures::HResult> {
         let _ = &resources;
         record("IDXGIDevice2::ReclaimResources()".to_string());
-        record_arguments(
-            "IDXGIDevice2::ReclaimResources(resources=an object or the caller's bytes)".to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIDevice2::ReclaimResources(resources={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
         Ok((0..2_u32).map(|_| true).collect())
     }
     fn enqueue_set_event(
@@ -7975,8 +8015,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
             priority, flags
         ));
         record_arguments(format!(
-            "IDXGIDevice4::OfferResources1(resources=an object or the caller's bytes, priority={:?}, flags={:?})",
-            priority, flags
+            "IDXGIDevice4::OfferResources1(resources={:?}, priority={:?}, flags={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            priority,
+            flags
         ));
         Ok(())
     }
@@ -7989,10 +8034,13 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
     > {
         let _ = &resources;
         record("IDXGIDevice4::ReclaimResources1()".to_string());
-        record_arguments(
-            "IDXGIDevice4::ReclaimResources1(resources=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "IDXGIDevice4::ReclaimResources1(resources={:?})",
+            resources
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
         Ok((0..2_u32)
             .map(|_| directx_graphics_infrastructure::enumerations::ReclaimResourceResults(53))
             .collect())
@@ -8150,9 +8198,10 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
             flags
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext2::UpdateTileMappings(tiled_resource=an object or the caller's bytes, tiled_resource_region_start_coordinates={:?}, tiled_resource_region_sizes={:?}, tile_pool=an object or the caller's bytes, range_flags={:?}, tile_pool_start_offsets={:?}, range_tile_counts={:?}, flags={:?})",
+            "ID3D11DeviceContext2::UpdateTileMappings(tiled_resource=an object or the caller's bytes, tiled_resource_region_start_coordinates={:?}, tiled_resource_region_sizes={:?}, tile_pool={:?}, range_flags={:?}, tile_pool_start_offsets={:?}, range_tile_counts={:?}, flags={:?})",
             tiled_resource_region_start_coordinates,
             tiled_resource_region_sizes,
+            tile_pool.is_some(),
             range_flags,
             tile_pool_start_offsets,
             range_tile_counts,
@@ -8257,7 +8306,11 @@ impl<A: Recorded> direct3d_11::DeviceContext2 for RecordedDeviceContext<A> {
         let _ = &tiled_resource_or_view_access_before_barrier;
         let _ = &tiled_resource_or_view_access_after_barrier;
         record("ID3D11DeviceContext2::TiledResourceBarrier()".to_string());
-        record_arguments("ID3D11DeviceContext2::TiledResourceBarrier(tiled_resource_or_view_access_before_barrier=an object or the caller's bytes, tiled_resource_or_view_access_after_barrier=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext2::TiledResourceBarrier(tiled_resource_or_view_access_before_barrier={:?}, tiled_resource_or_view_access_after_barrier={:?})",
+            tiled_resource_or_view_access_before_barrier.is_some(),
+            tiled_resource_or_view_access_after_barrier.is_some()
+        ));
     }
     fn is_annotation_enabled(&self) -> bool {
         record("ID3D11DeviceContext2::IsAnnotationEnabled()".to_string());
@@ -8383,8 +8436,14 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::VSSetConstantBuffers1(start_slot={:?}, constant_buffers=an object or the caller's bytes, first_constant={:?}, num_constants={:?})",
-            start_slot, first_constant, num_constants
+            "ID3D11DeviceContext1::VSSetConstantBuffers1(start_slot={:?}, constant_buffers={:?}, first_constant={:?}, num_constants={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            first_constant,
+            num_constants
         ));
     }
     fn hs_set_constant_buffers1(
@@ -8403,8 +8462,14 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::HSSetConstantBuffers1(start_slot={:?}, constant_buffers=an object or the caller's bytes, first_constant={:?}, num_constants={:?})",
-            start_slot, first_constant, num_constants
+            "ID3D11DeviceContext1::HSSetConstantBuffers1(start_slot={:?}, constant_buffers={:?}, first_constant={:?}, num_constants={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            first_constant,
+            num_constants
         ));
     }
     fn ds_set_constant_buffers1(
@@ -8423,8 +8488,14 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::DSSetConstantBuffers1(start_slot={:?}, constant_buffers=an object or the caller's bytes, first_constant={:?}, num_constants={:?})",
-            start_slot, first_constant, num_constants
+            "ID3D11DeviceContext1::DSSetConstantBuffers1(start_slot={:?}, constant_buffers={:?}, first_constant={:?}, num_constants={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            first_constant,
+            num_constants
         ));
     }
     fn gs_set_constant_buffers1(
@@ -8443,8 +8514,14 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::GSSetConstantBuffers1(start_slot={:?}, constant_buffers=an object or the caller's bytes, first_constant={:?}, num_constants={:?})",
-            start_slot, first_constant, num_constants
+            "ID3D11DeviceContext1::GSSetConstantBuffers1(start_slot={:?}, constant_buffers={:?}, first_constant={:?}, num_constants={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            first_constant,
+            num_constants
         ));
     }
     fn ps_set_constant_buffers1(
@@ -8463,8 +8540,14 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::PSSetConstantBuffers1(start_slot={:?}, constant_buffers=an object or the caller's bytes, first_constant={:?}, num_constants={:?})",
-            start_slot, first_constant, num_constants
+            "ID3D11DeviceContext1::PSSetConstantBuffers1(start_slot={:?}, constant_buffers={:?}, first_constant={:?}, num_constants={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            first_constant,
+            num_constants
         ));
     }
     fn cs_set_constant_buffers1(
@@ -8483,8 +8566,14 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext1::CSSetConstantBuffers1(start_slot={:?}, constant_buffers=an object or the caller's bytes, first_constant={:?}, num_constants={:?})",
-            start_slot, first_constant, num_constants
+            "ID3D11DeviceContext1::CSSetConstantBuffers1(start_slot={:?}, constant_buffers={:?}, first_constant={:?}, num_constants={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            first_constant,
+            num_constants
         ));
     }
     fn vs_get_constant_buffers1(
@@ -8704,8 +8793,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::VSSetConstantBuffers(start_slot={:?}, constant_buffers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::VSSetConstantBuffers(start_slot={:?}, constant_buffers={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn ps_set_shader_resources(
@@ -8722,8 +8815,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::PSSetShaderResources(start_slot={:?}, shader_resource_views=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::PSSetShaderResources(start_slot={:?}, shader_resource_views={:?})",
+            start_slot,
+            shader_resource_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn ps_set_shader(
@@ -8734,7 +8831,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &pixel_shader;
         let _ = &class_instances;
         record("ID3D11DeviceContext::PSSetShader()".to_string());
-        record_arguments("ID3D11DeviceContext::PSSetShader(pixel_shader=an object or the caller's bytes, class_instances=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::PSSetShader(pixel_shader={:?}, class_instances={:?})",
+            pixel_shader.is_some(),
+            class_instances
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn ps_set_samplers(
         &self,
@@ -8748,8 +8852,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::PSSetSamplers(start_slot={:?}, samplers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::PSSetSamplers(start_slot={:?}, samplers={:?})",
+            start_slot,
+            samplers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn vs_set_shader(
@@ -8760,7 +8868,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &vertex_shader;
         let _ = &class_instances;
         record("ID3D11DeviceContext::VSSetShader()".to_string());
-        record_arguments("ID3D11DeviceContext::VSSetShader(vertex_shader=an object or the caller's bytes, class_instances=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::VSSetShader(vertex_shader={:?}, class_instances={:?})",
+            vertex_shader.is_some(),
+            class_instances
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn draw_indexed(&self, index_count: u32, start_index_location: u32, base_vertex_location: i32) {
         let _ = &index_count;
@@ -8839,8 +8954,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::PSSetConstantBuffers(start_slot={:?}, constant_buffers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::PSSetConstantBuffers(start_slot={:?}, constant_buffers={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn ia_set_input_layout(
@@ -8849,10 +8968,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
     ) {
         let _ = &input_layout;
         record("ID3D11DeviceContext::IASetInputLayout()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext::IASetInputLayout(input_layout=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext::IASetInputLayout(input_layout={:?})",
+            input_layout.is_some()
+        ));
     }
     fn ia_set_vertex_buffers(
         &self,
@@ -8870,8 +8989,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::IASetVertexBuffers(start_slot={:?}, vertex_buffers=an object or the caller's bytes, strides={:?}, offsets={:?})",
-            start_slot, strides, offsets
+            "ID3D11DeviceContext::IASetVertexBuffers(start_slot={:?}, vertex_buffers={:?}, strides={:?}, offsets={:?})",
+            start_slot,
+            vertex_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            strides,
+            offsets
         ));
     }
     fn ia_set_index_buffer(
@@ -8888,8 +9013,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             format, offset
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::IASetIndexBuffer(index_buffer=an object or the caller's bytes, format={:?}, offset={:?})",
-            format, offset
+            "ID3D11DeviceContext::IASetIndexBuffer(index_buffer={:?}, format={:?}, offset={:?})",
+            index_buffer.is_some(),
+            format,
+            offset
         ));
     }
     fn draw_indexed_instanced(
@@ -8960,8 +9087,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::GSSetConstantBuffers(start_slot={:?}, constant_buffers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::GSSetConstantBuffers(start_slot={:?}, constant_buffers={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn gs_set_shader(
@@ -8972,7 +9103,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &shader;
         let _ = &class_instances;
         record("ID3D11DeviceContext::GSSetShader()".to_string());
-        record_arguments("ID3D11DeviceContext::GSSetShader(shader=an object or the caller's bytes, class_instances=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::GSSetShader(shader={:?}, class_instances={:?})",
+            shader.is_some(),
+            class_instances
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn ia_set_primitive_topology(
         &self,
@@ -9002,8 +9140,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::VSSetShaderResources(start_slot={:?}, shader_resource_views=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::VSSetShaderResources(start_slot={:?}, shader_resource_views={:?})",
+            start_slot,
+            shader_resource_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn vs_set_samplers(
@@ -9018,8 +9160,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::VSSetSamplers(start_slot={:?}, samplers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::VSSetSamplers(start_slot={:?}, samplers={:?})",
+            start_slot,
+            samplers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn begin(&self, async_: direct3d_11::AsynchronousRef<'_, Self::Api>) {
@@ -9070,7 +9216,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             predicate_value
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::SetPredication(predicate=an object or the caller's bytes, predicate_value={:?})",
+            "ID3D11DeviceContext::SetPredication(predicate={:?}, predicate_value={:?})",
+            predicate.is_some(),
             predicate_value
         ));
     }
@@ -9088,8 +9235,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::GSSetShaderResources(start_slot={:?}, shader_resource_views=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::GSSetShaderResources(start_slot={:?}, shader_resource_views={:?})",
+            start_slot,
+            shader_resource_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn gs_set_samplers(
@@ -9104,8 +9255,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::GSSetSamplers(start_slot={:?}, samplers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::GSSetSamplers(start_slot={:?}, samplers={:?})",
+            start_slot,
+            samplers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn om_set_render_targets(
@@ -9116,7 +9271,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &render_target_views;
         let _ = &depth_stencil_view;
         record("ID3D11DeviceContext::OMSetRenderTargets()".to_string());
-        record_arguments("ID3D11DeviceContext::OMSetRenderTargets(render_target_views=an object or the caller's bytes, depth_stencil_view=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::OMSetRenderTargets(render_target_views={:?}, depth_stencil_view={:?})",
+            render_target_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            depth_stencil_view.is_some()
+        ));
     }
     fn om_set_render_targets_and_unordered_access_views(
         &self,
@@ -9140,8 +9302,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             uav_start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews(render_target_views=an object or the caller's bytes, depth_stencil_view=an object or the caller's bytes, uav_start_slot={:?}, unordered_access_views=an object or the caller's bytes, uav_initial_counts={:?})",
-            uav_start_slot, uav_initial_counts
+            "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews(render_target_views={:?}, depth_stencil_view={:?}, uav_start_slot={:?}, unordered_access_views={:?}, uav_initial_counts={:?})",
+            render_target_views
+                .map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>()),
+            depth_stencil_view.is_some(),
+            uav_start_slot,
+            unordered_access_views
+                .map(|items| items.iter().map(|item| item.is_some()).collect::<Vec<_>>()),
+            uav_initial_counts
         ));
     }
     fn om_set_blend_state(
@@ -9160,8 +9328,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             sample_mask
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::OMSetBlendState(blend_state=an object or the caller's bytes, blend_factor={:?}, sample_mask={:?})",
-            blend_factor, sample_mask
+            "ID3D11DeviceContext::OMSetBlendState(blend_state={:?}, blend_factor={:?}, sample_mask={:?})",
+            blend_state.is_some(),
+            blend_factor,
+            sample_mask
         ));
     }
     fn om_set_depth_stencil_state(
@@ -9176,7 +9346,8 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             stencil_ref
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::OMSetDepthStencilState(depth_stencil_state=an object or the caller's bytes, stencil_ref={:?})",
+            "ID3D11DeviceContext::OMSetDepthStencilState(depth_stencil_state={:?}, stencil_ref={:?})",
+            depth_stencil_state.is_some(),
             stencil_ref
         ));
     }
@@ -9189,7 +9360,11 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &offsets;
         record("ID3D11DeviceContext::SOSetTargets()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceContext::SOSetTargets(so_targets=an object or the caller's bytes, offsets={:?})",
+            "ID3D11DeviceContext::SOSetTargets(so_targets={:?}, offsets={:?})",
+            so_targets
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
             offsets
         ));
     }
@@ -9269,10 +9444,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
     ) {
         let _ = &rasterizer_state;
         record("ID3D11DeviceContext::RSSetState()".to_string());
-        record_arguments(
-            "ID3D11DeviceContext::RSSetState(rasterizer_state=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D11DeviceContext::RSSetState(rasterizer_state={:?})",
+            rasterizer_state.is_some()
+        ));
     }
     fn rs_set_viewports(&self, viewports: &[direct3d_11::structures::Viewport]) {
         let _ = &viewports;
@@ -9514,8 +9689,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::HSSetShaderResources(start_slot={:?}, shader_resource_views=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::HSSetShaderResources(start_slot={:?}, shader_resource_views={:?})",
+            start_slot,
+            shader_resource_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn hs_set_shader(
@@ -9526,7 +9705,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &hull_shader;
         let _ = &class_instances;
         record("ID3D11DeviceContext::HSSetShader()".to_string());
-        record_arguments("ID3D11DeviceContext::HSSetShader(hull_shader=an object or the caller's bytes, class_instances=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::HSSetShader(hull_shader={:?}, class_instances={:?})",
+            hull_shader.is_some(),
+            class_instances
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn hs_set_samplers(
         &self,
@@ -9540,8 +9726,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::HSSetSamplers(start_slot={:?}, samplers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::HSSetSamplers(start_slot={:?}, samplers={:?})",
+            start_slot,
+            samplers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn hs_set_constant_buffers(
@@ -9556,8 +9746,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::HSSetConstantBuffers(start_slot={:?}, constant_buffers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::HSSetConstantBuffers(start_slot={:?}, constant_buffers={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn ds_set_shader_resources(
@@ -9574,8 +9768,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::DSSetShaderResources(start_slot={:?}, shader_resource_views=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::DSSetShaderResources(start_slot={:?}, shader_resource_views={:?})",
+            start_slot,
+            shader_resource_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn ds_set_shader(
@@ -9586,7 +9784,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &domain_shader;
         let _ = &class_instances;
         record("ID3D11DeviceContext::DSSetShader()".to_string());
-        record_arguments("ID3D11DeviceContext::DSSetShader(domain_shader=an object or the caller's bytes, class_instances=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::DSSetShader(domain_shader={:?}, class_instances={:?})",
+            domain_shader.is_some(),
+            class_instances
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn ds_set_samplers(
         &self,
@@ -9600,8 +9805,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::DSSetSamplers(start_slot={:?}, samplers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::DSSetSamplers(start_slot={:?}, samplers={:?})",
+            start_slot,
+            samplers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn ds_set_constant_buffers(
@@ -9616,8 +9825,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::DSSetConstantBuffers(start_slot={:?}, constant_buffers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::DSSetConstantBuffers(start_slot={:?}, constant_buffers={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn cs_set_shader_resources(
@@ -9634,8 +9847,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::CSSetShaderResources(start_slot={:?}, shader_resource_views=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::CSSetShaderResources(start_slot={:?}, shader_resource_views={:?})",
+            start_slot,
+            shader_resource_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn cs_set_unordered_access_views(
@@ -9654,8 +9871,13 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::CSSetUnorderedAccessViews(start_slot={:?}, unordered_access_views=an object or the caller's bytes, uav_initial_counts={:?})",
-            start_slot, uav_initial_counts
+            "ID3D11DeviceContext::CSSetUnorderedAccessViews(start_slot={:?}, unordered_access_views={:?}, uav_initial_counts={:?})",
+            start_slot,
+            unordered_access_views
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>(),
+            uav_initial_counts
         ));
     }
     fn cs_set_shader(
@@ -9666,7 +9888,14 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &compute_shader;
         let _ = &class_instances;
         record("ID3D11DeviceContext::CSSetShader()".to_string());
-        record_arguments("ID3D11DeviceContext::CSSetShader(compute_shader=an object or the caller's bytes, class_instances=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D11DeviceContext::CSSetShader(compute_shader={:?}, class_instances={:?})",
+            compute_shader.is_some(),
+            class_instances
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn cs_set_samplers(
         &self,
@@ -9680,8 +9909,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::CSSetSamplers(start_slot={:?}, samplers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::CSSetSamplers(start_slot={:?}, samplers={:?})",
+            start_slot,
+            samplers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn cs_set_constant_buffers(
@@ -9696,8 +9929,12 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             start_slot
         ));
         record_arguments(format!(
-            "ID3D11DeviceContext::CSSetConstantBuffers(start_slot={:?}, constant_buffers=an object or the caller's bytes)",
-            start_slot
+            "ID3D11DeviceContext::CSSetConstantBuffers(start_slot={:?}, constant_buffers={:?})",
+            start_slot,
+            constant_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
     }
     fn vs_get_constant_buffers(
@@ -10393,8 +10630,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDeviceContext<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -10537,8 +10775,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDomainShader<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -10665,8 +10904,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedFence<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -10751,8 +10991,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedGeometryShader<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -10837,8 +11078,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedHullShader<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -11283,8 +11525,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedInputLayout<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -11429,8 +11672,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedPixelShader<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -11534,8 +11778,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedPredicate<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -11649,8 +11894,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedQuery<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -11793,8 +12039,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedRasterizerState<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -11944,41 +12191,43 @@ impl<A: Recorded> direct3d_11::RenderTargetView1 for RecordedRenderTargetView<A>
             anonymous: direct3d_11::structures::RenderTargetViewDesc1Anonymous {
                 buffer: direct3d_11::structures::BufferRtv {
                     anonymous1: direct3d_11::structures::BufferRtvAnonymous1 {
-                        first_element: 0_u32,
-                        element_offset: 0_u32,
+                        first_element: 0x69686766_u32,
+                        element_offset: 0x69686766_u32,
                     },
                     anonymous2: direct3d_11::structures::BufferRtvAnonymous2 {
-                        num_elements: 0_u32,
-                        element_width: 0_u32,
+                        num_elements: 0x6d6c6b6a_u32,
+                        element_width: 0x6d6c6b6a_u32,
                     },
                 },
-                texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 },
+                texture_1d: direct3d_11::structures::Tex1DRtv {
+                    mip_slice: 0x69686766_u32,
+                },
                 texture_1d_array: direct3d_11::structures::Tex1DArrayRtv {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    mip_slice: 0x69686766_u32,
+                    first_array_slice: 0x6d6c6b6a_u32,
+                    array_size: 0x71706f6e_u32,
                 },
                 texture_2d: direct3d_11::structures::Tex2DRtv1 {
-                    mip_slice: 0_u32,
-                    plane_slice: 0_u32,
+                    mip_slice: 0x69686766_u32,
+                    plane_slice: 0x6d6c6b6a_u32,
                 },
                 texture_2d_array: direct3d_11::structures::Tex2DArrayRtv1 {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
-                    plane_slice: 0_u32,
+                    mip_slice: 0x69686766_u32,
+                    first_array_slice: 0x6d6c6b6a_u32,
+                    array_size: 0x71706f6e_u32,
+                    plane_slice: 0x75747372_u32,
                 },
                 texture_2dms: direct3d_11::structures::Tex2DmsRtv {
-                    unused_field_nothing_to_define: 0_u32,
+                    unused_field_nothing_to_define: 0x69686766_u32,
                 },
                 texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv {
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    first_array_slice: 0x69686766_u32,
+                    array_size: 0x6d6c6b6a_u32,
                 },
                 texture_3d: direct3d_11::structures::Tex3DRtv {
-                    mip_slice: 0_u32,
-                    first_w_slice: 0_u32,
-                    w_size: 0_u32,
+                    mip_slice: 0x69686766_u32,
+                    first_w_slice: 0x6d6c6b6a_u32,
+                    w_size: 0x71706f6e_u32,
                 },
             },
         }
@@ -11995,37 +12244,41 @@ impl<A: Recorded> direct3d_11::RenderTargetView for RecordedRenderTargetView<A> 
             anonymous: direct3d_11::structures::RenderTargetViewDescAnonymous {
                 buffer: direct3d_11::structures::BufferRtv {
                     anonymous1: direct3d_11::structures::BufferRtvAnonymous1 {
-                        first_element: 0_u32,
-                        element_offset: 0_u32,
+                        first_element: 0x31302f2e_u32,
+                        element_offset: 0x31302f2e_u32,
                     },
                     anonymous2: direct3d_11::structures::BufferRtvAnonymous2 {
-                        num_elements: 0_u32,
-                        element_width: 0_u32,
+                        num_elements: 0x35343332_u32,
+                        element_width: 0x35343332_u32,
                     },
                 },
-                texture_1d: direct3d_11::structures::Tex1DRtv { mip_slice: 0_u32 },
-                texture_1d_array: direct3d_11::structures::Tex1DArrayRtv {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                texture_1d: direct3d_11::structures::Tex1DRtv {
+                    mip_slice: 0x31302f2e_u32,
                 },
-                texture_2d: direct3d_11::structures::Tex2DRtv { mip_slice: 0_u32 },
+                texture_1d_array: direct3d_11::structures::Tex1DArrayRtv {
+                    mip_slice: 0x31302f2e_u32,
+                    first_array_slice: 0x35343332_u32,
+                    array_size: 0x39383736_u32,
+                },
+                texture_2d: direct3d_11::structures::Tex2DRtv {
+                    mip_slice: 0x31302f2e_u32,
+                },
                 texture_2d_array: direct3d_11::structures::Tex2DArrayRtv {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    mip_slice: 0x31302f2e_u32,
+                    first_array_slice: 0x35343332_u32,
+                    array_size: 0x39383736_u32,
                 },
                 texture_2dms: direct3d_11::structures::Tex2DmsRtv {
-                    unused_field_nothing_to_define: 0_u32,
+                    unused_field_nothing_to_define: 0x31302f2e_u32,
                 },
                 texture_2dms_array: direct3d_11::structures::Tex2DmsArrayRtv {
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    first_array_slice: 0x31302f2e_u32,
+                    array_size: 0x35343332_u32,
                 },
                 texture_3d: direct3d_11::structures::Tex3DRtv {
-                    mip_slice: 0_u32,
-                    first_w_slice: 0_u32,
-                    w_size: 0_u32,
+                    mip_slice: 0x31302f2e_u32,
+                    first_w_slice: 0x35343332_u32,
+                    w_size: 0x39383736_u32,
                 },
             },
         }
@@ -12085,8 +12338,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedRenderTargetView<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -12188,8 +12442,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedSamplerState<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -12237,61 +12492,61 @@ impl<A: Recorded> direct3d_11::ShaderResourceView1 for RecordedShaderResourceVie
             anonymous: direct3d_11::structures::ShaderResourceViewDesc1Anonymous {
                 buffer: direct3d_11::structures::BufferSrv {
                     anonymous1: direct3d_11::structures::BufferSrvAnonymous1 {
-                        first_element: 0_u32,
-                        element_offset: 0_u32,
+                        first_element: 0x2a292827_u32,
+                        element_offset: 0x2a292827_u32,
                     },
                     anonymous2: direct3d_11::structures::BufferSrvAnonymous2 {
-                        num_elements: 0_u32,
-                        element_width: 0_u32,
+                        num_elements: 0x2e2d2c2b_u32,
+                        element_width: 0x2e2d2c2b_u32,
                     },
                 },
                 texture_1d: direct3d_11::structures::Tex1DSrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
+                    most_detailed_mip: 0x2a292827_u32,
+                    mip_levels: 0x2e2d2c2b_u32,
                 },
                 texture_1d_array: direct3d_11::structures::Tex1DArraySrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    most_detailed_mip: 0x2a292827_u32,
+                    mip_levels: 0x2e2d2c2b_u32,
+                    first_array_slice: 0x3231302f_u32,
+                    array_size: 0x36353433_u32,
                 },
                 texture_2d: direct3d_11::structures::Tex2DSrv1 {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
-                    plane_slice: 0_u32,
+                    most_detailed_mip: 0x2a292827_u32,
+                    mip_levels: 0x2e2d2c2b_u32,
+                    plane_slice: 0x3231302f_u32,
                 },
                 texture_2d_array: direct3d_11::structures::Tex2DArraySrv1 {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
-                    plane_slice: 0_u32,
+                    most_detailed_mip: 0x2a292827_u32,
+                    mip_levels: 0x2e2d2c2b_u32,
+                    first_array_slice: 0x3231302f_u32,
+                    array_size: 0x36353433_u32,
+                    plane_slice: 0x3a393837_u32,
                 },
                 texture_2dms: direct3d_11::structures::Tex2DmsSrv {
-                    unused_field_nothing_to_define: 0_u32,
+                    unused_field_nothing_to_define: 0x2a292827_u32,
                 },
                 texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv {
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    first_array_slice: 0x2a292827_u32,
+                    array_size: 0x2e2d2c2b_u32,
                 },
                 texture_3d: direct3d_11::structures::Tex3DSrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
+                    most_detailed_mip: 0x2a292827_u32,
+                    mip_levels: 0x2e2d2c2b_u32,
                 },
                 texture_cube: direct3d_11::structures::TexcubeSrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
+                    most_detailed_mip: 0x2a292827_u32,
+                    mip_levels: 0x2e2d2c2b_u32,
                 },
                 texture_cube_array: direct3d_11::structures::TexcubeArraySrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
-                    first_2d_array_face: 0_u32,
-                    num_cubes: 0_u32,
+                    most_detailed_mip: 0x2a292827_u32,
+                    mip_levels: 0x2e2d2c2b_u32,
+                    first_2d_array_face: 0x3231302f_u32,
+                    num_cubes: 0x36353433_u32,
                 },
                 buffer_ex: direct3d_11::structures::BufferexSrv {
-                    first_element: 0_u32,
-                    num_elements: 0_u32,
-                    flags: 0_u32,
+                    first_element: 0x2a292827_u32,
+                    num_elements: 0x2e2d2c2b_u32,
+                    flags: 0x3231302f_u32,
                 },
             },
         }
@@ -12308,59 +12563,59 @@ impl<A: Recorded> direct3d_11::ShaderResourceView for RecordedShaderResourceView
             anonymous: direct3d_11::structures::ShaderResourceViewDescAnonymous {
                 buffer: direct3d_11::structures::BufferSrv {
                     anonymous1: direct3d_11::structures::BufferSrvAnonymous1 {
-                        first_element: 0_u32,
-                        element_offset: 0_u32,
+                        first_element: 0x302f2e2d_u32,
+                        element_offset: 0x302f2e2d_u32,
                     },
                     anonymous2: direct3d_11::structures::BufferSrvAnonymous2 {
-                        num_elements: 0_u32,
-                        element_width: 0_u32,
+                        num_elements: 0x34333231_u32,
+                        element_width: 0x34333231_u32,
                     },
                 },
                 texture_1d: direct3d_11::structures::Tex1DSrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
+                    most_detailed_mip: 0x302f2e2d_u32,
+                    mip_levels: 0x34333231_u32,
                 },
                 texture_1d_array: direct3d_11::structures::Tex1DArraySrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    most_detailed_mip: 0x302f2e2d_u32,
+                    mip_levels: 0x34333231_u32,
+                    first_array_slice: 0x38373635_u32,
+                    array_size: 0x3c3b3a39_u32,
                 },
                 texture_2d: direct3d_11::structures::Tex2DSrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
+                    most_detailed_mip: 0x302f2e2d_u32,
+                    mip_levels: 0x34333231_u32,
                 },
                 texture_2d_array: direct3d_11::structures::Tex2DArraySrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    most_detailed_mip: 0x302f2e2d_u32,
+                    mip_levels: 0x34333231_u32,
+                    first_array_slice: 0x38373635_u32,
+                    array_size: 0x3c3b3a39_u32,
                 },
                 texture_2dms: direct3d_11::structures::Tex2DmsSrv {
-                    unused_field_nothing_to_define: 0_u32,
+                    unused_field_nothing_to_define: 0x302f2e2d_u32,
                 },
                 texture_2dms_array: direct3d_11::structures::Tex2DmsArraySrv {
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    first_array_slice: 0x302f2e2d_u32,
+                    array_size: 0x34333231_u32,
                 },
                 texture_3d: direct3d_11::structures::Tex3DSrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
+                    most_detailed_mip: 0x302f2e2d_u32,
+                    mip_levels: 0x34333231_u32,
                 },
                 texture_cube: direct3d_11::structures::TexcubeSrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
+                    most_detailed_mip: 0x302f2e2d_u32,
+                    mip_levels: 0x34333231_u32,
                 },
                 texture_cube_array: direct3d_11::structures::TexcubeArraySrv {
-                    most_detailed_mip: 0_u32,
-                    mip_levels: 0_u32,
-                    first_2d_array_face: 0_u32,
-                    num_cubes: 0_u32,
+                    most_detailed_mip: 0x302f2e2d_u32,
+                    mip_levels: 0x34333231_u32,
+                    first_2d_array_face: 0x38373635_u32,
+                    num_cubes: 0x3c3b3a39_u32,
                 },
                 buffer_ex: direct3d_11::structures::BufferexSrv {
-                    first_element: 0_u32,
-                    num_elements: 0_u32,
-                    flags: 0_u32,
+                    first_element: 0x302f2e2d_u32,
+                    num_elements: 0x34333231_u32,
+                    flags: 0x38373635_u32,
                 },
             },
         }
@@ -12420,8 +12675,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedShaderResourceView<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -12481,27 +12737,27 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
                 flags: 19_u32,
                 anonymous: direct3d_11::structures::ShaderTraceDescAnonymous {
                     vertex_shader_trace_desc: direct3d_11::structures::VertexShaderTraceDesc {
-                        invocation: 0_u64,
+                        invocation: 0x21201f1e1d1c1b1a_u64,
                     },
                     hull_shader_trace_desc: direct3d_11::structures::HullShaderTraceDesc {
-                        invocation: 0_u64,
+                        invocation: 0x21201f1e1d1c1b1a_u64,
                     },
                     domain_shader_trace_desc: direct3d_11::structures::DomainShaderTraceDesc {
-                        invocation: 0_u64,
+                        invocation: 0x21201f1e1d1c1b1a_u64,
                     },
                     geometry_shader_trace_desc: direct3d_11::structures::GeometryShaderTraceDesc {
-                        invocation: 0_u64,
+                        invocation: 0x21201f1e1d1c1b1a_u64,
                     },
                     pixel_shader_trace_desc: direct3d_11::structures::PixelShaderTraceDesc {
-                        invocation: 0_u64,
-                        x: 0_i32,
-                        y: 0_i32,
-                        sample_mask: 0_u64,
+                        invocation: 0x21201f1e1d1c1b1a_u64,
+                        x: 0x25242322_i32,
+                        y: 0x29282726_i32,
+                        sample_mask: 0x31302f2e2d2c2b2a_u64,
                     },
                     compute_shader_trace_desc: direct3d_11::structures::ComputeShaderTraceDesc {
-                        invocation: 0_u64,
-                        thread_id_in_group: core::array::from_fn(|_| 0_u32),
-                        thread_group_id: core::array::from_fn(|_| 0_u32),
+                        invocation: 0x21201f1e1d1c1b1a_u64,
+                        thread_id_in_group: [0x25242322_u32, 0x29282726_u32, 0x2d2c2b2a_u32],
+                        thread_group_id: [0x31302f2e_u32, 0x35343332_u32, 0x39383736_u32],
                     },
                 },
             },
@@ -12611,8 +12867,8 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
             direct3d_11::structures::TraceRegister {
                 reg_type: direct3d_11::enumerations::TraceRegisterType(76),
                 anonymous: direct3d_11::structures::TraceRegisterAnonymous {
-                    index_1d: 0_u16,
-                    index_2d: core::array::from_fn(|_| 0_u16),
+                    index_1d: 0x5453_u16,
+                    index_2d: [0x5453_u16, 0x5655_u16],
                 },
                 operand_index: 90_u8,
                 flags: 97_u8,
@@ -12648,8 +12904,8 @@ impl<A: Recorded> direct3d_11::ShaderTrace for RecordedShaderTrace<A> {
             direct3d_11::structures::TraceRegister {
                 reg_type: direct3d_11::enumerations::TraceRegisterType(76),
                 anonymous: direct3d_11::structures::TraceRegisterAnonymous {
-                    index_1d: 0_u16,
-                    index_2d: core::array::from_fn(|_| 0_u16),
+                    index_1d: 0x5453_u16,
+                    index_2d: [0x5453_u16, 0x5655_u16],
                 },
                 operand_index: 90_u8,
                 flags: 97_u8,
@@ -12886,8 +13142,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedTexture1D<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -12919,8 +13176,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedTexture1D<
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -13525,8 +13783,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedTexture2D<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -13558,8 +13817,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedTexture2D<
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -14400,8 +14660,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedTexture3D<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -14433,8 +14694,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedTexture3D<
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
-            name
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown={:?})",
+            name,
+            unknown.is_some()
         ));
         Ok(())
     }
@@ -15005,30 +15267,32 @@ impl<A: Recorded> direct3d_11::UnorderedAccessView1 for RecordedUnorderedAccessV
             view_dimension: direct3d_11::enumerations::UavDimension(63),
             anonymous: direct3d_11::structures::UnorderedAccessViewDesc1Anonymous {
                 buffer: direct3d_11::structures::BufferUav {
-                    first_element: 0_u32,
-                    num_elements: 0_u32,
-                    flags: 0_u32,
+                    first_element: 0x49484746_u32,
+                    num_elements: 0x4d4c4b4a_u32,
+                    flags: 0x51504f4e_u32,
                 },
-                texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 },
+                texture_1d: direct3d_11::structures::Tex1DUav {
+                    mip_slice: 0x49484746_u32,
+                },
                 texture_1d_array: direct3d_11::structures::Tex1DArrayUav {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    mip_slice: 0x49484746_u32,
+                    first_array_slice: 0x4d4c4b4a_u32,
+                    array_size: 0x51504f4e_u32,
                 },
                 texture_2d: direct3d_11::structures::Tex2DUav1 {
-                    mip_slice: 0_u32,
-                    plane_slice: 0_u32,
+                    mip_slice: 0x49484746_u32,
+                    plane_slice: 0x4d4c4b4a_u32,
                 },
                 texture_2d_array: direct3d_11::structures::Tex2DArrayUav1 {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
-                    plane_slice: 0_u32,
+                    mip_slice: 0x49484746_u32,
+                    first_array_slice: 0x4d4c4b4a_u32,
+                    array_size: 0x51504f4e_u32,
+                    plane_slice: 0x55545352_u32,
                 },
                 texture_3d: direct3d_11::structures::Tex3DUav {
-                    mip_slice: 0_u32,
-                    first_w_slice: 0_u32,
-                    w_size: 0_u32,
+                    mip_slice: 0x49484746_u32,
+                    first_w_slice: 0x4d4c4b4a_u32,
+                    w_size: 0x51504f4e_u32,
                 },
             },
         }
@@ -15044,26 +15308,30 @@ impl<A: Recorded> direct3d_11::UnorderedAccessView for RecordedUnorderedAccessVi
             view_dimension: direct3d_11::enumerations::UavDimension(48),
             anonymous: direct3d_11::structures::UnorderedAccessViewDescAnonymous {
                 buffer: direct3d_11::structures::BufferUav {
-                    first_element: 0_u32,
-                    num_elements: 0_u32,
-                    flags: 0_u32,
+                    first_element: 0x3a393837_u32,
+                    num_elements: 0x3e3d3c3b_u32,
+                    flags: 0x4241403f_u32,
                 },
-                texture_1d: direct3d_11::structures::Tex1DUav { mip_slice: 0_u32 },
+                texture_1d: direct3d_11::structures::Tex1DUav {
+                    mip_slice: 0x3a393837_u32,
+                },
                 texture_1d_array: direct3d_11::structures::Tex1DArrayUav {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    mip_slice: 0x3a393837_u32,
+                    first_array_slice: 0x3e3d3c3b_u32,
+                    array_size: 0x4241403f_u32,
                 },
-                texture_2d: direct3d_11::structures::Tex2DUav { mip_slice: 0_u32 },
+                texture_2d: direct3d_11::structures::Tex2DUav {
+                    mip_slice: 0x3a393837_u32,
+                },
                 texture_2d_array: direct3d_11::structures::Tex2DArrayUav {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    mip_slice: 0x3a393837_u32,
+                    first_array_slice: 0x3e3d3c3b_u32,
+                    array_size: 0x4241403f_u32,
                 },
                 texture_3d: direct3d_11::structures::Tex3DUav {
-                    mip_slice: 0_u32,
-                    first_w_slice: 0_u32,
-                    w_size: 0_u32,
+                    mip_slice: 0x3a393837_u32,
+                    first_w_slice: 0x3e3d3c3b_u32,
+                    w_size: 0x4241403f_u32,
                 },
             },
         }
@@ -15123,8 +15391,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedUnorderedAccessView<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -15209,8 +15478,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVertexShader<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -15264,8 +15534,13 @@ impl<A: Recorded> direct3d_11::VideoContext3 for RecordedVideoContext<A> {
         let _ = &histogram_buffers;
         record("ID3D11VideoContext3::DecoderBeginFrame1()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext3::DecoderBeginFrame1(decoder=an object or the caller's bytes, view=an object or the caller's bytes, content_key={:?}, histogram_offsets={:?}, histogram_buffers=an object or the caller's bytes)",
-            content_key, histogram_offsets
+            "ID3D11VideoContext3::DecoderBeginFrame1(decoder=an object or the caller's bytes, view=an object or the caller's bytes, content_key={:?}, histogram_offsets={:?}, histogram_buffers={:?})",
+            content_key,
+            histogram_offsets,
+            histogram_buffers
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
         ));
         Ok(())
     }
@@ -15819,16 +16094,16 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
             direct3d_11::structures::VideoColor {
                 anonymous: direct3d_11::structures::VideoColorAnonymous {
                     y_cb_cr: direct3d_11::structures::VideoColorYcbcra {
-                        y: 0.0_f32,
-                        cb: 0.0_f32,
-                        cr: 0.0_f32,
-                        a: 0.0_f32,
+                        y: f32::from_bits(0x6e6d6c6b),
+                        cb: f32::from_bits(0x7271706f),
+                        cr: f32::from_bits(0x76757473),
+                        a: f32::from_bits(0x7a797877),
                     },
                     rgba: direct3d_11::structures::VideoColorRgba {
-                        r: 0.0_f32,
-                        g: 0.0_f32,
-                        b: 0.0_f32,
-                        a: 0.0_f32,
+                        r: f32::from_bits(0x6e6d6c6b),
+                        g: f32::from_bits(0x7271706f),
+                        b: f32::from_bits(0x76757473),
+                        a: f32::from_bits(0x7a797877),
                     },
                 },
             },
@@ -16474,8 +16749,9 @@ impl<A: Recorded> direct3d_11::VideoContext for RecordedVideoContext<A> {
         let _ = &streams;
         record("ID3D11VideoContext::VideoProcessorBlt()".to_string());
         record_arguments(format!(
-            "ID3D11VideoContext::VideoProcessorBlt(video_processor=an object or the caller's bytes, view=an object or the caller's bytes, output_frame={:?}, streams=an object or the caller's bytes)",
-            output_frame
+            "ID3D11VideoContext::VideoProcessorBlt(video_processor=an object or the caller's bytes, view=an object or the caller's bytes, output_frame={:?}, streams={:?})",
+            output_frame,
+            streams.len()
         ));
         Err(E_NOTIMPL)
     }
@@ -16706,8 +16982,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoContext<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -16862,8 +17139,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoDecoder<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -16914,7 +17192,9 @@ impl<A: Recorded> direct3d_11::VideoDecoderOutputView for RecordedVideoDecoderOu
             },
             view_dimension: direct3d_11::enumerations::VdovDimension(76),
             anonymous: direct3d_11::structures::VideoDecoderOutputViewDescAnonymous {
-                texture_2d: direct3d_11::structures::Tex2DVdov { array_slice: 0_u32 },
+                texture_2d: direct3d_11::structures::Tex2DVdov {
+                    array_slice: 0x56555453_u32,
+                },
             },
         }
     }
@@ -16973,8 +17253,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoDecoderOutputView<A>
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -17472,8 +17753,9 @@ impl<A: Recorded> direct3d_11::VideoDevice for RecordedVideoDevice<A> {
         let _ = &data;
         record("ID3D11VideoDevice::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11VideoDevice::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11VideoDevice::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -17592,8 +17874,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessor<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -17840,8 +18123,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessorEnumerator<
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -17888,8 +18172,8 @@ impl<A: Recorded> direct3d_11::VideoProcessorInputView for RecordedVideoProcesso
             view_dimension: direct3d_11::enumerations::VpivDimension(117),
             anonymous: direct3d_11::structures::VideoProcessorInputViewDescAnonymous {
                 texture_2d: direct3d_11::structures::Tex2DVpiv {
-                    mip_slice: 0_u32,
-                    array_slice: 0_u32,
+                    mip_slice: 0x17e7d7c_u32,
+                    array_slice: 0x5040302_u32,
                 },
             },
         }
@@ -17949,8 +18233,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessorInputView<A
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -17995,11 +18280,13 @@ impl<A: Recorded> direct3d_11::VideoProcessorOutputView for RecordedVideoProcess
         direct3d_11::structures::VideoProcessorOutputViewDesc {
             view_dimension: direct3d_11::enumerations::VpovDimension(54),
             anonymous: direct3d_11::structures::VideoProcessorOutputViewDescAnonymous {
-                texture_2d: direct3d_11::structures::Tex2DVpov { mip_slice: 0_u32 },
+                texture_2d: direct3d_11::structures::Tex2DVpov {
+                    mip_slice: 0x403f3e3d_u32,
+                },
                 texture_2d_array: direct3d_11::structures::Tex2DArrayVpov {
-                    mip_slice: 0_u32,
-                    first_array_slice: 0_u32,
-                    array_size: 0_u32,
+                    mip_slice: 0x403f3e3d_u32,
+                    first_array_slice: 0x44434241_u32,
+                    array_size: 0x48474645_u32,
                 },
             },
         }
@@ -18059,8 +18346,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedVideoProcessorOutputView<
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -18145,8 +18433,9 @@ impl<A: Recorded> direct3d_11::DeviceChild for RecordedDeviceContextState<A> {
         let _ = &data;
         record("ID3D11DeviceChild::SetPrivateDataInterface()".to_string());
         record_arguments(format!(
-            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data=an object or the caller's bytes)",
-            guid
+            "ID3D11DeviceChild::SetPrivateDataInterface(guid={:?}, data={:?})",
+            guid,
+            data.is_some()
         ));
         Ok(())
     }
@@ -18331,8 +18620,13 @@ impl direct3d_11::Direct3D11 for Recorder {
             driver_type, software, flags, sdk_version
         ));
         record_arguments(format!(
-            "D3D11CreateDevice(adapter=an object or the caller's bytes, driver_type={:?}, software={:?}, flags={:?}, feature_levels={:?}, sdk_version={:?})",
-            driver_type, software, flags, feature_levels, sdk_version
+            "D3D11CreateDevice(adapter={:?}, driver_type={:?}, software={:?}, flags={:?}, feature_levels={:?}, sdk_version={:?})",
+            adapter.is_some(),
+            driver_type,
+            software,
+            flags,
+            feature_levels,
+            sdk_version
         ));
         Ok((
             RecordedDevice::new(),
@@ -18375,8 +18669,14 @@ impl direct3d_11::Direct3D11 for Recorder {
             driver_type, software, flags, sdk_version
         ));
         record_arguments(format!(
-            "D3D11CreateDeviceAndSwapChain(adapter=an object or the caller's bytes, driver_type={:?}, software={:?}, flags={:?}, feature_levels={:?}, sdk_version={:?}, swap_chain_desc={:?})",
-            driver_type, software, flags, feature_levels, sdk_version, swap_chain_desc
+            "D3D11CreateDeviceAndSwapChain(adapter={:?}, driver_type={:?}, software={:?}, flags={:?}, feature_levels={:?}, sdk_version={:?}, swap_chain_desc={:?})",
+            adapter.is_some(),
+            driver_type,
+            software,
+            flags,
+            feature_levels,
+            sdk_version,
+            swap_chain_desc
         ));
         Ok((
             directx_graphics_infrastructure_recorder::RecordedSwapChain::new(),

@@ -16,24 +16,26 @@ wcontainers_direct3d_12_conformance::tests!(
         "ID3D11InfoQueue::SetBreakOnSeverity",
         "ID3D11InfoQueue::SetBreakOnID",
         "ID3D11Device::SetExceptionMode",
-        "ID3D11Device::CreateTexture1D",
-        "ID3D11Device::CreateTexture2D",
-        "ID3D11Device::CreateTexture3D",
         "ID3D11VideoContext3::DecoderBeginFrame1",
         "ID3D11Device::GetImmediateContext",
         "ID3D11Device1::GetImmediateContext1",
         "ID3D11Device2::GetImmediateContext2",
         "ID3D11Device3::GetImmediateContext3",
         "ID3D11Device1::CreateDeviceContextState",
-        "ID3D11DeviceChild::GetDevice on DeviceContext",
+        "ID3D11DeviceChild::GetDevice",
+        "ID3D11ClassInstance::GetClassLinkage",
         "D3D11CreateDevice",
-        "D3D11CreateDeviceAndSwapChain",
-        "ID3D11Device::CreateBuffer",
-        "ID3D11DeviceContext1::UpdateSubresource1",
-        "ID3D11DeviceContext::UpdateSubresource",
-        "ID3D11DeviceContext::IASetVertexBuffers",
-        "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews",
-        "ID3D11DeviceContext::Unmap",
-        "ID3D11DeviceContext::Map"
+        "D3D11CreateDeviceAndSwapChain"
+    ],
+    &[
+        ("ID3D11DeviceContext::Map", "ID3D11Buffer::GetDesc()"),
+        (
+            "ID3D11DeviceContext::UpdateSubresource",
+            "ID3D11Buffer::GetDesc()"
+        ),
+        (
+            "ID3D11DeviceContext1::UpdateSubresource1",
+            "ID3D11Buffer::GetDesc()"
+        )
     ]
 );

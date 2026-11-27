@@ -115,9 +115,19 @@ pub(crate) unsafe extern "system" fn blob_get_buffer_size<V: direct3d_common::Bl
     guarded(Default::default(), body)
 }
 
+/// How many calls reached an entry this serving glue refuses by its form, in the whole program.
+static REFUSALS_REACHED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Returns how many calls reached an entry this serving glue refuses by its form, in the whole program: none, where
+/// every caller is the calling glue, which refuses each such call itself.
+pub fn refusals_reached() -> usize {
+    REFUSALS_REACHED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// `ID3DBlob::GetBufferPointer` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers null.
+/// answers null. The call is counted (`refusals_reached`).
 pub(crate) extern "system" fn blob_get_buffer_pointer_refused(_this: Raw) -> *mut u8 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     core::ptr::null_mut()
 }
 
@@ -150,7 +160,7 @@ pub unsafe extern "system" fn destruction_notifier_unregister_destruction_callba
 }
 
 /// `ID3DDestructionNotifier::RegisterDestructionCallback` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
+/// answers E_NOTIMPL. The call is counted (`refusals_reached`).
 ///
 /// # Safety
 /// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
@@ -164,6 +174,7 @@ pub(crate) unsafe extern "system" fn destruction_notifier_register_destruction_c
     _p1: *mut u8,
     p2: *mut u8,
 ) -> i32 {
+    REFUSALS_REACHED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     #[expect(
         unsafe_code,
         reason = "ID3DDestructionNotifier::RegisterDestructionCallback: pCallbackID, as the header declares it for the C side"

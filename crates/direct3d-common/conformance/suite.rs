@@ -242,12 +242,15 @@ impl<A: direct3d_common::Direct3DCommon> Objects<A> {
     }
 }
 
-/// Makes an object of every kind it can, by every method that hands one out, in rounds until none is new.
+/// Makes an object of every kind it can, by every method that hands one out, in rounds until none is new: first by
+/// the methods that hand out an object of their own kind, then by those too that hand out an interface by id.
 fn make_all<A: direct3d_common::Direct3DCommon>(o: &mut Objects<A>) -> usize {
-    for _ in 0..6 {
-        let before = o.kinds_held();
-        if o.kinds_held() == before {
-            break;
+    for by_id in [false, true] {
+        for _ in 0..6 {
+            let before = o.kinds_held();
+            if o.kinds_held() == before {
+                break;
+            }
         }
     }
     o.kinds_held()
@@ -415,7 +418,8 @@ pub fn answers_received_of<A: direct3d_common::Direct3DCommon>(
 /// what it received from the same call made directly: nothing the caller passed is dropped, zeroed or mixed up on the
 /// way. A method whose call through both glues differs by design (a check of the glue's on an argument the suite
 /// passes, an answer the glue gives from its own record, a bit a row clears) must be one of `refused` (src/api.rs
-/// `SUITE_DIFFERENT`, each with the reason).
+/// `SUITE_DIFFERENT`, each with the reason). A call the calling glue makes of its own for a method (`extra`: the method and
+/// the line, src/api.rs `SUITE_EXTRA_CALLS`) is taken out of what the implementation received before the comparison.
 pub fn every_answer_and_argument_equals_the_reference<
     A: direct3d_common::Direct3DCommon,
     R: direct3d_common::Direct3DCommon,
@@ -425,6 +429,7 @@ pub fn every_answer_and_argument_equals_the_reference<
     logged: fn() -> usize,
     since: fn(usize) -> Vec<String>,
     refused: &[&str],
+    extra: &[(&str, &str)],
 ) {
     let wanted = answers_received_of(reference, logged, since);
     let got = answers_received_of(api, logged, since);
@@ -450,6 +455,19 @@ pub fn every_answer_and_argument_equals_the_reference<
             .next()
             .unwrap_or_default()
             .to_string();
+        let mut without_extra = got_line.clone();
+        for (_, line) in extra.iter().filter(|(at, _)| *at == place) {
+            for form in [
+                format!(", \"{line}\""),
+                format!("\"{line}\", "),
+                format!("\"{line}\""),
+            ] {
+                without_extra = without_extra.replace(&form, "");
+            }
+        }
+        if without_extra == *wanted_line {
+            continue;
+        }
         if refused.contains(&place.as_str())
             || refused.iter().any(|entry| {
                 got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
@@ -502,13 +520,13 @@ macro_rules! tests {
             $crate::every_answer_equals_the_reference($value, $reference);
         }
     };
-    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr) => {
+    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr, $extra:expr) => {
         // One test, so that no other drive adds to the implementation's log of arguments while it is read.
         #[test]
         fn every_method_answers_and_every_answer_and_argument_equals_the_reference() {
             $crate::every_method_answers($value);
             $crate::every_answer_and_argument_equals_the_reference(
-                $value, $reference, $logged, $since, $refused,
+                $value, $reference, $logged, $since, $refused, $extra,
             );
         }
     };

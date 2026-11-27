@@ -64,19 +64,6 @@ pub(crate) fn put_guid(
     bytes[at..at + value.len()].copy_from_slice(&value);
 }
 
-/// Reads a GUID from its 16 bytes.
-pub(crate) fn decode_guid(bytes: &[u8]) -> wcontainers_component_object_model::structures::Guid {
-    get_guid(bytes, usize::MIN)
-}
-
-/// Writes a GUID as its 16 bytes.
-pub(crate) fn encode_guid(
-    value: &wcontainers_component_object_model::structures::Guid,
-    bytes: &mut [u8],
-) {
-    put_guid(bytes, usize::MIN, value);
-}
-
 /// A GUID as C lays it out: its 16 bytes, aligned as its first field (a 32-bit word).
 #[derive(Clone, Copy)]
 #[repr(C)]

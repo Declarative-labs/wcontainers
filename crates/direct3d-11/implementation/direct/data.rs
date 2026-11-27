@@ -5392,57 +5392,6 @@ pub(crate) struct WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout {
     instance_data_step_rate: u32,
 }
 
-/// Reads `D3D11_INPUT_ELEMENT_DESC` from the 32 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_input_element_desc(
-    bytes: &[u8],
-) -> direct3d_11::structures::InputElementDesc {
-    direct3d_11::structures::InputElementDesc {
-        semantic_name: std::ffi::CString::default(),
-        semantic_index: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
-                semantic_index
-            ),
-        ),
-        format: directx_graphics_infrastructure::enumerations::Format(get_i32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
-                format
-            ),
-        )),
-        input_slot: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
-                input_slot
-            ),
-        ),
-        aligned_byte_offset: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
-                aligned_byte_offset
-            ),
-        ),
-        input_slot_class: direct3d_11::enumerations::InputClassification(get_i32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
-                input_slot_class
-            ),
-        )),
-        instance_data_step_rate: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
-                instance_data_step_rate
-            ),
-        ),
-    }
-}
-
 /// The offsets of `D3D11_INPUT_ELEMENT_DESC`'s texts, in the order of its fields.
 pub(crate) const TEXTS_WINDOWS_WIN32_GRAPHICS_DIRECT_3D11_D_3D11_INPUT_ELEMENT_DESC: [usize; 1] =
     [offset_of!(
@@ -5576,50 +5525,6 @@ pub(crate) struct WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout {
     start_component: u8,
     component_count: u8,
     output_slot: u8,
-}
-
-/// Reads `D3D11_SO_DECLARATION_ENTRY` from the 24 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_so_declaration_entry(
-    bytes: &[u8],
-) -> direct3d_11::structures::SoDeclarationEntry {
-    direct3d_11::structures::SoDeclarationEntry {
-        stream: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
-                stream
-            ),
-        ),
-        semantic_name: std::ffi::CString::default(),
-        semantic_index: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
-                semantic_index
-            ),
-        ),
-        start_component: get_u8(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
-                start_component
-            ),
-        ),
-        component_count: get_u8(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
-                component_count
-            ),
-        ),
-        output_slot: get_u8(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
-                output_slot
-            ),
-        ),
-    }
 }
 
 /// The offsets of `D3D11_SO_DECLARATION_ENTRY`'s texts, in the order of its fields.
@@ -6449,45 +6354,6 @@ pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_packed_mip_desc(
     }
 }
 
-/// Writes `D3D11_PACKED_MIP_DESC` as the 12 bytes C lays it out in.
-pub(crate) fn encode_windows_win32_graphics_direct_3d11_d_3d11_packed_mip_desc(
-    value: &direct3d_11::structures::PackedMipDesc,
-    bytes: &mut [u8],
-) {
-    put_u8(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-            num_standard_mips
-        ),
-        value.num_standard_mips,
-    );
-    put_u8(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-            num_packed_mips
-        ),
-        value.num_packed_mips,
-    );
-    put_u32(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-            num_tiles_for_packed_mips
-        ),
-        value.num_tiles_for_packed_mips,
-    );
-    put_u32(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11PackedMipDescLayout,
-            start_tile_index_in_overall_resource
-        ),
-        value.start_tile_index_in_overall_resource,
-    );
-}
-
 /// `D3D11_TILE_SHAPE` as C lays it out: its offsets and size are this type's.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -6526,37 +6392,6 @@ pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_tile_shape(
     }
 }
 
-/// Writes `D3D11_TILE_SHAPE` as the 12 bytes C lays it out in.
-pub(crate) fn encode_windows_win32_graphics_direct_3d11_d_3d11_tile_shape(
-    value: &direct3d_11::structures::TileShape,
-    bytes: &mut [u8],
-) {
-    put_u32(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout,
-            width_in_texels
-        ),
-        value.width_in_texels,
-    );
-    put_u32(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout,
-            height_in_texels
-        ),
-        value.height_in_texels,
-    );
-    put_u32(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11TileShapeLayout,
-            depth_in_texels
-        ),
-        value.depth_in_texels,
-    );
-}
-
 /// `D3D11_SUBRESOURCE_TILING` as C lays it out: its offsets and size are this type's.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -6565,81 +6400,6 @@ pub(crate) struct WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout {
     height_in_tiles: u16,
     depth_in_tiles: u16,
     start_tile_index_in_overall_resource: u32,
-}
-
-/// Reads `D3D11_SUBRESOURCE_TILING` from the 12 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_subresource_tiling(
-    bytes: &[u8],
-) -> direct3d_11::structures::SubresourceTiling {
-    direct3d_11::structures::SubresourceTiling {
-        width_in_tiles: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-                width_in_tiles
-            ),
-        ),
-        height_in_tiles: get_u16(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-                height_in_tiles
-            ),
-        ),
-        depth_in_tiles: get_u16(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-                depth_in_tiles
-            ),
-        ),
-        start_tile_index_in_overall_resource: get_u32(
-            bytes,
-            offset_of!(
-                WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-                start_tile_index_in_overall_resource
-            ),
-        ),
-    }
-}
-
-/// Writes `D3D11_SUBRESOURCE_TILING` as the 12 bytes C lays it out in.
-pub(crate) fn encode_windows_win32_graphics_direct_3d11_d_3d11_subresource_tiling(
-    value: &direct3d_11::structures::SubresourceTiling,
-    bytes: &mut [u8],
-) {
-    put_u32(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-            width_in_tiles
-        ),
-        value.width_in_tiles,
-    );
-    put_u16(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-            height_in_tiles
-        ),
-        value.height_in_tiles,
-    );
-    put_u16(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-            depth_in_tiles
-        ),
-        value.depth_in_tiles,
-    );
-    put_u32(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d11D3d11SubresourceTilingLayout,
-            start_tile_index_in_overall_resource
-        ),
-        value.start_tile_index_in_overall_resource,
-    );
 }
 
 /// `D3D11_TEXTURE2D_DESC1` as C lays it out: its offsets and size are this type's.
@@ -13797,18 +13557,6 @@ pub(crate) fn encode_windows_win32_graphics_dxgi_dxgi_surface_desc(
 #[repr(C)]
 pub(crate) struct WindowsWin32GraphicsDxgiDxgiSharedResourceLayout {
     handle: usize,
-}
-
-/// Reads `DXGI_SHARED_RESOURCE` from the 8 bytes C lays it out in.
-pub(crate) fn decode_windows_win32_graphics_dxgi_dxgi_shared_resource(
-    bytes: &[u8],
-) -> directx_graphics_infrastructure::structures::SharedResource {
-    directx_graphics_infrastructure::structures::SharedResource {
-        handle: component_object_model::structures::Handle(get_usize(
-            bytes,
-            offset_of!(WindowsWin32GraphicsDxgiDxgiSharedResourceLayout, handle),
-        )),
-    }
 }
 
 /// Writes `DXGI_SHARED_RESOURCE` as the 8 bytes C lays it out in.

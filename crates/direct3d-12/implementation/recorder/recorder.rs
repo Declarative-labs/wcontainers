@@ -711,7 +711,13 @@ impl<A: Recorded> direct3d_12::CommandQueue for RecordedCommandQueue<A> {
     ) {
         let _ = &command_lists;
         record("ID3D12CommandQueue::ExecuteCommandLists()".to_string());
-        record_arguments("ID3D12CommandQueue::ExecuteCommandLists(command_lists=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D12CommandQueue::ExecuteCommandLists(command_lists={:?})",
+            command_lists
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn signal(
         &self,
@@ -1041,8 +1047,11 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
             node_mask, type_
         ));
         record_arguments(format!(
-            "ID3D12Device::CreateCommandList(node_mask={:?}, type_={:?}, command_allocator=an object or the caller's bytes, initial_state=an object or the caller's bytes, riid={:?})",
-            node_mask, type_, riid
+            "ID3D12Device::CreateCommandList(node_mask={:?}, type_={:?}, command_allocator=an object or the caller's bytes, initial_state={:?}, riid={:?})",
+            node_mask,
+            type_,
+            initial_state.is_some(),
+            riid
         ));
         Ok(
             if [
@@ -1380,8 +1389,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &dest_descriptor;
         record("ID3D12Device::CreateShaderResourceView()".to_string());
         record_arguments(format!(
-            "ID3D12Device::CreateShaderResourceView(resource=an object or the caller's bytes, desc={:?}, dest_descriptor={:?})",
-            desc, dest_descriptor
+            "ID3D12Device::CreateShaderResourceView(resource={:?}, desc={:?}, dest_descriptor={:?})",
+            resource.is_some(),
+            desc,
+            dest_descriptor
         ));
     }
     fn create_render_target_view(
@@ -1395,8 +1406,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &dest_descriptor;
         record("ID3D12Device::CreateRenderTargetView()".to_string());
         record_arguments(format!(
-            "ID3D12Device::CreateRenderTargetView(resource=an object or the caller's bytes, desc={:?}, dest_descriptor={:?})",
-            desc, dest_descriptor
+            "ID3D12Device::CreateRenderTargetView(resource={:?}, desc={:?}, dest_descriptor={:?})",
+            resource.is_some(),
+            desc,
+            dest_descriptor
         ));
     }
     fn create_committed_resource(
@@ -1833,7 +1846,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &allocator;
         let _ = &initial_state;
         record("ID3D12GraphicsCommandList::Reset()".to_string());
-        record_arguments("ID3D12GraphicsCommandList::Reset(allocator=an object or the caller's bytes, initial_state=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::Reset(allocator=an object or the caller's bytes, initial_state={:?})",
+            initial_state.is_some()
+        ));
         Ok(())
     }
     fn draw_instanced(
@@ -1978,10 +1994,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     fn resource_barrier(&self, barriers: &[direct3d_12::structures::ResourceBarrier<Self::Api>]) {
         let _ = &barriers;
         record("ID3D12GraphicsCommandList::ResourceBarrier()".to_string());
-        record_arguments(
-            "ID3D12GraphicsCommandList::ResourceBarrier(barriers=an object or the caller's bytes)"
-                .to_string(),
-        );
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::ResourceBarrier(barriers={:?})",
+            barriers.len()
+        ));
     }
     fn set_descriptor_heaps(
         &self,
@@ -1989,7 +2005,13 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &descriptor_heaps;
         record("ID3D12GraphicsCommandList::SetDescriptorHeaps()".to_string());
-        record_arguments("ID3D12GraphicsCommandList::SetDescriptorHeaps(descriptor_heaps=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetDescriptorHeaps(descriptor_heaps={:?})",
+            descriptor_heaps
+                .iter()
+                .map(|item| item.is_some())
+                .collect::<Vec<_>>()
+        ));
     }
     fn set_compute_root_signature(
         &self,
@@ -1997,7 +2019,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &root_signature;
         record("ID3D12GraphicsCommandList::SetComputeRootSignature()".to_string());
-        record_arguments("ID3D12GraphicsCommandList::SetComputeRootSignature(root_signature=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetComputeRootSignature(root_signature={:?})",
+            root_signature.is_some()
+        ));
     }
     fn set_graphics_root_signature(
         &self,
@@ -2005,7 +2030,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &root_signature;
         record("ID3D12GraphicsCommandList::SetGraphicsRootSignature()".to_string());
-        record_arguments("ID3D12GraphicsCommandList::SetGraphicsRootSignature(root_signature=an object or the caller's bytes)".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetGraphicsRootSignature(root_signature={:?})",
+            root_signature.is_some()
+        ));
     }
     fn set_graphics_root_descriptor_table(
         &self,
@@ -2319,8 +2347,10 @@ impl direct3d_12::Direct3D12 for Recorder {
             minimum_feature_level
         ));
         record_arguments(format!(
-            "D3D12CreateDevice(adapter=an object or the caller's bytes, minimum_feature_level={:?}, riid={:?})",
-            minimum_feature_level, riid
+            "D3D12CreateDevice(adapter={:?}, minimum_feature_level={:?}, riid={:?})",
+            adapter.is_some(),
+            minimum_feature_level,
+            riid
         ));
         Ok(
             if [

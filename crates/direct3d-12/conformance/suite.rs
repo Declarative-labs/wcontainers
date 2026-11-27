@@ -277,1892 +277,1795 @@ impl<A: direct3d_12::Direct3D12> Objects<A> {
     }
 }
 
-/// Makes an object of every kind it can, by every method that hands one out, in rounds until none is new.
+/// Makes an object of every kind it can, by every method that hands one out, in rounds until none is new: first by
+/// the methods that hand out an object of their own kind, then by those too that hand out an interface by id.
 fn make_all<A: direct3d_12::Direct3D12>(o: &mut Objects<A>) -> usize {
-    for _ in 0..6 {
-        let before = o.kinds_held();
-        // ID3D12Device::CreateCommandQueue for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_DEVICE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_FENCE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_RESOURCE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandQueue for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_DEVICE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_FENCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandAllocator for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_allocator(
-                        this,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_DEVICE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_FENCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommandList for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let v1 = o.k51.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_list(
-                        this,
-                        27_u32,
-                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
-                        v1,
-                        o.k57.as_ref(),
-                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_DEVICE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_FENCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateDescriptorHeap for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(
-                        this,
-                        &direct3d_12::structures::DescriptorHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                            num_descriptors: 41_u32,
-                            flags:
-                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                            node_mask: 55_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_DEVICE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_FENCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateRootSignature for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_root_signature(
-                        this,
-                        27_u32,
-                        &[119_u8],
-                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_DEVICE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_FENCE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_RESOURCE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateCommittedResource for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_DEVICE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_FENCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateFence for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_fence(
-                        this,
-                        54_u64,
-                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
-                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_DEVICE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_FENCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // ID3D12Device::CreateQueryHeap for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(
-                        this,
-                        &direct3d_12::structures::QueryHeapDesc {
-                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-                            count: 65_u32,
-                            node_mask: 72_u32,
-                        },
-                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for CommandAllocator
-        if o.k51.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
-                && o.k51.is_none()
-            {
-                o.k51 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for CommandQueue
-        if o.k52.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
-                && o.k52.is_none()
-            {
-                o.k52 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for DescriptorHeap
-        if o.k53.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
-                && o.k53.is_none()
-            {
-                o.k53 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for Device
-        if o.k54.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_DEVICE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
-                && o.k54.is_none()
-            {
-                o.k54 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for Fence
-        if o.k55.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_FENCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
-                && o.k55.is_none()
-            {
-                o.k55 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for GraphicsCommandList
-        if o.k56.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
-                && o.k56.is_none()
-            {
-                o.k56 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for PipelineState
-        if o.k57.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
-                && o.k57.is_none()
-            {
-                o.k57 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for QueryHeap
-        if o.k58.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
-                && o.k58.is_none()
-            {
-                o.k58 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for Resource
-        if o.k59.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
-                && o.k59.is_none()
-            {
-                o.k59 = Some(p0);
-            }
-        }
-        // D3D12CreateDevice for RootSignature
-        if o.k60.is_none() {
-            let answer = {
-                let o = &*o;
-                made(|| {
-                    let answer = direct3d_12::Direct3D12::create_device(
-                        &o.api,
-                        None,
-                        direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
-                    );
-                    answer.ok()
-                })
-            };
-            if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
-                && o.k60.is_none()
-            {
-                o.k60 = Some(p0);
-            }
-        }
-        if o.kinds_held() == before {
-            break;
+    for by_id in [false, true] {
+        for _ in 0..6 {
+            let before = o.kinds_held();
+            // ID3D12Device::CreateCommandQueue for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_DEVICE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_FENCE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_RESOURCE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandQueue for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_DEVICE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_FENCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandAllocator for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_allocator(
+                            this,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_DEVICE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_FENCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommandList for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let v1 = o.k51.as_ref()?;
+                        let answer = direct3d_12::Device::create_command_list(
+                            this,
+                            27_u32,
+                            direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                            v1,
+                            o.k57.as_ref(),
+                            &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_DEVICE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_FENCE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_RESOURCE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateDescriptorHeap for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_descriptor_heap(this, &direct3d_12::structures::DescriptorHeapDesc { type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, num_descriptors: 41_u32, flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, node_mask: 55_u32 }, &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_DEVICE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_FENCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateRootSignature for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_root_signature(
+                            this,
+                            27_u32,
+                            &[119_u8],
+                            &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_DEVICE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_FENCE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_RESOURCE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateCommittedResource for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_DEVICE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_FENCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateFence for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_fence(
+                            this,
+                            54_u64,
+                            direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                            &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_DEVICE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_FENCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // ID3D12Device::CreateQueryHeap for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let this = o.k54.as_ref()?;
+                        let answer = direct3d_12::Device::create_query_heap(
+                            this,
+                            &direct3d_12::structures::QueryHeapDesc {
+                                type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                count: 65_u32,
+                                node_mask: 72_u32,
+                            },
+                            &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for CommandAllocator
+            if by_id && (o.k51.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandAllocator(p0)) = answer
+                    && o.k51.is_none()
+                {
+                    o.k51 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for CommandQueue
+            if by_id && (o.k52.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::CommandQueue(p0)) = answer
+                    && o.k52.is_none()
+                {
+                    o.k52 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for DescriptorHeap
+            if by_id && (o.k53.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::DescriptorHeap(p0)) = answer
+                    && o.k53.is_none()
+                {
+                    o.k53 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for Device
+            if by_id && (o.k54.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_DEVICE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Device(p0)) = answer
+                    && o.k54.is_none()
+                {
+                    o.k54 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for Fence
+            if by_id && (o.k55.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_FENCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Fence(p0)) = answer
+                    && o.k55.is_none()
+                {
+                    o.k55 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for GraphicsCommandList
+            if by_id && (o.k56.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::GraphicsCommandList(p0)) = answer
+                    && o.k56.is_none()
+                {
+                    o.k56 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for PipelineState
+            if by_id && (o.k57.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::PipelineState(p0)) = answer
+                    && o.k57.is_none()
+                {
+                    o.k57 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for QueryHeap
+            if by_id && (o.k58.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::QueryHeap(p0)) = answer
+                    && o.k58.is_none()
+                {
+                    o.k58 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for Resource
+            if by_id && (o.k59.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::Resource(p0)) = answer
+                    && o.k59.is_none()
+                {
+                    o.k59 = Some(p0);
+                }
+            }
+            // D3D12CreateDevice for RootSignature
+            if by_id && (o.k60.is_none()) {
+                let answer = {
+                    let o = &*o;
+                    made(|| {
+                        let answer = direct3d_12::Direct3D12::create_device(
+                            &o.api,
+                            None,
+                            direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
+                            &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                        );
+                        answer.ok()
+                    })
+                };
+                if let Some(direct3d_12::UnknownObject::RootSignature(p0)) = answer
+                    && o.k60.is_none()
+                {
+                    o.k60 = Some(p0);
+                }
+            }
+            if o.kinds_held() == before {
+                break;
+            }
         }
     }
     o.kinds_held()
@@ -2495,19 +2398,19 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
     // ID3D12Device::CreateShaderResourceView on Device
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else { return false; };
-        answered(direct3d_12::Device::create_shader_resource_view(this, o.k59.as_ref(), Some(&direct3d_12::structures::ShaderResourceViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_12::enumerations::D3D12_SRV_DIMENSION_BUFFER, shader4_component_mapping: 72_u32, anonymous: direct3d_12::structures::ShaderResourceViewDescAnonymous { buffer: direct3d_12::structures::BufferSrv { first_element: 0_u64, num_elements: 0_u32, structure_byte_stride: 0_u32, flags: direct3d_12::enumerations::BufferSrvFlags(0) }, texture_1d: direct3d_12::structures::Tex1DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, resource_min_lod_clamp: 0.0_f32 }, texture_1d_array: direct3d_12::structures::Tex1DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, resource_min_lod_clamp: 0.0_f32 }, texture_2d: direct3d_12::structures::Tex2DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, plane_slice: 0_u32, resource_min_lod_clamp: 0.0_f32 }, texture_2d_array: direct3d_12::structures::Tex2DArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32, resource_min_lod_clamp: 0.0_f32 }, texture_2dms: direct3d_12::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_12::structures::Tex2DmsArraySrv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_12::structures::Tex3DSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, resource_min_lod_clamp: 0.0_f32 }, texture_cube: direct3d_12::structures::TexcubeSrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, resource_min_lod_clamp: 0.0_f32 }, texture_cube_array: direct3d_12::structures::TexcubeArraySrv { most_detailed_mip: 0_u32, mip_levels: 0_u32, first_2d_array_face: 0_u32, num_cubes: 0_u32, resource_min_lod_clamp: 0.0_f32 }, raytracing_acceleration_structure: direct3d_12::structures::RaytracingAccelerationStructureSrv { location: 0_u64 } } }), direct3d_12::structures::CpuDescriptorHandle { ptr: 106_usize }))
+        answered(direct3d_12::Device::create_shader_resource_view(this, o.k59.as_ref(), Some(&direct3d_12::structures::ShaderResourceViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_12::enumerations::D3D12_SRV_DIMENSION_BUFFER, shader4_component_mapping: 72_u32, anonymous: direct3d_12::structures::ShaderResourceViewDescAnonymous { buffer: direct3d_12::structures::BufferSrv { first_element: 0x565554535251504f_u64, num_elements: 0x5a595857_u32, structure_byte_stride: 0x5e5d5c5b_u32, flags: direct3d_12::enumerations::BufferSrvFlags(0x6261605f_i32) }, texture_1d: direct3d_12::structures::Tex1DSrv { most_detailed_mip: 0x5251504f_u32, mip_levels: 0x56555453_u32, resource_min_lod_clamp: f32::from_bits(0x5a595857) }, texture_1d_array: direct3d_12::structures::Tex1DArraySrv { most_detailed_mip: 0x5251504f_u32, mip_levels: 0x56555453_u32, first_array_slice: 0x5a595857_u32, array_size: 0x5e5d5c5b_u32, resource_min_lod_clamp: f32::from_bits(0x6261605f) }, texture_2d: direct3d_12::structures::Tex2DSrv { most_detailed_mip: 0x5251504f_u32, mip_levels: 0x56555453_u32, plane_slice: 0x5a595857_u32, resource_min_lod_clamp: f32::from_bits(0x5e5d5c5b) }, texture_2d_array: direct3d_12::structures::Tex2DArraySrv { most_detailed_mip: 0x5251504f_u32, mip_levels: 0x56555453_u32, first_array_slice: 0x5a595857_u32, array_size: 0x5e5d5c5b_u32, plane_slice: 0x6261605f_u32, resource_min_lod_clamp: f32::from_bits(0x0) }, texture_2dms: direct3d_12::structures::Tex2DmsSrv { unused_field_nothing_to_define: 0x5251504f_u32 }, texture_2dms_array: direct3d_12::structures::Tex2DmsArraySrv { first_array_slice: 0x5251504f_u32, array_size: 0x56555453_u32 }, texture_3d: direct3d_12::structures::Tex3DSrv { most_detailed_mip: 0x5251504f_u32, mip_levels: 0x56555453_u32, resource_min_lod_clamp: f32::from_bits(0x5a595857) }, texture_cube: direct3d_12::structures::TexcubeSrv { most_detailed_mip: 0x5251504f_u32, mip_levels: 0x56555453_u32, resource_min_lod_clamp: f32::from_bits(0x5a595857) }, texture_cube_array: direct3d_12::structures::TexcubeArraySrv { most_detailed_mip: 0x5251504f_u32, mip_levels: 0x56555453_u32, first_2d_array_face: 0x5a595857_u32, num_cubes: 0x5e5d5c5b_u32, resource_min_lod_clamp: f32::from_bits(0x6261605f) }, raytracing_acceleration_structure: direct3d_12::structures::RaytracingAccelerationStructureSrv { location: 0x565554535251504f_u64 } } }), direct3d_12::structures::CpuDescriptorHandle { ptr: 106_usize }))
     });
     // ID3D12Device::CreateRenderTargetView on Device
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else { return false; };
-        answered(direct3d_12::Device::create_render_target_view(this, o.k59.as_ref(), Some(&direct3d_12::structures::RenderTargetViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_12::enumerations::D3D12_RTV_DIMENSION_BUFFER, anonymous: direct3d_12::structures::RenderTargetViewDescAnonymous { buffer: direct3d_12::structures::BufferRtv { first_element: 0_u64, num_elements: 0_u32 }, texture_1d: direct3d_12::structures::Tex1DRtv { mip_slice: 0_u32 }, texture_1d_array: direct3d_12::structures::Tex1DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32 }, texture_2d: direct3d_12::structures::Tex2DRtv { mip_slice: 0_u32, plane_slice: 0_u32 }, texture_2d_array: direct3d_12::structures::Tex2DArrayRtv { mip_slice: 0_u32, first_array_slice: 0_u32, array_size: 0_u32, plane_slice: 0_u32 }, texture_2dms: direct3d_12::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0_u32 }, texture_2dms_array: direct3d_12::structures::Tex2DmsArrayRtv { first_array_slice: 0_u32, array_size: 0_u32 }, texture_3d: direct3d_12::structures::Tex3DRtv { mip_slice: 0_u32, first_w_slice: 0_u32, w_size: 0_u32 } } }), direct3d_12::structures::CpuDescriptorHandle { ptr: 106_usize }))
+        answered(direct3d_12::Device::create_render_target_view(this, o.k59.as_ref(), Some(&direct3d_12::structures::RenderTargetViewDesc { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, view_dimension: direct3d_12::enumerations::D3D12_RTV_DIMENSION_BUFFER, anonymous: direct3d_12::structures::RenderTargetViewDescAnonymous { buffer: direct3d_12::structures::BufferRtv { first_element: 0x4f4e4d4c4b4a4948_u64, num_elements: 0x53525150_u32 }, texture_1d: direct3d_12::structures::Tex1DRtv { mip_slice: 0x4b4a4948_u32 }, texture_1d_array: direct3d_12::structures::Tex1DArrayRtv { mip_slice: 0x4b4a4948_u32, first_array_slice: 0x4f4e4d4c_u32, array_size: 0x53525150_u32 }, texture_2d: direct3d_12::structures::Tex2DRtv { mip_slice: 0x4b4a4948_u32, plane_slice: 0x4f4e4d4c_u32 }, texture_2d_array: direct3d_12::structures::Tex2DArrayRtv { mip_slice: 0x4b4a4948_u32, first_array_slice: 0x4f4e4d4c_u32, array_size: 0x53525150_u32, plane_slice: 0x0_u32 }, texture_2dms: direct3d_12::structures::Tex2DmsRtv { unused_field_nothing_to_define: 0x4b4a4948_u32 }, texture_2dms_array: direct3d_12::structures::Tex2DmsArrayRtv { first_array_slice: 0x4b4a4948_u32, array_size: 0x4f4e4d4c_u32 }, texture_3d: direct3d_12::structures::Tex3DRtv { mip_slice: 0x4b4a4948_u32, first_w_slice: 0x4f4e4d4c_u32, w_size: 0x53525150_u32 } } }), direct3d_12::structures::CpuDescriptorHandle { ptr: 106_usize }))
     });
     // ID3D12Device::CreateCommittedResource on Device
     let noted = answers.len();
     answers.start();
     driven.attempt(|| {
         let Some(this) = o.k54.as_ref() else { return false; };
-        failure_is_negative({ let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: core::array::from_fn(|_| 0.0_f32), depth_stencil: direct3d_12::structures::DepthStencilValue { depth: 0.0_f32, stencil: 0_u8 } } }), &component_object_model::structures::Guid { data1: 99_u32, data2: 106_u16, data3: 113_u16, data4: core::array::from_fn(|_| 120_u8) }); answers.push(format!("ID3D12Device::CreateCommittedResource -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
+        failure_is_negative({ let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, Some(&direct3d_12::structures::ClearValue { format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, anonymous: direct3d_12::structures::ClearValueAnonymous { color: [f32::from_bits(0x9080706), f32::from_bits(0xd0c0b0a), f32::from_bits(0x11100f0e), f32::from_bits(0x15141312)], depth_stencil: direct3d_12::structures::DepthStencilValue { depth: f32::from_bits(0x9080706), stencil: 0xa_u8 } } }), &component_object_model::structures::Guid { data1: 99_u32, data2: 106_u16, data3: 113_u16, data4: core::array::from_fn(|_| 120_u8) }); answers.push(format!("ID3D12Device::CreateCommittedResource -> {}", match &answer { Ok(v0) => format!("Ok({})", "an object".to_string()), Err(v0) => format!("Err({:#x})", v0.0) })); answer })
     });
     answers.not_called_since(noted, "ID3D12Device::CreateCommittedResource on Device");
     // ID3D12Device::CreateFence on Device
@@ -3058,19 +2961,26 @@ fn drive<A: direct3d_12::Direct3D12>(o: &Objects<A>, answers: &Answers) -> Drive
         ))
     });
     // ID3D12Resource::Unmap on Resource
+    let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k59.as_ref() else {
             return false;
         };
-        answered(direct3d_12::Resource::unmap(
-            this,
-            64_u32,
-            Some(&direct3d_12::structures::Range {
-                begin: 89_usize,
-                end: 96_usize,
-            }),
-        ))
+        answered({
+            let answer = direct3d_12::Resource::unmap(
+                this,
+                64_u32,
+                Some(&direct3d_12::structures::Range {
+                    begin: 89_usize,
+                    end: 96_usize,
+                }),
+            );
+            answers.push("ID3D12Resource::Unmap -> nothing".to_string());
+            answer
+        })
     });
+    answers.not_called_since(noted, "ID3D12Resource::Unmap on Resource");
     // ID3D12Resource::GetDesc on Resource
     let noted = answers.len();
     answers.start();
@@ -3130,7 +3040,7 @@ const CALLS: usize = 53;
 
 /// The number of answers the suite notes and compares: each answer of a method both glues carry to the
 /// implementation, and the caller's bytes after each such method that writes them.
-const COMPARED: usize = 33;
+const COMPARED: usize = 34;
 
 /// Makes an object of every kind the implementation makes and calls every method of every kind and every export on
 /// them: no method panics, a failure is negative, an object handed out equals its clone.
@@ -3220,7 +3130,8 @@ pub fn answers_received_of<A: direct3d_12::Direct3D12>(
 /// what it received from the same call made directly: nothing the caller passed is dropped, zeroed or mixed up on the
 /// way. A method whose call through both glues differs by design (a check of the glue's on an argument the suite
 /// passes, an answer the glue gives from its own record, a bit a row clears) must be one of `refused` (src/api.rs
-/// `SUITE_DIFFERENT`, each with the reason).
+/// `SUITE_DIFFERENT`, each with the reason). A call the calling glue makes of its own for a method (`extra`: the method and
+/// the line, src/api.rs `SUITE_EXTRA_CALLS`) is taken out of what the implementation received before the comparison.
 pub fn every_answer_and_argument_equals_the_reference<
     A: direct3d_12::Direct3D12,
     R: direct3d_12::Direct3D12,
@@ -3230,6 +3141,7 @@ pub fn every_answer_and_argument_equals_the_reference<
     logged: fn() -> usize,
     since: fn(usize) -> Vec<String>,
     refused: &[&str],
+    extra: &[(&str, &str)],
 ) {
     let wanted = answers_received_of(reference, logged, since);
     let got = answers_received_of(api, logged, since);
@@ -3255,6 +3167,19 @@ pub fn every_answer_and_argument_equals_the_reference<
             .next()
             .unwrap_or_default()
             .to_string();
+        let mut without_extra = got_line.clone();
+        for (_, line) in extra.iter().filter(|(at, _)| *at == place) {
+            for form in [
+                format!(", \"{line}\""),
+                format!("\"{line}\", "),
+                format!("\"{line}\""),
+            ] {
+                without_extra = without_extra.replace(&form, "");
+            }
+        }
+        if without_extra == *wanted_line {
+            continue;
+        }
         if refused.contains(&place.as_str())
             || refused.iter().any(|entry| {
                 got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
@@ -3307,13 +3232,13 @@ macro_rules! tests {
             $crate::every_answer_equals_the_reference($value, $reference);
         }
     };
-    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr) => {
+    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr, $extra:expr) => {
         // One test, so that no other drive adds to the implementation's log of arguments while it is read.
         #[test]
         fn every_method_answers_and_every_answer_and_argument_equals_the_reference() {
             $crate::every_method_answers($value);
             $crate::every_answer_and_argument_equals_the_reference(
-                $value, $reference, $logged, $since, $refused,
+                $value, $reference, $logged, $since, $refused, $extra,
             );
         }
     };

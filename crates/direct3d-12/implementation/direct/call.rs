@@ -1705,7 +1705,7 @@ impl<A: System> direct3d_12::Device for SystemDevice<A> {
     {
         let _ = desc;
         let _ = riid;
-        // Refused by its kinds (src/kinds.rs), the system never called: pDesc: D3D12_GRAPHICS_PIPELINE_STATE_DESC.VS: D3D12_SHADER_BYTECODE.pShaderBytecode: a raw pointer with no size, which the system reads or writes as it likes; pDesc: D3D12_GRAPHICS_PIPELINE_STATE_DESC.VS: D3D12_SHADER_BYTECODE.BytecodeLength: an integer of pointer width, which the system may take as an address; pDesc: D3D12_GRAPHICS_PIPELINE_STATE_DESC.CachedPSO: D3D12_CACHED_PIPELINE_STATE.pCachedBlob: a raw pointer with no size, which the system reads or writes as it likes; pDesc: D3D12_GRAPHICS_PIPELINE_STATE_DESC.CachedPSO: D3D12_CACHED_PIPELINE_STATE.CachedBlobSizeInBytes: an integer of pointer width, which the system may take as an address.
+        // Refused by its kinds (src/kinds.rs), the system never called: pDesc: D3D12_GRAPHICS_PIPELINE_STATE_DESC.VS: D3D12_SHADER_BYTECODE.pShaderBytecode: a raw pointer with no size, which the system reads or writes as it likes; pDesc: D3D12_GRAPHICS_PIPELINE_STATE_DESC.CachedPSO: D3D12_CACHED_PIPELINE_STATE.pCachedBlob: a raw pointer with no size, which the system reads or writes as it likes.
         Err(E_NOTIMPL)
     }
     fn create_compute_pipeline_state(
@@ -1716,7 +1716,7 @@ impl<A: System> direct3d_12::Device for SystemDevice<A> {
     {
         let _ = desc;
         let _ = riid;
-        // Refused by its kinds (src/kinds.rs), the system never called: pDesc: D3D12_COMPUTE_PIPELINE_STATE_DESC.CS: D3D12_SHADER_BYTECODE.pShaderBytecode: a raw pointer with no size, which the system reads or writes as it likes; pDesc: D3D12_COMPUTE_PIPELINE_STATE_DESC.CS: D3D12_SHADER_BYTECODE.BytecodeLength: an integer of pointer width, which the system may take as an address; pDesc: D3D12_COMPUTE_PIPELINE_STATE_DESC.CachedPSO: D3D12_CACHED_PIPELINE_STATE.pCachedBlob: a raw pointer with no size, which the system reads or writes as it likes; pDesc: D3D12_COMPUTE_PIPELINE_STATE_DESC.CachedPSO: D3D12_CACHED_PIPELINE_STATE.CachedBlobSizeInBytes: an integer of pointer width, which the system may take as an address.
+        // Refused by its kinds (src/kinds.rs), the system never called: pDesc: D3D12_COMPUTE_PIPELINE_STATE_DESC.CS: D3D12_SHADER_BYTECODE.pShaderBytecode: a raw pointer with no size, which the system reads or writes as it likes; pDesc: D3D12_COMPUTE_PIPELINE_STATE_DESC.CachedPSO: D3D12_CACHED_PIPELINE_STATE.pCachedBlob: a raw pointer with no size, which the system reads or writes as it likes.
         Err(E_NOTIMPL)
     }
     fn create_command_list(
@@ -2622,13 +2622,29 @@ impl<A: System> direct3d_12::Resource for SystemResource<A> {
         let _ = subresource;
         let _ = read_range;
         let _ = data;
-        // Refused by its kinds (src/kinds.rs), the system never called: pReadRange: D3D12_RANGE.Begin: an integer of pointer width, which the system may take as an address; pReadRange: D3D12_RANGE.End: an integer of pointer width, which the system may take as an address; ppData: an address the system writes (a 2-deep pointer), valid until a later call the metadata does not name.
+        // Refused by its kinds (src/kinds.rs), the system never called: ppData: an address the system writes (a 2-deep pointer), valid until a later call the metadata does not name.
         Err(E_NOTIMPL)
     }
     fn unmap(&self, subresource: u32, written_range: Option<&direct3d_12::structures::Range>) {
-        let _ = subresource;
-        let _ = written_range;
-        // Refused by its kinds (src/kinds.rs), the system never called: pWrittenRange: D3D12_RANGE.Begin: an integer of pointer width, which the system may take as an address; pWrittenRange: D3D12_RANGE.End: an integer of pointer width, which the system may take as an address.
+        let written_range_bytes = written_range.map(|value| {
+            let mut bytes = Aligned::<
+                { size_of::<WindowsWin32GraphicsDirect3d12D3d12RangeLayout>() },
+            >::default();
+            encode_windows_win32_graphics_direct_3d12_d_3d12_range(value, &mut bytes.0);
+            bytes
+        });
+        #[expect(unsafe_code, reason = "ID3D12Resource::Unmap, called out")]
+        // SAFETY: a live object whose table holds `ID3D12Resource::Unmap` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self.object.entry_points().resource_unmap)(
+                self.object.raw(),
+                subresource,
+                written_range_bytes
+                    .as_ref()
+                    .map_or(null(), |bytes| bytes.0.as_ptr()),
+            )
+        };
+        let () = returned;
     }
     fn get_desc(&self) -> direct3d_12::structures::ResourceDesc {
         let mut ret_val = Aligned::<

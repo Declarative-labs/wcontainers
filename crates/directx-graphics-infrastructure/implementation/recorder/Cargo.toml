@@ -16,6 +16,10 @@ path = "conformance_run.rs"
 name = "conformance_through_glues"
 path = "conformance_through_glues.rs"
 
+[[test]]
+name = "refusals_through_glues"
+path = "refusals_through_glues.rs"
+
 [dependencies]
 wcontainers-directx-graphics-infrastructure = { path = "../.." }
 wcontainers-component-object-model = { path = "../../../component-object-model" }

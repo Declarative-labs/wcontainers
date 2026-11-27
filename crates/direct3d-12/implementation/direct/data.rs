@@ -1069,21 +1069,6 @@ pub(crate) fn decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_ha
     }
 }
 
-/// Writes `D3D12_CPU_DESCRIPTOR_HANDLE` as the 8 bytes C lays it out in.
-pub(crate) fn encode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
-    value: &direct3d_12::structures::CpuDescriptorHandle,
-    bytes: &mut [u8],
-) {
-    put_usize(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d12D3d12CpuDescriptorHandleLayout,
-            ptr
-        ),
-        value.ptr,
-    );
-}
-
 /// `D3D12_GPU_DESCRIPTOR_HANDLE` as C lays it out: its offsets and size are this type's.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -1104,19 +1089,4 @@ pub(crate) fn decode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_ha
             ),
         ),
     }
-}
-
-/// Writes `D3D12_GPU_DESCRIPTOR_HANDLE` as the 8 bytes C lays it out in.
-pub(crate) fn encode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_handle(
-    value: &direct3d_12::structures::GpuDescriptorHandle,
-    bytes: &mut [u8],
-) {
-    put_u64(
-        bytes,
-        offset_of!(
-            WindowsWin32GraphicsDirect3d12D3d12GpuDescriptorHandleLayout,
-            ptr
-        ),
-        value.ptr,
-    );
 }

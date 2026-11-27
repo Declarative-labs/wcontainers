@@ -16165,7 +16165,7 @@ pub fn drive_where(
             let _ = directx_graphics_infrastructure::SwapChain4::set_hdr_meta_data(
                 this,
                 directx_graphics_infrastructure::enumerations::DXGI_HDR_METADATA_TYPE_HDR10,
-                None,
+                Some(&[45_u8]),
             );
             true
         });
