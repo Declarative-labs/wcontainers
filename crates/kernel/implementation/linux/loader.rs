@@ -9,9 +9,7 @@ use wcontainers_executor::Executor;
 use object::LittleEndian;
 use object::elf;
 use object::read::elf::{FileHeader, ProgramHeader};
-use wcontainers_abi::{
-    HWCAP, HWCAP2, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
-};
+use wcontainers_abi::{LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions, RegisterBlock};
 
 use crate::fs::{Content, Node};
 use crate::linux::auxvec::*;
@@ -709,11 +707,13 @@ fn place<S: crate::System, C: Executor + 'static>(
     let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 
     let credentials = &after.credentials;
+    let capabilities =
+        crate::identification::hardware_capabilities(&crate::identification::PRESENTED);
     // In `create_elf_tables`'s order: arm64's `ARCH_DLINFO` first.
     let auxiliary = [
         (AT_SYSINFO_EHDR, vdso + crate::vdso::VVAR_PAGES * PAGE_SIZE),
         (AT_MINSIGSTKSZ, crate::linux_extra::SIGNAL_MINSIGSTKSZ),
-        (AT_HWCAP, HWCAP),
+        (AT_HWCAP, capabilities.0),
         (AT_PAGESZ, PAGE_SIZE),
         (AT_CLKTCK, crate::linux_extra::USER_HZ),
         (AT_PHDR, main.program_headers),
@@ -1151,7 +1151,10 @@ fn build_stack<S: crate::System, C: Executor + 'static>(
     let mut vector: Vec<(u32, u64)> = auxiliary.to_vec();
     vector.extend([
         (AT_RANDOM, random),
-        (AT_HWCAP2, HWCAP2),
+        (
+            AT_HWCAP2,
+            crate::identification::hardware_capabilities(&crate::identification::PRESENTED).1,
+        ),
         (AT_EXECFN, strings_start + file_name_offset),
         (AT_PLATFORM, platform),
         (AT_NULL, 0),

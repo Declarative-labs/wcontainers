@@ -23,7 +23,9 @@ use crate::sysctl::{
 
 /// What /proc/cpuinfo says of each processor before its number, and after it.
 const CPUINFO_PROCESSOR: &str = "processor\t: ";
-const CPUINFO_FIELDS: &str = "\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
+const CPUINFO_BEFORE_FEATURES: &str = "\nBogoMIPS\t: 48.00\nFeatures\t: ";
+/// What /proc/cpuinfo says of each processor after its features.
+const CPUINFO_FIELDS: &str = "\n\
 CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0x000\n\
 CPU revision\t: 0\n\n";
 
@@ -1820,6 +1822,10 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     for processor in 0..machine.processors.get() {
                         out.push_str(CPUINFO_PROCESSOR);
                         out.push_str(&processor.to_string());
+                        out.push_str(CPUINFO_BEFORE_FEATURES);
+                        out.push_str(&crate::identification::capability_names(
+                            &crate::identification::PRESENTED,
+                        ));
                         out.push_str(CPUINFO_FIELDS);
                     }
                 }

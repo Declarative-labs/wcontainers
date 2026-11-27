@@ -10,6 +10,16 @@ use wcontainers_kernel::arm64_features::{
     UnlistedImplementer, Variant,
 };
 
+use crate::linux::ptrace::{
+    HWCAP_AES, HWCAP_ASIMD, HWCAP_ASIMDDP, HWCAP_ASIMDFHM, HWCAP_ASIMDHP, HWCAP_ASIMDRDM,
+    HWCAP_ATOMICS, HWCAP_CMPBR, HWCAP_CPUID, HWCAP_CRC32, HWCAP_DCPOP, HWCAP_DIT, HWCAP_FCMA,
+    HWCAP_FLAGM, HWCAP_FP, HWCAP_FPHP, HWCAP_FPRCVT, HWCAP_ILRCPC, HWCAP_JSCVT, HWCAP_LRCPC,
+    HWCAP_PMULL, HWCAP_SB, HWCAP_SHA1, HWCAP_SHA2, HWCAP_SHA3, HWCAP_SHA512, HWCAP_SM3, HWCAP_SM4,
+    HWCAP_SSBS, HWCAP_USCAT, HWCAP2_BF16, HWCAP2_CSSC, HWCAP2_DCPODP, HWCAP2_DGH, HWCAP2_EBF16,
+    HWCAP2_FAMINMAX, HWCAP2_FLAGM2, HWCAP2_FRINT, HWCAP2_HBC, HWCAP2_I8MM, HWCAP2_LRCPC3,
+    HWCAP2_LSE128, HWCAP2_LUT, HWCAP2_MOPS, HWCAP2_RNG, HWCAP2_RPRFM,
+};
+
 /// The processor programs are told they run on: the base instruction set with floating point,
 /// vectors, the CRC32 instructions and the single-instruction atomics (`AT_HWCAP`'s `fp asimd
 /// crc32 atomics`), from implementer 0, part 0, as /proc/cpuinfo says. Its cache type and zero
@@ -134,6 +144,23 @@ const ISAR2: Place = (6, 2);
 const ISAR3: Place = (6, 3);
 /// [ID_AA64MMFR2_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64MMFR2-EL1--AArch64-Memory-Model-Feature-Register-2).
 const MMFR2: Place = (7, 2);
+/// [ID_AA64DFR0_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64DFR0-EL1--AArch64-Debug-Feature-Register-0).
+const DFR0: Place = (5, 0);
+/// [ID_AA64MMFR0_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ID-AA64MMFR0-EL1--AArch64-Memory-Model-Feature-Register-0).
+const MMFR0: Place = (7, 0);
+
+/// What a program reads of ID_AA64DFR0_EL1, whose every field Linux hides at its safe value.
+///
+/// DebugVer [3:0] is 6, the Armv8.0 debug architecture
+/// (<https://docs.kernel.org/arch/arm64/cpu-feature-registers.html#:~:text=The%20safe%20value>),
+/// MEASURED on the ARM64 machine's Linux 7.0.
+const DEBUG_FEATURES_SEEN: u64 = 0x6;
+/// What a program reads of ID_AA64MMFR0_EL1, whose fields but ECV Linux hides at their safe values.
+///
+/// TGran64 [27:24] and TGran4 [31:28] are 0xF (not implemented), TGran16_2 [35:32], TGran64_2
+/// [39:36] and TGran4_2 [43:40] 1 (as stage 1 says), MEASURED on the ARM64 machine's Linux 7.0;
+/// ECV [63:60] is 0, as no processor presented here has the enhanced counter.
+const MEMORY_MODEL_0_SEEN: u64 = 0x0000_0111_FF00_0000;
 
 /// Returns what a program reads from the identification register of encoding `(op0, op1, CRn,
 /// CRm)` and `op2` on a processor with `features`, as Linux answers the trapped read; `None`
@@ -151,9 +178,11 @@ pub(crate) fn read(features: &Arm64Features, encoding: (u8, u8, u8, u8), op2: u8
             _ => None,
         };
     }
-    // A register Linux tracks shows the fields it lets a program see; any other register of the
-    // space reads as zero.
+    // A register Linux tracks shows the fields it lets a program see and the safe value of each
+    // field it hides; any other register of the space reads as zero.
     Some(match (crm, op2) {
+        DFR0 => DEBUG_FEATURES_SEEN,
+        MMFR0 => MEMORY_MODEL_0_SEEN,
         PFR0 => processor_features_0(&features.pfr0),
         PFR1 => processor_features_1(&features.pfr1),
         ISAR0 => instruction_set_0(&features.isar0),
@@ -307,6 +336,157 @@ fn memory_model_2(mmfr2: &IdAa64Mmfr2El1) -> u64 {
     fields(&[(present(mmfr2.at), 32)])
 }
 
+/// Returns `AT_HWCAP` and `AT_HWCAP2` of a processor with `features`, as Linux derives them.
+///
+/// Each capability whose field reaches the level that names it
+/// (<https://docs.kernel.org/arch/arm64/elf_hwcaps.html>), and CPUID on every processor, as Linux
+/// answers the identification registers' trapped reads; FEAT_LSFE has no capability bit in the
+/// headers this kernel is built from.
+pub(crate) fn hardware_capabilities(features: &Arm64Features) -> (u64, u64) {
+    let (pfr0, pfr1, mmfr2) = (&features.pfr0, &features.pfr1, &features.mmfr2);
+    let (isar0, isar1, isar2, isar3) = (
+        &features.isar0,
+        &features.isar1,
+        &features.isar2,
+        &features.isar3,
+    );
+    let first: [(bool, u64); 30] = [
+        (true, HWCAP_FP.into()),
+        (mmfr2.at, HWCAP_USCAT.into()),
+        (true, HWCAP_ASIMD.into()),
+        (true, HWCAP_CPUID.into()),
+        (pfr0.fp16, HWCAP_FPHP.into()),
+        (pfr0.fp16, HWCAP_ASIMDHP.into()),
+        (pfr0.dit, HWCAP_DIT.into()),
+        (pfr1.ssbs >= Some(Ssbs::Ssbs2), HWCAP_SSBS.into()),
+        (isar0.aes.is_some(), HWCAP_AES.into()),
+        (isar0.aes >= Some(Aes::Pmull), HWCAP_PMULL.into()),
+        (isar0.sha1, HWCAP_SHA1.into()),
+        (isar0.sha2.is_some(), HWCAP_SHA2.into()),
+        (isar0.sha2 >= Some(Sha2::Sha512), HWCAP_SHA512.into()),
+        (isar0.crc32, HWCAP_CRC32.into()),
+        (isar0.atomic.is_some(), HWCAP_ATOMICS.into()),
+        (isar0.rdm, HWCAP_ASIMDRDM.into()),
+        (isar0.sha3, HWCAP_SHA3.into()),
+        (isar0.sm3, HWCAP_SM3.into()),
+        (isar0.sm4, HWCAP_SM4.into()),
+        (isar0.dp, HWCAP_ASIMDDP.into()),
+        (isar0.fhm, HWCAP_ASIMDFHM.into()),
+        (isar0.ts.is_some(), HWCAP_FLAGM.into()),
+        (isar1.dpb.is_some(), HWCAP_DCPOP.into()),
+        (isar1.jscvt, HWCAP_JSCVT.into()),
+        (isar1.fcma, HWCAP_FCMA.into()),
+        (isar1.lrcpc.is_some(), HWCAP_LRCPC.into()),
+        (isar1.lrcpc >= Some(Lrcpc::Lrcpc2), HWCAP_ILRCPC.into()),
+        (isar1.sb, HWCAP_SB.into()),
+        (isar2.cssc >= Some(Cssc::Cmpbr), HWCAP_CMPBR),
+        (isar3.fprcvt, HWCAP_FPRCVT),
+    ];
+    let second: [(bool, u64); 16] = [
+        (
+            isar0.ts >= Some(FlagManipulation::FlagM2),
+            HWCAP2_FLAGM2.into(),
+        ),
+        (isar0.rndr, HWCAP2_RNG.into()),
+        (isar0.atomic >= Some(Atomic::Lse128), HWCAP2_LSE128),
+        (isar1.dpb >= Some(Dpb::Dpb2), HWCAP2_DCPODP.into()),
+        (isar1.frintts, HWCAP2_FRINT.into()),
+        (isar1.bf16.is_some(), HWCAP2_BF16.into()),
+        (isar1.bf16 >= Some(Bf16::Ebf16), HWCAP2_EBF16),
+        (isar1.dgh, HWCAP2_DGH.into()),
+        (isar1.i8mm, HWCAP2_I8MM.into()),
+        (isar1.lrcpc >= Some(Lrcpc::Lrcpc3), HWCAP2_LRCPC3),
+        (isar2.mops, HWCAP2_MOPS),
+        (isar2.bc, HWCAP2_HBC),
+        (isar2.rprfm, HWCAP2_RPRFM),
+        (isar2.cssc.is_some(), HWCAP2_CSSC),
+        (isar2.lut, HWCAP2_LUT),
+        (isar3.faminmax, HWCAP2_FAMINMAX),
+    ];
+    let word = |capabilities: &[(bool, u64)]| {
+        capabilities
+            .iter()
+            .filter(|(has, _)| *has)
+            .fold(0, |word, (_, bit)| word | bit)
+    };
+    (word(&first), word(&second))
+}
+
+/// The name /proc/cpuinfo gives each `AT_HWCAP` capability this kernel may set, by bit.
+///
+/// The names and their order are Linux's (<https://docs.kernel.org/arch/arm64/elf_hwcaps.html>).
+const FIRST_NAMES: [(u64, &str); 30] = [
+    (HWCAP_FP as u64, "fp"),
+    (HWCAP_ASIMD as u64, "asimd"),
+    (HWCAP_AES as u64, "aes"),
+    (HWCAP_PMULL as u64, "pmull"),
+    (HWCAP_SHA1 as u64, "sha1"),
+    (HWCAP_SHA2 as u64, "sha2"),
+    (HWCAP_CRC32 as u64, "crc32"),
+    (HWCAP_ATOMICS as u64, "atomics"),
+    (HWCAP_FPHP as u64, "fphp"),
+    (HWCAP_ASIMDHP as u64, "asimdhp"),
+    (HWCAP_CPUID as u64, "cpuid"),
+    (HWCAP_ASIMDRDM as u64, "asimdrdm"),
+    (HWCAP_JSCVT as u64, "jscvt"),
+    (HWCAP_FCMA as u64, "fcma"),
+    (HWCAP_LRCPC as u64, "lrcpc"),
+    (HWCAP_DCPOP as u64, "dcpop"),
+    (HWCAP_SHA3 as u64, "sha3"),
+    (HWCAP_SM3 as u64, "sm3"),
+    (HWCAP_SM4 as u64, "sm4"),
+    (HWCAP_ASIMDDP as u64, "asimddp"),
+    (HWCAP_SHA512 as u64, "sha512"),
+    (HWCAP_ASIMDFHM as u64, "asimdfhm"),
+    (HWCAP_DIT as u64, "dit"),
+    (HWCAP_USCAT as u64, "uscat"),
+    (HWCAP_ILRCPC as u64, "ilrcpc"),
+    (HWCAP_FLAGM as u64, "flagm"),
+    (HWCAP_SSBS as u64, "ssbs"),
+    (HWCAP_SB as u64, "sb"),
+    (HWCAP_CMPBR, "cmpbr"),
+    (HWCAP_FPRCVT, "fprcvt"),
+];
+
+/// As [`FIRST_NAMES`], for `AT_HWCAP2`, whose names follow those of `AT_HWCAP`.
+///
+/// The names and their order are Linux's (<https://docs.kernel.org/arch/arm64/elf_hwcaps.html>).
+const SECOND_NAMES: [(u64, &str); 16] = [
+    (HWCAP2_DCPODP as u64, "dcpodp"),
+    (HWCAP2_FLAGM2 as u64, "flagm2"),
+    (HWCAP2_FRINT as u64, "frint"),
+    (HWCAP2_I8MM as u64, "i8mm"),
+    (HWCAP2_BF16 as u64, "bf16"),
+    (HWCAP2_DGH as u64, "dgh"),
+    (HWCAP2_RNG as u64, "rng"),
+    (HWCAP2_EBF16, "ebf16"),
+    (HWCAP2_CSSC, "cssc"),
+    (HWCAP2_RPRFM, "rprfm"),
+    (HWCAP2_MOPS, "mops"),
+    (HWCAP2_HBC, "hbc"),
+    (HWCAP2_LRCPC3, "lrcpc3"),
+    (HWCAP2_LSE128, "lse128"),
+    (HWCAP2_LUT, "lut"),
+    (HWCAP2_FAMINMAX, "faminmax"),
+];
+
+/// Returns the `Features` /proc/cpuinfo gives a processor with `features`.
+///
+/// Its capabilities' names, one space apart.
+pub(crate) fn capability_names(features: &Arm64Features) -> alloc::string::String {
+    let (first, second) = hardware_capabilities(features);
+    let named = |word: u64, names: &'static [(u64, &'static str)]| {
+        names
+            .iter()
+            .filter(move |(bit, _)| word & bit != 0)
+            .map(|(_, name)| *name)
+    };
+    let names: alloc::vec::Vec<&str> = named(first, &FIRST_NAMES)
+        .chain(named(second, &SECOND_NAMES))
+        .collect();
+    names.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,10 +504,47 @@ mod tests {
         assert_eq!(read(6, 1), Some(0), "ID_AA64ISAR1_EL1");
         assert_eq!(
             read(5, 0),
-            Some(0),
-            "ID_AA64DFR0_EL1, which Linux shows no field of here"
+            Some(0x6),
+            "ID_AA64DFR0_EL1, which Linux shows no field of here, DebugVer at its safe value"
+        );
+        assert_eq!(
+            read(7, 0),
+            Some(0x0000_0111_FF00_0000),
+            "ID_AA64MMFR0_EL1, its hidden fields at their safe values"
         );
         assert_eq!(read(7, 7), Some(0), "a reserved register of the space");
+    }
+
+    #[test]
+    fn the_capabilities_say_what_the_registers_say() {
+        assert_eq!(
+            hardware_capabilities(&PRESENTED),
+            (0x983, 0),
+            "fp, asimd, crc32, atomics and cpuid"
+        );
+        assert_eq!(capability_names(&PRESENTED), "fp asimd crc32 atomics cpuid");
+        let mut features = PRESENTED;
+        features.isar0.aes = Some(Aes::Pmull);
+        features.isar0.rndr = true;
+        features.isar0.atomic = Some(Atomic::Lse128);
+        features.isar1.lrcpc = Some(Lrcpc::Lrcpc3);
+        features.pfr0.fp16 = true;
+        features.pfr1.ssbs = Some(Ssbs::Ssbs);
+        features.mmfr2.at = true;
+        let (first, second) = hardware_capabilities(&features);
+        assert_eq!(
+            first, 0x0600_8F9B,
+            "and aes, pmull, fphp, asimdhp, lrcpc, uscat and ilrcpc, but not ssbs below SSBS2"
+        );
+        assert_eq!(
+            second,
+            u64::from(HWCAP2_RNG) | HWCAP2_LSE128 | HWCAP2_LRCPC3,
+            "rng, lse128 and lrcpc3"
+        );
+        assert_eq!(
+            capability_names(&features),
+            "fp asimd aes pmull crc32 atomics fphp asimdhp cpuid lrcpc uscat ilrcpc rng lrcpc3 lse128"
+        );
     }
 
     #[test]
