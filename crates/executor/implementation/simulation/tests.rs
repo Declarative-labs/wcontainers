@@ -17,7 +17,7 @@ use wcontainers_processor_architecture_arm64::encoding::{RN, RT};
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, Exception, INSTRUCTION_SIZE, Instruction, Processor,
-    ProcessorExpectation, RegisterValueExpectation, User, ZERO_PROCESSOR,
+    ProcessorExpectation, User, ZERO_PROCESSOR,
 };
 use wcontainers_random_source::RandomSource;
 use wcontainers_random_source_seeded::SeededRandomSource;
@@ -80,8 +80,8 @@ fn undecided_values_come_from_the_random_source() {
     let chip = simulate_first_behaviors();
     let undecided = 5;
     let mut expectation = ProcessorExpectation::new(ZERO_PROCESSOR);
-    expectation.general_purpose_registers[undecided] = RegisterValueExpectation::NonDeterministic;
-    expectation.condition_flags = RegisterValueExpectation::NonDeterministic;
+    expectation.uncompared.general_purpose_registers[undecided] = u64::MAX;
+    expectation.uncompared.condition_flags = ConditionFlags::all();
     let same_seed = seed_random(SEED);
     let mut expected = ZERO_PROCESSOR;
     expected.general_purpose_registers[undecided] = read_random_word(&same_seed);
