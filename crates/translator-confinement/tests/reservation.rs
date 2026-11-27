@@ -208,7 +208,7 @@ fn held(maps: &[(u64, u64, bool)], from: u64, to: u64, any: bool) -> bool {
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 #[test]
 fn the_pool_reserves_what_every_piece_reaches_around_a_window() {
-    use wcontainers_executor_in_process::InProcessPool;
+    use wcontainers_executor_in_process::memory::InProcessPool;
     use wcontainers_translator_confinement::SLOT_BYTES;
     let pool = InProcessPool::new().expect("a host with the guest's pages");
     let (memory, _table) = pool.create_memory().expect("a free slot");
