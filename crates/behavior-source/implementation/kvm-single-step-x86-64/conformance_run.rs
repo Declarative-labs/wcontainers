@@ -49,9 +49,11 @@ fn make(code: &[u8], after: Vec<MemoryDelta<'static, X86_64>>) -> ExecutionState
 }
 
 /// States the chip refuses: a permission that starts inside a page, bytes past the program's addresses, INT 0x80, which
-/// Linux takes as a 32-bit system call, and TILERELEASE, which under Linux traps its first use of the tiles.
+/// Linux takes as a 32-bit system call, and IA32_XFD disabling TILEDATA where XCR0 does not enable the tiles.
 fn to_unexecutable() -> Vec<ExecutionState<'static, X86_64>> {
     const ADD: [u8; 3] = [0x48, 0x01, 0xD8];
+    let mut disabled = make(&ADD, Vec::new());
+    disabled.processor.xfd = 1 << 18;
     vec![
         make(
             &ADD,
@@ -68,7 +70,7 @@ fn to_unexecutable() -> Vec<ExecutionState<'static, X86_64>> {
             }],
         ),
         make(&[0xCD, 0x80], Vec::new()),
-        make(&[0xC4, 0xE2, 0x78, 0x49, 0xC0], Vec::new()),
+        disabled,
     ]
 }
 

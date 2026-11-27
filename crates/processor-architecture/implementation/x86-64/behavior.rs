@@ -330,6 +330,7 @@ impl PreciseInstruction {
             Self::Optional { instruction, .. } => instruction,
             Self::State { instruction, .. } => instruction,
             Self::MonitorFaultsAsRead(instruction) => instruction,
+            Self::Amx { instruction, .. } => instruction,
         }
     }
 }
@@ -419,6 +420,7 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         }
         _ if crate::optional::find_optional_form(instruction).is_some() => crate::optional::list_optional_behaviors(instruction),
         _ if crate::xsave::find_state_form(instruction).is_some() => crate::xsave::list_state_behaviors(instruction),
+        _ if crate::amx::find_amx_form(instruction).is_some() => crate::amx::list_amx_behaviors(instruction),
         _ => list_integer_behaviors(instruction),
     }
 }

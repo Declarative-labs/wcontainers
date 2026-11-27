@@ -37,7 +37,11 @@ pub const TRACKING_CODE: u64 = 0xD000;
 /// XSAVEOPT wrote.
 pub const SAVED_AREA: u64 = 0xE000;
 pub const OBSERVED_AREA: u64 = 0xF000;
-pub const KERNEL_PAGES: u64 = 0x10;
+/// AMX TILES: the images the handler restores TILECFG and TILEDATA from and saves them to, apart from the slot's: an
+/// XSAVE of these two components alone reads and writes only their areas and the header.
+pub const TILES_BEFORE: u64 = 0x1_0000;
+pub const TILES_AFTER: u64 = 0x1_3000;
+pub const KERNEL_PAGES: u64 = 0x16;
 /// What full loading takes a state's tables and frames from.
 pub const ARENA: Range<u64> = 0x20_0000..0x200_0000;
 /// INCREMENTAL MEMORY: the top-level table, the lower tables and the frames the guest keeps between states.
@@ -102,6 +106,11 @@ pub struct Slot {
     pub after_xsave: XsaveImage,
     /// CR3 while the instruction runs.
     pub page_table: u64,
+    /// AMX TILES: the components the handler restores from [`TILES_BEFORE`] and saves to [`TILES_AFTER`], none where
+    /// XCR0 does not enable the tiles; and the IA32_XFD and IA32_XFD_ERR it writes before it restores them.
+    pub tile_request: u64,
+    pub feature_disable: u64,
+    pub feature_disable_error: u64,
     /// The vector the handler was entered by, [`NOT_RUN`] before.
     pub vector: u64,
     /// The error code the chip pushed, zero for a vector that has none.
@@ -110,9 +119,13 @@ pub struct Slot {
     pub fault_address: u64,
     /// DR6 after.
     pub debug_status: u64,
+    /// AMX TILES: IA32_XFD_ERR after, which the handler reads where the slot's tile request names components.
+    pub feature_disable_error_after: u64,
     pub tracking: TrackingSteps,
     pub before: Registers,
     pub after: Registers,
+    /// Keeps the slot a whole number of 64-byte lines, as its images align it, with no padding.
+    pub unused: [u64; 6],
 }
 
 /// XRSTOR TRACKING: what the handler runs at ring 3 around the instruction, in the same entry, to load the tracking
@@ -141,7 +154,7 @@ pub struct TrackingSteps {
     pub reading_request: u64,
     pub reading_bytes: u64,
     /// Fills the slot to a multiple of its alignment.
-    pub reserved: [u64; 4],
+    pub reserved: [u64; 2],
 }
 
 /// XRSTOR TRACKING: the phases: the instruction runs, the loading XRSTOR runs, the reading XSAVEOPT runs, the
@@ -185,6 +198,12 @@ pub const XSAVE_HIGH_16_ZMM: usize = 1664;
 pub const XSAVE_PKRU: usize = 2688;
 /// The legacy area, the header, the AVX area, AVX-512's three and PKRU's, to the image's alignment.
 pub const XSAVE_IMAGE_BYTES: usize = 2752;
+/// AMX TILES: where the standard format keeps TILECFG and TILEDATA, at the offsets of CPUID leaf 0xD's subleaves 17
+/// and 18, and the bytes up to TILEDATA's end.
+pub const XSAVE_TILE_CONFIGURATION: usize = 2752;
+pub const XSAVE_TILE_DATA: usize = 2816;
+pub const TILE_IMAGE_BYTES: u64 = XSAVE_TILE_DATA as u64 + 8192;
+const _: () = assert!(TILES_BEFORE + TILE_IMAGE_BYTES <= TILES_AFTER && TILES_AFTER + TILE_IMAGE_BYTES <= KERNEL_PAGES * PAGE_BYTES);
 /// XCR0's bits: x87, SSE, AVX, then the opmask, ZMM_Hi256 and Hi16_ZMM components of AVX-512, then PKRU.
 pub const X87_COMPONENT: u64 = 1 << 0;
 pub const SSE_COMPONENT: u64 = 1 << 1;
@@ -194,8 +213,7 @@ pub const OPMASK_COMPONENT: u64 = 1 << 5;
 pub const ZMM_HIGH_256_COMPONENT: u64 = 1 << 6;
 pub const HIGH_16_ZMM_COMPONENT: u64 = 1 << 7;
 pub const PKRU_COMPONENT: u64 = 1 << 9;
-/// XCR0 as the source sets it: Linux's on this chip but for AMX's tile components, which KVM gives a guest only after
-/// a system call kvm-ioctls does not make.
+/// XCR0 as the source sets it for a state without the tiles: Linux's on this chip but for AMX's tile components.
 pub const EXTENDED_CONTROL_0: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
 /// The components the handler loads and saves: those the state holds.
 pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
