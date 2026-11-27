@@ -673,6 +673,47 @@ unsafe extern "C" {
     fn wc_bytes_free(bytes: *mut BytesMirror);
 }
 
+/// The stages of `enum wc_stage`, each a zero-sized type a shader by stage names, and for each function that takes
+/// only some stages a trait those stages implement.
+pub mod stage {
+    /// `WC_STAGE_VERTEX`.
+    #[derive(Debug)]
+    pub struct Vertex;
+
+    /// `WC_STAGE_FRAGMENT`.
+    #[derive(Debug)]
+    pub struct Fragment;
+
+    /// `WC_STAGE_COMPUTE`.
+    #[derive(Debug)]
+    pub struct Compute;
+
+    /// `WC_STAGE_GEOMETRY`.
+    #[derive(Debug)]
+    pub struct Geometry;
+
+    /// `WC_STAGE_TESS_CONTROL`.
+    #[derive(Debug)]
+    pub struct TessControl;
+
+    /// `WC_STAGE_TESS_EVALUATION`.
+    #[derive(Debug)]
+    pub struct TessEvaluation;
+
+    /// The stages `wc_prepared_points_as_squares` takes.
+    pub trait TakesPreparedPointsAsSquares {}
+
+    impl TakesPreparedPointsAsSquares for Vertex {}
+
+    impl TakesPreparedPointsAsSquares for TessEvaluation {}
+
+    /// The stages `wc_prepared_geometry_points_as_squares` takes.
+    pub trait TakesPreparedGeometryPointsAsSquares {}
+
+    impl TakesPreparedGeometryPointsAsSquares for Geometry {}
+
+}
+
 /// A `struct wc_spirv_shader` the bridge made, given back by `wc_spirv_shader_free` when dropped. Not `Send`: no fact of the
 /// bridge's is relied on for a shader moved between threads.
 #[derive(Debug)]
@@ -731,18 +772,19 @@ impl Drop for SpirvCommon {
     }
 }
 
-/// A `struct wc_received` of the vertex stage the bridge made, given back by `wc_received_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
+/// A `struct wc_received` the bridge made, of the stage `S` names, given back by `wc_received_free` when dropped. Not `Send`:
+/// no fact of the bridge's is relied on for a shader moved between threads.
 #[derive(Debug)]
-pub struct ReceivedVertex {
+pub struct Received<S> {
     nir: NonNull<c_void>,
+    _stage: PhantomData<fn() -> S>,
     _thread: PhantomData<*const ()>,
 }
 
-impl ReceivedVertex {
+impl<S> Received<S> {
     /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<ReceivedVertex> {
-        NonNull::new(nir).map(|nir| ReceivedVertex { nir, _thread: PhantomData })
+    fn owning(nir: *mut c_void) -> Option<Received<S>> {
+        NonNull::new(nir).map(|nir| Received { nir, _stage: PhantomData, _thread: PhantomData })
     }
 
     /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
@@ -752,296 +794,73 @@ impl ReceivedVertex {
     }
 }
 
-impl Drop for ReceivedVertex {
+impl<S> Drop for Received<S> {
     fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made")]
+        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made, of any stage")]
         // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
         unsafe { wc_received_free(self.nir.as_ptr()) };
     }
 }
 
-/// A `struct wc_received` of the fragment stage the bridge made, given back by `wc_received_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
+/// A `struct wc_received` of the vertex stage.
+pub type ReceivedVertex = Received<stage::Vertex>;
+
+/// A `struct wc_received` of the fragment stage.
+pub type ReceivedFragment = Received<stage::Fragment>;
+
+/// A `struct wc_received` of the compute stage.
+pub type ReceivedCompute = Received<stage::Compute>;
+
+/// A `struct wc_received` of the geometry stage.
+pub type ReceivedGeometry = Received<stage::Geometry>;
+
+/// A `struct wc_received` of the tess control stage.
+pub type ReceivedTessControl = Received<stage::TessControl>;
+
+/// A `struct wc_received` of the tess evaluation stage.
+pub type ReceivedTessEvaluation = Received<stage::TessEvaluation>;
+
+/// A `struct wc_prepared` the bridge made, of the stage `S` names, given back by `wc_prepared_free` when dropped. Not `Send`:
+/// no fact of the bridge's is relied on for a shader moved between threads.
 #[derive(Debug)]
-pub struct ReceivedFragment {
+pub struct Prepared<S> {
     nir: NonNull<c_void>,
+    _stage: PhantomData<fn() -> S>,
     _thread: PhantomData<*const ()>,
 }
 
-impl ReceivedFragment {
+impl<S> Prepared<S> {
     /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<ReceivedFragment> {
-        NonNull::new(nir).map(|nir| ReceivedFragment { nir, _thread: PhantomData })
-    }
-
-    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
-    fn into_raw(self) -> *mut c_void {
-        let kept = core::mem::ManuallyDrop::new(self);
-        kept.nir.as_ptr()
+    fn owning(nir: *mut c_void) -> Option<Prepared<S>> {
+        NonNull::new(nir).map(|nir| Prepared { nir, _stage: PhantomData, _thread: PhantomData })
     }
 }
 
-impl Drop for ReceivedFragment {
+impl<S> Drop for Prepared<S> {
     fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_received_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_received` of the compute stage the bridge made, given back by `wc_received_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct ReceivedCompute {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl ReceivedCompute {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<ReceivedCompute> {
-        NonNull::new(nir).map(|nir| ReceivedCompute { nir, _thread: PhantomData })
-    }
-
-    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
-    fn into_raw(self) -> *mut c_void {
-        let kept = core::mem::ManuallyDrop::new(self);
-        kept.nir.as_ptr()
-    }
-}
-
-impl Drop for ReceivedCompute {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_received_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_received` of the geometry stage the bridge made, given back by `wc_received_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct ReceivedGeometry {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl ReceivedGeometry {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<ReceivedGeometry> {
-        NonNull::new(nir).map(|nir| ReceivedGeometry { nir, _thread: PhantomData })
-    }
-
-    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
-    fn into_raw(self) -> *mut c_void {
-        let kept = core::mem::ManuallyDrop::new(self);
-        kept.nir.as_ptr()
-    }
-}
-
-impl Drop for ReceivedGeometry {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_received_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_received` of the tess control stage the bridge made, given back by `wc_received_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct ReceivedTessControl {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl ReceivedTessControl {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<ReceivedTessControl> {
-        NonNull::new(nir).map(|nir| ReceivedTessControl { nir, _thread: PhantomData })
-    }
-
-    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
-    fn into_raw(self) -> *mut c_void {
-        let kept = core::mem::ManuallyDrop::new(self);
-        kept.nir.as_ptr()
-    }
-}
-
-impl Drop for ReceivedTessControl {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_received_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_received` of the tess evaluation stage the bridge made, given back by `wc_received_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct ReceivedTessEvaluation {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl ReceivedTessEvaluation {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<ReceivedTessEvaluation> {
-        NonNull::new(nir).map(|nir| ReceivedTessEvaluation { nir, _thread: PhantomData })
-    }
-
-    /// The shader, given to a bridge function that takes it (and gives it back itself): not dropped here.
-    fn into_raw(self) -> *mut c_void {
-        let kept = core::mem::ManuallyDrop::new(self);
-        kept.nir.as_ptr()
-    }
-}
-
-impl Drop for ReceivedTessEvaluation {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_free gives back a wc_received the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_received_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_prepared` of the vertex stage the bridge made, given back by `wc_prepared_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct PreparedVertex {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl PreparedVertex {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<PreparedVertex> {
-        NonNull::new(nir).map(|nir| PreparedVertex { nir, _thread: PhantomData })
-    }
-}
-
-impl Drop for PreparedVertex {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made")]
+        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made, of any stage")]
         // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
         unsafe { wc_prepared_free(self.nir.as_ptr()) };
     }
 }
 
-/// A `struct wc_prepared` of the fragment stage the bridge made, given back by `wc_prepared_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct PreparedFragment {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
+/// A `struct wc_prepared` of the vertex stage.
+pub type PreparedVertex = Prepared<stage::Vertex>;
 
-impl PreparedFragment {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<PreparedFragment> {
-        NonNull::new(nir).map(|nir| PreparedFragment { nir, _thread: PhantomData })
-    }
-}
+/// A `struct wc_prepared` of the fragment stage.
+pub type PreparedFragment = Prepared<stage::Fragment>;
 
-impl Drop for PreparedFragment {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_prepared_free(self.nir.as_ptr()) };
-    }
-}
+/// A `struct wc_prepared` of the compute stage.
+pub type PreparedCompute = Prepared<stage::Compute>;
 
-/// A `struct wc_prepared` of the compute stage the bridge made, given back by `wc_prepared_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct PreparedCompute {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
+/// A `struct wc_prepared` of the geometry stage.
+pub type PreparedGeometry = Prepared<stage::Geometry>;
 
-impl PreparedCompute {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<PreparedCompute> {
-        NonNull::new(nir).map(|nir| PreparedCompute { nir, _thread: PhantomData })
-    }
-}
+/// A `struct wc_prepared` of the tess control stage.
+pub type PreparedTessControl = Prepared<stage::TessControl>;
 
-impl Drop for PreparedCompute {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_prepared_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_prepared` of the geometry stage the bridge made, given back by `wc_prepared_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct PreparedGeometry {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl PreparedGeometry {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<PreparedGeometry> {
-        NonNull::new(nir).map(|nir| PreparedGeometry { nir, _thread: PhantomData })
-    }
-}
-
-impl Drop for PreparedGeometry {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_prepared_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_prepared` of the tess control stage the bridge made, given back by `wc_prepared_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct PreparedTessControl {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl PreparedTessControl {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<PreparedTessControl> {
-        NonNull::new(nir).map(|nir| PreparedTessControl { nir, _thread: PhantomData })
-    }
-}
-
-impl Drop for PreparedTessControl {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_prepared_free(self.nir.as_ptr()) };
-    }
-}
-
-/// A `struct wc_prepared` of the tess evaluation stage the bridge made, given back by `wc_prepared_free` when dropped. Not `Send`: no fact of the
-/// bridge's is relied on for a shader moved between threads.
-#[derive(Debug)]
-pub struct PreparedTessEvaluation {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl PreparedTessEvaluation {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<PreparedTessEvaluation> {
-        NonNull::new(nir).map(|nir| PreparedTessEvaluation { nir, _thread: PhantomData })
-    }
-}
-
-impl Drop for PreparedTessEvaluation {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_free gives back a wc_prepared the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_prepared_free(self.nir.as_ptr()) };
-    }
-}
+/// A `struct wc_prepared` of the tess evaluation stage.
+pub type PreparedTessEvaluation = Prepared<stage::TessEvaluation>;
 
 /// A `struct wc_made` the bridge made, given back by `wc_made_free` when dropped. Not `Send`: no fact of the
 /// bridge's is relied on for a shader moved between threads.
@@ -1095,6 +914,60 @@ impl Drop for Variant {
     }
 }
 
+
+/// The glue of the bridge's `wc_received_prepare`, for a shader of any stage it takes.
+fn received_prepare<S>(taken: Received<S>) -> PreparedForm<Prepared<S>, Made> {
+    let mut out = PreparedFormMirror::default();
+    #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a Received<S> of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
+    // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+    unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
+    let copied = out.owned(Prepared::<S>::owning);
+    #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+    // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+    unsafe { wc_prepared_form_free(&raw mut out) };
+    copied
+}
+
+/// The glue of the bridge's `wc_prepared_variant`, for a shader of any stage it takes.
+fn prepared_variant<S>(shader: &Prepared<S>, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
+    let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
+    let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
+    let mut out = VariantFormMirror::default();
+    #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a Prepared<S> of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
+    // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+    unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
+    let copied = out.owned();
+    #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+    // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+    unsafe { wc_variant_form_free(&raw mut out) };
+    copied
+}
+
+/// The glue of the bridge's `wc_prepared_points_as_squares`, for a shader of any stage it takes.
+fn prepared_points_as_squares<S: stage::TakesPreparedPointsAsSquares>(vs: &Prepared<S>, at: u32, largest: f32) -> Squares<Made> {
+    let mut out = SquaresMirror::default();
+    #[expect(unsafe_code, reason = "bridge.h: wc_prepared_points_as_squares takes the types declared there; vs is a Prepared<S> of ours, of the type the function names, of the stage its type names, one that `stage::TakesPreparedPointsAsSquares` is implemented for, the stages STAGES_TAKEN lists for it (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; out is one zeroed struct wc_squares of ours")]
+    // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+    unsafe { wc_prepared_points_as_squares(vs.nir.as_ptr(), at, largest, &raw mut out) };
+    let copied = out.owned();
+    #[expect(unsafe_code, reason = "bridge.h: wc_squares_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+    // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+    unsafe { wc_squares_free(&raw mut out) };
+    copied
+}
+
+/// The glue of the bridge's `wc_prepared_geometry_points_as_squares`, for a shader of any stage it takes.
+fn prepared_geometry_points_as_squares<S: stage::TakesPreparedGeometryPointsAsSquares>(gs: &Prepared<S>, at: u32, largest: f32, block: u32) -> Squares<Made> {
+    let mut out = SquaresMirror::default();
+    #[expect(unsafe_code, reason = "bridge.h: wc_prepared_geometry_points_as_squares takes the types declared there; gs is a Prepared<S> of ours, of the type the function names, of the stage its type names, one that `stage::TakesPreparedGeometryPointsAsSquares` is implemented for, the stages STAGES_TAKEN lists for it (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; out is one zeroed struct wc_squares of ours")]
+    // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
+    unsafe { wc_prepared_geometry_points_as_squares(gs.nir.as_ptr(), at, largest, block, &raw mut out) };
+    let copied = out.owned();
+    #[expect(unsafe_code, reason = "bridge.h: wc_squares_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
+    // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
+    unsafe { wc_squares_free(&raw mut out) };
+    copied
+}
 
 impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
     type SpirvShader = SpirvShader;
@@ -1180,195 +1053,63 @@ impl wcontainers_mesa_compiler::MesaCompiler for Bridge {
     }
 
     fn received_vertex_prepare(&self, taken: ReceivedVertex) -> PreparedForm<PreparedVertex, Made> {
-        let mut out = PreparedFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a ReceivedVertex of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
-        let copied = out.owned(PreparedVertex::owning);
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_prepared_form_free(&raw mut out) };
-        copied
+        received_prepare(taken)
     }
 
     fn received_fragment_prepare(&self, taken: ReceivedFragment) -> PreparedForm<PreparedFragment, Made> {
-        let mut out = PreparedFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a ReceivedFragment of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
-        let copied = out.owned(PreparedFragment::owning);
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_prepared_form_free(&raw mut out) };
-        copied
+        received_prepare(taken)
     }
 
     fn received_compute_prepare(&self, taken: ReceivedCompute) -> PreparedForm<PreparedCompute, Made> {
-        let mut out = PreparedFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a ReceivedCompute of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
-        let copied = out.owned(PreparedCompute::owning);
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_prepared_form_free(&raw mut out) };
-        copied
+        received_prepare(taken)
     }
 
     fn received_geometry_prepare(&self, taken: ReceivedGeometry) -> PreparedForm<PreparedGeometry, Made> {
-        let mut out = PreparedFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a ReceivedGeometry of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
-        let copied = out.owned(PreparedGeometry::owning);
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_prepared_form_free(&raw mut out) };
-        copied
+        received_prepare(taken)
     }
 
     fn received_tess_control_prepare(&self, taken: ReceivedTessControl) -> PreparedForm<PreparedTessControl, Made> {
-        let mut out = PreparedFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a ReceivedTessControl of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
-        let copied = out.owned(PreparedTessControl::owning);
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_prepared_form_free(&raw mut out) };
-        copied
+        received_prepare(taken)
     }
 
     fn received_tess_evaluation_prepare(&self, taken: ReceivedTessEvaluation) -> PreparedForm<PreparedTessEvaluation, Made> {
-        let mut out = PreparedFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_received_prepare takes the types declared there; taken is a ReceivedTessEvaluation of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), which the bridge takes and gives back itself; out is one zeroed struct wc_prepared_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_received_prepare(taken.into_raw(), &raw mut out) };
-        let copied = out.owned(PreparedTessEvaluation::owning);
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_prepared_form_free(&raw mut out) };
-        copied
+        received_prepare(taken)
     }
 
     fn prepared_vertex_variant(&self, shader: &PreparedVertex, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
-        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
-        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
-        let mut out = VariantFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a PreparedVertex of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_variant_form_free(&raw mut out) };
-        copied
+        prepared_variant(shader, settings, swizzles, samplers)
     }
 
     fn prepared_fragment_variant(&self, shader: &PreparedFragment, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
-        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
-        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
-        let mut out = VariantFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a PreparedFragment of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_variant_form_free(&raw mut out) };
-        copied
+        prepared_variant(shader, settings, swizzles, samplers)
     }
 
     fn prepared_compute_variant(&self, shader: &PreparedCompute, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
-        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
-        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
-        let mut out = VariantFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a PreparedCompute of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_variant_form_free(&raw mut out) };
-        copied
+        prepared_variant(shader, settings, swizzles, samplers)
     }
 
     fn prepared_geometry_variant(&self, shader: &PreparedGeometry, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
-        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
-        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
-        let mut out = VariantFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a PreparedGeometry of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_variant_form_free(&raw mut out) };
-        copied
+        prepared_variant(shader, settings, swizzles, samplers)
     }
 
     fn prepared_tess_control_variant(&self, shader: &PreparedTessControl, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
-        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
-        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
-        let mut out = VariantFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a PreparedTessControl of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_variant_form_free(&raw mut out) };
-        copied
+        prepared_variant(shader, settings, swizzles, samplers)
     }
 
     fn prepared_tess_evaluation_variant(&self, shader: &PreparedTessEvaluation, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Variant> {
-        let swizzles: Vec<TextureSwizzleMirror> = swizzles.iter().map(TextureSwizzleMirror::from).collect();
-        let samplers: Vec<NearestSamplerMirror> = samplers.iter().map(NearestSamplerMirror::from).collect();
-        let mut out = VariantFormMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_variant takes the types declared there; shader is a PreparedTessEvaluation of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; swizzles holds as many elements as the count beside it, in our memory; swizzle_count is swizzles's length; samplers holds as many elements as the count beside it, in our memory; sampler_count is samplers's length; out is one zeroed struct wc_variant_form of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_variant(shader.nir.as_ptr(), VariantSettingsMirror::from(&settings), swizzles.as_ptr(), swizzles.len(), samplers.as_ptr(), samplers.len(), &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_variant_form_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_variant_form_free(&raw mut out) };
-        copied
+        prepared_variant(shader, settings, swizzles, samplers)
     }
 
     fn prepared_vertex_points_as_squares(&self, vs: &PreparedVertex, at: u32, largest: f32) -> Squares<Made> {
-        let mut out = SquaresMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_points_as_squares takes the types declared there; vs is a PreparedVertex of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; out is one zeroed struct wc_squares of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_points_as_squares(vs.nir.as_ptr(), at, largest, &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_squares_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_squares_free(&raw mut out) };
-        copied
+        prepared_points_as_squares(vs, at, largest)
     }
 
     fn prepared_tess_evaluation_points_as_squares(&self, vs: &PreparedTessEvaluation, at: u32, largest: f32) -> Squares<Made> {
-        let mut out = SquaresMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_points_as_squares takes the types declared there; vs is a PreparedTessEvaluation of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; out is one zeroed struct wc_squares of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_points_as_squares(vs.nir.as_ptr(), at, largest, &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_squares_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_squares_free(&raw mut out) };
-        copied
+        prepared_points_as_squares(vs, at, largest)
     }
 
     fn prepared_geometry_points_as_squares(&self, gs: &PreparedGeometry, at: u32, largest: f32, block: u32) -> Squares<Made> {
-        let mut out = SquaresMirror::default();
-        #[expect(unsafe_code, reason = "bridge.h: wc_prepared_geometry_points_as_squares takes the types declared there; gs is a PreparedGeometry of ours, of the type the function names, of the stage its type names (wc_glsl_to_nir fills stages[s] with a shader of stage s, and wc_received_prepare keeps the stage of the shader it takes), read by the call alone; out is one zeroed struct wc_squares of ours")]
-        // SAFETY: the bridge's own function, declared as bridge.h declares it; every pointer passed is to our memory or the caller's, as long as the call reads or writes, and lives for the call.
-        unsafe { wc_prepared_geometry_points_as_squares(gs.nir.as_ptr(), at, largest, block, &raw mut out) };
-        let copied = out.owned();
-        #[expect(unsafe_code, reason = "bridge.h: wc_squares_free gives back what the bridge allocated into out (null pointers are given back as none: free(NULL))")]
-        // SAFETY: out is the struct the bridge filled, its shaders taken and set to null by `copied`; given back once.
-        unsafe { wc_squares_free(&raw mut out) };
-        copied
+        prepared_geometry_points_as_squares(gs, at, largest, block)
     }
 
     fn made_key(&self, shader: &Made) -> Option<Vec<u8>> {

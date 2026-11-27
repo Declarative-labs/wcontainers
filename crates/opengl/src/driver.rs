@@ -205,20 +205,20 @@ impl<B: HostWindows> Gallium for Driver<B> {
         });
     }
 
-    fn fence_finish(&self, _: Option<&Self::Context>, fence: &Self::Fence, _: u64) -> bool {
-        match *fence {}
+    fn fence_finish(&self, _: Option<&Self::Context>, fence: &Arc<Self::Fence>, _: u64) -> bool {
+        match **fence {}
     }
 
     fn flush_frontbuffer(
         &self,
         _: Option<&Self::Context>,
-        resource: &Self::Resource,
+        resource: &Arc<Self::Resource>,
         _: u32,
         _: u32,
         _: u64,
         _: Option<&PipeBox>,
     ) {
-        match *resource {}
+        match **resource {}
     }
 
     fn get_device_vendor(&self) -> Vec<u8> {
@@ -257,9 +257,6 @@ impl<B: HostWindows> Gallium for Driver<B> {
         guest_call(guest::SCREEN, None, || not_moved("resource_create"))
     }
 
-    fn resource_destroy(&self, pt: Self::Resource) {
-        match pt {}
-    }
 }
 
 /// The compiler whose received programs the shader states are made from.
@@ -268,7 +265,7 @@ type Compiled = Bridge;
 impl<B: HostWindows> GalliumContext for DriverContext<B> {
     type Screen = Driver<B>;
 
-    fn begin_query(&self, q: Unmoved) -> Option<Unmoved> {
+    fn begin_query(&self, q: Unmoved) -> Result<Unmoved, Unmoved> {
         match q {}
     }
 
@@ -351,23 +348,23 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn blit(&self, info: &BlitInfo<'_, Unmoved>) {
         if let Some(resource) = info.dst.resource.or(info.src.resource) {
-            match *resource {}
+            match **resource {}
         }
         self.call((), || not_moved("blit"));
     }
 
     fn buffer_map(
         &self,
-        resource: &Unmoved,
+        resource: &Arc<Unmoved>,
         _: u32,
         _: u32,
         _: &PipeBox,
     ) -> Option<Mapped<Unmoved>> {
-        match *resource {}
+        match **resource {}
     }
 
-    fn buffer_subdata(&self, resource: &Unmoved, _: u32, _: u32, _: u32, _: &[u8]) {
-        match *resource {}
+    fn buffer_subdata(&self, resource: &Arc<Unmoved>, _: u32, _: u32, _: u32, _: &[u8]) {
+        match **resource {}
     }
 
     fn buffer_unmap(&self, transfer: Unmoved, _: &[u8]) {
@@ -391,7 +388,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: bool,
     ) {
         if let Some(texture) = dst.texture {
-            match *texture {}
+            match **texture {}
         }
         self.call((), || not_moved("clear_depth_stencil"));
     }
@@ -407,7 +404,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: bool,
     ) {
         if let Some(texture) = dst.texture {
-            match *texture {}
+            match **texture {}
         }
         self.call((), || not_moved("clear_render_target"));
     }
@@ -485,12 +482,12 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         })
     }
 
-    fn create_sampler_view(&self, texture: &Unmoved, _: &SamplerViewTemplate) -> Option<Unmoved> {
-        match *texture {}
+    fn create_sampler_view(&self, texture: &Arc<Unmoved>, _: &SamplerViewTemplate) -> Option<Unmoved> {
+        match **texture {}
     }
 
-    fn create_stream_output_target(&self, resource: &Unmoved, _: u32, _: u32) -> Option<Unmoved> {
-        match *resource {}
+    fn create_stream_output_target(&self, resource: &Arc<Unmoved>, _: u32, _: u32) -> Option<Unmoved> {
+        match **resource {}
     }
 
     fn create_tcs_state(
@@ -610,12 +607,12 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
     }
 
     /// A resource about to be shown or shared needs nothing more: every write is already ordered.
-    fn flush_resource(&self, resource: &Unmoved) {
-        match *resource {}
+    fn flush_resource(&self, resource: &Arc<Unmoved>) {
+        match **resource {}
     }
 
-    fn generate_mipmap(&self, resource: &Unmoved, _: u32, _: u32, _: u32, _: u32, _: u32) -> bool {
-        match *resource {}
+    fn generate_mipmap(&self, resource: &Arc<Unmoved>, _: u32, _: u32, _: u32, _: u32, _: u32) -> bool {
+        match **resource {}
     }
 
     fn get_device_reset_status(&self) -> u32 {
@@ -628,16 +625,6 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn get_query_result_end_only_query(&self, q: &Unmoved, _: bool, _: &mut [u8]) -> bool {
         match *q {}
-    }
-
-    /// The host's samples sit at the standard positions (WebGPU's, Vulkan's and Direct3D's), which
-    /// Mesa's `u_default_get_sample_position` gives; the glue is to install it (NEEDED, G2).
-    fn get_sample_position(&self, _: u32, _: u32) -> [f32; 2] {
-        self.call([0.5, 0.5], || {
-            refuse(format_args!(
-                "get_sample_position is Mesa's u_default_get_sample_position, the glue's (G2)"
-            ))
-        })
     }
 
     fn get_timestamp(&self) -> u64 {
@@ -664,20 +651,16 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn resource_copy_region(
         &self,
-        dst: &Unmoved,
+        dst: &Arc<Unmoved>,
         _: u32,
         _: u32,
         _: u32,
         _: u32,
-        _: &Unmoved,
+        _: &Arc<Unmoved>,
         _: u32,
         _: &PipeBox,
     ) {
-        match *dst {}
-    }
-
-    fn sampler_view_destroy(&self, view: Unmoved) {
-        match view {}
+        match **dst {}
     }
 
     fn set_active_query_state(&self, _: bool) {
@@ -693,7 +676,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn set_constant_buffer(&self, _: u32, _: u32, buf: Option<&ConstantBuffer<'_, Unmoved>>) {
         if let Some(resource) = buf.and_then(|b| b.buffer) {
-            match *resource {}
+            match **resource {}
         }
         self.call((), || not_moved("set_constant_buffer"));
     }
@@ -720,10 +703,10 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: u32,
         _: u32,
         _: u32,
-        views: Option<&[Option<&Unmoved>]>,
+        views: Option<&[Option<&Arc<Unmoved>>]>,
     ) {
         if let Some(view) = views.into_iter().flatten().flatten().next() {
-            match **view {}
+            match ***view {}
         }
         self.call((), || not_moved("set_sampler_views"));
     }
@@ -746,7 +729,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: u32,
     ) {
         if let Some(resource) = buffers.into_iter().flatten().find_map(|b| b.buffer) {
-            match *resource {}
+            match **resource {}
         }
         self.call((), || not_moved("set_shader_buffers"));
     }
@@ -760,7 +743,7 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         images: Option<&[ImageView<'_, Unmoved>]>,
     ) {
         if let Some(resource) = images.into_iter().flatten().find_map(|i| i.resource) {
-            match *resource {}
+            match **resource {}
         }
         self.call((), || not_moved("set_shader_images"));
     }
@@ -769,16 +752,16 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         self.set.borrow_mut().stencil_ref = value.ref_value;
     }
 
-    fn set_stream_output_targets(&self, targets: &[Option<&Unmoved>], _: &[u32], _: u32) {
+    fn set_stream_output_targets(&self, targets: &[Option<&Arc<Unmoved>>], _: &[u32], _: u32) {
         if let Some(target) = targets.iter().flatten().next() {
-            match **target {}
+            match ***target {}
         }
         self.call((), || not_moved("set_stream_output_targets"));
     }
 
     fn set_vertex_buffers(&self, buffers: &[VertexBuffer<'_, Unmoved>]) {
         if let Some(resource) = buffers.iter().find_map(|b| b.buffer.resource) {
-            match *resource {}
+            match **resource {}
         }
         self.call((), || not_moved("set_vertex_buffers"));
     }
@@ -792,10 +775,6 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         }
     }
 
-    fn stream_output_target_destroy(&self, target: Unmoved) {
-        match target {}
-    }
-
     /// Later draws see what earlier ones wrote, to targets or storage: the open pass ends (the host
     /// orders passes and dispatches after the ones before).
     fn texture_barrier(&self, _: u32) {
@@ -807,19 +786,9 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         });
     }
 
-    fn texture_map(
-        &self,
-        resource: &Unmoved,
-        _: u32,
-        _: u32,
-        _: &PipeBox,
-    ) -> Option<Mapped<Unmoved>> {
-        match *resource {}
-    }
-
     fn texture_subdata(
         &self,
-        resource: &Unmoved,
+        resource: &Arc<Unmoved>,
         _: u32,
         _: u32,
         _: &PipeBox,
@@ -827,25 +796,18 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
         _: u32,
         _: u64,
     ) {
-        match *resource {}
+        match **resource {}
     }
 
-    fn texture_unmap(&self, transfer: Unmoved, _: &[u8]) {
-        match transfer {}
-    }
-
-    fn transfer_flush_region(&self, transfer: &Unmoved, _: &[u8], _: &PipeBox) {
-        match *transfer {}
-    }
 
     fn helper_transfer_map(
         &self,
-        prsc: &Unmoved,
+        prsc: &Arc<Unmoved>,
         _: u32,
         _: u32,
         _: &PipeBox,
     ) -> Option<Mapped<Unmoved>> {
-        match *prsc {}
+        match **prsc {}
     }
 
     fn helper_transfer_unmap(&self, ptrans: Unmoved, _: &[u8]) {
