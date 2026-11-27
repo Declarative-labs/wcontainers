@@ -932,6 +932,7 @@ pub fn write(registry: &Registry, sets: &[&Set], classified: &[Classified], out:
             let tests = direct.join("tests");
             std::fs::create_dir_all(&tests).map_err(|e| e.to_string())?;
             write(tests.join("conformance.rs"), &format!("{}{}", header(set), templates.gl_direct_test))?;
+            write(tests.join("kept.rs"), &format!("{}{}", header(set), templates.gl_direct_kept))?;
             write(conformance.join("suite.rs"), &write_suite(set, classified, templates.gl_suite))?;
             write(conformance.join("Cargo.toml"), templates.gl_suite_manifest)?;
         } else {
@@ -967,6 +968,7 @@ pub struct Templates {
     pub gl_direct: &'static str,
     pub gl_manifest: &'static str,
     pub gl_direct_test: &'static str,
+    pub gl_direct_kept: &'static str,
     pub gl_suite: &'static str,
     pub gl_suite_manifest: &'static str,
     pub fake: &'static str,

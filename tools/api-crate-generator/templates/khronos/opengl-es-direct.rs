@@ -18,6 +18,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeMap;
 
+use wcontainers_egl::Egl;
 use wcontainers_egl_direct::{Binding, Context, Display, Library, Surface};
 use wcontainers_opengl_es::{CompressedPixelUnpack, OnEgl, PixelPack, PixelUnpack, constants};
 
@@ -77,7 +78,44 @@ pub struct OpenGlEsContext {
     fences: RefCell<BTreeMap<u64, usize>>,
     next_fence: Cell<u64>,
     number: u64,
+    /// The EGL objects the context owns, destroyed at its drop (made by `owning`).
+    owned: Option<Owned>,
     _thread: PhantomData<*const ()>,
+}
+
+/// The EGL objects a context made by `owning` destroys at its drop, after its last call.
+struct Owned {
+    egl: Library,
+    display: Display,
+    context: Context,
+    draw: Option<Surface>,
+    read: Option<Surface>,
+}
+
+impl OpenGlEsContext {
+    /// Makes a context that owns the EGL context and surfaces it draws with: at its drop, after its last call, it
+    /// makes no context current on the thread and destroys them (EGL defers a destroy of what another thread has
+    /// current until it is released). A surface given as both `draw` and `read` is destroyed once.
+    pub fn owning(egl: Library, display: Display, context: Context, draw: Option<Surface>, read: Option<Surface>) -> Option<Self> {
+        let mut made = <Self as OnEgl<Library>>::new(&egl, &display, &context, draw.as_ref(), read.as_ref())?;
+        made.owned = Some(Owned { egl, display, context, draw, read });
+        Some(made)
+    }
+}
+
+impl Drop for OpenGlEsContext {
+    fn drop(&mut self) {
+        let Some(owned) = self.owned.take() else { return };
+        // Each refusal is the library's to report; a drop has nobody to report it to.
+        let _ = owned.egl.make_current(&owned.display, None, None, None);
+        if let Some(draw) = &owned.draw {
+            let _ = owned.egl.destroy_surface(&owned.display, draw);
+        }
+        if let Some(read) = owned.read.as_ref().filter(|read| owned.draw.as_ref() != Some(*read)) {
+            let _ = owned.egl.destroy_surface(&owned.display, read);
+        }
+        let _ = owned.egl.destroy_context(&owned.display, &owned.context);
+    }
 }
 
 impl OnEgl<Library> for OpenGlEsContext {
@@ -93,6 +131,7 @@ impl OnEgl<Library> for OpenGlEsContext {
             fences: RefCell::new(BTreeMap::new()),
             next_fence: Cell::new(1),
             number: NEXT_CONTEXT.fetch_add(1, Ordering::Relaxed),
+            owned: None,
             _thread: PhantomData,
         })
     }

@@ -14,7 +14,7 @@ mod calls;
 
 use core::ffi::{CStr, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use wcontainers_egl::constants;
 
@@ -110,6 +110,20 @@ struct Loaded {
     _library: libloading::Library,
 }
 
+/// The first library loaded from each folder, kept for the process: the system unloads a library with its last
+/// handle, and Mesa's then unloads its driver too and loads it again for the next context (about 55 ms a context,
+/// MEASURED by the WebGL back end). Every later load of the folder is a library of its own (its handles are its own)
+/// that finds the code still loaded.
+static KEPT: Mutex<Vec<(Option<std::path::PathBuf>, Arc<Loaded>)>> = Mutex::new(Vec::new());
+
+/// Keeps the folder's first library loaded for the process.
+fn keep(folder: Option<&std::path::Path>, loaded: &Arc<Loaded>) {
+    let mut kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !kept.iter().any(|(kept, _)| kept.as_deref() == folder) {
+        kept.push((folder.map(std::path::Path::to_path_buf), Arc::clone(loaded)));
+    }
+}
+
 /// EGL's library, loaded once and shared by every clone.
 #[derive(Clone)]
 pub struct Library {
@@ -131,8 +145,9 @@ impl Library {
             let symbol = unsafe { library.get::<unsafe extern "system" fn()>(name.to_bytes_with_nul()) };
             symbol.map_or(core::ptr::null(), |symbol| *symbol as *const c_void)
         });
-        let loaded = Loaded { entries, gate: RwLock::new(()), _library: library };
-        let library = Library { loaded: Arc::new(loaded) };
+        let loaded = Arc::new(Loaded { entries, gate: RwLock::new(()), _library: library });
+        keep(folder, &loaded);
+        let library = Library { loaded };
         // Every client API entry point must come by name (EGL 1.5, or EGL_KHR_client_get_all_proc_addresses).
         let extensions = {
             let _gate = library.reading();

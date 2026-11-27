@@ -168,6 +168,13 @@ VALUES_GL = [
 ]
 UNDECLARED = "0xfff0"
 
+# Plants of the direct crates' additions (NEEDED "After GI7" items 5 and 7): each an (id, file, old, new).
+ADDED = [
+    ("owned-context-destroyed", GL + "/implementation.rs", "        let _ = owned.egl.destroy_context(&owned.display, &owned.context);\n", ""),
+    ("owned-draw-surface-destroyed", GL + "/implementation.rs", "            let _ = owned.egl.destroy_surface(&owned.display, draw);\n", ""),
+    ("library-kept", EGL + "/implementation.rs", "        keep(folder, &loaded);\n", ""),
+]
+
 LISTED_SHARED = [
     ("extensions-bounded", "a library answering more extensions than 4096: Mesa answers its few hundred; the fuzzing's lying library answers up to 2^31 (a run without the bound does not end)"),
     ("egl-gate", "a destroy runs while no other call of the library is in flight (the gate): a race, which no single-threaded test makes"),
@@ -177,6 +184,7 @@ LISTED_SHARED = [
     ("egl-handles-written", "a slot past the count EGL wrote: also left None by the null check after it (two checks of one fact; only both removed shows)"),
     ("egl-handles-null", "a null handle in the count EGL wrote: EGL writes none"),
     ("value:UNMASKED_RENDERER_WEBGL", "WebGL's own value (WEBGL_debug_renderer_info): no native OpenGL ES context answers it, so no test over a native library can tell a wrong number; the browser implementation's test reads it"),
+    ("owned-read-surface-destroyed-once", "a read surface that is also the draw surface is destroyed once: a second destroy of its ended handle is refused by the glue, so nothing a test can see changes"),
     ("egl-binding-alive-before-make-current", "a context or surface destroyed and not current: the check under the gate refuses it, and without it eglMakeCurrent refuses the destroyed handle (Mesa checks its handles), on which the glue refuses the call alike"),
 ]
 
@@ -242,6 +250,8 @@ def plants_of(root):
         plants.append((name, {f"{GL}/implementation.rs": [(old, new)]}))
     for name, old, new in PASSED_GL:
         plants.append((name, {f"{GL}/calls.rs": [(old, new)]}))
+    for name, path, old, new in ADDED:
+        plants.append((name, {path: [(old, new)]}))
     for name, number in VALUES_GL:
         line = f"pub const {name}: u32 = {number};"
         plants.append((f"value:{name}", {"crates/opengl-es/constants.rs": [(line, line.replace(number, UNDECLARED))]}))
@@ -279,7 +289,7 @@ def run(root, target, plant, jobs):
     if "error[E" in output or "could not compile" in output:
         first = next((line for line in output.split("\n") if line.startswith("error")), "")
         return name, "BROKEN", first
-    failed = sorted(set(re.findall(r"^    direct::(\w+)$", output, re.M)) | set(re.findall(r"test direct::(\w+) \.\.\. FAILED", output)))
+    failed = sorted(set(re.findall(r"^    ([\w:]+)$", output, re.M)) | set(re.findall(r"test ([\w:]+) \.\.\. FAILED", output)))
     message = next((line.strip() for line in output.split("\n") if "panicked at" in line or "assertion" in line or "signal" in line), "")
     following = output.split(message, 1)[1].strip().split("\n")[0] if message and message in output else ""
     return name, "CAUGHT", f"status {status}; {', '.join(failed) or 'the test process ended'}; {message} {following}".strip()
