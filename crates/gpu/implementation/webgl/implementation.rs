@@ -50,7 +50,7 @@ const MIXED_CHANNELS: &str = "a pass drawing into formats lacking different chan
 const NEVER_ADVANCES: u32 = 1 << 31;
 
 #[derive(Debug)]
-pub struct BufferObj {
+struct BufferObj {
     id: Id,
     size: u64,
     usage: u32,
@@ -82,7 +82,7 @@ enum Storage {
 }
 
 #[derive(Debug)]
-pub struct TextureObj {
+struct TextureObj {
     id: Id,
     storage: Storage,
     target: u32,
@@ -98,7 +98,7 @@ pub struct TextureObj {
     side: u8,
     /// On the texture as made: its twin, a second GL texture in the twin format, made at the first
     /// view in that format (WebGL 2 has no views).
-    twin: std::cell::OnceCell<Texture>,
+    twin: std::cell::OnceCell<TextureRef>,
     /// On a twin: the texture it is the twin of.
     own: Option<std::rc::Weak<TextureObj>>,
     /// With WEBGL_stencil_texturing, whether programs fetching a depth-stencil texture get its stencil
@@ -118,14 +118,14 @@ pub struct TextureObj {
 }
 
 #[derive(Debug)]
-pub struct ViewObj {
+struct ViewObj {
     id: Id,
-    texture: Texture,
+    texture: TextureRef,
     desc: TextureViewDesc,
 }
 
 #[derive(Debug)]
-pub struct SamplerObj {
+struct SamplerObj {
     id: Id,
     raw: u32,
     /// Its twin whose minimum level of detail is 0, for units that gathers read, where its own
@@ -136,20 +136,20 @@ pub struct SamplerObj {
 /// What one binding of a set holds.
 #[derive(Debug)]
 enum Bound {
-    Uniform(Buffer, u64, u64),
-    Texture(TextureView),
-    Sampler(Sampler),
+    Uniform(BufferRef, u64, u64),
+    Texture(ViewRef),
+    Sampler(SamplerRef),
 }
 
 #[derive(Debug)]
-pub struct SetObj {
+struct SetObj {
     id: Id,
     entries: Vec<(u32, Bound)>,
 }
 
 /// A read back; `F` is the OpenGL ES fence type.
 #[derive(Debug)]
-pub struct ReadbackObj<F> {
+struct ReadbackObj<F> {
     /// The pack buffer texels or bytes are copied into; none for query results.
     pbo: Option<u32>,
     /// The queries read, in order; none for a query never begun or written, which reads zero.
@@ -167,17 +167,18 @@ pub struct ReadbackObj<F> {
     host: Option<Vec<u8>>,
 }
 
-/// A fence; `F` is the OpenGL ES fence type.
-#[derive(Debug)]
-pub struct FenceObj<F> {
-    /// None where the context was lost when the fence was made.
-    sync: Option<F>,
-    done: Cell<bool>,
+/// A point in the submitted work: its sync object, none where the context was lost when the fence was made
+/// (`F` is the OpenGL ES fence type, a number of the OpenGL ES crate's), and whether it is known done, shared
+/// by every clone.
+#[derive(Clone, Debug)]
+pub struct Fence<F> {
+    pub sync: Option<F>,
+    pub done: Rc<Cell<bool>>,
 }
 
-/// A handle: a clone names the same object.
+/// An object as the back end holds it: a clone names the same object.
 #[derive(Debug)]
-pub struct Handle<T>(Rc<T>);
+struct Handle<T>(Rc<T>);
 
 impl TextureObj {
     /// The GL texture; none for a multisampled texture.
@@ -202,44 +203,326 @@ impl<T> core::ops::Deref for Handle<T> {
     }
 }
 
-pub type Buffer = Handle<BufferObj>;
-pub type Texture = Handle<TextureObj>;
-pub type TextureView = Handle<ViewObj>;
-pub type Sampler = Handle<SamplerObj>;
-pub type Shader = Handle<ShaderObj>;
-pub type GlProgram = Handle<ProgramObj>;
+type BufferRef = Handle<BufferObj>;
+type TextureRef = Handle<TextureObj>;
+type ViewRef = Handle<ViewObj>;
+type SamplerRef = Handle<SamplerObj>;
+type ShaderRef = Handle<ShaderObj>;
+type ProgramRef = Handle<ProgramObj>;
 /// A state block: its id and the GL values it stands for.
-pub type Block<T> = Handle<(Id, T)>;
-pub type BindingSet = Handle<SetObj>;
-pub type Readback<F> = Handle<core::cell::RefCell<ReadbackObj<F>>>;
-pub type Fence<F> = Handle<FenceObj<F>>;
+type BlockRef<T> = Handle<(Id, T)>;
+type SetRef = Handle<SetObj>;
+type ReadbackRef<F> = Handle<core::cell::RefCell<ReadbackObj<F>>>;
 
 /// A query set: each query's GL object, made when the query is first begun or written. A read back
 /// holds the objects it reads, so a query begun again before the read finished gets a new one.
 #[derive(Debug)]
-pub struct QuerySetObj {
+struct QuerySetObj {
     kind: QueryKind,
     slots: core::cell::RefCell<Vec<Option<Rc<u32>>>>,
 }
 
-pub type QuerySet = Handle<QuerySetObj>;
+type QuerySetRef = Handle<QuerySetObj>;
+
+/// Defines a handle the interface's associated types name: the number the back end keeps the object under
+/// until it is destroyed.
+macro_rules! handle {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Clone, Debug)]
+        pub struct $name(pub u64);
+    };
+}
+
+handle!(Buffer);
+handle!(Texture);
+handle!(TextureView);
+handle!(Sampler);
+handle!(Shader);
+handle!(Program);
+handle!(Blend);
+handle!(DepthStencil);
+handle!(Raster);
+handle!(VertexLayout);
+handle!(BindingSet);
+handle!(QuerySet);
+handle!(Readback);
+
+/// Why a call naming a destroyed object, or one this back end never made, is refused.
+const GONE: &str = "a handle names an object destroyed before, or one this back end never made";
+
+/// The objects the handles name, by their numbers, from their making to their destroying (a read back's
+/// until it is finished). `F` is the OpenGL ES fence type.
+#[derive(Debug)]
+struct Objects<F> {
+    buffers: HashMap<u64, BufferRef>,
+    textures: HashMap<u64, TextureRef>,
+    views: HashMap<u64, ViewRef>,
+    samplers: HashMap<u64, SamplerRef>,
+    shaders: HashMap<u64, ShaderRef>,
+    programs: HashMap<u64, ProgramRef>,
+    blends: HashMap<u64, BlockRef<state::GlBlend>>,
+    depth_stencils: HashMap<u64, BlockRef<state::GlDepthStencil>>,
+    rasters: HashMap<u64, BlockRef<state::GlRaster>>,
+    layouts: HashMap<u64, BlockRef<state::GlLayout>>,
+    sets: HashMap<u64, SetRef>,
+    query_sets: HashMap<u64, QuerySetRef>,
+    readbacks: HashMap<u64, ReadbackRef<F>>,
+}
+
+impl<F> Default for Objects<F> {
+    fn default() -> Self {
+        Objects {
+            buffers: HashMap::new(),
+            textures: HashMap::new(),
+            views: HashMap::new(),
+            samplers: HashMap::new(),
+            shaders: HashMap::new(),
+            programs: HashMap::new(),
+            blends: HashMap::new(),
+            depth_stencils: HashMap::new(),
+            rasters: HashMap::new(),
+            layouts: HashMap::new(),
+            sets: HashMap::new(),
+            query_sets: HashMap::new(),
+            readbacks: HashMap::new(),
+        }
+    }
+}
+
+/// The object a handle's number names in `table`, while it is not destroyed.
+fn held<H: Clone>(table: &HashMap<u64, H>, number: u64) -> Option<H> {
+    table.get(&number).cloned()
+}
+
+/// A texture region as the back end reads it: its texture as the back end holds it.
+#[derive(Clone, Debug)]
+struct Region {
+    texture: TextureRef,
+    mip: u32,
+    layer: u32,
+    origin: Origin,
+    stencil: bool,
+}
+
+/// A buffer's part of a copy between a buffer and a texture, its buffer as the back end holds it.
+#[derive(Clone, Debug)]
+struct Place {
+    buffer: BufferRef,
+    offset: u64,
+    row_pitch: u32,
+    rows_per_layer: u32,
+}
+
+/// What a read back reads, its object as the back end holds it.
+#[derive(Clone, Debug)]
+enum Source {
+    Buffer {
+        buffer: BufferRef,
+        offset: u64,
+        size: u64,
+    },
+    Texture {
+        region: Region,
+        extent: Extent,
+    },
+}
+
+/// An object to destroy, as the back end holds it.
+enum Held {
+    Buffer(BufferRef),
+    Texture(TextureRef),
+    Sampler(SamplerRef),
+    Shader(ShaderRef),
+    Program(ProgramRef),
+    QuerySet(QuerySetRef),
+    Surface(u64),
+}
+
+/// The region `r` names, while its texture is not destroyed.
+fn region_of<O: OpenGlEs>(gpu: &Gl<O>, r: &TextureRegion<'_, Gl<O>>) -> Option<Region> {
+    Some(Region {
+        texture: held(&gpu.objects.textures, r.texture.0)?,
+        mip: r.mip,
+        layer: r.layer,
+        origin: r.origin,
+        stencil: r.stencil,
+    })
+}
+
+/// The buffer part `p` names, while its buffer is not destroyed.
+fn place_of<O: OpenGlEs>(gpu: &Gl<O>, p: &CopyBufferTexture<'_, Gl<O>>) -> Option<Place> {
+    Some(Place {
+        buffer: held(&gpu.objects.buffers, p.buffer.0)?,
+        offset: p.offset,
+        row_pitch: p.row_pitch,
+        rows_per_layer: p.rows_per_layer,
+    })
+}
+
+/// A vertex stream of a draw, its buffer as the back end holds it.
+#[derive(Clone, Debug)]
+struct Stream {
+    buffer: BufferRef,
+    offset: u64,
+}
+
+/// A draw's index buffer, as the back end holds it.
+#[derive(Clone, Debug)]
+struct Index {
+    buffer: BufferRef,
+    offset: u64,
+    format: IndexFormat,
+}
+
+/// The objects a draw names, as the back end holds them.
+#[derive(Clone, Debug)]
+struct Drawn {
+    program: ProgramRef,
+    blend: BlockRef<state::GlBlend>,
+    depth_stencil: BlockRef<state::GlDepthStencil>,
+    raster: BlockRef<state::GlRaster>,
+    vertex_layout: BlockRef<state::GlLayout>,
+    bindings: [Option<SetRef>; MAX_BINDING_SETS],
+    vertex_buffers: Vec<Option<Stream>>,
+    index: Option<Index>,
+}
+
+/// A colour target of a pass, its views as the back end holds them.
+struct HeldColour {
+    view: ViewRef,
+    depth_slice: u32,
+    resolve: Option<ViewRef>,
+    load: LoadOp<[u32; 4]>,
+    store: StoreOp,
+}
+
+/// The depth and stencil target of a pass, its view as the back end holds it.
+struct HeldDepth {
+    view: ViewRef,
+    depth: Option<AspectOps<u32>>,
+    stencil: Option<AspectOps<u8>>,
+}
+
+/// A pass as the back end holds its objects.
+struct HeldPass {
+    colors: [Option<HeldColour>; MAX_COLOR_TARGETS],
+    depth: Option<HeldDepth>,
+    empty: Option<EmptyPass>,
+    occlusion: Option<QuerySetRef>,
+}
+
+/// What `pass` names, while none of it is destroyed.
+fn pass_of<O: OpenGlEs>(gpu: &Gl<O>, pass: &PassDesc<'_, Gl<O>>) -> Option<HeldPass> {
+    let o = &gpu.objects;
+    let mut colors: [Option<HeldColour>; MAX_COLOR_TARGETS] = Default::default();
+    for (slot, c) in colors.iter_mut().zip(&pass.colors) {
+        if let Some(c) = c {
+            *slot = Some(HeldColour {
+                view: held(&o.views, c.view.0)?,
+                depth_slice: c.depth_slice,
+                resolve: match c.resolve {
+                    Some(r) => Some(held(&o.views, r.0)?),
+                    None => None,
+                },
+                load: c.load,
+                store: c.store,
+            });
+        }
+    }
+    let depth = match &pass.depth {
+        Some(d) => Some(HeldDepth {
+            view: held(&o.views, d.view.0)?,
+            depth: d.depth,
+            stencil: d.stencil,
+        }),
+        None => None,
+    };
+    let occlusion = match pass.occlusion {
+        Some(q) => Some(held(&o.query_sets, q.0)?),
+        None => None,
+    };
+    Some(HeldPass {
+        colors,
+        depth,
+        empty: pass.empty,
+        occlusion,
+    })
+}
+
+/// What `call` names, while none of it is destroyed.
+fn drawn_of<O: OpenGlEs>(gpu: &Gl<O>, call: &DrawCall<'_, Gl<O>>) -> Option<Drawn> {
+    let o = &gpu.objects;
+    let mut bindings: [Option<SetRef>; MAX_BINDING_SETS] = Default::default();
+    for (slot, set) in bindings.iter_mut().zip(&call.bindings) {
+        if let Some(set) = set {
+            *slot = Some(held(&o.sets, set.0)?);
+        }
+    }
+    let mut vertex_buffers = Vec::with_capacity(call.vertex_buffers.len());
+    for stream in call.vertex_buffers {
+        vertex_buffers.push(match stream {
+            Some(s) => Some(Stream {
+                buffer: held(&o.buffers, s.buffer.0)?,
+                offset: s.offset,
+            }),
+            None => None,
+        });
+    }
+    let index = match &call.index {
+        Some(i) => Some(Index {
+            buffer: held(&o.buffers, i.buffer.0)?,
+            offset: i.offset,
+            format: i.format,
+        }),
+        None => None,
+    };
+    Some(Drawn {
+        program: held(&o.programs, call.program.0)?,
+        blend: held(&o.blends, call.blend.0)?,
+        depth_stencil: held(&o.depth_stencils, call.depth_stencil.0)?,
+        raster: held(&o.rasters, call.raster.0)?,
+        vertex_layout: held(&o.layouts, call.vertex_layout.0)?,
+        bindings,
+        vertex_buffers,
+        index,
+    })
+}
+
+/// What `s` names, while its object is not destroyed.
+fn source_of<O: OpenGlEs>(gpu: &Gl<O>, s: &ReadSource<'_, Gl<O>>) -> Option<Source> {
+    Some(match s {
+        ReadSource::Buffer {
+            buffer,
+            offset,
+            size,
+        } => Source::Buffer {
+            buffer: held(&gpu.objects.buffers, buffer.0)?,
+            offset: *offset,
+            size: *size,
+        },
+        ReadSource::Texture { region, extent } => Source::Texture {
+            region: region_of(gpu, region)?,
+            extent: *extent,
+        },
+    })
+}
 
 /// WebGL 2 has no resource tables, so none is ever made.
 #[derive(Clone, Debug)]
 pub enum NoTable {}
 
-/// The one surface a back end has: its context's canvas (natively, an EGL window surface).
-#[derive(Clone, Debug)]
-pub struct Surface {
-    id: Id,
-}
+handle!(
+    /// The one surface a back end has: its context's canvas.
+    Surface
+);
 
 /// The surface's frame: the texture `current_texture` hands out, copied into the canvas's drawing
 /// buffer by `present` (the drawing buffer is not a texture, so nothing can draw into it directly).
 #[derive(Debug)]
 struct SurfaceState {
     id: Id,
-    frame: Option<(Texture, TextureView)>,
+    frame: Option<(TextureRef, ViewRef)>,
 }
 
 /// Which mip, layer and slice of which texture an attachment is.
@@ -253,11 +536,11 @@ type FramebufferKey = [Option<Attachment>; MAX_COLOR_TARGETS + 1];
 struct Pass {
     framebuffer: u32,
     discard: Points,
-    occlusion: Option<QuerySet>,
+    occlusion: Option<QuerySetRef>,
     /// An occlusion query is running.
     counting: bool,
     /// Per colour target: the multisampled texture and the view it resolves into at the end.
-    resolves: [Option<(Texture, TextureView)>; MAX_COLOR_TARGETS],
+    resolves: [Option<(TextureRef, ViewRef)>; MAX_COLOR_TARGETS],
     /// The area every attachment holds, which scissors are clipped to.
     size: (u32, u32),
     /// How many colour targets it draws into.
@@ -410,8 +693,8 @@ pub struct Gl<O: OpenGlEs> {
     values: GlValues,
     applied: Applied,
     /// The live shaders by their text, so shaders of equal text are one.
-    shaders: HashMap<Rc<shader::ShaderText>, Shader>,
-    programs: HashMap<(Id, Id), GlProgram>,
+    shaders: HashMap<Rc<shader::ShaderText>, ShaderRef>,
+    programs: HashMap<(Id, Id), ProgramRef>,
     framebuffers: HashMap<FramebufferKey, u32>,
     /// Framebuffers of passes without attachments, each on an `R8` renderbuffer of its own that no
     /// draw writes (GLES 3.0 has no framebuffer without attachments).
@@ -442,6 +725,8 @@ pub struct Gl<O: OpenGlEs> {
     point_sampler: Option<u32>,
     /// Whether blits between textures of one float format keep every bit (the probe at creation).
     float_blits: bool,
+    /// The objects the handles name.
+    objects: Objects<O::Fence>,
     /// The EGL objects the context lives in, destroyed after every field above.
     #[cfg(not(target_arch = "wasm32"))]
     held: Option<platform::Held>,
@@ -552,6 +837,7 @@ impl<O: OpenGlEs> Gl<O> {
             copy_programs: HashMap::new(),
             point_sampler: None,
             float_blits: false,
+            objects: Objects::default(),
             #[cfg(not(target_arch = "wasm32"))]
             held: None,
         };
@@ -652,26 +938,29 @@ fn probe_float_blits<O: OpenGlEs>(gpu: &mut Gl<O>) -> bool {
 fn blit_keeps<O: OpenGlEs>(gpu: &mut Gl<O>, format: Format, twin: Format, bytes: &[u8]) -> bool {
     let width = bytes.len() as u32 / FORMAT_FACTS[format as usize].block.2;
     let make = |b: &mut Gl<O>, format| {
-        b.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format,
-            width,
-            height: 1,
-            depth_or_layers: 1,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::SAMPLE
-                | TextureUsage::RENDER
-                | TextureUsage::COPY_SRC
-                | TextureUsage::COPY_DST,
-            cube: false,
-            reinterpret: false,
-        })
+        make_texture(
+            b,
+            &TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width,
+                height: 1,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::SAMPLE
+                    | TextureUsage::RENDER
+                    | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            },
+        )
     };
     let made = [make(gpu, format), make(gpu, format), make(gpu, twin)];
     let kept = match &made {
         [Ok(from), Ok(to), Ok(bits)] => {
-            let region = |texture| TextureRegion {
+            let region = |texture| Region {
                 texture,
                 mip: 0,
                 layer: 0,
@@ -684,17 +973,25 @@ fn blit_keeps<O: OpenGlEs>(gpu: &mut Gl<O>, format: Format, twin: Format, bytes:
                 depth_or_layers: 1,
             };
             let row = bytes.len() as u32;
-            gpu.write_texture(&region(from), extent, bytes, row, 1, WriteMode::Ordered);
-            blit_same(gpu, &region(from), &region(to), extent);
+            write_texture_held(
+                gpu,
+                &region(from.clone()),
+                extent,
+                bytes,
+                row,
+                1,
+                WriteMode::Ordered,
+            );
+            blit_same(gpu, &region(from.clone()), &region(to.clone()), extent);
             let mut got = vec![0; bytes.len()];
-            copy_by_draw(gpu, &region(to), &region(bits), extent)
-                && read_texture_now(gpu, &region(bits), extent, &mut got).is_ok()
+            copy_by_draw(gpu, &region(to.clone()), &region(bits.clone()), extent)
+                && read_texture_now(gpu, &region(bits.clone()), extent, &mut got).is_ok()
                 && got == bytes
         }
         _ => false,
     };
     for t in made.into_iter().flatten() {
-        gpu.destroy(Object::Texture(t));
+        destroy_held(gpu, Held::Texture(t));
     }
     kept
 }
@@ -747,18 +1044,21 @@ fn probe_bias<O: OpenGlEs>(
     let error = |e: GpuError| format!("{e:?}");
     let (program, uniform) = depth::build_probe(&gpu.gl)?;
     let texture = |b: &mut Gl<O>, format, usage| {
-        b.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format,
-            width: 1,
-            height: 1,
-            depth_or_layers: 1,
-            mip_levels: 1,
-            samples: 1,
-            usage,
-            cube: false,
-            reinterpret: false,
-        })
+        make_texture(
+            b,
+            &TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: 1,
+                height: 1,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage,
+                cube: false,
+                reinterpret: false,
+            },
+        )
     };
     let depth = texture(gpu, format, TextureUsage::RENDER).map_err(error)?;
     let out = texture(gpu, Format::R32Uint, TextureUsage::RENDER).map_err(error)?;
@@ -792,8 +1092,8 @@ fn probe_bias<O: OpenGlEs>(
         let mut word = [0u8; 4];
         read_texture_now(
             gpu,
-            &TextureRegion {
-                texture: &out,
+            &Region {
+                texture: out.clone(),
                 mip: 0,
                 layer: 0,
                 origin: Origin::default(),
@@ -809,8 +1109,8 @@ fn probe_bias<O: OpenGlEs>(
         .map_err(error)?;
         *bits = u32::from_le_bytes(word);
     }
-    gpu.destroy(Object::Texture(depth));
-    gpu.destroy(Object::Texture(out));
+    destroy_held(gpu, Held::Texture(depth));
+    destroy_held(gpu, Held::Texture(out));
     gpu.gl.delete_program(program);
     Ok(bits)
 }
@@ -878,7 +1178,7 @@ fn invalid<O: OpenGlEs>(gpu: &mut Gl<O>, rule: String) {
 /// shape, which [`fresh`] keeps holding the same bytes.
 /// The GL query object for query `index` of `set`, a new one when a read back still holds the
 /// last. None (the device lost) past the set's end or when GL makes none.
-fn query_slot<O: OpenGlEs>(gpu: &mut Gl<O>, set: &QuerySet, index: u32) -> Option<u32> {
+fn query_slot<O: OpenGlEs>(gpu: &mut Gl<O>, set: &QuerySetRef, index: u32) -> Option<u32> {
     let mut slots = set.slots.borrow_mut();
     let Some(slot) = slots.get_mut(index as usize) else {
         drop(slots);
@@ -911,7 +1211,7 @@ fn create_samples<O: OpenGlEs>(
     gpu: &mut Gl<O>,
     desc: &TextureDesc,
     gl_format: format::GlFormat,
-) -> Result<Texture, GpuError> {
+) -> Result<TextureRef, GpuError> {
     if !gpu.caps.formats.takes_samples(desc.format, desc.samples)
         || desc.dimension != TextureDimension::D2
         || desc.mip_levels != 1
@@ -958,7 +1258,13 @@ fn create_samples<O: OpenGlEs>(
 
 /// Averages the samples of multisampled `src` into level `mip`, layer `layer` of single-sampled
 /// `dst` of the same format, by `blitFramebuffer`.
-fn blit_resolve<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Texture, dst: &Texture, mip: u32, layer: u32) {
+fn blit_resolve<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    src: &TextureRef,
+    dst: &TextureRef,
+    mip: u32,
+    layer: u32,
+) {
     let mask = match FORMAT_FACTS[src.desc.format as usize].kind {
         FormatKind::DepthStencil => gles::DEPTH_BUFFER_BIT | gles::STENCIL_BUFFER_BIT,
         FormatKind::Depth => gles::DEPTH_BUFFER_BIT,
@@ -979,12 +1285,8 @@ fn blit_resolve<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Texture, dst: &Texture, mip:
 /// into no multisampled framebuffer and programs cannot read samples here, so the source is
 /// resolved and drawn into every sample of the destination
 /// ([`SlowPath::MultisampleCopyResolved`], a listed loss).
-fn copy_samples<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-) {
-    let (s, d) = (src.texture, dst.texture);
+fn copy_samples<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region) {
+    let (s, d) = (&src.texture, &dst.texture);
     if s.desc.samples != d.desc.samples
         || s.desc.width != d.desc.width
         || s.desc.height != d.desc.height
@@ -1011,11 +1313,14 @@ fn copy_samples<O: OpenGlEs>(
         _ => {}
     }
     gpu.record_slow_path(SlowPath::MultisampleCopyResolved);
-    let resolved = match gpu.create_texture(&TextureDesc {
-        samples: 1,
-        usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
-        ..s.desc
-    }) {
+    let resolved = match make_texture(
+        gpu,
+        &TextureDesc {
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+            ..s.desc
+        },
+    ) {
         Ok(t) => t,
         Err(_) => return fail(gpu, LossReason::OutOfMemory),
     };
@@ -1025,21 +1330,21 @@ fn copy_samples<O: OpenGlEs>(
         height: s.desc.height,
         depth_or_layers: 1,
     };
-    let from = TextureRegion {
-        texture: &resolved,
+    let from = Region {
+        texture: resolved.clone(),
         ..*src
     };
     if !copy_by_draw(gpu, &from, dst, whole) {
         unbuilt(gpu, "copies of multisampled textures of this format");
     }
-    gpu.destroy(Object::Texture(resolved));
+    destroy_held(gpu, Held::Texture(resolved));
 }
 
 fn twin_of<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    texture: &Texture,
+    texture: &TextureRef,
     format: Format,
-) -> Result<Texture, GpuError> {
+) -> Result<TextureRef, GpuError> {
     if let Some(t) = texture.twin.get() {
         return Ok(t.clone());
     }
@@ -1054,10 +1359,13 @@ fn twin_of<O: OpenGlEs>(
             "sRGB twins of formats read back wider than stored",
         ));
     }
-    let mut twin = gpu.create_texture(&TextureDesc {
-        format,
-        ..texture.desc
-    })?;
+    let mut twin = make_texture(
+        gpu,
+        &TextureDesc {
+            format,
+            ..texture.desc
+        },
+    )?;
     let t = Rc::get_mut(&mut twin.0).expect("a texture just made has one handle");
     t.newest = texture.newest.clone();
     t.side = 2;
@@ -1073,17 +1381,23 @@ fn twin_of<O: OpenGlEs>(
 /// The stencil copy of `texture`, made at its first stencil view without WEBGL_stencil_texturing:
 /// an `r8uint` texture of the same shape, which [`fresh`] fills from the stencil by draws
 /// whenever the stencil changed since.
-fn stencil_copy_of<O: OpenGlEs>(gpu: &mut Gl<O>, texture: &Texture) -> Result<Texture, GpuError> {
+fn stencil_copy_of<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    texture: &TextureRef,
+) -> Result<TextureRef, GpuError> {
     if let Some(t) = texture.twin.get() {
         return Ok(t.clone());
     }
-    let mut copy = gpu.create_texture(&TextureDesc {
-        format: Format::R8Uint,
-        samples: 1,
-        usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
-        reinterpret: false,
-        ..texture.desc
-    })?;
+    let mut copy = make_texture(
+        gpu,
+        &TextureDesc {
+            format: Format::R8Uint,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+            reinterpret: false,
+            ..texture.desc
+        },
+    )?;
     let t = Rc::get_mut(&mut copy.0).expect("a texture just made has one handle");
     t.newest = texture.newest.clone();
     t.side = 2;
@@ -1097,8 +1411,8 @@ fn stencil_copy_of<O: OpenGlEs>(gpu: &mut Gl<O>, texture: &Texture) -> Result<Te
 /// Fills every level and layer of `copy` with the stencil of `src`, counted by draws.
 fn fill_stencil_copy<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    src: &Texture,
-    copy: &Texture,
+    src: &TextureRef,
+    copy: &TextureRef,
 ) -> Result<(), GpuError> {
     let d = src.desc;
     for mip in 0..d.mip_levels {
@@ -1108,14 +1422,14 @@ fn fill_stencil_copy<O: OpenGlEs>(
             let fb = texture_framebuffer(gpu, copy, mip, layer);
             let size = (size.0 as i32, size.1 as i32);
             fetch(gpu, Fetch::Depth2D, &counted, 0, [0; 3], 255, fb, size)?;
-            gpu.destroy(Object::Texture(counted));
+            destroy_held(gpu, Held::Texture(counted));
         }
     }
     Ok(())
 }
 
 /// Before `t` is read or written: copies its twin's texels into it when the twin holds newer ones.
-fn fresh<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture) {
+fn fresh<O: OpenGlEs>(gpu: &mut Gl<O>, t: &TextureRef) {
     let newest = t.newest.get();
     if newest == 0 || newest == t.side {
         return;
@@ -1136,7 +1450,7 @@ fn fresh<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture) {
 }
 
 /// After `t` was written: its twin no longer holds the same texels, and the next draw binds again.
-fn written<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture) {
+fn written<O: OpenGlEs>(gpu: &mut Gl<O>, t: &TextureRef) {
     if t.side == 2 || t.twin.get().is_some() {
         t.newest.set(t.side);
         gpu.applied.sets = [Id::MAX; MAX_BINDING_SETS];
@@ -1146,7 +1460,7 @@ fn written<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture) {
 /// Copies every level and layer of `from` into `to`, a texture of the same shape whose texels have
 /// the same bytes: on the GPU, or for textures kept on the host from host copy to host copy, then
 /// uploaded.
-fn copy_whole<O: OpenGlEs>(gpu: &mut Gl<O>, from: &Texture, to: &Texture) {
+fn copy_whole<O: OpenGlEs>(gpu: &mut Gl<O>, from: &TextureRef, to: &TextureRef) {
     let d = from.desc;
     let kept = from.host.as_ref().zip(to.host.as_ref());
     if let Some((a, b)) = kept {
@@ -1154,7 +1468,7 @@ fn copy_whole<O: OpenGlEs>(gpu: &mut Gl<O>, from: &Texture, to: &Texture) {
         b.copy_from(a);
     }
     for mip in 0..d.mip_levels {
-        let region = |texture| TextureRegion {
+        let region = |texture| Region {
             texture,
             mip,
             layer: 0,
@@ -1171,9 +1485,9 @@ fn copy_whole<O: OpenGlEs>(gpu: &mut Gl<O>, from: &Texture, to: &Texture) {
             },
         };
         if kept.is_some() {
-            upload_blocks(gpu, &region(to), extent);
+            upload_blocks(gpu, &region(to.clone()), extent);
         } else {
-            copy_same_bytes(gpu, &region(from), &region(to), extent);
+            copy_same_bytes(gpu, &region(from.clone()), &region(to.clone()), extent);
         }
     }
 }
@@ -1182,12 +1496,7 @@ fn copy_whole<O: OpenGlEs>(gpu: &mut Gl<O>, from: &Texture, to: &Texture) {
 /// `readPixels` as stored: by a draw where one carries both formats and they are not floats,
 /// which stays on the GPU, else through a pixel buffer, whose unpack ANGLE waits for on the CPU
 /// ([`SlowPath::CopyThroughBuffer`] either way).
-fn copy_same_bytes<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) {
+fn copy_same_bytes<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) {
     let float = [src, dst]
         .iter()
         .any(|r| format::float_bits(r.texture.desc.format));
@@ -1201,12 +1510,7 @@ fn copy_same_bytes<O: OpenGlEs>(
 /// Copies a region between textures whose texels have the same bytes, the source's read by
 /// `readPixels` as stored: read into a pixel pack buffer, then written from it as the destination's
 /// texels, all on the GPU ([`SlowPath::CopyThroughBuffer`]).
-fn copy_through_pbo<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) {
+fn copy_through_pbo<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) {
     gpu.record_slow_path(SlowPath::CopyThroughBuffer);
     let read = src
         .texture
@@ -1230,7 +1534,7 @@ fn copy_through_pbo<O: OpenGlEs>(
     };
     for i in 0..extent.depth_or_layers {
         let layer = read_layer(src, i);
-        read_framebuffer(gpu, src.texture, src.mip, layer);
+        read_framebuffer(gpu, &src.texture, src.mip, layer);
         gpu.gl.read_pixels(
             src.origin.x as i32,
             src.origin.y as i32,
@@ -1259,12 +1563,7 @@ fn copy_through_pbo<O: OpenGlEs>(
 /// each source texel and writes its bits as the destination's value ([`SlowPath::CopyThroughBuffer`],
 /// convert.rs). False when no such draw carries the two formats or the destination cannot be
 /// drawn into.
-fn copy_by_draw<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) -> bool {
+fn copy_by_draw<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) -> bool {
     let (from, to) = (src.texture.desc.format, dst.texture.desc.format);
     let sampler = match src.texture.target {
         gles::TEXTURE_2D => "2D",
@@ -1303,12 +1602,12 @@ fn copy_by_draw<O: OpenGlEs>(
             }
         }
     }
-    if bind_source(gpu, src.texture, src.mip).is_err() {
+    if bind_source(gpu, &src.texture, src.mip).is_err() {
         fail(gpu, LossReason::OutOfMemory);
         return true;
     }
     if FORMAT_FACTS[from as usize].depth_stencil {
-        aspect(gpu, src.texture, false);
+        aspect(gpu, &src.texture, false);
     }
     let rect = [
         dst.origin.x as i32,
@@ -1317,7 +1616,7 @@ fn copy_by_draw<O: OpenGlEs>(
         extent.height as i32,
     ];
     for i in 0..extent.depth_or_layers {
-        let fb = texture_framebuffer(gpu, dst.texture, dst.mip, read_layer(dst, i));
+        let fb = texture_framebuffer(gpu, &dst.texture, dst.mip, read_layer(dst, i));
         let (program, at, unit) = &gpu.copy_programs[&key];
         gpu.gl.use_program(*program);
         gpu.gl.uniform3i(
@@ -1341,11 +1640,7 @@ fn copy_by_draw<O: OpenGlEs>(
 /// Whether a copy reads and writes one subresource (layers of a level that both regions cover,
 /// or one level of a 3D texture, whose slices GL copies into as one image), which every GL
 /// route refuses as a feedback loop.
-fn within_one_subresource<O: OpenGlEs>(
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) -> bool {
+fn within_one_subresource(src: &Region, dst: &Region, extent: Extent) -> bool {
     let (s, d, n) = (src.layer, dst.layer, extent.depth_or_layers);
     Rc::ptr_eq(&src.texture.0, &dst.texture.0)
         && src.mip == dst.mip
@@ -1356,42 +1651,40 @@ fn within_one_subresource<O: OpenGlEs>(
 /// ([`SlowPath::CopyWithinTexture`]): a copy into the buffer, then one out of it, aspect by
 /// aspect for a format with depth and stencil. Formats GL does not read back (16-bit floats)
 /// are held in a 2D texture instead.
-fn copy_within<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) {
+fn copy_within<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) {
     gpu.record_slow_path(SlowPath::CopyWithinTexture);
     let format = src.texture.desc.format;
     if !gpu.caps.formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
         let d = &src.texture.desc;
-        let Ok(held) = gpu.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format,
-            width: extent.width,
-            height: extent.height,
-            depth_or_layers: extent.depth_or_layers,
-            mip_levels: 1,
-            samples: 1,
-            usage: (d.usage & (TextureUsage::SAMPLE | TextureUsage::RENDER))
-                | TextureUsage::COPY_SRC
-                | TextureUsage::COPY_DST,
-            cube: false,
-            reinterpret: false,
-        }) else {
+        let Ok(held) = make_texture(
+            gpu,
+            &TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: extent.depth_or_layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: (d.usage & (TextureUsage::SAMPLE | TextureUsage::RENDER))
+                    | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            },
+        ) else {
             return fail(gpu, LossReason::OutOfMemory);
         };
-        let at = TextureRegion {
-            texture: &held,
+        let at = Region {
+            texture: held.clone(),
             mip: 0,
             layer: 0,
             origin: Origin::default(),
             stencil: false,
         };
-        gpu.copy_texture(src, &at, extent);
-        gpu.copy_texture(&at, dst, extent);
-        return gpu.destroy(Object::Texture(held));
+        copy_texture_held(gpu, src, &at, extent);
+        copy_texture_held(gpu, &at, dst, extent);
+        return destroy_held(gpu, Held::Texture(held));
     }
     let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
     // A buffer's depth of a combined format is a 32-bit word, its stencil a byte.
@@ -1402,33 +1695,47 @@ fn copy_within<O: OpenGlEs>(
     let (cols, rows) = (extent.width.div_ceil(bw), extent.height.div_ceil(bh));
     for &(stencil, bytes) in aspects {
         let size = u64::from(cols * bytes * rows * extent.depth_or_layers);
-        let Ok(held) = gpu.create_buffer(&BufferDesc {
-            size,
-            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
-            intent: MapIntent::Rarely,
-        }) else {
+        let Ok(held) = make_buffer(
+            gpu,
+            &BufferDesc {
+                size,
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            },
+        ) else {
             return fail(gpu, LossReason::OutOfMemory);
         };
-        let at = CopyBufferTexture {
-            buffer: &held,
+        let at = Place {
+            buffer: held.clone(),
             offset: 0,
             row_pitch: cols * bytes,
             rows_per_layer: rows,
         };
-        gpu.copy_texture_to_buffer(&TextureRegion { stencil, ..*src }, &at, extent);
-        gpu.copy_buffer_to_texture(&at, &TextureRegion { stencil, ..*dst }, extent);
-        gpu.destroy(Object::Buffer(held));
+        copy_texture_to_buffer_held(
+            gpu,
+            &Region {
+                stencil,
+                ..src.clone()
+            },
+            &at,
+            extent,
+        );
+        copy_buffer_to_texture_held(
+            gpu,
+            &at,
+            &Region {
+                stencil,
+                ..dst.clone()
+            },
+            extent,
+        );
+        destroy_held(gpu, Held::Buffer(held));
     }
 }
 
 /// Copies a region of a texture into one of the same format by `blitFramebuffer`, layer by layer:
 /// a depth or depth-stencil one, or a float one where blits keep every bit.
-fn blit_same<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) {
+fn blit_same<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) {
     let mask = match FORMAT_FACTS[src.texture.desc.format as usize].kind {
         FormatKind::DepthStencil => gles::DEPTH_BUFFER_BIT | gles::STENCIL_BUFFER_BIT,
         FormatKind::Depth => gles::DEPTH_BUFFER_BIT,
@@ -1445,8 +1752,8 @@ fn blit_same<O: OpenGlEs>(
         extent.height as i32,
     );
     for i in 0..extent.depth_or_layers {
-        read_framebuffer(gpu, src.texture, src.mip, read_layer(src, i));
-        let fb = texture_framebuffer(gpu, dst.texture, dst.mip, read_layer(dst, i));
+        read_framebuffer(gpu, &src.texture, src.mip, read_layer(src, i));
+        let fb = texture_framebuffer(gpu, &dst.texture, dst.mip, read_layer(dst, i));
         gpu.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
         gpu.gl.blit_framebuffer(
             sx,
@@ -1489,7 +1796,7 @@ fn open_writes<O: OpenGlEs>(gpu: &mut Gl<O>) {
 fn framebuffer<O: OpenGlEs>(
     gpu: &mut Gl<O>,
     key: FramebufferKey,
-    views: &[Option<&TextureView>],
+    views: &[Option<&ViewRef>],
 ) -> u32 {
     if let Some(fb) = gpu.framebuffers.get(&key) {
         return *fb;
@@ -1561,7 +1868,11 @@ fn framebuffer<O: OpenGlEs>(
 
 /// A pass without attachments: its own renderbuffer of the pass's size and samples, with no draw
 /// buffer, so draws rasterise (for queries and depth-less tests) and write nothing.
-fn begin_empty_pass<O: OpenGlEs>(gpu: &mut Gl<O>, empty: EmptyPass, occlusion: Option<QuerySet>) {
+fn begin_empty_pass<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    empty: EmptyPass,
+    occlusion: Option<QuerySetRef>,
+) {
     let gl = &gpu.gl;
     let fb = match gpu.empty_passes.get(&empty) {
         Some(fb) => *fb,
@@ -1616,7 +1927,7 @@ fn begin_empty_pass<O: OpenGlEs>(gpu: &mut Gl<O>, empty: EmptyPass, occlusion: O
 }
 
 /// The attachment a view to draw into names: its texture, mip, and layer or slice.
-fn attachment(view: &TextureView, slice: u32) -> Attachment {
+fn attachment(view: &ViewRef, slice: u32) -> Attachment {
     let layer = if view.texture.desc.dimension == TextureDimension::D3 {
         slice
     } else {
@@ -1626,7 +1937,7 @@ fn attachment(view: &TextureView, slice: u32) -> Attachment {
 }
 
 /// Binds a framebuffer holding one level and layer of `texture` for reading.
-fn read_framebuffer<O: OpenGlEs>(gpu: &mut Gl<O>, texture: &Texture, mip: u32, layer: u32) {
+fn read_framebuffer<O: OpenGlEs>(gpu: &mut Gl<O>, texture: &TextureRef, mip: u32, layer: u32) {
     let fb = texture_framebuffer(gpu, texture, mip, layer);
     if gpu.applied.read_framebuffer != Some(fb) {
         gpu.gl.bind_framebuffer(gles::READ_FRAMEBUFFER, fb);
@@ -1638,7 +1949,7 @@ fn read_framebuffer<O: OpenGlEs>(gpu: &mut Gl<O>, texture: &Texture, mip: u32, l
 /// stays as it was.
 fn texture_framebuffer<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    texture: &Texture,
+    texture: &TextureRef,
     mip: u32,
     layer: u32,
 ) -> u32 {
@@ -1648,9 +1959,9 @@ fn texture_framebuffer<O: OpenGlEs>(
 /// The framebuffer of the back end's own holding `parts` (each a texture, level and layer; colour
 /// ones on targets 0, 1 and on, a depth or stencil one on its point), made if new; the draw binding
 /// stays as it was.
-fn own_framebuffer<O: OpenGlEs>(gpu: &mut Gl<O>, parts: &[(&Texture, u32, u32)]) -> u32 {
+fn own_framebuffer<O: OpenGlEs>(gpu: &mut Gl<O>, parts: &[(&TextureRef, u32, u32)]) -> u32 {
     let mut key: FramebufferKey = [None; MAX_COLOR_TARGETS + 1];
-    let mut views: [Option<TextureView>; MAX_COLOR_TARGETS + 1] = Default::default();
+    let mut views: [Option<ViewRef>; MAX_COLOR_TARGETS + 1] = Default::default();
     let mut colour = 0;
     for &(texture, mip, layer) in parts {
         let slot = if FORMAT_FACTS[texture.desc.format as usize].depth_stencil {
@@ -1690,10 +2001,10 @@ fn own_framebuffer<O: OpenGlEs>(gpu: &mut Gl<O>, parts: &[(&Texture, u32, u32)])
 /// ([`SlowPath::DepthReadByDraw`]).
 fn depth_by_draw<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    region: &TextureRegion<'_, Gl<O>>,
+    region: &Region,
     extent: Extent,
-) -> Result<Texture, GpuError> {
-    fresh(gpu, region.texture);
+) -> Result<TextureRef, GpuError> {
+    fresh(gpu, &region.texture);
     let src = region.texture.clone();
     let Some((scale, kept)) = depth::stored(src.desc.format) else {
         return Err(GpuError::Invalid("webgl: not a depth format"));
@@ -1720,18 +2031,21 @@ fn depth_by_draw<O: OpenGlEs>(
         k => k,
     };
     gpu.record_slow_path(SlowPath::DepthReadByDraw);
-    let mut scratch = gpu.create_texture(&TextureDesc {
-        dimension: TextureDimension::D2,
-        format: Format::R32Uint,
-        width: extent.width,
-        height: extent.height,
-        depth_or_layers: extent.depth_or_layers,
-        mip_levels: 1,
-        samples: 1,
-        usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
-        cube: false,
-        reinterpret: false,
-    })?;
+    let mut scratch = make_texture(
+        gpu,
+        &TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::R32Uint,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        },
+    )?;
     Rc::get_mut(&mut scratch.0)
         .expect("a texture just made has one handle")
         .read = Some(format::ReadAs {
@@ -1752,7 +2066,7 @@ fn depth_by_draw<O: OpenGlEs>(
         if bits {
             let counted = stencil_bits(gpu, &src, region.mip, layer)?;
             fetch(gpu, kind, &counted, 0, [at[0], at[1], 0], 255, fb, size)?;
-            gpu.destroy(Object::Texture(counted));
+            destroy_held(gpu, Held::Texture(counted));
         } else {
             fetch(
                 gpu,
@@ -1777,7 +2091,7 @@ fn depth_by_draw<O: OpenGlEs>(
 fn fetch<O: OpenGlEs>(
     gpu: &mut Gl<O>,
     kind: Fetch,
-    src: &Texture,
+    src: &TextureRef,
     mip: u32,
     at: [i32; 3],
     scale: u32,
@@ -1806,7 +2120,7 @@ fn fetch<O: OpenGlEs>(
 
 /// Binds level `mip` of `src` alone on unit 0 for the back end's own fetches, through a nearest
 /// sampler (GLES leaves a depth texture without comparison incomplete under linear filters).
-fn bind_source<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Texture, mip: u32) -> Result<(), GpuError> {
+fn bind_source<O: OpenGlEs>(gpu: &mut Gl<O>, src: &TextureRef, mip: u32) -> Result<(), GpuError> {
     let Some(raw) = src.tex() else {
         return Err(unbuilt(gpu, "fetches of multisampled textures"));
     };
@@ -1864,7 +2178,7 @@ fn own_depth_draw_into<O: OpenGlEs>(gpu: &mut Gl<O>, target: u32, rect: [i32; 4]
 /// aspect of a combined format alone, nor 24-bit depth as Direct3D stores it, from bytes.
 fn write_depth<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    dst: &TextureRegion<'_, Gl<O>>,
+    dst: &Region,
     extent: Extent,
     texels: Texels<'_>,
     row_pitch: u32,
@@ -1875,22 +2189,25 @@ fn write_depth<O: OpenGlEs>(
         (false, Format::Depth16Unorm) => Format::R16Uint,
         _ => Format::R32Uint,
     };
-    let Ok(scratch) = gpu.create_texture(&TextureDesc {
-        dimension: TextureDimension::D2,
-        format,
-        width: extent.width,
-        height: extent.height,
-        depth_or_layers: extent.depth_or_layers,
-        mip_levels: 1,
-        samples: 1,
-        usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
-        cube: false,
-        reinterpret: false,
-    }) else {
+    let Ok(scratch) = make_texture(
+        gpu,
+        &TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        },
+    ) else {
         return fail(gpu, LossReason::OutOfMemory);
     };
-    let src = TextureRegion {
-        texture: &scratch,
+    let src = Region {
+        texture: scratch.clone(),
         mip: 0,
         layer: 0,
         origin: Origin::default(),
@@ -1904,18 +2221,13 @@ fn write_depth<O: OpenGlEs>(
     } else {
         unbuilt(gpu, "depth written into textures of this format");
     }
-    gpu.destroy(Object::Texture(scratch));
+    destroy_held(gpu, Held::Texture(scratch));
 }
 
 /// Writes the stencil of `dst` from the `r8uint` texels of `src` (2D or 2D array), layer by
 /// layer: one draw sets the region's stencil to 0, then one per bit sets that bit where the
 /// source has it ([`SlowPath::StencilWrittenByDraw`]). Depth stays.
-fn stencil_by_draw<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) {
+fn stencil_by_draw<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) {
     gpu.record_slow_path(SlowPath::StencilWrittenByDraw);
     let k = usize::from(src.texture.target == gles::TEXTURE_2D_ARRAY);
     if gpu.stencil_write[k].is_none() {
@@ -1927,7 +2239,7 @@ fn stencil_by_draw<O: OpenGlEs>(
             }
         }
     }
-    if bind_source(gpu, src.texture, src.mip).is_err() {
+    if bind_source(gpu, &src.texture, src.mip).is_err() {
         return fail(gpu, LossReason::OutOfMemory);
     }
     let rect = [
@@ -1937,7 +2249,7 @@ fn stencil_by_draw<O: OpenGlEs>(
         extent.height as i32,
     ];
     for i in 0..extent.depth_or_layers {
-        let fb = texture_framebuffer(gpu, dst.texture, dst.mip, read_layer(dst, i));
+        let fb = texture_framebuffer(gpu, &dst.texture, dst.mip, read_layer(dst, i));
         gpu.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
         gpu.applied.draw_framebuffer = Some(fb);
         gpu.applied.program = 0;
@@ -2041,10 +2353,10 @@ fn aspect<O: OpenGlEs>(gpu: &mut Gl<O>, texture: &TextureObj, stencil: bool) {
 /// which unorm8 blending sums exactly ([`SlowPath::StencilCopiedByDraw`]).
 fn stencil_bits<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    src: &Texture,
+    src: &TextureRef,
     mip: u32,
     layer: u32,
-) -> Result<Texture, GpuError> {
+) -> Result<TextureRef, GpuError> {
     gpu.record_slow_path(SlowPath::StencilCopiedByDraw);
     if gpu.bits_program.is_none() {
         match depth::build_bits(&gpu.gl) {
@@ -2056,18 +2368,21 @@ fn stencil_bits<O: OpenGlEs>(
         (src.desc.width >> mip).max(1),
         (src.desc.height >> mip).max(1),
     );
-    let counted = gpu.create_texture(&TextureDesc {
-        dimension: TextureDimension::D2,
-        format: Format::R8Unorm,
-        width: w,
-        height: h,
-        depth_or_layers: 1,
-        mip_levels: 1,
-        samples: 1,
-        usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
-        cube: false,
-        reinterpret: false,
-    })?;
+    let counted = make_texture(
+        gpu,
+        &TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::R8Unorm,
+            width: w,
+            height: h,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+            cube: false,
+            reinterpret: false,
+        },
+    )?;
     let fb = own_framebuffer(gpu, &[(&counted, 0, 0), (src, mip, layer)]);
     gpu.gl.bind_framebuffer(gles::DRAW_FRAMEBUFFER, fb);
     gpu.gl.use_program(gpu.bits_program.unwrap_or(0));
@@ -2120,7 +2435,7 @@ fn bind_scratch<O: OpenGlEs>(gpu: &mut Gl<O>, target: u32, raw: u32) {
 
 /// Writes texels from the host or from a buffer (bound as the pixel unpack buffer) into a region.
 /// A region's first texel and slice (layer, or depth slice in 3D), as the host copy counts them.
-fn corner<O: OpenGlEs>(region: &TextureRegion<'_, Gl<O>>) -> [u32; 3] {
+fn corner(region: &Region) -> [u32; 3] {
     let z = if region.texture.desc.dimension == TextureDimension::D3 {
         region.origin.z
     } else {
@@ -2133,12 +2448,7 @@ fn corner<O: OpenGlEs>(region: &TextureRegion<'_, Gl<O>>) -> [u32; 3] {
 /// texels): the source's blocks from its host copy, or read back first where it has none
 /// ([`SlowPath::HostCopyReadBack`]), then written into the destination as a host write (into
 /// both its forms where it keeps a host copy, as texels where it does not).
-fn copy_host_kept<O: OpenGlEs>(
-    gpu: &mut Gl<O>,
-    src: &TextureRegion<'_, Gl<O>>,
-    dst: &TextureRegion<'_, Gl<O>>,
-    extent: Extent,
-) {
+fn copy_host_kept<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) {
     let (sbw, sbh, bytes) = FORMAT_FACTS[src.texture.desc.format as usize].block;
     let (dbw, dbh, dst_bytes) = FORMAT_FACTS[dst.texture.desc.format as usize].block;
     if bytes != dst_bytes {
@@ -2167,7 +2477,15 @@ fn copy_host_kept<O: OpenGlEs>(
         height: rows * dbh,
         depth_or_layers: extent.depth_or_layers,
     };
-    gpu.write_texture(dst, into, &packed, cols * bytes, rows, WriteMode::Ordered);
+    write_texture_held(
+        gpu,
+        dst,
+        into,
+        &packed,
+        cols * bytes,
+        rows,
+        WriteMode::Ordered,
+    );
 }
 
 /// Before the levels of `levels` (by bit) of the host copy of `t` are read: where draws wrote
@@ -2175,7 +2493,7 @@ fn copy_host_kept<O: OpenGlEs>(
 /// texture of its signed integer twin, which reads back as stored, and written into the host
 /// copy ([`SlowPath::HostCopyReadBack`]). A draw reads the smallest value as the one above it,
 /// so in a level whose host copy may hold it, the texels are not recovered.
-fn host_current<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture, levels: u32) -> Result<(), GpuError> {
+fn host_current<O: OpenGlEs>(gpu: &mut Gl<O>, t: &TextureRef, levels: u32) -> Result<(), GpuError> {
     let drawn = t.drawn.get() & levels;
     if drawn == 0 {
         return Ok(());
@@ -2207,19 +2525,22 @@ fn host_current<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture, levels: u32) -> Resul
                 d.depth_or_layers
             },
         };
-        let held = gpu.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format: twin,
-            width: extent.width,
-            height: extent.height,
-            depth_or_layers: extent.depth_or_layers,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
-            cube: false,
-            reinterpret: false,
-        })?;
-        let region = |texture, mip| TextureRegion {
+        let held = make_texture(
+            gpu,
+            &TextureDesc {
+                dimension: TextureDimension::D2,
+                format: twin,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: extent.depth_or_layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+                cube: false,
+                reinterpret: false,
+            },
+        )?;
+        let region = |texture, mip| Region {
             texture,
             mip,
             layer: 0,
@@ -2231,11 +2552,16 @@ fn host_current<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture, levels: u32) -> Resul
             extent.width * extent.height,
         );
         let mut bytes = vec![0; (texels * extent.depth_or_layers * texel) as usize];
-        let read = match copy_by_draw(gpu, &region(t, mip), &region(&held, 0), extent) {
-            true => read_texture_now(gpu, &region(&held, 0), extent, &mut bytes),
+        let read = match copy_by_draw(
+            gpu,
+            &region(t.clone(), mip),
+            &region(held.clone(), 0),
+            extent,
+        ) {
+            true => read_texture_now(gpu, &region(held.clone(), 0), extent, &mut bytes),
             false => Err(unbuilt(gpu, "draws from this signed normalised format")),
         };
-        gpu.destroy(Object::Texture(held));
+        destroy_held(gpu, Held::Texture(held));
         read?;
         let size = [extent.width, extent.height, extent.depth_or_layers];
         let row = (extent.width * texel) as usize;
@@ -2247,7 +2573,7 @@ fn host_current<O: OpenGlEs>(gpu: &mut Gl<O>, t: &Texture, levels: u32) -> Resul
 
 /// Uploads a region of a block-compressed texture from its host copy: as blocks natively, else
 /// decoded ([`SlowPath::BlockDecoded`]).
-fn upload_blocks<O: OpenGlEs>(gpu: &mut Gl<O>, region: &TextureRegion<'_, Gl<O>>, extent: Extent) {
+fn upload_blocks<O: OpenGlEs>(gpu: &mut Gl<O>, region: &Region, extent: Extent) {
     let t = region.texture.clone();
     let Some(h) = &t.host else { return };
     let level = |size: u32| (size >> region.mip).max(1);
@@ -2333,7 +2659,7 @@ fn upload_blocks<O: OpenGlEs>(gpu: &mut Gl<O>, region: &TextureRegion<'_, Gl<O>>
 
 fn upload<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    region: &TextureRegion<'_, Gl<O>>,
+    region: &Region,
     extent: Extent,
     texels: Texels<'_>,
     row_pitch: u32,
@@ -2409,9 +2735,9 @@ fn upload<O: OpenGlEs>(
 /// colour texture go.
 fn through_draw<R, O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    region: &TextureRegion<'_, Gl<O>>,
+    region: &Region,
     extent: Extent,
-    read: impl FnOnce(&mut Gl<O>, &TextureRegion<'_, Gl<O>>) -> Result<R, GpuError>,
+    read: impl FnOnce(&mut Gl<O>, &Region) -> Result<R, GpuError>,
 ) -> Option<Result<R, GpuError>> {
     let format = region.texture.desc.format;
     let scratch = if depth::stored(format).is_some() {
@@ -2424,15 +2750,15 @@ fn through_draw<R, O: OpenGlEs>(
         return None;
     };
     Some(scratch.and_then(|scratch| {
-        let colour = TextureRegion {
-            texture: &scratch,
+        let colour = Region {
+            texture: scratch.clone(),
             mip: 0,
             layer: 0,
             origin: Origin::default(),
             stencil: false,
         };
         let r = read(gpu, &colour);
-        gpu.destroy(Object::Texture(scratch.clone()));
+        destroy_held(gpu, Held::Texture(scratch.clone()));
         r
     }))
 }
@@ -2440,31 +2766,34 @@ fn through_draw<R, O: OpenGlEs>(
 /// A region's bits drawn into a new 2D texture of `twin`, an integer format of the same bits.
 fn bits_by_draw<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    region: &TextureRegion<'_, Gl<O>>,
+    region: &Region,
     extent: Extent,
     twin: Format,
-) -> Result<Texture, GpuError> {
-    let held = gpu.create_texture(&TextureDesc {
-        dimension: TextureDimension::D2,
-        format: twin,
-        width: extent.width,
-        height: extent.height,
-        depth_or_layers: extent.depth_or_layers,
-        mip_levels: 1,
-        samples: 1,
-        usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
-        cube: false,
-        reinterpret: false,
-    })?;
-    let at = TextureRegion {
-        texture: &held,
+) -> Result<TextureRef, GpuError> {
+    let held = make_texture(
+        gpu,
+        &TextureDesc {
+            dimension: TextureDimension::D2,
+            format: twin,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        },
+    )?;
+    let at = Region {
+        texture: held.clone(),
         mip: 0,
         layer: 0,
         origin: Origin::default(),
         stencil: false,
     };
     if !copy_by_draw(gpu, region, &at, extent) {
-        gpu.destroy(Object::Texture(held));
+        destroy_held(gpu, Held::Texture(held));
         return Err(unbuilt(gpu, "reading back this format"));
     }
     gpu.record_slow_path(SlowPath::CopyThroughBuffer);
@@ -2474,12 +2803,12 @@ fn bits_by_draw<O: OpenGlEs>(
 /// Reads one region of a colour texture into `dst`, rows tightly packed, now.
 fn read_texture_now<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    region: &TextureRegion<'_, Gl<O>>,
+    region: &Region,
     extent: Extent,
     dst: &mut [u8],
 ) -> Result<(), GpuError> {
     if let Some(h) = &region.texture.host {
-        host_current(gpu, region.texture, 1 << region.mip)?;
+        host_current(gpu, &region.texture, 1 << region.mip)?;
         let corner = corner(region);
         let size = [extent.width, extent.height, extent.depth_or_layers];
         h.read(&region.texture.desc, region.mip, corner, size, dst);
@@ -2490,8 +2819,8 @@ fn read_texture_now<O: OpenGlEs>(
     }) {
         return r;
     }
-    fresh(gpu, region.texture);
-    let t = region.texture;
+    fresh(gpu, &region.texture);
+    let t = &region.texture;
     let read = t.read.ok_or(GpuError::Invalid(
         "webgl: the format cannot be read back here",
     ))?;
@@ -2535,7 +2864,7 @@ fn read_texture_now<O: OpenGlEs>(
 }
 
 /// The texture layer, or 3D slice, of layer `i` of a region.
-fn read_layer<O: OpenGlEs>(region: &TextureRegion<'_, Gl<O>>, i: u32) -> u32 {
+fn read_layer(region: &Region, i: u32) -> u32 {
     if region.texture.desc.dimension == TextureDimension::D3 {
         region.origin.z + i
     } else {
@@ -2592,14 +2921,14 @@ fn mark_stale<O: OpenGlEs>(gpu: &mut Gl<O>, buffer: &BufferObj, index: bool, sta
 
 /// Brings up to date every range a draw reads: indices from the index GL buffer, streams and
 /// uniform blocks from the data one.
-fn refresh_draw<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>) {
-    if let Some(index) = &call.index {
-        refresh(gpu, index.buffer, Some(true));
+fn refresh_draw<O: OpenGlEs>(gpu: &mut Gl<O>, drawn: &Drawn) {
+    if let Some(index) = &drawn.index {
+        refresh(gpu, &index.buffer, Some(true));
     }
-    for stream in call.vertex_buffers.iter().flatten() {
-        refresh(gpu, stream.buffer, Some(false));
+    for stream in drawn.vertex_buffers.iter().flatten() {
+        refresh(gpu, &stream.buffer, Some(false));
     }
-    for set in call.bindings.iter().flatten() {
+    for set in drawn.bindings.iter().flatten() {
         for (_, bound) in &set.entries {
             if let Bound::Uniform(buffer, _, _) = bound {
                 refresh(gpu, buffer, Some(false));
@@ -2662,7 +2991,7 @@ fn apply_bindings<O: OpenGlEs>(
     gpu: &mut Gl<O>,
     program: Id,
     linked: &shader::Linked,
-    sets: &[Option<&BindingSet>; MAX_BINDING_SETS],
+    sets: &[Option<&SetRef>; MAX_BINDING_SETS],
 ) -> Result<(), Unbindable> {
     let ids = sets.map(|s| s.map_or(0, |s| s.id));
     if gpu.applied.program == program && gpu.applied.sets == ids {
@@ -2791,15 +3120,15 @@ fn apply_bindings<O: OpenGlEs>(
 /// offset would fall below zero.
 fn apply_vertices<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    call: &DrawCall<'_, Gl<O>>,
+    drawn: &Drawn,
     base_vertex: i64,
     first_instance: u32,
     later: u32,
 ) -> Result<(), ()> {
-    let layout = &call.vertex_layout.0.1;
+    let layout = &drawn.vertex_layout.0.1;
     let mut wanted = [None; MAX_VERTEX_STREAMS];
     for (w, a) in wanted.iter_mut().zip(&layout.attributes) {
-        let Some(binding) = call.vertex_buffers.get(a.stream).and_then(|b| b.as_ref()) else {
+        let Some(binding) = drawn.vertex_buffers.get(a.stream).and_then(|b| b.as_ref()) else {
             *w = Some((a, None, 0));
             continue;
         };
@@ -2814,11 +3143,11 @@ fn apply_vertices<O: OpenGlEs>(
         } * i64::from(a.stride);
         let offset = binding.offset as i64 + i64::from(a.offset) + moved;
         let offset = u64::try_from(offset).map_err(|_| ())?;
-        *w = Some((a, Some(binding.buffer), offset));
+        *w = Some((a, Some(&binding.buffer), offset));
     }
     let n = layout.attributes.len();
     let wanted = &wanted[..n];
-    let changed = gpu.applied.layout != call.vertex_layout.0.0
+    let changed = gpu.applied.layout != drawn.vertex_layout.0.0
         || gpu.applied.attributes.len() != n
         || wanted
             .iter()
@@ -2855,7 +3184,7 @@ fn apply_vertices<O: OpenGlEs>(
         }
     }
     gpu.applied.enabled = enabled;
-    gpu.applied.layout = call.vertex_layout.0.0;
+    gpu.applied.layout = drawn.vertex_layout.0.0;
     Ok(())
 }
 /// [`Gpu::draw`], with the draw's instances starting `later` instances past its first
@@ -2863,7 +3192,7 @@ fn apply_vertices<O: OpenGlEs>(
 /// The bytes of a draw's indices, read back from the index GL buffer (waiting for the GPU).
 fn read_indices<O: OpenGlEs>(
     gpu: &mut Gl<O>,
-    index: &IndexBinding<'_, Gl<O>>,
+    index: &Index,
     first: u32,
     count: u32,
 ) -> Result<Vec<u8>, GpuError> {
@@ -2874,7 +3203,7 @@ fn read_indices<O: OpenGlEs>(
         ));
     }
     let mut raw = vec![0u8; (range.end - range.start) as usize];
-    refresh(gpu, index.buffer, Some(true));
+    refresh(gpu, &index.buffer, Some(true));
     let gl_buffer = index.buffer.index.or(index.buffer.data);
     let read = {
         gpu.gl
@@ -2890,7 +3219,7 @@ fn read_indices<O: OpenGlEs>(
 /// An indexed draw that must not restart, whose indices may hold GL's restart value (which WebGL
 /// cannot turn off): they are read back and, where one is there, drawn rewritten as 32-bit indices
 /// from the index ring ([`SlowPath::RestartRewrite`]).
-fn draw_unrestarted<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>) {
+fn draw_unrestarted<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, drawn: &Drawn) {
     let (
         Some(index),
         DrawRange::Indexed {
@@ -2900,9 +3229,9 @@ fn draw_unrestarted<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>) {
             first_instance,
             instances,
         },
-    ) = (&call.index, &call.range)
+    ) = (&drawn.index, &call.range)
     else {
-        return draw_from(gpu, call, 0);
+        return draw_from(gpu, call, drawn, 0);
     };
     let (first, count, base_vertex) = (*first, *count, *base_vertex);
     let (first_instance, instances) = (*first_instance, *instances);
@@ -2913,7 +3242,7 @@ fn draw_unrestarted<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>) {
     let start = index_bytes(index, first, count).start;
     index.buffer.maxima.borrow_mut().wrote(start, &bytes);
     let (widened, shift) = match restart::rewrite(&bytes, index.format) {
-        restart::Rewrite::Unneeded => return draw_from(gpu, call, 0),
+        restart::Rewrite::Unneeded => return draw_from(gpu, call, drawn, 0),
         restart::Rewrite::Widened(widened, shift) => (widened, shift),
         restart::Rewrite::Unreachable => {
             unbuilt(
@@ -2936,6 +3265,17 @@ fn draw_unrestarted<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>) {
         Ok(ring) => ring,
         Err(_) => return fail(gpu, LossReason::OutOfMemory),
     };
+    let Some(ring_held) = held(&gpu.objects.buffers, ring.0) else {
+        return invalid(gpu, GONE.into());
+    };
+    let rewritten = Drawn {
+        index: Some(Index {
+            buffer: ring_held,
+            offset: offset[0],
+            format: IndexFormat::U32,
+        }),
+        ..drawn.clone()
+    };
     draw_from(
         gpu,
         &DrawCall {
@@ -2953,11 +3293,12 @@ fn draw_unrestarted<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>) {
             },
             ..*call
         },
+        &rewritten,
         0,
     );
 }
 
-fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, later: u32) {
+fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, drawn: &Drawn, later: u32) {
     let (base_vertex, first_instance, instances) = match call.range {
         DrawRange::Vertices {
             first_instance,
@@ -2999,23 +3340,23 @@ fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, later: u3
         );
         return;
     }
-    let converted = call.vertex_layout.0.1.converted;
+    let converted = drawn.vertex_layout.0.1.converted;
     let variant = match converted {
         0 => None,
-        key => match variant(gpu, call.program, key) {
+        key => match variant(gpu, &drawn.program, key) {
             Some(v) => Some(v),
             None => return,
         },
     };
-    let program: &ProgramObj = variant.as_deref().unwrap_or(call.program);
+    let program: &ProgramObj = variant.as_deref().unwrap_or(&drawn.program);
     let Some(linked) = linked(gpu, program) else {
         return;
     };
     if gpu.stale_buffers > 0 {
-        refresh_draw(gpu, call);
+        refresh_draw(gpu, drawn);
     }
     if gpu.twins > 0 {
-        for set in call.bindings.iter().flatten() {
+        for set in drawn.bindings.iter().flatten() {
             for (_, bound) in &set.entries {
                 if let Bound::Texture(v) = bound {
                     fresh(gpu, &v.texture);
@@ -3040,9 +3381,9 @@ fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, later: u3
             state::clip_distances(&gpu.gl, &mut gpu.values, n);
         }
     }
-    if gpu.applied.blend != call.blend.0.0 {
+    if gpu.applied.blend != drawn.blend.0.0 {
         // GL blends a second source into one colour target only.
-        if call.blend.0.1.second_source && gpu.pass.as_ref().is_some_and(|p| p.color_targets > 1) {
+        if drawn.blend.0.1.second_source && gpu.pass.as_ref().is_some_and(|p| p.color_targets > 1) {
             invalid(
                 gpu,
                 "a second-source blend with more than one colour target".into(),
@@ -3052,26 +3393,26 @@ fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, later: u3
         state::blend(
             &gpu.gl,
             &mut gpu.values,
-            &call.blend.0.1,
+            &drawn.blend.0.1,
             gpu.pass_unwritten,
         );
-        gpu.applied.blend = call.blend.0.0;
+        gpu.applied.blend = drawn.blend.0.0;
     }
     let (gl, v) = (&gpu.gl, &mut gpu.values);
     let reference = call.stencil_reference[0];
-    if gpu.applied.depth_stencil != call.depth_stencil.0.0
+    if gpu.applied.depth_stencil != drawn.depth_stencil.0.0
         || gpu.applied.stencil_reference != reference
     {
-        if let Err(what) = state::depth_stencil(gl, v, &call.depth_stencil.0.1, reference) {
+        if let Err(what) = state::depth_stencil(gl, v, &drawn.depth_stencil.0.1, reference) {
             unbuilt(gpu, what);
             return;
         }
-        gpu.applied.depth_stencil = call.depth_stencil.0.0;
+        gpu.applied.depth_stencil = drawn.depth_stencil.0.0;
         gpu.applied.stencil_reference = reference;
     }
-    if gpu.applied.raster != call.raster.0.0 {
-        state::raster(gl, v, &call.raster.0.1);
-        gpu.applied.raster = call.raster.0.0;
+    if gpu.applied.raster != drawn.raster.0.0 {
+        state::raster(gl, v, &drawn.raster.0.1);
+        gpu.applied.raster = drawn.raster.0.0;
     }
     if let Some(vp) = call.viewports.first() {
         let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
@@ -3126,7 +3467,12 @@ fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, later: u3
         gl.blend_color(color[0], color[1], color[2], color[3]);
         v.blend_color = color;
     }
-    match apply_bindings(gpu, program.id, linked, &call.bindings) {
+    match apply_bindings(
+        gpu,
+        program.id,
+        linked,
+        &drawn.bindings.each_ref().map(Option::as_ref),
+    ) {
         Ok(()) => {}
         Err(Unbindable::Missing((set, binding))) => {
             invalid(
@@ -3173,7 +3519,7 @@ fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, later: u3
     if base_vertex != 0 || first_instance != 0 || later != 0 {
         gpu.record_slow_path(SlowPath::BaseVertexRebind);
     }
-    if apply_vertices(gpu, call, base_vertex, first_instance, later).is_err() {
+    if apply_vertices(gpu, drawn, base_vertex, first_instance, later).is_err() {
         unbuilt(gpu, "negative stream offsets after the base vertex");
         return;
     }
@@ -3197,7 +3543,7 @@ fn draw_from<O: OpenGlEs>(gpu: &mut Gl<O>, call: &DrawCall<'_, Gl<O>>, later: u3
             gl.draw_arrays_instanced(mode, first as i32, count as i32, instances as i32)
         }
         DrawRange::Indexed { first, count, .. } => {
-            let Some(index) = &call.index else {
+            let Some(index) = &drawn.index else {
                 return invalid(gpu, "an indexed draw without an index buffer".into());
             };
             if gpu.applied.index != index.buffer.id {
@@ -3248,7 +3594,7 @@ fn f(bits: u32) -> f32 {
 const NO_PASS: (u32, u32) = (i32::MAX as u32, i32::MAX as u32);
 
 /// The byte range of a buffer that a draw's indices `first..first + count` take.
-fn index_bytes<B: Gpu>(index: &IndexBinding<'_, B>, first: u32, count: u32) -> Range<u64> {
+fn index_bytes(index: &Index, first: u32, count: u32) -> Range<u64> {
     let size = u64::from(INDEX_FORMATS[index.format as usize].size);
     let start = index.offset + u64::from(first) * size;
     start..start + u64::from(count) * size
@@ -3268,14 +3614,14 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     type TextureView = TextureView;
     type Sampler = Sampler;
     type Shader = Shader;
-    type Program = GlProgram;
-    type Blend = Block<state::GlBlend>;
-    type DepthStencil = Block<state::GlDepthStencil>;
-    type Raster = Block<state::GlRaster>;
-    type VertexLayout = Block<state::GlLayout>;
+    type Program = Program;
+    type Blend = Blend;
+    type DepthStencil = DepthStencil;
+    type Raster = Raster;
+    type VertexLayout = VertexLayout;
     type BindingSet = BindingSet;
     type QuerySet = QuerySet;
-    type Readback = Readback<O::Fence>;
+    type Readback = Readback;
     type Fence = Fence<O::Fence>;
     type ResourceTable = NoTable;
     type Surface = Surface;
@@ -3300,127 +3646,15 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     }
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> Result<Buffer, GpuError> {
-        let size = i32::try_from(desc.size).map_err(|_| GpuError::OutOfMemory)?;
-        let usage = match desc.intent {
-            MapIntent::Rarely => gles::STATIC_DRAW,
-            MapIntent::Often => gles::DYNAMIC_DRAW,
-        };
-        let copies = BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::READ_BACK;
-        let indices = desc.usage.contains(BufferUsage::INDEX);
-        let other = !(desc.usage - BufferUsage::INDEX - copies).is_empty() || !indices;
-        if indices && other {
-            self.record_slow_path(SlowPath::IndexBufferTwin);
-        }
-        let gl = &self.gl;
-        let make = |target| {
-            let b = platform::one(|n| gl.gen_buffers(n)).ok_or(GpuError::OutOfMemory)?;
-            gl.bind_buffer(target, b);
-            gl.buffer_data(target, size as i64, None, usage);
-            Ok::<_, GpuError>(b)
-        };
-        let data = other.then(|| make(gles::ARRAY_BUFFER)).transpose()?;
-        let index = indices
-            .then(|| make(gles::ELEMENT_ARRAY_BUFFER))
-            .transpose()?;
-        if indices {
-            self.applied.index = 0;
-        }
-        Ok(Handle(Rc::new(BufferObj {
-            id: id(self),
-            size: desc.size,
-            usage,
-            data,
-            index,
-            stale: Cell::new(None),
-            maxima: RefCell::default(),
-        })))
+        let b = make_buffer(self, desc)?;
+        self.objects.buffers.insert(b.id, b.clone());
+        Ok(Buffer(b.id))
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
-        if self.caps.formats.uses[desc.format as usize] == FormatUse::empty() {
-            return Err(GpuError::Invalid(
-                "webgl: the format has no capabilities here",
-            ));
-        }
-        // Block-compressed formats are GL's compressed formats with their extension (not in 3D,
-        // which GLES does not compress), else stored decoded.
-        let (gl_format, decoded) = match host::compressed(desc.format) {
-            Some((internal, ext, _))
-                if self.extensions.contains(ext) && desc.dimension != TextureDimension::D3 =>
-            {
-                let class = format::Class::Norm { render: false };
-                let (format, ty) = (0, 0);
-                let f = format::GlFormat {
-                    internal,
-                    format,
-                    ty,
-                    class,
-                };
-                (Some(f), None)
-            }
-            _ => match host::decoded(desc.format) {
-                Some(decoded) => {
-                    self.record_slow_path(SlowPath::BlockDecoded);
-                    (format::gl_format(decoded), Some(decoded))
-                }
-                None => (format::gl_format(desc.format), format::widened(desc.format)),
-            },
-        };
-        let gl_format = gl_format.ok_or(GpuError::Invalid(
-            "webgl: the format has no capabilities here",
-        ))?;
-        if desc.samples > 1 {
-            return create_samples(self, desc, gl_format);
-        }
-        let target = match desc.own_view() {
-            ViewDimension::D2 => gles::TEXTURE_2D,
-            ViewDimension::D2Array => gles::TEXTURE_2D_ARRAY,
-            ViewDimension::Cube => gles::TEXTURE_CUBE_MAP,
-            ViewDimension::D3 => gles::TEXTURE_3D,
-            ViewDimension::CubeArray => {
-                return Err(GpuError::Invalid("webgl: WebGL 2 has no cube arrays"));
-            }
-        };
-        let raw = platform::one(|n| self.gl.gen_textures(n)).ok_or(GpuError::OutOfMemory)?;
-        bind_scratch(self, target, raw);
-        let gl = &self.gl;
-        let (w, h, d) = (
-            desc.width as i32,
-            desc.height as i32,
-            desc.depth_or_layers as i32,
-        );
-        let levels = desc.mip_levels as i32;
-        match target {
-            gles::TEXTURE_2D | gles::TEXTURE_CUBE_MAP => {
-                gl.tex_storage_2d(target, levels, gl_format.internal, w, h)
-            }
-            _ => gl.tex_storage_3d(target, levels, gl_format.internal, w, h, d),
-        }
-        gl.tex_parameteri(target, gles::TEXTURE_MAX_LEVEL, levels - 1);
-        Ok(Handle(Rc::new(TextureObj {
-            id: id(self),
-            storage: Storage::Texture(raw),
-            target,
-            desc: *desc,
-            gl: gl_format,
-            read: format::read_as(
-                desc.format,
-                format::FormatExtensions::found(&self.extensions),
-            ),
-            levels: Cell::new((0, desc.mip_levels - 1)),
-            newest: Rc::new(Cell::new(0)),
-            side: 1,
-            twin: std::cell::OnceCell::new(),
-            own: None,
-            stencil_mode: Cell::new(false),
-            host: host::kept(desc.format).then(|| {
-                self.record_slow_path(SlowPath::HostCopyKept);
-                host::HostCopy::new(desc)
-            }),
-            decoded,
-            drawn: Cell::new(0),
-            minimum: Cell::new(0),
-        })))
+        let t = make_texture(self, desc)?;
+        self.objects.textures.insert(t.id, t.clone());
+        Ok(Texture(t.id))
     }
 
     fn create_view(
@@ -3428,48 +3662,10 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
-        let t = &texture.desc;
-        let three_d = t.dimension == TextureDimension::D3;
-        let to_draw = desc.mip_count == 1 && (desc.layer_count == 1 || three_d);
-        let whole = desc.dimension == t.own_view()
-            && desc.base_layer == 0
-            && desc.layer_count == if three_d { 1 } else { t.depth_or_layers };
-        if !to_draw && !whole {
-            return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
-        }
-        if desc.stencil {
-            if FORMAT_FACTS[t.format as usize].kind != FormatKind::DepthStencil {
-                return Err(GpuError::Invalid(
-                    "webgl: a stencil view of a texture without stencil",
-                ));
-            }
-            // Natively the texture gives its stencil when a draw binds the view; else a copy in
-            // `r8uint` kept in step by draws.
-            let texture = if self.extensions.contains("WEBGL_stencil_texturing") {
-                texture.clone()
-            } else {
-                stencil_copy_of(self, texture)?
-            };
-            return Ok(Handle(Rc::new(ViewObj {
-                id: id(self),
-                texture,
-                desc: *desc,
-            })));
-        }
-        let texture = if desc.format == t.format {
-            texture.clone()
-        } else if FORMAT_FACTS[desc.format as usize].linear
-            == FORMAT_FACTS[t.format as usize].linear
-        {
-            twin_of(self, texture, desc.format)?
-        } else {
-            return Err(GpuError::Absent(Features::FORMAT_REINTERPRET));
-        };
-        Ok(Handle(Rc::new(ViewObj {
-            id: id(self),
-            texture,
-            desc: *desc,
-        })))
+        let texture = held(&self.objects.textures, texture.0).ok_or(GpuError::Invalid(GONE))?;
+        let v = make_view(self, &texture, desc)?;
+        self.objects.views.insert(v.id, v.clone());
+        Ok(TextureView(v.id))
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Sampler, GpuError> {
@@ -3539,11 +3735,14 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             false => None,
         };
         let level_zero = twin.map(|t| (id(self), t));
-        Ok(Handle(Rc::new(SamplerObj {
-            id: id(self),
+        let number = id(self);
+        let made = Handle(Rc::new(SamplerObj {
+            id: number,
             raw,
             level_zero,
-        })))
+        }));
+        self.objects.samplers.insert(number, made);
+        Ok(Sampler(number))
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {
@@ -3563,7 +3762,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         let text = Rc::new(shader::write(module, self.glsl)?);
         if let Some(s) = self.shaders.get(&text) {
             s.handles.set(s.handles.get() + 1);
-            return Ok(s.clone());
+            return Ok(Shader(s.id));
         }
         let raw = shader::start_compile(&self.gl, text.stage, &text.source)?;
         let s = Handle(Rc::new(shader::ShaderObj {
@@ -3573,32 +3772,42 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             text: text.clone(),
         }));
         self.shaders.insert(text, s.clone());
-        Ok(s)
+        self.objects.shaders.insert(s.id, s.clone());
+        Ok(Shader(s.id))
     }
 
-    fn create_program(&mut self, program: &Program<'_, Self>) -> Result<GlProgram, GpuError> {
-        let Program::Render { vertex, fragment } = program else {
+    fn create_program(
+        &mut self,
+        program: &wcontainers_gpu::shader::Program<'_, Self>,
+    ) -> Result<Program, GpuError> {
+        let wcontainers_gpu::shader::Program::Render { vertex, fragment } = program else {
             return Err(GpuError::Absent(Features::COMPUTE));
         };
-        let pair = (vertex.id, fragment.map_or(0, |f| f.id));
+        let vertex = held(&self.objects.shaders, vertex.0).ok_or(GpuError::Invalid(GONE))?;
+        let fragment = match fragment {
+            Some(f) => Some(held(&self.objects.shaders, f.0).ok_or(GpuError::Invalid(GONE))?),
+            None => None,
+        };
+        let pair = (vertex.id, fragment.as_ref().map_or(0, |f| f.id));
         if let Some(p) = self.programs.get(&pair) {
             p.handles.set(p.handles.get() + 1);
-            return Ok(p.clone());
+            return Ok(Program(p.id));
         }
         let id = id(self);
         let started = shader::link(
             &self.gl,
             id,
             &vertex.0,
-            fragment.map(|f| &f.0),
+            fragment.as_ref().map(|f| &f.0),
             self.empty_fragment,
         )?;
         let p = Handle(Rc::new(started));
         self.programs.insert(pair, p.clone());
-        Ok(p)
+        self.objects.programs.insert(p.id, p.clone());
+        Ok(Program(p.id))
     }
 
-    fn create_blend(&mut self, desc: &BlendDesc) -> Result<Block<state::GlBlend>, GpuError> {
+    fn create_blend(&mut self, desc: &BlendDesc) -> Result<Blend, GpuError> {
         if desc.logic_op.is_some() {
             return Err(GpuError::Absent(Features::LOGIC_OP));
         }
@@ -3635,13 +3844,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         if mixed {
             return Err(GpuError::Absent(Features::BLEND_CONSTANT_ALPHA));
         }
-        Ok(Handle(Rc::new((id(self), state::GlBlend::new(desc)))))
+        let number = id(self);
+        let made = Handle(Rc::new((number, state::GlBlend::new(desc))));
+        self.objects.blends.insert(number, made);
+        Ok(Blend(number))
     }
 
-    fn create_depth_stencil(
-        &mut self,
-        desc: &DepthStencilDesc,
-    ) -> Result<Block<state::GlDepthStencil>, GpuError> {
+    fn create_depth_stencil(&mut self, desc: &DepthStencilDesc) -> Result<DepthStencil, GpuError> {
         if desc.depth_bounds.is_some() {
             return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
         }
@@ -3650,13 +3859,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         {
             return Err(GpuError::Absent(Features::STENCIL_PER_FACE));
         }
-        Ok(Handle(Rc::new((
-            id(self),
-            state::GlDepthStencil::new(desc),
-        ))))
+        let number = id(self);
+        let made = Handle(Rc::new((number, state::GlDepthStencil::new(desc))));
+        self.objects.depth_stencils.insert(number, made);
+        Ok(DepthStencil(number))
     }
 
-    fn create_raster(&mut self, desc: &RasterDesc) -> Result<Block<state::GlRaster>, GpuError> {
+    fn create_raster(&mut self, desc: &RasterDesc) -> Result<Raster, GpuError> {
         let has = |f| self.caps.features.contains(f);
         let absent = [
             (
@@ -3695,16 +3904,16 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         if let Some((_, feature)) = absent.into_iter().find(|(missing, _)| *missing) {
             return Err(GpuError::Absent(feature));
         }
-        Ok(Handle(Rc::new((
-            id(self),
+        let number = id(self);
+        let made = Handle(Rc::new((
+            number,
             state::GlRaster::new(desc, self.glsl.flip_y),
-        ))))
+        )));
+        self.objects.rasters.insert(number, made);
+        Ok(Raster(number))
     }
 
-    fn create_vertex_layout(
-        &mut self,
-        desc: &VertexLayoutDesc,
-    ) -> Result<Block<state::GlLayout>, GpuError> {
+    fn create_vertex_layout(&mut self, desc: &VertexLayoutDesc) -> Result<VertexLayout, GpuError> {
         if desc
             .streams
             .iter()
@@ -3735,7 +3944,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             ));
         }
         match state::GlLayout::new(desc) {
-            Some(layout) => Ok(Handle(Rc::new((id(self), layout)))),
+            Some(layout) => {
+                let number = id(self);
+                self.objects
+                    .layouts
+                    .insert(number, Handle(Rc::new((number, layout))));
+                Ok(VertexLayout(number))
+            }
             None => Err(GpuError::Invalid(
                 "an attribute names a stream the layout lacks",
             )),
@@ -3749,10 +3964,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         let mut bound = Vec::with_capacity(entries.len());
         for e in entries {
             let r = match &e.resource {
-                BindingResource::UniformBuffer(r) => {
-                    Bound::Uniform(r.buffer.clone(), r.offset, r.size)
-                }
+                BindingResource::UniformBuffer(r) => Bound::Uniform(
+                    held(&self.objects.buffers, r.buffer.0).ok_or(GpuError::Invalid(GONE))?,
+                    r.offset,
+                    r.size,
+                ),
                 BindingResource::Texture(v) => {
+                    let v = held(&self.objects.views, v.0).ok_or(GpuError::Invalid(GONE))?;
                     // A GL texture is sampled whole in its own target: views to draw into of one
                     // layer, or of a cube's face, cannot be sampled.
                     let t = &v.texture.desc;
@@ -3766,9 +3984,11 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                     {
                         return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
                     }
-                    Bound::Texture((*v).clone())
+                    Bound::Texture(v)
                 }
-                BindingResource::Sampler(s) => Bound::Sampler((*s).clone()),
+                BindingResource::Sampler(s) => Bound::Sampler(
+                    held(&self.objects.samplers, s.0).ok_or(GpuError::Invalid(GONE))?,
+                ),
                 BindingResource::StorageBuffer { .. } | BindingResource::StorageTexture { .. } => {
                     return Err(GpuError::Absent(
                         Features::FRAGMENT_STORAGE_WRITE | Features::VERTEX_STORAGE_READ,
@@ -3784,10 +4004,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             };
             bound.push((e.binding, r));
         }
-        Ok(Handle(Rc::new(SetObj {
-            id: id(self),
+        let number = id(self);
+        let made = Handle(Rc::new(SetObj {
+            id: number,
             entries: bound,
-        })))
+        }));
+        self.objects.sets.insert(number, made);
+        Ok(BindingSet(number))
     }
 
     fn binding_layout_key(&self, _set: &BindingSet) -> BindingLayoutKey {
@@ -3804,150 +4027,62 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             }
             QueryKind::Timestamp => {}
         }
-        Ok(Handle(Rc::new(QuerySetObj {
+        let number = id(self);
+        let made = Handle(Rc::new(QuerySetObj {
             kind,
             slots: core::cell::RefCell::new(vec![None; count as usize]),
-        })))
+        }));
+        self.objects.query_sets.insert(number, made);
+        Ok(QuerySet(number))
     }
 
     fn destroy(&mut self, object: Object<Self>) {
-        if let Object::Surface(surface) = &object {
-            if self.surface.as_ref().is_some_and(|s| s.id == surface.id)
-                && let Some((t, v)) = self.surface.take().and_then(|s| s.frame)
-            {
-                self.destroy(Object::TextureView(v));
-                self.destroy(Object::Texture(t));
+        let o = &mut self.objects;
+        let held = match object {
+            Object::Buffer(b) => o.buffers.remove(&b.0).map(Held::Buffer),
+            Object::Texture(t) => o.textures.remove(&t.0).map(Held::Texture),
+            // A view and a binding set hold no GL object of their own.
+            Object::TextureView(v) => {
+                o.views.remove(&v.0);
+                None
             }
-            return;
-        }
-        if let Object::Texture(t) = &object
-            && let Some(twin) = t.twin.get()
-        {
-            self.twins -= 1;
-            let twin = twin.clone();
-            self.destroy(Object::Texture(twin));
-        }
-        let gl = &self.gl;
-        match object {
-            Object::Buffer(b) => {
-                if b.stale.get().is_some() {
-                    self.stale_buffers -= 1;
-                }
-                for raw in [b.data, b.index].into_iter().flatten() {
-                    gl.delete_buffers(&[raw]);
-                }
+            Object::Sampler(x) => o.samplers.remove(&x.0).map(Held::Sampler),
+            // Shaders and programs of equal text are one object: it leaves the table with its last handle.
+            Object::Shader(x) => held(&o.shaders, x.0).map(Held::Shader),
+            Object::Program(x) => held(&o.programs, x.0).map(Held::Program),
+            Object::Blend(x) => {
+                o.blends.remove(&x.0);
+                None
             }
-            Object::Texture(t) => {
-                self.framebuffers.retain(|key, fb| {
-                    let uses = key.iter().flatten().any(|a| a.0 == t.id);
-                    if uses {
-                        gl.delete_framebuffers(&[*fb]);
-                    }
-                    !uses
-                });
-                if self
-                    .applied
-                    .draw_framebuffer
-                    .is_some_and(|fb| !self.framebuffers.values().any(|f| *f == fb))
-                {
-                    self.applied.draw_framebuffer = None;
-                }
-                if self
-                    .applied
-                    .read_framebuffer
-                    .is_some_and(|fb| !self.framebuffers.values().any(|f| *f == fb))
-                {
-                    self.applied.read_framebuffer = None;
-                }
-                match t.storage {
-                    Storage::Texture(raw) => gl.delete_textures(&[raw]),
-                    Storage::Samples(rb) => gl.delete_renderbuffers(&[rb]),
-                }
+            Object::DepthStencil(x) => {
+                o.depth_stencils.remove(&x.0);
+                None
             }
-            Object::Sampler(s) => {
-                gl.delete_samplers(&[s.raw]);
-                if let Some((_, twin)) = s.level_zero {
-                    gl.delete_samplers(&[twin]);
-                }
+            Object::Raster(x) => {
+                o.rasters.remove(&x.0);
+                None
             }
-            Object::Shader(s) => {
-                s.handles.set(s.handles.get() - 1);
-                if s.handles.get() == 0 {
-                    self.shaders.remove(&s.text);
-                    gl.delete_shader(s.raw);
-                }
+            Object::VertexLayout(x) => {
+                o.layouts.remove(&x.0);
+                None
             }
-            Object::Program(p) => {
-                p.handles.set(p.handles.get() - 1);
-                if p.handles.get() == 0 {
-                    self.programs.remove(&p.pair);
-                    gl.delete_program(p.raw);
-                    let captures = p.captures.iter().filter_map(|c| c.get());
-                    for c in captures.chain(core::iter::once(&p.0)) {
-                        for (_, v) in c.variants.borrow().iter() {
-                            gl.delete_program(v.raw);
-                            if self.applied.program == v.id {
-                                self.applied.program = 0;
-                            }
-                        }
-                    }
-                    for c in p.captures.iter().filter_map(|c| c.get()) {
-                        gl.delete_program(c.raw);
-                        if self.applied.program == c.id {
-                            self.applied.program = 0;
-                        }
-                    }
-                    if self.applied.program == p.id {
-                        self.applied.program = 0;
-                    }
-                }
+            Object::BindingSet(x) => {
+                o.sets.remove(&x.0);
+                None
             }
-            Object::Blend(_)
-            | Object::DepthStencil(_)
-            | Object::Raster(_)
-            | Object::VertexLayout(_)
-            | Object::TextureView(_)
-            | Object::BindingSet(_)
-            | Object::Surface(_) => {}
-            Object::QuerySet(set) => {
-                // Queries a read back still holds are deleted when it finishes.
-                for q in set.slots.borrow_mut().drain(..).flatten() {
-                    if let Ok(q) = Rc::try_unwrap(q) {
-                        gl.delete_queries(&[q]);
-                    }
-                }
-            }
+            Object::QuerySet(x) => o.query_sets.remove(&x.0).map(Held::QuerySet),
+            Object::Surface(x) => Some(Held::Surface(x.0)),
             Object::ResourceTable(t) => match t {},
+        };
+        if let Some(held) = held {
+            destroy_held(self, held);
         }
     }
 
     fn write_buffer(&mut self, buffer: &Buffer, offset: u64, data: &[u8], mode: WriteMode) {
-        if offset + data.len() as u64 > buffer.size {
-            return invalid(
-                self,
-                format!(
-                    "a write of {} bytes at {offset} past a buffer of {}",
-                    data.len(),
-                    buffer.size
-                ),
-            );
-        }
-        if buffer.index.is_some() {
-            buffer.maxima.borrow_mut().wrote(offset, data);
-        }
-        let gl = &self.gl;
-        for raw in [buffer.data, buffer.index].into_iter().flatten() {
-            gl.bind_buffer(gles::COPY_WRITE_BUFFER, raw);
-            if mode == WriteMode::Discard {
-                // Orphan at the buffer's own size, so later writes above this part still fit.
-                gl.buffer_data(
-                    gles::COPY_WRITE_BUFFER,
-                    buffer.size as i64,
-                    None,
-                    buffer.usage,
-                );
-            }
-            gl.buffer_sub_data(gles::COPY_WRITE_BUFFER, offset as i64, data);
+        match held(&self.objects.buffers, buffer.0) {
+            Some(buffer) => write_buffer_held(self, &buffer, offset, data, mode),
+            None => invalid(self, GONE.into()),
         }
     }
 
@@ -3958,104 +4093,34 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         data: &[u8],
         row_pitch: u32,
         rows_per_layer: u32,
-        _mode: WriteMode,
+        mode: WriteMode,
     ) {
-        fresh(self, region.texture);
-        written(self, region.texture);
-        let t = region.texture;
-        let (corner, size) = (
-            corner(region),
-            [extent.width, extent.height, extent.depth_or_layers],
-        );
-        let (pitch, per_layer) = (row_pitch as usize, rows_per_layer as usize);
-        let snorm = format::signed_normalised(t.desc.format);
-        let level = 1 << region.mip;
-        if snorm && host::covers_level(&t.desc, region.mip, corner, size) {
-            // Every texel of the level is the host's again.
-            t.drawn.set(t.drawn.get() & !level);
-            t.minimum.set(t.minimum.get() & !level);
-        }
-        let wrote_minimum = snorm
-            && host::write_holds_minimum(&t.desc, region.mip, corner, size, data, pitch, per_layer);
-        if wrote_minimum {
-            // Texels drawn since are read back while a draw still reads them exactly.
-            if t.minimum.get() & level == 0 {
-                let _ = host_current(self, t, level);
+        match region_of(self, region) {
+            Some(region) => {
+                write_texture_held(self, &region, extent, data, row_pitch, rows_per_layer, mode)
             }
-            t.minimum.set(t.minimum.get() | level);
+            None => invalid(self, GONE.into()),
         }
-        if let Some(h) = &region.texture.host {
-            h.write(&t.desc, region.mip, corner, size, data, pitch, per_layer);
-            if t.minimum.get() & level != 0 && !wrote_minimum && t.drawn.get() & level == 0 {
-                // The host copy holds every texel of the level; this write may have replaced its
-                // last minimum.
-                if !h.holds_minimum(t.desc.format, region.mip) {
-                    t.minimum.set(t.minimum.get() & !level);
-                }
-            }
-            if host::decoded(region.texture.desc.format).is_some() {
-                return upload_blocks(self, region, extent);
-            }
-        }
-        if FORMAT_FACTS[region.texture.desc.format as usize].depth_stencil {
-            return write_depth(
-                self,
-                region,
-                extent,
-                Texels::Bytes(data),
-                row_pitch,
-                rows_per_layer,
-            );
-        }
-        let format = region.texture.desc.format;
-        if format::converts_writes(format) {
-            // Converted into tightly packed rows of the stored texels.
-            self.record_slow_path(SlowPath::FormatConverted);
-            let row = extent.width as usize * FORMAT_FACTS[format as usize].block.2 as usize;
-            let (rows, layers) = (extent.height as usize, extent.depth_or_layers as usize);
-            let mut stored = Vec::new();
-            for layer in 0..layers {
-                for r in 0..rows {
-                    let at = (layer * rows_per_layer as usize + r) * row_pitch as usize;
-                    format::stored_texels(format, &data[at..at + row], &mut stored);
-                }
-            }
-            let texel = FORMAT_FACTS[t.decoded.unwrap_or(format) as usize].block.2;
-            return upload(
-                self,
-                region,
-                extent,
-                Texels::Bytes(&stored),
-                extent.width * texel,
-                extent.height,
-            );
-        }
-        upload(
-            self,
-            region,
-            extent,
-            Texels::Bytes(data),
-            row_pitch,
-            rows_per_layer,
-        );
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
+        let Some(pass) = pass_of(self, pass) else {
+            return invalid(self, GONE.into());
+        };
         if let Some(empty) = pass.empty {
-            return begin_empty_pass(self, empty, pass.occlusion.cloned());
+            return begin_empty_pass(self, empty, pass.occlusion.clone());
         }
         let mut key: FramebufferKey = [None; MAX_COLOR_TARGETS + 1];
-        let mut views: [Option<&TextureView>; MAX_COLOR_TARGETS + 1] =
-            [None; MAX_COLOR_TARGETS + 1];
+        let mut views: [Option<&ViewRef>; MAX_COLOR_TARGETS + 1] = [None; MAX_COLOR_TARGETS + 1];
         for (i, c) in pass.colors.iter().enumerate() {
             if let Some(c) = c {
-                key[i] = Some(attachment(c.view, c.depth_slice));
-                views[i] = Some(c.view);
+                key[i] = Some(attachment(&c.view, c.depth_slice));
+                views[i] = Some(&c.view);
             }
         }
         if let Some(d) = &pass.depth {
-            key[MAX_COLOR_TARGETS] = Some(attachment(d.view, 0));
-            views[MAX_COLOR_TARGETS] = Some(d.view);
+            key[MAX_COLOR_TARGETS] = Some(attachment(&d.view, 0));
+            views[MAX_COLOR_TARGETS] = Some(&d.view);
         }
         let size = views
             .iter()
@@ -4092,7 +4157,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         }
         // The channels draws leave in each target; slots without a target follow the first.
         let colors = &views[..MAX_COLOR_TARGETS];
-        let unwritten = |v: &TextureView| format::unwritten(v.texture.desc.format);
+        let unwritten = |v: &ViewRef| format::unwritten(v.texture.desc.format);
         let first = colors.iter().flatten().next().map_or(0, |v| unwritten(v));
         let unwritten = if colors.iter().flatten().any(|v| unwritten(v) != 0) {
             if colors.iter().flatten().any(|v| unwritten(v) != first)
@@ -4137,13 +4202,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         let gl = &self.gl;
         // A layer of a 2D array is never invalidated: in Chrome (ANGLE on Direct3D 11) that
         // loses the other layers of the level.
-        let whole = |v: &TextureView| v.texture.target != gles::TEXTURE_2D_ARRAY;
+        let whole = |v: &ViewRef| v.texture.target != gles::TEXTURE_2D_ARRAY;
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else { continue };
             let point = gles::COLOR_ATTACHMENT0 + i as u32;
             let format = c.view.texture.desc.format;
             // A target lacking channels keeps their values, which a discard would lose.
-            let whole = whole(c.view) && format::unwritten(format) == 0;
+            let whole = whole(&c.view) && format::unwritten(format) == 0;
             match c.load {
                 LoadOp::Clear(value) => match FORMAT_FACTS[format as usize].kind {
                     FormatKind::Uint => gl.clear_bufferuiv(gles::COLOR, i as i32, &value),
@@ -4191,7 +4256,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 ),
             ] {
                 if let Some((load, store)) = ops
-                    && whole(d.view)
+                    && whole(&d.view)
                 {
                     if load {
                         start_discard.push(point);
@@ -4208,11 +4273,11 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         self.pass = Some(Pass {
             framebuffer: fb,
             discard: end_discard,
-            occlusion: pass.occlusion.cloned(),
+            occlusion: pass.occlusion.clone(),
             counting: false,
             resolves: core::array::from_fn(|i| {
                 let c = pass.colors[i].as_ref()?;
-                Some((c.view.texture.clone(), c.resolve?.clone()))
+                Some((c.view.texture.clone(), c.resolve.clone()?))
             }),
             size,
             color_targets: pass.colors.iter().flatten().count(),
@@ -4246,18 +4311,21 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
+        let Some(drawn) = drawn_of(self, call) else {
+            return invalid(self, GONE.into());
+        };
         if !call.restart
             && let (Some(index), DrawRange::Indexed { first, count, .. }) =
-                (&call.index, &call.range)
+                (&drawn.index, &call.range)
             && index
                 .buffer
                 .maxima
                 .borrow()
                 .may_hold(index.format, index_bytes(index, *first, *count))
         {
-            return draw_unrestarted(self, call);
+            return draw_unrestarted(self, call, &drawn);
         }
-        draw_from(self, call, 0);
+        draw_from(self, call, &drawn, 0);
     }
 
     fn begin_query(&mut self, index: u32) {
@@ -4295,9 +4363,15 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         dst_offset: u64,
         size: u64,
     ) {
+        let Some(src) = held(&self.objects.buffers, src.0) else {
+            return invalid(self, GONE.into());
+        };
+        let Some(dst) = held(&self.objects.buffers, dst.0) else {
+            return invalid(self, GONE.into());
+        };
         // Both sides are made whole first, so afterwards at most the side no copy reached is stale.
-        refresh(self, src, None);
-        refresh(self, dst, None);
+        refresh(self, &src, None);
+        refresh(self, &dst, None);
         let pairs = [(src.data, dst.data, false), (src.index, dst.index, true)];
         let mut copied = false;
         let mut missed = None;
@@ -4325,13 +4399,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             // buffer meet on the host.
             self.record_slow_path(SlowPath::HostCopyReadBack);
             let mut bytes = vec![0; size as usize];
-            let read = ReadSource::Buffer {
-                buffer: src,
+            let read = Source::Buffer {
+                buffer: src.clone(),
                 offset: src_offset,
                 size,
             };
-            if self.read_back_now(&read, &mut bytes).is_ok() {
-                self.write_buffer(dst, dst_offset, &bytes, WriteMode::Ordered);
+            if read_back_now_held(self, &read, &mut bytes).is_ok() {
+                write_buffer_held(self, &dst, dst_offset, &bytes, WriteMode::Ordered);
             }
             return;
         }
@@ -4346,7 +4420,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             }
         }
         if let Some(index) = missed {
-            mark_stale(self, dst, index, dst_offset, dst_offset + size);
+            mark_stale(self, &dst, index, dst_offset, dst_offset + size);
         }
     }
 
@@ -4356,115 +4430,9 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        // Signed normalised texels drawn since their host copy was whole are drawn on the GPU where
-        // they hold no smallest value.
-        let level = 1 << src.mip;
-        let by_draw =
-            src.texture.drawn.get() & level != 0 && src.texture.minimum.get() & level == 0;
-        if (src.texture.host.is_some() && !by_draw) || dst.texture.host.is_some() {
-            return copy_host_kept(self, src, dst, extent);
-        }
-        if src.texture.desc.samples > 1 || dst.texture.desc.samples > 1 {
-            return copy_samples(self, src, dst);
-        }
-        if within_one_subresource(src, dst, extent) {
-            return copy_within(self, src, dst, extent);
-        }
-        let (from, to) = (src.texture.desc.format, dst.texture.desc.format);
-        fresh(self, src.texture);
-        fresh(self, dst.texture);
-        written(self, dst.texture);
-        if from == to && FORMAT_FACTS[from as usize].depth_stencil {
-            return blit_same(self, src, dst, extent);
-        }
-        if FORMAT_FACTS[from as usize].depth_stencil || FORMAT_FACTS[to as usize].depth_stencil {
-            // A colour and a depth format of one typeless group.
-            if copy_by_draw(self, src, dst, extent) {
-                self.record_slow_path(if FORMAT_FACTS[to as usize].depth_stencil {
-                    SlowPath::DepthWrittenByDraw
-                } else {
-                    SlowPath::CopyThroughBuffer
-                });
-            } else {
-                unbuilt(self, "copies between these depth and colour formats");
-            }
-            return;
-        }
-        let renderable = |f| self.caps.formats.uses[f as usize].contains(FormatUse::RENDER);
-        // copyTexSubImage may copy floats through arithmetic, which loses NaN payloads and denormals.
-        let float = format::float_bits(from);
-        if from == to && renderable(from) && float && self.float_blits {
-            return blit_same(self, src, dst, extent);
-        }
-        // Formats `readPixels` reads are colour-renderable in GL, so copyTexSubImage copies them,
-        // also where they are not reported as targets (B4G4R4A4).
-        let attachable = renderable(from) || src.texture.read.is_some();
-        if from != to || !attachable || float {
-            let as_stored = src
-                .texture
-                .read
-                .is_some_and(|r| r.texel_read() == r.texel_kept());
-            let half = matches!(
-                to,
-                Format::R16Float | Format::Rg16Float | Format::Rgba16Float
-            );
-            if as_stored && FORMAT_FACTS[from as usize].block == FORMAT_FACTS[to as usize].block {
-                copy_same_bytes(self, src, dst, extent);
-            } else if half {
-                // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
-                // writes the bits.
-                copy_host_kept(self, src, dst, extent);
-            } else if copy_by_draw(self, src, dst, extent) {
-                self.record_slow_path(SlowPath::CopyThroughBuffer);
-            } else if float || src.texture.host.is_some() {
-                // 32-bit floats are no targets without EXT_color_buffer_float.
-                copy_host_kept(self, src, dst, extent);
-            } else {
-                unbuilt(self, "copies of these formats");
-            }
-            return;
-        }
-        let d = dst.texture.clone();
-        let Some(raw) = d.tex() else {
-            return;
-        };
-        for i in 0..extent.depth_or_layers {
-            let layer = read_layer(src, i);
-            read_framebuffer(self, src.texture, src.mip, layer);
-            bind_scratch(self, d.target, raw);
-            let (x, y) = (dst.origin.x as i32, dst.origin.y as i32);
-            let (sx, sy, w, h) = (
-                src.origin.x as i32,
-                src.origin.y as i32,
-                extent.width as i32,
-                extent.height as i32,
-            );
-            let level = dst.mip as i32;
-            let gl = &self.gl;
-            match d.target {
-                gles::TEXTURE_2D => gl.copy_tex_sub_image_2d(d.target, level, x, y, sx, sy, w, h),
-                gles::TEXTURE_CUBE_MAP => gl.copy_tex_sub_image_2d(
-                    gles::TEXTURE_CUBE_MAP_POSITIVE_X + dst.layer + i,
-                    level,
-                    x,
-                    y,
-                    sx,
-                    sy,
-                    w,
-                    h,
-                ),
-                _ => gl.copy_tex_sub_image_3d(
-                    d.target,
-                    level,
-                    x,
-                    y,
-                    read_layer(dst, i) as i32,
-                    sx,
-                    sy,
-                    w,
-                    h,
-                ),
-            }
+        match (region_of(self, src), region_of(self, dst)) {
+            (Some(src), Some(dst)) => copy_texture_held(self, &src, &dst, extent),
+            _ => invalid(self, GONE.into()),
         }
     }
 
@@ -4474,47 +4442,10 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        let data = src.buffer.data.filter(|_| {
-            dst.texture.host.is_none() && !format::converts_writes(dst.texture.desc.format)
-        });
-        let Some(data) = data else {
-            // The buffer's bytes read back, then written as a host write: into textures kept on the
-            // host or swapped there, and from index-only buffers, which no unpack buffer can be.
-            let (bw, bh, bytes) = FORMAT_FACTS[dst.texture.desc.format as usize].block;
-            let (row, rows) = (
-                u64::from(extent.width.div_ceil(bw) * bytes),
-                u64::from(extent.height.div_ceil(bh)),
-            );
-            let layers = u64::from(extent.depth_or_layers);
-            if rows == 0 || layers == 0 {
-                return;
-            }
-            let (pitch, per_layer) = (u64::from(src.row_pitch), u64::from(src.rows_per_layer));
-            let size = pitch * (per_layer * (layers - 1) + rows - 1) + row;
-            let mut bytes = vec![0; size as usize];
-            self.record_slow_path(SlowPath::HostCopyReadBack);
-            let read = ReadSource::Buffer {
-                buffer: src.buffer,
-                offset: src.offset,
-                size,
-            };
-            if self.read_back_now(&read, &mut bytes).is_ok() {
-                let (pitch, per_layer) = (src.row_pitch, src.rows_per_layer);
-                self.write_texture(dst, extent, &bytes, pitch, per_layer, WriteMode::Ordered);
-            }
-            return;
-        };
-        refresh(self, src.buffer, Some(false));
-        fresh(self, dst.texture);
-        written(self, dst.texture);
-        self.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, data);
-        let texels = Texels::Offset(src.offset as u32);
-        if FORMAT_FACTS[dst.texture.desc.format as usize].depth_stencil {
-            write_depth(self, dst, extent, texels, src.row_pitch, src.rows_per_layer);
-        } else {
-            upload(self, dst, extent, texels, src.row_pitch, src.rows_per_layer);
+        match (place_of(self, src), region_of(self, dst)) {
+            (Some(src), Some(dst)) => copy_buffer_to_texture_held(self, &src, &dst, extent),
+            _ => invalid(self, GONE.into()),
         }
-        self.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, 0);
     }
 
     fn copy_texture_to_buffer(
@@ -4523,85 +4454,18 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        if through_draw(self, src, extent, |b, colour| {
-            b.copy_texture_to_buffer(colour, dst, extent);
-            Ok(())
-        })
-        .is_some()
-        {
-            return;
-        }
-        let direct = src.texture.read.filter(|r| !r.repacks());
-        let (Some(read), Some(data), None) = (direct, dst.buffer.data, &src.texture.host) else {
-            // Read on the host (the host copy, or the GPU's texels read back now), then each row of
-            // blocks written into the buffer in order: for textures kept on the host, formats
-            // `readPixels` reads other than stored, and index-only buffers. Depth arrives here as the
-            // colour texture it was drawn into, whose texels keep the depth's own bytes.
-            let (bw, bh, bytes) = match (&src.texture.host, src.texture.read) {
-                (None, Some(r)) => (1, 1, r.texel_kept() as u32),
-                _ => FORMAT_FACTS[src.texture.desc.format as usize].block,
-            };
-            let (row, rows) = (
-                (extent.width.div_ceil(bw) * bytes) as usize,
-                extent.height.div_ceil(bh) as usize,
-            );
-            let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
-            if let Some(h) = &src.texture.host {
-                if host_current(self, src.texture, 1 << src.mip).is_err() {
-                    return;
-                }
-                let size = [extent.width, extent.height, extent.depth_or_layers];
-                h.read(&src.texture.desc, src.mip, corner(src), size, &mut packed);
-            } else {
-                self.record_slow_path(SlowPath::HostCopyReadBack);
-                if read_texture_now(self, src, extent, &mut packed).is_err() {
-                    return invalid(
-                        self,
-                        "a copy out of a format that cannot be read back".into(),
-                    );
-                }
-            }
-            let (pitch, per_layer) = (u64::from(dst.row_pitch), u64::from(dst.rows_per_layer));
-            for (i, chunk) in packed.chunks_exact(row).enumerate() {
-                let (layer, r) = ((i / rows) as u64, (i % rows) as u64);
-                let at = dst.offset + (layer * per_layer + r) * pitch;
-                self.write_buffer(dst.buffer, at, chunk, WriteMode::Ordered);
-            }
-            return;
-        };
-        fresh(self, src.texture);
-        refresh(self, dst.buffer, None);
-        let layer_bytes = dst.row_pitch as usize * dst.rows_per_layer as usize;
-        for i in 0..extent.depth_or_layers {
-            let layer = read_layer(src, i);
-            read_framebuffer(self, src.texture, src.mip, layer);
-            self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, data);
-            self.gl.pixel_storei(
-                gles::PACK_ROW_LENGTH,
-                (dst.row_pitch as usize / read.texel_kept()) as i32,
-            );
-            self.gl.read_pixels(
-                src.origin.x as i32,
-                src.origin.y as i32,
-                extent.width as i32,
-                extent.height as i32,
-                read.format,
-                read.ty,
-                PixelPack::Offset(dst.offset + (i as usize * layer_bytes) as u64),
-            );
-            self.gl.pixel_storei(gles::PACK_ROW_LENGTH, 0);
-            self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, 0);
-        }
-        if dst.buffer.index.is_some() {
-            let end = dst.offset + (layer_bytes * extent.depth_or_layers as usize) as u64;
-            dst.buffer.maxima.borrow_mut().unknown(dst.offset..end);
-            mark_stale(self, dst.buffer, true, dst.offset, end);
+        match (region_of(self, src), place_of(self, dst)) {
+            (Some(src), Some(dst)) => copy_texture_to_buffer_held(self, &src, &dst, extent),
+            _ => invalid(self, GONE.into()),
         }
     }
 
     /// WebGL 2 has no buffer clear: one block of the pattern is written from the host into every GL
     /// buffer of `buffer`, then doubled by copies within each ([`SlowPath::PatternClearCopied`]).
     fn clear_buffer(&mut self, buffer: &Buffer, offset: u64, size: u64, pattern: &[u8]) {
+        let Some(buffer) = held(&self.objects.buffers, buffer.0) else {
+            return invalid(self, GONE.into());
+        };
         if size == 0 {
             return;
         }
@@ -4626,7 +4490,13 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             *b = *p;
         }
         let first = size.min(PATTERN_SPAN as u64);
-        self.write_buffer(buffer, offset, &block[..first as usize], WriteMode::Ordered);
+        write_buffer_held(
+            self,
+            &buffer,
+            offset,
+            &block[..first as usize],
+            WriteMode::Ordered,
+        );
         let gl = &self.gl;
         for raw in [buffer.data, buffer.index].into_iter().flatten() {
             let mut done = first;
@@ -4661,7 +4531,10 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
-        let (s, d) = (src.texture, dst.texture);
+        let (Some(src), Some(dst)) = (region_of(self, src), region_of(self, dst)) else {
+            return invalid(self, GONE.into());
+        };
+        let (s, d) = (&src.texture, &dst.texture);
         if s.desc.samples == 1 || d.desc.samples != 1 {
             return invalid(self, "a resolve from one sample or into several".into());
         }
@@ -4694,10 +4567,10 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             self.last_log = "no sync object: the context is lost".into();
             fail(self, LossReason::Reset);
         }
-        Handle(Rc::new(FenceObj {
-            done: Cell::new(sync.is_none()),
+        Fence {
+            done: Rc::new(Cell::new(sync.is_none())),
             sync,
-        }))
+        }
     }
 
     fn fence_done(&mut self, fence: &Self::Fence) -> bool {
@@ -4729,135 +4602,11 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError> {
-        if let ReadSource::Texture { region, extent } = src
-            && let Some(r) = through_draw(self, region, *extent, |b, colour| {
-                b.read_back(&ReadSource::Texture {
-                    region: TextureRegion { ..*colour },
-                    extent: *extent,
-                })
-            })
-        {
-            return r;
-        }
-        if let ReadSource::Texture { region, extent } = src
-            && let Some(h) = &region.texture.host
-        {
-            host_current(self, region.texture, 1 << region.mip)?;
-            let (bw, bh, bytes) = FORMAT_FACTS[region.texture.desc.format as usize].block;
-            let size = extent.width.div_ceil(bw) * extent.height.div_ceil(bh) * bytes;
-            let mut kept = vec![0; (size * extent.depth_or_layers) as usize];
-            let corner = corner(region);
-            let whole = [extent.width, extent.height, extent.depth_or_layers];
-            h.read(&region.texture.desc, region.mip, corner, whole, &mut kept);
-            return Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
-                pbo: None,
-                queries: Vec::new(),
-                timestamps: false,
-                size: kept.len(),
-                sync: None,
-                waited: false,
-                repack: None,
-                host: Some(kept),
-            }))));
-        }
-        if let ReadSource::Texture { region, .. } = src {
-            fresh(self, region.texture);
-        }
-        let size = match src {
-            ReadSource::Buffer { size, .. } => *size as usize,
-            ReadSource::Texture { region, extent } => {
-                let read = region.texture.read.ok_or(GpuError::Invalid(
-                    "webgl: the format cannot be read back here",
-                ))?;
-                (extent.width * extent.height * extent.depth_or_layers) as usize * read.texel_read()
-            }
-        };
-        // The staging buffer takes its WebGL type from its first target: a pixel pack buffer for
-        // texels, and for a buffer the type of the GL buffer it copies from, since WebGL copies only
-        // between buffers of one type.
-        let target = match src {
-            ReadSource::Buffer { buffer, .. } if buffer.data.is_none() => {
-                // The vertex array's index binding changes; the next indexed draw rebinds it.
-                self.applied.index = 0;
-                gles::ELEMENT_ARRAY_BUFFER
-            }
-            ReadSource::Buffer { .. } => gles::COPY_WRITE_BUFFER,
-            ReadSource::Texture { .. } => gles::PIXEL_PACK_BUFFER,
-        };
-        let pbo = {
-            let pbo = platform::one(|n| self.gl.gen_buffers(n)).ok_or(GpuError::OutOfMemory)?;
-            let first = if target == gles::COPY_WRITE_BUFFER {
-                gles::ARRAY_BUFFER
-            } else {
-                target
-            };
-            self.gl.bind_buffer(first, pbo);
-            self.gl
-                .buffer_data(first, size as i64, None, gles::STREAM_READ);
-            self.gl.bind_buffer(target, pbo);
-            pbo
-        };
-        match src {
-            ReadSource::Buffer {
-                buffer,
-                offset,
-                size,
-            } => {
-                let raw = any_gl(self, buffer);
-                self.gl.bind_buffer(gles::COPY_READ_BUFFER, raw);
-                self.gl.copy_buffer_sub_data(
-                    gles::COPY_READ_BUFFER,
-                    target,
-                    *offset as i64,
-                    0,
-                    *size as i64,
-                );
-            }
-            ReadSource::Texture { region, extent } => {
-                let t = region.texture;
-                let read = t.read.expect("checked above");
-                let layer_bytes = extent.width * extent.height * read.texel_read() as u32;
-                for i in 0..extent.depth_or_layers {
-                    let layer = read_layer(region, i);
-                    read_framebuffer(self, t, region.mip, layer);
-                    self.gl.read_pixels(
-                        region.origin.x as i32,
-                        region.origin.y as i32,
-                        extent.width as i32,
-                        extent.height as i32,
-                        read.format,
-                        read.ty,
-                        PixelPack::Offset(u64::from(i * layer_bytes)),
-                    );
-                }
-            }
-        }
-        let sync = {
-            self.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, 0);
-            self.gl.fence_sync(gles::SYNC_GPU_COMMANDS_COMPLETE, 0)
-        };
-        // Without a sync object nothing says when the copy is done: only a lost context fails here.
-        if sync.is_none() {
-            fail(self, LossReason::Reset);
-        }
-        let repack = match src {
-            ReadSource::Texture { region, .. } => region.texture.read,
-            ReadSource::Buffer { .. } => None,
-        }
-        .filter(|r| r.repacks());
-        if repack.is_some_and(format::ReadAs::converts) {
-            self.record_slow_path(SlowPath::FormatConverted);
-        }
-        Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
-            pbo: Some(pbo),
-            queries: Vec::new(),
-            timestamps: false,
-            size,
-            sync,
-            waited: false,
-            repack,
-            host: None,
-        }))))
+        let src = source_of(self, src).ok_or(GpuError::Invalid(GONE))?;
+        let r = read_back_held(self, &src)?;
+        let number = id(self);
+        self.objects.readbacks.insert(number, r);
+        Ok(Readback(number))
     }
 
     fn read_queries(
@@ -4866,13 +4615,14 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         first: u32,
         count: u32,
     ) -> Result<Self::Readback, GpuError> {
+        let set = held(&self.objects.query_sets, set.0).ok_or(GpuError::Invalid(GONE))?;
         let slots = set.slots.borrow();
         let queries = slots
             .get(first as usize..(first + count) as usize)
             .ok_or(GpuError::Invalid("read_queries past the set's end"))?
             .to_vec();
         self.gl.flush();
-        Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
+        let made = Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
             pbo: None,
             queries,
             timestamps: set.kind == QueryKind::Timestamp,
@@ -4881,12 +4631,20 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             waited: false,
             repack: None,
             host: None,
-        }))))
+        })));
+        drop(slots);
+        let number = id(self);
+        self.objects.readbacks.insert(number, made);
+        Ok(Readback(number))
     }
 
     /// Ready once the copy's sync object is signalled; a read back made without one is ready at once and
     /// reads nothing, the device having been lost when it was made.
     fn read_state(&mut self, readback: &Self::Readback) -> ReadState {
+        let Some(readback) = held(&self.objects.readbacks, readback.0) else {
+            invalid(self, GONE.into());
+            return ReadState::Ready;
+        };
         let r = readback.borrow();
         if r.pbo.is_none() {
             return if queries_available(self, &r.queries) {
@@ -4902,6 +4660,9 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     }
 
     fn wait_read(&mut self, readback: &Self::Readback) {
+        let Some(readback) = held(&self.objects.readbacks, readback.0) else {
+            return invalid(self, GONE.into());
+        };
         if readback.borrow().pbo.is_none() {
             // Natively the results arrive while the device thread spins. WebGL makes them available only
             // between tasks, so in the browser the thread must give way until they are, through a wait
@@ -4921,16 +4682,19 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         }
         let sync = readback.borrow().sync.clone();
         if let Some(sync) = sync {
-            let fence = Handle(Rc::new(FenceObj {
+            let fence = Fence {
                 sync: Some(sync),
-                done: Cell::new(false),
-            }));
+                done: Rc::new(Cell::new(false)),
+            };
             self.wait_fence(&fence);
             readback.borrow_mut().waited = true;
         }
     }
 
     fn finish_read(&mut self, readback: Self::Readback, dst: &mut [u8]) {
+        let Some(readback) = self.objects.readbacks.remove(&readback.0) else {
+            return invalid(self, GONE.into());
+        };
         if let Some(kept) = readback.borrow_mut().host.take() {
             let n = kept.len().min(dst.len());
             dst[..n].copy_from_slice(&kept[..n]);
@@ -5000,7 +4764,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         }
         let id = id(self);
         self.surface = Some(SurfaceState { id, frame: None });
-        Ok(Surface { id })
+        Ok(Surface(id))
     }
 
     /// `vsync` changes nothing: the browser shows the canvas when it composites the page, at the
@@ -5013,7 +4777,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         height: u32,
         _vsync: bool,
     ) -> Result<(), GpuError> {
-        if self.surface.as_ref().map(|s| s.id) != Some(surface.id) {
+        if self.surface.as_ref().map(|s| s.id) != Some(surface.0) {
             return Err(GpuError::Invalid("webgl: the surface was destroyed"));
         }
         // BGRA textures are stored as RGBA, so both blit into the RGBA drawing buffer as they are.
@@ -5022,19 +4786,23 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 "webgl: surfaces take rgba8unorm and bgra8unorm only",
             ));
         }
-        let texture = self.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format,
-            width,
-            height,
-            depth_or_layers: 1,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::PRESENT,
-            cube: false,
-            reinterpret: false,
-        })?;
-        let view = self.create_view(
+        let texture = make_texture(
+            self,
+            &TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width,
+                height,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::PRESENT,
+                cube: false,
+                reinterpret: false,
+            },
+        )?;
+        let view = make_view(
+            self,
             &texture,
             &TextureViewDesc {
                 format,
@@ -5046,21 +4814,23 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 stencil: false,
             },
         )?;
+        // The frame's view is what `current_texture` hands out, so its number names it.
+        self.objects.views.insert(view.id, view.clone());
         let old = self
             .surface
             .as_mut()
             .and_then(|s| s.frame.replace((texture, view)));
         if let Some((t, v)) = old {
-            self.destroy(Object::TextureView(v));
-            self.destroy(Object::Texture(t));
+            self.objects.views.remove(&v.id);
+            destroy_held(self, Held::Texture(t));
         }
         Ok(())
     }
 
     fn current_texture(&mut self, surface: &Surface) -> Result<TextureView, GpuError> {
         match &self.surface {
-            Some(s) if s.id == surface.id => match &s.frame {
-                Some((_, view)) => Ok(view.clone()),
+            Some(s) if s.id == surface.0 => match &s.frame {
+                Some((_, view)) => Ok(TextureView(view.id)),
                 None => Err(GpuError::Invalid("webgl: the surface is not configured")),
             },
             _ => Err(GpuError::Invalid("webgl: the surface was destroyed")),
@@ -5079,7 +4849,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             });
         }
         let texture = match &self.surface {
-            Some(s) if s.id == surface.id => match &s.frame {
+            Some(s) if s.id == surface.0 => match &s.frame {
                 Some((t, _)) => t.clone(),
                 None => return Err(GpuError::Invalid("webgl: the surface is not configured")),
             },
@@ -5117,25 +4887,8 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         src: &ReadSource<'_, Self>,
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
-        match src {
-            ReadSource::Texture { region, extent } => read_texture_now(self, region, *extent, dst),
-            ReadSource::Buffer {
-                buffer,
-                offset,
-                size,
-            } => {
-                let raw = any_gl(self, buffer);
-                self.gl.bind_buffer(gles::COPY_READ_BUFFER, raw);
-                platform::get_buffer_sub_data(
-                    &self.gl,
-                    gles::COPY_READ_BUFFER,
-                    *offset,
-                    &mut dst[..*size as usize],
-                )
-                .then_some(())
-                .ok_or_else(|| read_failed(self))
-            }
-        }
+        let src = source_of(self, src).ok_or(GpuError::Invalid(GONE))?;
+        read_back_now_held(self, &src, dst)
     }
 
     /// Clears each rectangle by `clearBuffer*` under the scissor, in one pass that loads the view.
@@ -5146,6 +4899,8 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         value: ClearValue,
         rects: &[ScissorRect],
     ) -> Result<(), GpuError> {
+        let id = view;
+        let view = held(&self.objects.views, view.0).ok_or(GpuError::Invalid(GONE))?;
         if rects.is_empty() {
             return Ok(());
         }
@@ -5166,7 +4921,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         let (depth, stencil) = match value {
             ClearValue::Color(_) => {
                 pass.colors[0] = Some(ColorAttachment {
-                    view,
+                    view: id,
                     depth_slice: 0,
                     resolve: None,
                     load: LoadOp::Load,
@@ -5183,7 +4938,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                     return Ok(());
                 }
                 pass.depth = Some(DepthAttachment {
-                    view,
+                    view: id,
                     depth: keep(has_depth),
                     stencil: keep(has_stencil),
                 });
@@ -5237,6 +4992,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
+        let texture = held(&self.objects.textures, texture.0).ok_or(GpuError::Invalid(GONE))?;
         let levels = mips.start.max(1)..mips.end.min(desc.mip_levels);
         let every_layer = layers.start == 0 && layers.end >= desc.depth_or_layers;
         let native = FormatUse::RENDER | FormatUse::FILTER;
@@ -5247,12 +5003,19 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 && texture.host.is_none()
                 && self.caps.formats.uses[values as usize].contains(native)
         }) else {
-            return Helpers::generate_mips_by_draws(self, texture, desc, values, mips, layers);
+            return Helpers::generate_mips_by_draws(
+                self,
+                &Texture(texture.id),
+                desc,
+                values,
+                mips,
+                layers,
+            );
         };
         if levels.is_empty() {
             return Ok(());
         }
-        fresh(self, texture);
+        fresh(self, &texture);
         bind_scratch(self, texture.target, raw);
         let range = (levels.start - 1, levels.end - 1);
         let gl = &self.gl;
@@ -5262,7 +5025,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             texture.levels.set(range);
         }
         gl.generate_mipmap(texture.target);
-        written(self, texture);
+        written(self, &texture);
         Ok(())
     }
 
@@ -5385,7 +5148,19 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                  saying whether a pass is open",
             ));
         }
-        let outputs = &call.program.stages.0.outputs;
+        let Some(drawn) = drawn_of(self, call) else {
+            return Err(GpuError::Invalid(GONE));
+        };
+        let mut held_targets = Vec::with_capacity(targets.len());
+        for t in targets {
+            held_targets.push(BufferRange {
+                buffer: held(&self.objects.buffers, t.buffer.0).ok_or(GpuError::Invalid(GONE))?,
+                offset: t.offset,
+                size: t.size,
+            });
+        }
+        let targets = &held_targets[..];
+        let outputs = &drawn.program.stages.0.outputs;
         let separate = targets.len() > 1;
         if outputs.is_empty()
             || outputs.iter().any(|(_, bytes)| *bytes == 0)
@@ -5426,7 +5201,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 let numbers = (*first..first.saturating_add(*count)).map(Some);
                 capture::list_order(
                     call.topology,
-                    call.raster.0.1.provoking(),
+                    drawn.raster.0.1.provoking(),
                     numbers,
                     &mut list,
                 );
@@ -5442,7 +5217,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                     instances,
                 },
             ) => {
-                let Some(index) = &call.index else {
+                let Some(index) = &drawn.index else {
                     return Err(GpuError::Invalid("an indexed draw with no index buffer"));
                 };
                 let size = INDEX_FORMATS[index.format as usize].size;
@@ -5465,7 +5240,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 });
                 capture::list_order(
                     call.topology,
-                    call.raster.0.1.provoking(),
+                    drawn.raster.0.1.provoking(),
                     numbers,
                     &mut list,
                 );
@@ -5504,7 +5279,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             separate,
             rasterize: !discard,
         };
-        let slot = &call.program.captures[kind.slot()];
+        let slot = &drawn.program.captures[kind.slot()];
         let capture = match slot.get() {
             Some(c) => c.clone(),
             None => {
@@ -5512,7 +5287,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 let c = shader::relink(
                     &self.gl,
                     id,
-                    call.program,
+                    &drawn.program,
                     Some(kind),
                     0,
                     self.empty_fragment,
@@ -5525,7 +5300,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             return Err(GpuError::DeviceLost);
         }
         for t in targets {
-            refresh(self, t.buffer, Some(false));
+            refresh(self, &t.buffer, Some(false));
         }
         let gl = &self.gl;
         if discard {
@@ -5559,6 +5334,12 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
         }
         gl.begin_transform_feedback(native.map_or(gles::POINTS, |(mode, _)| mode));
+        // The capture program in the draw's place, with no index buffer.
+        let captured = Drawn {
+            program: capture.clone(),
+            index: None,
+            ..drawn.clone()
+        };
         if let DrawRange::Vertices {
             first,
             count,
@@ -5567,23 +5348,26 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
         } = call.range
             && native.is_some()
         {
-            self.draw(&DrawCall {
-                program: &capture,
-                index: None,
-                range: DrawRange::Vertices {
-                    first,
-                    count,
-                    first_instance,
-                    instances,
+            draw_from(
+                self,
+                &DrawCall {
+                    index: None,
+                    range: DrawRange::Vertices {
+                        first,
+                        count,
+                        first_instance,
+                        instances,
+                    },
+                    ..*call
                 },
-                ..*call
-            });
+                &captured,
+                0,
+            );
         } else {
             self.record_slow_path(SlowPath::CaptureExpanded);
             for later in 0..instances {
                 for (first, count) in capture::runs(&list) {
                     let run = DrawCall {
-                        program: &capture,
                         index: None,
                         topology: Topology::PointList,
                         range: DrawRange::Vertices {
@@ -5594,7 +5378,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                         },
                         ..*call
                     };
-                    draw_from(self, &run, later);
+                    draw_from(self, &run, &captured, later);
                 }
             }
         }
@@ -5611,7 +5395,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
             if t.buffer.index.is_some() {
                 let end = t.offset + vertices * stride(n);
                 t.buffer.maxima.borrow_mut().unknown(t.offset..end);
-                mark_stale(self, t.buffer, true, t.offset, end);
+                mark_stale(self, &t.buffer, true, t.offset, end);
             }
         }
         if rasterize && native.is_none() {
@@ -5625,6 +5409,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
 
     /// `queryCounterEXT` with `TIMESTAMP_EXT`, which GL writes between any two commands.
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
+        let set = held(&self.objects.query_sets, set.0).ok_or(GpuError::Invalid(GONE))?;
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
@@ -5633,7 +5418,7 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
                 "write_timestamp into a set of another kind, or inside a pass",
             ));
         }
-        let q = query_slot(self, set, index).ok_or(GpuError::DeviceLost)?;
+        let q = query_slot(self, &set, index).ok_or(GpuError::DeviceLost)?;
         self.gl.query_counter_ext(q, gles::TIMESTAMP_EXT);
         Ok(())
     }
@@ -5666,5 +5451,823 @@ impl<O: OpenGlEs> Gpu for Gl<O> {
     ) -> Result<(), GpuError> {
         let _ = (table, first, entries);
         Err(GpuError::Absent(Features::RESOURCE_TABLES))
+    }
+}
+
+/// Writes `data` at `offset` of `buffer`, as `write_buffer` does once the handle is looked up.
+fn write_buffer_held<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    buffer: &BufferObj,
+    offset: u64,
+    data: &[u8],
+    mode: WriteMode,
+) {
+    if offset + data.len() as u64 > buffer.size {
+        return invalid(
+            gpu,
+            format!(
+                "a write of {} bytes at {offset} past a buffer of {}",
+                data.len(),
+                buffer.size
+            ),
+        );
+    }
+    if buffer.index.is_some() {
+        buffer.maxima.borrow_mut().wrote(offset, data);
+    }
+    let gl = &gpu.gl;
+    for raw in [buffer.data, buffer.index].into_iter().flatten() {
+        gl.bind_buffer(gles::COPY_WRITE_BUFFER, raw);
+        if mode == WriteMode::Discard {
+            // Orphan at the buffer's own size, so later writes above this part still fit.
+            gl.buffer_data(
+                gles::COPY_WRITE_BUFFER,
+                buffer.size as i64,
+                None,
+                buffer.usage,
+            );
+        }
+        gl.buffer_sub_data(gles::COPY_WRITE_BUFFER, offset as i64, data);
+    }
+}
+
+fn make_buffer<O: OpenGlEs>(gpu: &mut Gl<O>, desc: &BufferDesc) -> Result<BufferRef, GpuError> {
+    let size = i32::try_from(desc.size).map_err(|_| GpuError::OutOfMemory)?;
+    let usage = match desc.intent {
+        MapIntent::Rarely => gles::STATIC_DRAW,
+        MapIntent::Often => gles::DYNAMIC_DRAW,
+    };
+    let copies = BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::READ_BACK;
+    let indices = desc.usage.contains(BufferUsage::INDEX);
+    let other = !(desc.usage - BufferUsage::INDEX - copies).is_empty() || !indices;
+    if indices && other {
+        gpu.record_slow_path(SlowPath::IndexBufferTwin);
+    }
+    let gl = &gpu.gl;
+    let make = |target| {
+        let b = platform::one(|n| gl.gen_buffers(n)).ok_or(GpuError::OutOfMemory)?;
+        gl.bind_buffer(target, b);
+        gl.buffer_data(target, size as i64, None, usage);
+        Ok::<_, GpuError>(b)
+    };
+    let data = other.then(|| make(gles::ARRAY_BUFFER)).transpose()?;
+    let index = indices
+        .then(|| make(gles::ELEMENT_ARRAY_BUFFER))
+        .transpose()?;
+    if indices {
+        gpu.applied.index = 0;
+    }
+    Ok(Handle(Rc::new(BufferObj {
+        id: id(gpu),
+        size: desc.size,
+        usage,
+        data,
+        index,
+        stale: Cell::new(None),
+        maxima: RefCell::default(),
+    })))
+}
+
+fn make_texture<O: OpenGlEs>(gpu: &mut Gl<O>, desc: &TextureDesc) -> Result<TextureRef, GpuError> {
+    if gpu.caps.formats.uses[desc.format as usize] == FormatUse::empty() {
+        return Err(GpuError::Invalid(
+            "webgl: the format has no capabilities here",
+        ));
+    }
+    // Block-compressed formats are GL's compressed formats with their extension (not in 3D,
+    // which GLES does not compress), else stored decoded.
+    let (gl_format, decoded) = match host::compressed(desc.format) {
+        Some((internal, ext, _))
+            if gpu.extensions.contains(ext) && desc.dimension != TextureDimension::D3 =>
+        {
+            let class = format::Class::Norm { render: false };
+            let (format, ty) = (0, 0);
+            let f = format::GlFormat {
+                internal,
+                format,
+                ty,
+                class,
+            };
+            (Some(f), None)
+        }
+        _ => match host::decoded(desc.format) {
+            Some(decoded) => {
+                gpu.record_slow_path(SlowPath::BlockDecoded);
+                (format::gl_format(decoded), Some(decoded))
+            }
+            None => (format::gl_format(desc.format), format::widened(desc.format)),
+        },
+    };
+    let gl_format = gl_format.ok_or(GpuError::Invalid(
+        "webgl: the format has no capabilities here",
+    ))?;
+    if desc.samples > 1 {
+        return create_samples(gpu, desc, gl_format);
+    }
+    let target = match desc.own_view() {
+        ViewDimension::D2 => gles::TEXTURE_2D,
+        ViewDimension::D2Array => gles::TEXTURE_2D_ARRAY,
+        ViewDimension::Cube => gles::TEXTURE_CUBE_MAP,
+        ViewDimension::D3 => gles::TEXTURE_3D,
+        ViewDimension::CubeArray => {
+            return Err(GpuError::Invalid("webgl: WebGL 2 has no cube arrays"));
+        }
+    };
+    let raw = platform::one(|n| gpu.gl.gen_textures(n)).ok_or(GpuError::OutOfMemory)?;
+    bind_scratch(gpu, target, raw);
+    let gl = &gpu.gl;
+    let (w, h, d) = (
+        desc.width as i32,
+        desc.height as i32,
+        desc.depth_or_layers as i32,
+    );
+    let levels = desc.mip_levels as i32;
+    match target {
+        gles::TEXTURE_2D | gles::TEXTURE_CUBE_MAP => {
+            gl.tex_storage_2d(target, levels, gl_format.internal, w, h)
+        }
+        _ => gl.tex_storage_3d(target, levels, gl_format.internal, w, h, d),
+    }
+    gl.tex_parameteri(target, gles::TEXTURE_MAX_LEVEL, levels - 1);
+    Ok(Handle(Rc::new(TextureObj {
+        id: id(gpu),
+        storage: Storage::Texture(raw),
+        target,
+        desc: *desc,
+        gl: gl_format,
+        read: format::read_as(
+            desc.format,
+            format::FormatExtensions::found(&gpu.extensions),
+        ),
+        levels: Cell::new((0, desc.mip_levels - 1)),
+        newest: Rc::new(Cell::new(0)),
+        side: 1,
+        twin: std::cell::OnceCell::new(),
+        own: None,
+        stencil_mode: Cell::new(false),
+        host: host::kept(desc.format).then(|| {
+            gpu.record_slow_path(SlowPath::HostCopyKept);
+            host::HostCopy::new(desc)
+        }),
+        decoded,
+        drawn: Cell::new(0),
+        minimum: Cell::new(0),
+    })))
+}
+
+fn make_view<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    texture: &TextureRef,
+    desc: &TextureViewDesc,
+) -> Result<ViewRef, GpuError> {
+    let t = &texture.desc;
+    let three_d = t.dimension == TextureDimension::D3;
+    let to_draw = desc.mip_count == 1 && (desc.layer_count == 1 || three_d);
+    let whole = desc.dimension == t.own_view()
+        && desc.base_layer == 0
+        && desc.layer_count == if three_d { 1 } else { t.depth_or_layers };
+    if !to_draw && !whole {
+        return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
+    }
+    if desc.stencil {
+        if FORMAT_FACTS[t.format as usize].kind != FormatKind::DepthStencil {
+            return Err(GpuError::Invalid(
+                "webgl: a stencil view of a texture without stencil",
+            ));
+        }
+        // Natively the texture gives its stencil when a draw binds the view; else a copy in
+        // `r8uint` kept in step by draws.
+        let texture = if gpu.extensions.contains("WEBGL_stencil_texturing") {
+            texture.clone()
+        } else {
+            stencil_copy_of(gpu, texture)?
+        };
+        return Ok(Handle(Rc::new(ViewObj {
+            id: id(gpu),
+            texture,
+            desc: *desc,
+        })));
+    }
+    let texture = if desc.format == t.format {
+        texture.clone()
+    } else if FORMAT_FACTS[desc.format as usize].linear == FORMAT_FACTS[t.format as usize].linear {
+        twin_of(gpu, texture, desc.format)?
+    } else {
+        return Err(GpuError::Absent(Features::FORMAT_REINTERPRET));
+    };
+    Ok(Handle(Rc::new(ViewObj {
+        id: id(gpu),
+        texture,
+        desc: *desc,
+    })))
+}
+
+fn write_texture_held<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    region: &Region,
+    extent: Extent,
+    data: &[u8],
+    row_pitch: u32,
+    rows_per_layer: u32,
+    _mode: WriteMode,
+) {
+    fresh(gpu, &region.texture);
+    written(gpu, &region.texture);
+    let t = &region.texture;
+    let (corner, size) = (
+        corner(region),
+        [extent.width, extent.height, extent.depth_or_layers],
+    );
+    let (pitch, per_layer) = (row_pitch as usize, rows_per_layer as usize);
+    let snorm = format::signed_normalised(t.desc.format);
+    let level = 1 << region.mip;
+    if snorm && host::covers_level(&t.desc, region.mip, corner, size) {
+        // Every texel of the level is the host's again.
+        t.drawn.set(t.drawn.get() & !level);
+        t.minimum.set(t.minimum.get() & !level);
+    }
+    let wrote_minimum = snorm
+        && host::write_holds_minimum(&t.desc, region.mip, corner, size, data, pitch, per_layer);
+    if wrote_minimum {
+        // Texels drawn since are read back while a draw still reads them exactly.
+        if t.minimum.get() & level == 0 {
+            let _ = host_current(gpu, t, level);
+        }
+        t.minimum.set(t.minimum.get() | level);
+    }
+    if let Some(h) = &region.texture.host {
+        h.write(&t.desc, region.mip, corner, size, data, pitch, per_layer);
+        if t.minimum.get() & level != 0 && !wrote_minimum && t.drawn.get() & level == 0 {
+            // The host copy holds every texel of the level; this write may have replaced its
+            // last minimum.
+            if !h.holds_minimum(t.desc.format, region.mip) {
+                t.minimum.set(t.minimum.get() & !level);
+            }
+        }
+        if host::decoded(region.texture.desc.format).is_some() {
+            return upload_blocks(gpu, region, extent);
+        }
+    }
+    if FORMAT_FACTS[region.texture.desc.format as usize].depth_stencil {
+        return write_depth(
+            gpu,
+            region,
+            extent,
+            Texels::Bytes(data),
+            row_pitch,
+            rows_per_layer,
+        );
+    }
+    let format = region.texture.desc.format;
+    if format::converts_writes(format) {
+        // Converted into tightly packed rows of the stored texels.
+        gpu.record_slow_path(SlowPath::FormatConverted);
+        let row = extent.width as usize * FORMAT_FACTS[format as usize].block.2 as usize;
+        let (rows, layers) = (extent.height as usize, extent.depth_or_layers as usize);
+        let mut stored = Vec::new();
+        for layer in 0..layers {
+            for r in 0..rows {
+                let at = (layer * rows_per_layer as usize + r) * row_pitch as usize;
+                format::stored_texels(format, &data[at..at + row], &mut stored);
+            }
+        }
+        let texel = FORMAT_FACTS[t.decoded.unwrap_or(format) as usize].block.2;
+        return upload(
+            gpu,
+            region,
+            extent,
+            Texels::Bytes(&stored),
+            extent.width * texel,
+            extent.height,
+        );
+    }
+    upload(
+        gpu,
+        region,
+        extent,
+        Texels::Bytes(data),
+        row_pitch,
+        rows_per_layer,
+    );
+}
+
+fn copy_texture_held<O: OpenGlEs>(gpu: &mut Gl<O>, src: &Region, dst: &Region, extent: Extent) {
+    // Signed normalised texels drawn since their host copy was whole are drawn on the GPU where
+    // they hold no smallest value.
+    let level = 1 << src.mip;
+    let by_draw = src.texture.drawn.get() & level != 0 && src.texture.minimum.get() & level == 0;
+    if (src.texture.host.is_some() && !by_draw) || dst.texture.host.is_some() {
+        return copy_host_kept(gpu, src, dst, extent);
+    }
+    if src.texture.desc.samples > 1 || dst.texture.desc.samples > 1 {
+        return copy_samples(gpu, src, dst);
+    }
+    if within_one_subresource(src, dst, extent) {
+        return copy_within(gpu, src, dst, extent);
+    }
+    let (from, to) = (src.texture.desc.format, dst.texture.desc.format);
+    fresh(gpu, &src.texture);
+    fresh(gpu, &dst.texture);
+    written(gpu, &dst.texture);
+    if from == to && FORMAT_FACTS[from as usize].depth_stencil {
+        return blit_same(gpu, src, dst, extent);
+    }
+    if FORMAT_FACTS[from as usize].depth_stencil || FORMAT_FACTS[to as usize].depth_stencil {
+        // A colour and a depth format of one typeless group.
+        if copy_by_draw(gpu, src, dst, extent) {
+            gpu.record_slow_path(if FORMAT_FACTS[to as usize].depth_stencil {
+                SlowPath::DepthWrittenByDraw
+            } else {
+                SlowPath::CopyThroughBuffer
+            });
+        } else {
+            unbuilt(gpu, "copies between these depth and colour formats");
+        }
+        return;
+    }
+    let renderable = |f| gpu.caps.formats.uses[f as usize].contains(FormatUse::RENDER);
+    // copyTexSubImage may copy floats through arithmetic, which loses NaN payloads and denormals.
+    let float = format::float_bits(from);
+    if from == to && renderable(from) && float && gpu.float_blits {
+        return blit_same(gpu, src, dst, extent);
+    }
+    // Formats `readPixels` reads are colour-renderable in GL, so copyTexSubImage copies them,
+    // also where they are not reported as targets (B4G4R4A4).
+    let attachable = renderable(from) || src.texture.read.is_some();
+    if from != to || !attachable || float {
+        let as_stored = src
+            .texture
+            .read
+            .is_some_and(|r| r.texel_read() == r.texel_kept());
+        let half = matches!(
+            to,
+            Format::R16Float | Format::Rg16Float | Format::Rgba16Float
+        );
+        if as_stored && FORMAT_FACTS[from as usize].block == FORMAT_FACTS[to as usize].block {
+            copy_same_bytes(gpu, src, dst, extent);
+        } else if half {
+            // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
+            // writes the bits.
+            copy_host_kept(gpu, src, dst, extent);
+        } else if copy_by_draw(gpu, src, dst, extent) {
+            gpu.record_slow_path(SlowPath::CopyThroughBuffer);
+        } else if float || src.texture.host.is_some() {
+            // 32-bit floats are no targets without EXT_color_buffer_float.
+            copy_host_kept(gpu, src, dst, extent);
+        } else {
+            unbuilt(gpu, "copies of these formats");
+        }
+        return;
+    }
+    let d = dst.texture.clone();
+    let Some(raw) = d.tex() else {
+        return;
+    };
+    for i in 0..extent.depth_or_layers {
+        let layer = read_layer(src, i);
+        read_framebuffer(gpu, &src.texture, src.mip, layer);
+        bind_scratch(gpu, d.target, raw);
+        let (x, y) = (dst.origin.x as i32, dst.origin.y as i32);
+        let (sx, sy, w, h) = (
+            src.origin.x as i32,
+            src.origin.y as i32,
+            extent.width as i32,
+            extent.height as i32,
+        );
+        let level = dst.mip as i32;
+        let gl = &gpu.gl;
+        match d.target {
+            gles::TEXTURE_2D => gl.copy_tex_sub_image_2d(d.target, level, x, y, sx, sy, w, h),
+            gles::TEXTURE_CUBE_MAP => gl.copy_tex_sub_image_2d(
+                gles::TEXTURE_CUBE_MAP_POSITIVE_X + dst.layer + i,
+                level,
+                x,
+                y,
+                sx,
+                sy,
+                w,
+                h,
+            ),
+            _ => gl.copy_tex_sub_image_3d(
+                d.target,
+                level,
+                x,
+                y,
+                read_layer(dst, i) as i32,
+                sx,
+                sy,
+                w,
+                h,
+            ),
+        }
+    }
+}
+
+fn copy_texture_to_buffer_held<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    src: &Region,
+    dst: &Place,
+    extent: Extent,
+) {
+    if through_draw(gpu, src, extent, |b, colour| {
+        copy_texture_to_buffer_held(b, colour, dst, extent);
+        Ok(())
+    })
+    .is_some()
+    {
+        return;
+    }
+    let direct = src.texture.read.filter(|r| !r.repacks());
+    let (Some(read), Some(data), None) = (direct, dst.buffer.data, &src.texture.host) else {
+        // Read on the host (the host copy, or the GPU's texels read back now), then each row of
+        // blocks written into the buffer in order: for textures kept on the host, formats
+        // `readPixels` reads other than stored, and index-only buffers. Depth arrives here as the
+        // colour texture it was drawn into, whose texels keep the depth's own bytes.
+        let (bw, bh, bytes) = match (&src.texture.host, src.texture.read) {
+            (None, Some(r)) => (1, 1, r.texel_kept() as u32),
+            _ => FORMAT_FACTS[src.texture.desc.format as usize].block,
+        };
+        let (row, rows) = (
+            (extent.width.div_ceil(bw) * bytes) as usize,
+            extent.height.div_ceil(bh) as usize,
+        );
+        let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
+        if let Some(h) = &src.texture.host {
+            if host_current(gpu, &src.texture, 1 << src.mip).is_err() {
+                return;
+            }
+            let size = [extent.width, extent.height, extent.depth_or_layers];
+            h.read(&src.texture.desc, src.mip, corner(src), size, &mut packed);
+        } else {
+            gpu.record_slow_path(SlowPath::HostCopyReadBack);
+            if read_texture_now(gpu, src, extent, &mut packed).is_err() {
+                return invalid(
+                    gpu,
+                    "a copy out of a format that cannot be read back".into(),
+                );
+            }
+        }
+        let (pitch, per_layer) = (u64::from(dst.row_pitch), u64::from(dst.rows_per_layer));
+        for (i, chunk) in packed.chunks_exact(row).enumerate() {
+            let (layer, r) = ((i / rows) as u64, (i % rows) as u64);
+            let at = dst.offset + (layer * per_layer + r) * pitch;
+            write_buffer_held(gpu, &dst.buffer, at, chunk, WriteMode::Ordered);
+        }
+        return;
+    };
+    fresh(gpu, &src.texture);
+    refresh(gpu, &dst.buffer, None);
+    let layer_bytes = dst.row_pitch as usize * dst.rows_per_layer as usize;
+    for i in 0..extent.depth_or_layers {
+        let layer = read_layer(src, i);
+        read_framebuffer(gpu, &src.texture, src.mip, layer);
+        gpu.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, data);
+        gpu.gl.pixel_storei(
+            gles::PACK_ROW_LENGTH,
+            (dst.row_pitch as usize / read.texel_kept()) as i32,
+        );
+        gpu.gl.read_pixels(
+            src.origin.x as i32,
+            src.origin.y as i32,
+            extent.width as i32,
+            extent.height as i32,
+            read.format,
+            read.ty,
+            PixelPack::Offset(dst.offset + (i as usize * layer_bytes) as u64),
+        );
+        gpu.gl.pixel_storei(gles::PACK_ROW_LENGTH, 0);
+        gpu.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, 0);
+    }
+    if dst.buffer.index.is_some() {
+        let end = dst.offset + (layer_bytes * extent.depth_or_layers as usize) as u64;
+        dst.buffer.maxima.borrow_mut().unknown(dst.offset..end);
+        mark_stale(gpu, &dst.buffer, true, dst.offset, end);
+    }
+}
+
+fn copy_buffer_to_texture_held<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    src: &Place,
+    dst: &Region,
+    extent: Extent,
+) {
+    let data = src.buffer.data.filter(|_| {
+        dst.texture.host.is_none() && !format::converts_writes(dst.texture.desc.format)
+    });
+    let Some(data) = data else {
+        // The buffer's bytes read back, then written as a host write: into textures kept on the
+        // host or swapped there, and from index-only buffers, which no unpack buffer can be.
+        let (bw, bh, bytes) = FORMAT_FACTS[dst.texture.desc.format as usize].block;
+        let (row, rows) = (
+            u64::from(extent.width.div_ceil(bw) * bytes),
+            u64::from(extent.height.div_ceil(bh)),
+        );
+        let layers = u64::from(extent.depth_or_layers);
+        if rows == 0 || layers == 0 {
+            return;
+        }
+        let (pitch, per_layer) = (u64::from(src.row_pitch), u64::from(src.rows_per_layer));
+        let size = pitch * (per_layer * (layers - 1) + rows - 1) + row;
+        let mut bytes = vec![0; size as usize];
+        gpu.record_slow_path(SlowPath::HostCopyReadBack);
+        let read = Source::Buffer {
+            buffer: src.buffer.clone(),
+            offset: src.offset,
+            size,
+        };
+        if read_back_now_held(gpu, &read, &mut bytes).is_ok() {
+            let (pitch, per_layer) = (src.row_pitch, src.rows_per_layer);
+            write_texture_held(
+                gpu,
+                dst,
+                extent,
+                &bytes,
+                pitch,
+                per_layer,
+                WriteMode::Ordered,
+            );
+        }
+        return;
+    };
+    refresh(gpu, &src.buffer, Some(false));
+    fresh(gpu, &dst.texture);
+    written(gpu, &dst.texture);
+    gpu.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, data);
+    let texels = Texels::Offset(src.offset as u32);
+    if FORMAT_FACTS[dst.texture.desc.format as usize].depth_stencil {
+        write_depth(gpu, dst, extent, texels, src.row_pitch, src.rows_per_layer);
+    } else {
+        upload(gpu, dst, extent, texels, src.row_pitch, src.rows_per_layer);
+    }
+    gpu.gl.bind_buffer(gles::PIXEL_UNPACK_BUFFER, 0);
+}
+
+fn read_back_held<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    src: &Source,
+) -> Result<ReadbackRef<O::Fence>, GpuError> {
+    if let Source::Texture { region, extent } = src
+        && let Some(r) = through_draw(gpu, region, *extent, |b, colour| {
+            read_back_held(
+                b,
+                &Source::Texture {
+                    region: colour.clone(),
+                    extent: *extent,
+                },
+            )
+        })
+    {
+        return r;
+    }
+    if let Source::Texture { region, extent } = src
+        && let Some(h) = &region.texture.host
+    {
+        host_current(gpu, &region.texture, 1 << region.mip)?;
+        let (bw, bh, bytes) = FORMAT_FACTS[region.texture.desc.format as usize].block;
+        let size = extent.width.div_ceil(bw) * extent.height.div_ceil(bh) * bytes;
+        let mut kept = vec![0; (size * extent.depth_or_layers) as usize];
+        let corner = corner(region);
+        let whole = [extent.width, extent.height, extent.depth_or_layers];
+        h.read(&region.texture.desc, region.mip, corner, whole, &mut kept);
+        return Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
+            pbo: None,
+            queries: Vec::new(),
+            timestamps: false,
+            size: kept.len(),
+            sync: None,
+            waited: false,
+            repack: None,
+            host: Some(kept),
+        }))));
+    }
+    if let Source::Texture { region, .. } = src {
+        fresh(gpu, &region.texture);
+    }
+    let size = match src {
+        Source::Buffer { size, .. } => *size as usize,
+        Source::Texture { region, extent } => {
+            let read = region.texture.read.ok_or(GpuError::Invalid(
+                "webgl: the format cannot be read back here",
+            ))?;
+            (extent.width * extent.height * extent.depth_or_layers) as usize * read.texel_read()
+        }
+    };
+    // The staging buffer takes its WebGL type from its first target: a pixel pack buffer for
+    // texels, and for a buffer the type of the GL buffer it copies from, since WebGL copies only
+    // between buffers of one type.
+    let target = match src {
+        Source::Buffer { buffer, .. } if buffer.data.is_none() => {
+            // The vertex array's index binding changes; the next indexed draw rebinds it.
+            gpu.applied.index = 0;
+            gles::ELEMENT_ARRAY_BUFFER
+        }
+        Source::Buffer { .. } => gles::COPY_WRITE_BUFFER,
+        Source::Texture { .. } => gles::PIXEL_PACK_BUFFER,
+    };
+    let pbo = {
+        let pbo = platform::one(|n| gpu.gl.gen_buffers(n)).ok_or(GpuError::OutOfMemory)?;
+        let first = if target == gles::COPY_WRITE_BUFFER {
+            gles::ARRAY_BUFFER
+        } else {
+            target
+        };
+        gpu.gl.bind_buffer(first, pbo);
+        gpu.gl
+            .buffer_data(first, size as i64, None, gles::STREAM_READ);
+        gpu.gl.bind_buffer(target, pbo);
+        pbo
+    };
+    match src {
+        Source::Buffer {
+            buffer,
+            offset,
+            size,
+        } => {
+            let raw = any_gl(gpu, buffer);
+            gpu.gl.bind_buffer(gles::COPY_READ_BUFFER, raw);
+            gpu.gl.copy_buffer_sub_data(
+                gles::COPY_READ_BUFFER,
+                target,
+                *offset as i64,
+                0,
+                *size as i64,
+            );
+        }
+        Source::Texture { region, extent } => {
+            let t = &region.texture;
+            let read = t.read.expect("checked above");
+            let layer_bytes = extent.width * extent.height * read.texel_read() as u32;
+            for i in 0..extent.depth_or_layers {
+                let layer = read_layer(region, i);
+                read_framebuffer(gpu, t, region.mip, layer);
+                gpu.gl.read_pixels(
+                    region.origin.x as i32,
+                    region.origin.y as i32,
+                    extent.width as i32,
+                    extent.height as i32,
+                    read.format,
+                    read.ty,
+                    PixelPack::Offset(u64::from(i * layer_bytes)),
+                );
+            }
+        }
+    }
+    let sync = {
+        gpu.gl.bind_buffer(gles::PIXEL_PACK_BUFFER, 0);
+        gpu.gl.fence_sync(gles::SYNC_GPU_COMMANDS_COMPLETE, 0)
+    };
+    // Without a sync object nothing says when the copy is done: only a lost context fails here.
+    if sync.is_none() {
+        fail(gpu, LossReason::Reset);
+    }
+    let repack = match src {
+        Source::Texture { region, .. } => region.texture.read,
+        Source::Buffer { .. } => None,
+    }
+    .filter(|r| r.repacks());
+    if repack.is_some_and(format::ReadAs::converts) {
+        gpu.record_slow_path(SlowPath::FormatConverted);
+    }
+    Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
+        pbo: Some(pbo),
+        queries: Vec::new(),
+        timestamps: false,
+        size,
+        sync,
+        waited: false,
+        repack,
+        host: None,
+    }))))
+}
+
+fn read_back_now_held<O: OpenGlEs>(
+    gpu: &mut Gl<O>,
+    src: &Source,
+    dst: &mut [u8],
+) -> Result<(), GpuError> {
+    match src {
+        Source::Texture { region, extent } => read_texture_now(gpu, region, *extent, dst),
+        Source::Buffer {
+            buffer,
+            offset,
+            size,
+        } => {
+            let raw = any_gl(gpu, buffer);
+            gpu.gl.bind_buffer(gles::COPY_READ_BUFFER, raw);
+            platform::get_buffer_sub_data(
+                &gpu.gl,
+                gles::COPY_READ_BUFFER,
+                *offset,
+                &mut dst[..*size as usize],
+            )
+            .then_some(())
+            .ok_or_else(|| read_failed(gpu))
+        }
+    }
+}
+
+fn destroy_held<O: OpenGlEs>(gpu: &mut Gl<O>, object: Held) {
+    if let Held::Surface(surface) = &object {
+        if gpu.surface.as_ref().is_some_and(|s| s.id == *surface)
+            && let Some((t, v)) = gpu.surface.take().and_then(|s| s.frame)
+        {
+            gpu.objects.views.remove(&v.id);
+            destroy_held(gpu, Held::Texture(t));
+        }
+        return;
+    }
+    if let Held::Texture(t) = &object
+        && let Some(twin) = t.twin.get()
+    {
+        gpu.twins -= 1;
+        let twin = twin.clone();
+        destroy_held(gpu, Held::Texture(twin));
+    }
+    let gl = &gpu.gl;
+    match object {
+        Held::Buffer(b) => {
+            if b.stale.get().is_some() {
+                gpu.stale_buffers -= 1;
+            }
+            for raw in [b.data, b.index].into_iter().flatten() {
+                gl.delete_buffers(&[raw]);
+            }
+        }
+        Held::Texture(t) => {
+            gpu.framebuffers.retain(|key, fb| {
+                let uses = key.iter().flatten().any(|a| a.0 == t.id);
+                if uses {
+                    gl.delete_framebuffers(&[*fb]);
+                }
+                !uses
+            });
+            if gpu
+                .applied
+                .draw_framebuffer
+                .is_some_and(|fb| !gpu.framebuffers.values().any(|f| *f == fb))
+            {
+                gpu.applied.draw_framebuffer = None;
+            }
+            if gpu
+                .applied
+                .read_framebuffer
+                .is_some_and(|fb| !gpu.framebuffers.values().any(|f| *f == fb))
+            {
+                gpu.applied.read_framebuffer = None;
+            }
+            match t.storage {
+                Storage::Texture(raw) => gl.delete_textures(&[raw]),
+                Storage::Samples(rb) => gl.delete_renderbuffers(&[rb]),
+            }
+        }
+        Held::Sampler(s) => {
+            gl.delete_samplers(&[s.raw]);
+            if let Some((_, twin)) = s.level_zero {
+                gl.delete_samplers(&[twin]);
+            }
+        }
+        Held::Shader(s) => {
+            s.handles.set(s.handles.get() - 1);
+            if s.handles.get() == 0 {
+                gpu.shaders.remove(&s.text);
+                gpu.objects.shaders.remove(&s.id);
+                gl.delete_shader(s.raw);
+            }
+        }
+        Held::Program(p) => {
+            p.handles.set(p.handles.get() - 1);
+            if p.handles.get() == 0 {
+                gpu.programs.remove(&p.pair);
+                gpu.objects.programs.remove(&p.id);
+                gl.delete_program(p.raw);
+                let captures = p.captures.iter().filter_map(|c| c.get());
+                for c in captures.chain(core::iter::once(&p.0)) {
+                    for (_, v) in c.variants.borrow().iter() {
+                        gl.delete_program(v.raw);
+                        if gpu.applied.program == v.id {
+                            gpu.applied.program = 0;
+                        }
+                    }
+                }
+                for c in p.captures.iter().filter_map(|c| c.get()) {
+                    gl.delete_program(c.raw);
+                    if gpu.applied.program == c.id {
+                        gpu.applied.program = 0;
+                    }
+                }
+                if gpu.applied.program == p.id {
+                    gpu.applied.program = 0;
+                }
+            }
+        }
+        Held::Surface(_) => {}
+        Held::QuerySet(set) => {
+            // Queries a read back still holds are deleted when it finishes.
+            for q in set.slots.borrow_mut().drain(..).flatten() {
+                if let Ok(q) = Rc::try_unwrap(q) {
+                    gl.delete_queries(&[q]);
+                }
+            }
+        }
     }
 }
