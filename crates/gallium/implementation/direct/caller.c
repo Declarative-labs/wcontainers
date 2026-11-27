@@ -254,7 +254,7 @@ static void filled_vertex_elements(struct pipe_vertex_element elements[2])
     elements[0].instance_divisor = 1202;
     elements[1].src_offset = 1203;
     elements[1].vertex_buffer_index = 78;
-    elements[1].dual_slot = 1;
+    elements[1].dual_slot = 0;
     elements[1].src_format = 7;
     elements[1].src_stride = 1207;
     elements[1].instance_divisor = 1208;

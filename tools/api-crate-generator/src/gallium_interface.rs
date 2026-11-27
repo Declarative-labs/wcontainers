@@ -435,8 +435,9 @@ impl Structures<'_> {
         let numeric = element.trim();
         let (c, debug) = match numeric {
             "f32" | "f64" => (format!("{value}.25f"), format!("{value}.25")),
-            // Flags alternate, so that both values cross the glue.
-            "bool" if counter.is_multiple_of(2) => ("0".to_string(), "false".to_string()),
+            // Flags change every second field, so that both values cross the glue (the two vertex elements, six fields
+            // apart, take one each).
+            "bool" if *counter % 4 < 2 => ("0".to_string(), "false".to_string()),
             "bool" => ("1".to_string(), "true".to_string()),
             "u8" | "i8" if width.is_none() => {
                 let small = 1 + *counter % 100;
