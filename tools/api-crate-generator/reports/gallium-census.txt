@@ -1,0 +1,381 @@
+STRUCTURE pipe_context: 151 function pointers
+  pipe_context.destroy return:void :struct pipe_context*
+  pipe_context.draw_vbo return:void pipe:struct pipe_context* info:const struct pipe_draw_info* drawid_offset:unsigned indirect:const struct pipe_draw_indirect_info* draws:const struct pipe_draw_start_count_bias* num_draws:unsigned
+  pipe_context.draw_vbo_buffers return:void pipe:struct pipe_context* info:const struct pipe_draw_info* buffers:const struct pipe_vertex_buffer* buffer_count:unsigned draws:const struct pipe_draw_start_count_bias* num_draws:unsigned
+  pipe_context.draw_vertex_state return:void ctx:struct pipe_context* state:struct pipe_vertex_state* partial_velem_mask:uint32_t info:struct pipe_draw_vertex_state_info draws:const struct pipe_draw_start_count_bias* num_draws:unsigned
+  pipe_context.render_condition return:void pipe:struct pipe_context* query:struct pipe_query* condition:bool mode:enum pipe_render_cond_flag
+  pipe_context.render_condition_mem return:void pipe:struct pipe_context* buffer:struct pipe_resource* offset:uint32_t condition:bool
+  pipe_context.create_query return:struct pipe_query* pipe:struct pipe_context* query_type:unsigned index:unsigned
+  pipe_context.create_batch_query return:struct pipe_query* pipe:struct pipe_context* num_queries:unsigned query_types:unsigned*
+  pipe_context.destroy_query return:void pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.begin_query return:bool pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.end_query return:bool pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.get_query_result return:bool pipe:struct pipe_context* q:struct pipe_query* wait:bool result:union pipe_query_result*
+  pipe_context.get_query_result_resource return:void pipe:struct pipe_context* q:struct pipe_query* flags:enum pipe_query_flags result_type:enum pipe_query_value_type index:int resource:struct pipe_resource* offset:unsigned
+  pipe_context.set_active_query_state return:void pipe:struct pipe_context* enable:bool
+  pipe_context.init_intel_perf_query_info return:unsigned pipe:struct pipe_context*
+  pipe_context.get_intel_perf_query_info return:void pipe:struct pipe_context* query_index:unsigned name:const char** data_size:uint32_t* n_counters:uint32_t* n_active:uint32_t*
+  pipe_context.get_intel_perf_query_counter_info return:void pipe:struct pipe_context* query_index:unsigned counter_index:unsigned name:const char** desc:const char** offset:uint32_t* data_size:uint32_t* type_enum:uint32_t* data_type_enum:uint32_t* raw_max:uint64_t*
+  pipe_context.new_intel_perf_query_obj return:struct pipe_query* pipe:struct pipe_context* query_index:unsigned
+  pipe_context.begin_intel_perf_query return:bool pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.end_intel_perf_query return:void pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.delete_intel_perf_query return:void pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.wait_intel_perf_query return:void pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.is_intel_perf_query_ready return:bool pipe:struct pipe_context* q:struct pipe_query*
+  pipe_context.get_intel_perf_query_data return:bool pipe:struct pipe_context* q:struct pipe_query* data_size:size_t data:uint32_t* bytes_written:uint32_t*
+  pipe_context.link_shader return:void :struct pipe_context* handles:void**
+  pipe_context.create_blend_state return:void* :struct pipe_context* :const struct pipe_blend_state*
+  pipe_context.bind_blend_state return:void :struct pipe_context* :void*
+  pipe_context.delete_blend_state return:void :struct pipe_context* :void*
+  pipe_context.create_sampler_state return:void* :struct pipe_context* :const struct pipe_sampler_state*
+  pipe_context.bind_sampler_states return:void :struct pipe_context* shader:mesa_shader_stage start_slot:unsigned num_samplers:unsigned samplers:void**
+  pipe_context.delete_sampler_state return:void :struct pipe_context* :void*
+  pipe_context.create_rasterizer_state return:void* :struct pipe_context* :const struct pipe_rasterizer_state*
+  pipe_context.bind_rasterizer_state return:void :struct pipe_context* :void*
+  pipe_context.delete_rasterizer_state return:void :struct pipe_context* :void*
+  pipe_context.create_depth_stencil_alpha_state return:void* :struct pipe_context* :const struct pipe_depth_stencil_alpha_state*
+  pipe_context.bind_depth_stencil_alpha_state return:void :struct pipe_context* :void*
+  pipe_context.delete_depth_stencil_alpha_state return:void :struct pipe_context* :void*
+  pipe_context.create_fs_state return:void* :struct pipe_context* :const struct pipe_shader_state*
+  pipe_context.bind_fs_state return:void :struct pipe_context* :void*
+  pipe_context.delete_fs_state return:void :struct pipe_context* :void*
+  pipe_context.create_vs_state return:void* :struct pipe_context* :const struct pipe_shader_state*
+  pipe_context.bind_vs_state return:void :struct pipe_context* :void*
+  pipe_context.delete_vs_state return:void :struct pipe_context* :void*
+  pipe_context.create_gs_state return:void* :struct pipe_context* :const struct pipe_shader_state*
+  pipe_context.bind_gs_state return:void :struct pipe_context* :void*
+  pipe_context.delete_gs_state return:void :struct pipe_context* :void*
+  pipe_context.create_tcs_state return:void* :struct pipe_context* :const struct pipe_shader_state*
+  pipe_context.bind_tcs_state return:void :struct pipe_context* :void*
+  pipe_context.delete_tcs_state return:void :struct pipe_context* :void*
+  pipe_context.create_tes_state return:void* :struct pipe_context* :const struct pipe_shader_state*
+  pipe_context.bind_tes_state return:void :struct pipe_context* :void*
+  pipe_context.delete_tes_state return:void :struct pipe_context* :void*
+  pipe_context.create_vertex_elements_state return:void* :struct pipe_context* num_elements:unsigned :const struct pipe_vertex_element*
+  pipe_context.bind_vertex_elements_state return:void :struct pipe_context* :void*
+  pipe_context.delete_vertex_elements_state return:void :struct pipe_context* :void*
+  pipe_context.create_ts_state return:void* :struct pipe_context* :const struct pipe_shader_state*
+  pipe_context.bind_ts_state return:void :struct pipe_context* :void*
+  pipe_context.delete_ts_state return:void :struct pipe_context* :void*
+  pipe_context.create_ms_state return:void* :struct pipe_context* :const struct pipe_shader_state*
+  pipe_context.bind_ms_state return:void :struct pipe_context* :void*
+  pipe_context.delete_ms_state return:void :struct pipe_context* :void*
+  pipe_context.set_blend_color return:void :struct pipe_context* :const struct pipe_blend_color*
+  pipe_context.set_stencil_ref return:void :struct pipe_context* ref:const struct pipe_stencil_ref
+  pipe_context.set_sample_mask return:void :struct pipe_context* sample_mask:unsigned
+  pipe_context.set_min_samples return:void :struct pipe_context* min_samples:unsigned
+  pipe_context.set_sample_coverage return:void :struct pipe_context* value:float invert:bool
+  pipe_context.set_clip_state return:void :struct pipe_context* :const struct pipe_clip_state*
+  pipe_context.set_constant_buffer return:void :struct pipe_context* shader:mesa_shader_stage index:uint buf:const struct pipe_constant_buffer*
+  pipe_context.set_inlinable_constants return:void :struct pipe_context* shader:mesa_shader_stage num_values:uint values:uint32_t*
+  pipe_context.set_framebuffer_state return:void :struct pipe_context* :const struct pipe_framebuffer_state*
+  pipe_context.set_sample_locations return:void :struct pipe_context* size:size_t locations:const uint8_t*
+  pipe_context.set_polygon_stipple return:void :struct pipe_context* :const struct pipe_poly_stipple*
+  pipe_context.set_scissor_states return:void :struct pipe_context* start_slot:unsigned num_scissors:unsigned :const struct pipe_scissor_state*
+  pipe_context.set_window_rectangles return:void :struct pipe_context* include:bool num_rectangles:unsigned :const struct pipe_scissor_state*
+  pipe_context.set_viewport_states return:void :struct pipe_context* start_slot:unsigned num_viewports:unsigned :const struct pipe_viewport_state*
+  pipe_context.set_sampler_views return:void :struct pipe_context* shader:mesa_shader_stage start_slot:unsigned num_views:unsigned unbind_num_trailing_slots:unsigned views:struct pipe_sampler_view**
+  pipe_context.set_tess_state return:void :struct pipe_context* default_outer_level:const float[4] default_inner_level:const float[2]
+  pipe_context.set_patch_vertices return:void ctx:struct pipe_context* patch_vertices:uint8_t
+  pipe_context.set_debug_callback return:void :struct pipe_context* :const struct util_debug_callback*
+  pipe_context.set_shader_buffers return:void :struct pipe_context* shader:mesa_shader_stage start_slot:unsigned count:unsigned buffers:const struct pipe_shader_buffer* writable_bitmask:unsigned
+  pipe_context.set_hw_atomic_buffers return:void :struct pipe_context* start_slot:unsigned count:unsigned buffers:const struct pipe_shader_buffer*
+  pipe_context.set_shader_images return:void :struct pipe_context* shader:mesa_shader_stage start_slot:unsigned count:unsigned unbind_num_trailing_slots:unsigned images:const struct pipe_image_view*
+  pipe_context.set_vertex_buffers return:void :struct pipe_context* count:unsigned :const struct pipe_vertex_buffer*
+  pipe_context.create_stream_output_target return:struct pipe_stream_output_target* :struct pipe_context* :struct pipe_resource* buffer_offset:unsigned buffer_size:unsigned
+  pipe_context.stream_output_target_destroy return:void :struct pipe_context* :struct pipe_stream_output_target*
+  pipe_context.set_stream_output_targets return:void :struct pipe_context* num_targets:unsigned targets:struct pipe_stream_output_target** offsets:const unsigned* output_prim:enum mesa_prim
+  pipe_context.stream_output_target_offset return:uint32_t target:struct pipe_stream_output_target*
+  pipe_context.set_frontend_noop return:void :struct pipe_context* enable:bool
+  pipe_context.resource_copy_region return:void pipe:struct pipe_context* dst:struct pipe_resource* dst_level:unsigned dstx:unsigned dsty:unsigned dstz:unsigned src:struct pipe_resource* src_level:unsigned src_box:const struct pipe_box*
+  pipe_context.image_copy_buffer return:void pipe:struct pipe_context* dst:struct pipe_resource* src:struct pipe_resource* buffer_offset:unsigned buffer_stride:unsigned buffer_layer_stride:unsigned level:unsigned box:const struct pipe_box*
+  pipe_context.blit return:void pipe:struct pipe_context* info:const struct pipe_blit_info*
+  pipe_context.clear return:void pipe:struct pipe_context* buffers:unsigned color_clear_mask:uint32_t stencil_clear_mask:uint8_t scissor_state:const struct pipe_scissor_state* color:const union pipe_color_union* depth:double stencil:unsigned
+  pipe_context.clear_render_target return:void pipe:struct pipe_context* dst:struct pipe_surface* color:const union pipe_color_union* dstx:unsigned dsty:unsigned width:unsigned height:unsigned render_condition_enabled:bool
+  pipe_context.clear_depth_stencil return:void pipe:struct pipe_context* dst:struct pipe_surface* clear_flags:unsigned depth:double stencil:unsigned dstx:unsigned dsty:unsigned width:unsigned height:unsigned render_condition_enabled:bool
+  pipe_context.clear_texture return:void pipe:struct pipe_context* res:struct pipe_resource* level:unsigned box:const struct pipe_box* data:const void*
+  pipe_context.clear_buffer return:void pipe:struct pipe_context* res:struct pipe_resource* offset:unsigned size:unsigned clear_value:const void* clear_value_size:int
+  pipe_context.evaluate_depth_buffer return:void pipe:struct pipe_context*
+  pipe_context.flush return:void pipe:struct pipe_context* fence:struct pipe_fence_handle** flags:unsigned
+  pipe_context.create_fence_fd return:void pipe:struct pipe_context* fence:struct pipe_fence_handle** fd:int type:enum pipe_fd_type
+  pipe_context.fence_server_sync return:void pipe:struct pipe_context* fence:struct pipe_fence_handle* timeline_value:uint64_t
+  pipe_context.fence_server_signal return:void pipe:struct pipe_context* fence:struct pipe_fence_handle* timeline_value:uint64_t
+  pipe_context.create_sampler_view return:struct pipe_sampler_view* ctx:struct pipe_context* texture:struct pipe_resource* templat:const struct pipe_sampler_view*
+  pipe_context.sampler_view_destroy return:void ctx:struct pipe_context* view:struct pipe_sampler_view*
+  pipe_context.sampler_view_release return:void ctx:struct pipe_context* view:struct pipe_sampler_view*
+  pipe_context.buffer_map return:void* :struct pipe_context* resource:struct pipe_resource* level:unsigned usage:unsigned :const struct pipe_box* out_transfer:struct pipe_transfer**
+  pipe_context.transfer_flush_region return:void :struct pipe_context* transfer:struct pipe_transfer* :const struct pipe_box*
+  pipe_context.transfer_map_clientptr_range return:void* :struct pipe_context* transfer:struct pipe_transfer* clientptr_range:struct pipe_clientptr_range* size:uint32_t*
+  pipe_context.transfer_unmap_clientptr_range return:void :struct pipe_context* :struct pipe_transfer*
+  pipe_context.buffer_unmap return:void :struct pipe_context* transfer:struct pipe_transfer*
+  pipe_context.texture_map return:void* :struct pipe_context* resource:struct pipe_resource* level:unsigned usage:unsigned :const struct pipe_box* out_transfer:struct pipe_transfer**
+  pipe_context.texture_unmap return:void :struct pipe_context* transfer:struct pipe_transfer*
+  pipe_context.buffer_subdata return:void :struct pipe_context* :struct pipe_resource* usage:unsigned offset:unsigned size:unsigned data:const void*
+  pipe_context.texture_subdata return:void :struct pipe_context* :struct pipe_resource* level:unsigned usage:unsigned :const struct pipe_box* data:const void* stride:unsigned layer_stride:uintptr_t
+  pipe_context.texture_barrier return:void :struct pipe_context* flags:unsigned
+  pipe_context.memory_barrier return:void :struct pipe_context* flags:unsigned
+  pipe_context.resource_commit return:bool :struct pipe_context* :struct pipe_resource* level:unsigned box:struct pipe_box* commit:bool
+  pipe_context.resource_release return:void :struct pipe_context* :struct pipe_resource*
+  pipe_context.create_video_codec return:struct pipe_video_codec* context:struct pipe_context* templat:const struct pipe_video_codec*
+  pipe_context.create_video_buffer return:struct pipe_video_buffer* context:struct pipe_context* templat:const struct pipe_video_buffer*
+  pipe_context.create_compute_state return:void* context:struct pipe_context* :const struct pipe_compute_state*
+  pipe_context.bind_compute_state return:void :struct pipe_context* :void*
+  pipe_context.delete_compute_state return:void :struct pipe_context* :void*
+  pipe_context.get_compute_state_info return:void :struct pipe_context* :void* :struct pipe_compute_state_object_info*
+  pipe_context.get_compute_state_subgroup_size return:uint32_t :struct pipe_context* :void* block:const uint32_t[3]
+  pipe_context.set_global_binding return:void context:struct pipe_context* first:unsigned count:unsigned resources:struct pipe_resource** handles:uint32_t**
+  pipe_context.launch_grid return:void context:struct pipe_context* info:const struct pipe_grid_info*
+  pipe_context.draw_mesh_tasks return:void context:struct pipe_context* info:const struct pipe_grid_info*
+  pipe_context.svm_migrate return:void context:struct pipe_context* num_ptrs:unsigned ptrs:const void** sizes:const size_t* to_device:bool content_undefined:bool
+  pipe_context.get_sample_position return:void context:struct pipe_context* sample_count:unsigned sample_index:unsigned out_value:float*
+  pipe_context.get_timestamp return:uint64_t :struct pipe_context*
+  pipe_context.flush_resource return:void ctx:struct pipe_context* resource:struct pipe_resource*
+  pipe_context.invalidate_resource return:void ctx:struct pipe_context* resource:struct pipe_resource*
+  pipe_context.get_device_reset_status return:enum pipe_reset_status ctx:struct pipe_context*
+  pipe_context.set_device_reset_callback return:void ctx:struct pipe_context* cb:const struct pipe_device_reset_callback*
+  pipe_context.dump_debug_state return:void ctx:struct pipe_context* stream:FILE* flags:unsigned
+  pipe_context.set_log_context return:void ctx:struct pipe_context* log:struct u_log_context*
+  pipe_context.emit_string_marker return:void ctx:struct pipe_context* string:const char* len:int
+  pipe_context.generate_mipmap return:bool ctx:struct pipe_context* resource:struct pipe_resource* format:enum pipe_format base_level:unsigned last_level:unsigned first_layer:unsigned last_layer:unsigned
+  pipe_context.create_texture_handle return:uint64_t ctx:struct pipe_context* view:struct pipe_sampler_view* state:const struct pipe_sampler_state*
+  pipe_context.delete_texture_handle return:void ctx:struct pipe_context* handle:uint64_t
+  pipe_context.make_texture_handle_resident return:void ctx:struct pipe_context* handle:uint64_t resident:bool
+  pipe_context.create_image_handle return:uint64_t ctx:struct pipe_context* image:const struct pipe_image_view*
+  pipe_context.delete_image_handle return:void ctx:struct pipe_context* handle:uint64_t
+  pipe_context.make_image_handle_resident return:void ctx:struct pipe_context* handle:uint64_t access:unsigned resident:bool
+  pipe_context.callback return:void ctx:struct pipe_context* ):void ( fn)(void** data:void* asap:bool
+  pipe_context.set_context_param return:void ctx:struct pipe_context* param:enum pipe_context_param value:unsigned
+  pipe_context.create_video_buffer_with_modifiers return:struct pipe_video_buffer* context:struct pipe_context* templat:const struct pipe_video_buffer* modifiers:const uint64_t* modifiers_count:unsigned int
+  pipe_context.video_buffer_from_handle return:struct pipe_video_buffer* context:struct pipe_context* templat:const struct pipe_video_buffer* handle:struct winsys_handle* usage:unsigned
+  pipe_context.ml_subgraph_invoke return:void context:struct pipe_context* subgraph:struct pipe_ml_subgraph* inputs_count:unsigned input_idxs:unsigned[] inputs:void*[] is_signed:bool[]
+  pipe_context.ml_subgraph_read_output return:void context:struct pipe_context* subgraph:struct pipe_ml_subgraph* outputs_count:unsigned output_idxs:unsigned[] outputs:void*[] is_signed:bool[]
+  pipe_context.ml_subgraph_deserialize return:struct pipe_ml_subgraph* context:struct pipe_context* data:const uint8_t* size:size_t
+STRUCTURE pipe_device_reset_callback: 1 function pointers
+  pipe_device_reset_callback.reset return:void data:void* status:enum pipe_reset_status
+STRUCTURE pipe_ml_device: 5 function pointers
+  pipe_ml_device.ml_operation_supported return:bool device:struct pipe_ml_device* operation:const struct pipe_ml_operation*
+  pipe_ml_device.ml_subgraph_create return:struct pipe_ml_subgraph* device:struct pipe_ml_device* operations:const struct pipe_ml_operation* count:unsigned
+  pipe_ml_device.ml_subgraph_serialize return:uint8_t* device:struct pipe_ml_device* subgraph:struct pipe_ml_subgraph* size:size_t*
+  pipe_ml_device.ml_subgraph_destroy return:void device:struct pipe_ml_device* subgraph:struct pipe_ml_subgraph*
+  pipe_ml_device.ml_device_destroy return:void device:struct pipe_ml_device*
+STRUCTURE pipe_screen: 81 function pointers
+  pipe_screen.get_screen_fd return:int :struct pipe_screen*
+  pipe_screen.destroy return:void :struct pipe_screen*
+  pipe_screen.get_name return:const char* :struct pipe_screen*
+  pipe_screen.get_vendor return:const char* :struct pipe_screen*
+  pipe_screen.get_ml_device return:struct pipe_ml_device* :struct pipe_screen*
+  pipe_screen.get_device_vendor return:const char* :struct pipe_screen*
+  pipe_screen.get_cl_cts_version return:const char* :struct pipe_screen*
+  pipe_screen.get_video_param return:int :struct pipe_screen* profile:enum pipe_video_profile entrypoint:enum pipe_video_entrypoint param:enum pipe_video_cap
+  pipe_screen.get_sample_pixel_grid return:void :struct pipe_screen* sample_count:unsigned out_width:unsigned* out_height:unsigned*
+  pipe_screen.get_timestamp return:uint64_t :struct pipe_screen*
+  pipe_screen.convert_timestamp return:uint64_t :struct pipe_screen* raw_timestamp:uint64_t
+  pipe_screen.get_canonical_format return:enum pipe_format :struct pipe_screen* format:enum pipe_format
+  pipe_screen.context_create return:struct pipe_context* screen:struct pipe_screen* priv:void* flags:unsigned
+  pipe_screen.is_compute_copy_faster return:bool :struct pipe_screen* src_format:enum pipe_format dst_format:enum pipe_format width:unsigned height:unsigned depth:unsigned cpu:bool
+  pipe_screen.is_format_supported return:bool :struct pipe_screen* format:enum pipe_format target:enum pipe_texture_target sample_count:unsigned storage_sample_count:unsigned bindings:unsigned
+  pipe_screen.is_video_format_supported return:bool :struct pipe_screen* format:enum pipe_format profile:enum pipe_video_profile entrypoint:enum pipe_video_entrypoint
+  pipe_screen.can_create_resource return:bool screen:struct pipe_screen* templat:const struct pipe_resource*
+  pipe_screen.resource_create return:struct pipe_resource* :struct pipe_screen* templat:const struct pipe_resource*
+  pipe_screen.resource_create_drawable return:struct pipe_resource* :struct pipe_screen* tmpl:const struct pipe_resource* loader_private:const void*
+  pipe_screen.resource_create_front return:struct pipe_resource* :struct pipe_screen* templat:const struct pipe_resource* map_front_private:const void*
+  pipe_screen.resource_from_handle return:struct pipe_resource* :struct pipe_screen* templat:const struct pipe_resource* handle:struct winsys_handle* usage:unsigned
+  pipe_screen.resource_from_user_memory return:struct pipe_resource* :struct pipe_screen* t:const struct pipe_resource* user_memory:void*
+  pipe_screen.check_resource_capability return:bool screen:struct pipe_screen* resource:struct pipe_resource* bind:unsigned
+  pipe_screen.resource_get_handle return:bool :struct pipe_screen* context:struct pipe_context* tex:struct pipe_resource* handle:struct winsys_handle* usage:unsigned
+  pipe_screen.set_resource_label return:void pscreen:struct pipe_screen* presource:struct pipe_resource* label:const char*
+  pipe_screen.resource_get_param return:bool screen:struct pipe_screen* context:struct pipe_context* resource:struct pipe_resource* plane:unsigned layer:unsigned level:unsigned param:enum pipe_resource_param handle_usage:unsigned value:uint64_t*
+  pipe_screen.resource_changed return:void :struct pipe_screen* pt:struct pipe_resource*
+  pipe_screen.resource_destroy return:void :struct pipe_screen* pt:struct pipe_resource*
+  pipe_screen.flush_frontbuffer return:void screen:struct pipe_screen* ctx:struct pipe_context* resource:struct pipe_resource* level:unsigned layer:unsigned winsys_drawable_handle:void* nboxes:unsigned subbox:struct pipe_box*
+  pipe_screen.fence_reference return:void screen:struct pipe_screen* ptr:struct pipe_fence_handle** fence:struct pipe_fence_handle*
+  pipe_screen.semaphore_create return:struct pipe_fence_handle* screen:struct pipe_screen*
+  pipe_screen.fence_finish return:bool screen:struct pipe_screen* ctx:struct pipe_context* fence:struct pipe_fence_handle* timeout:uint64_t
+  pipe_screen.fence_get_fd return:int screen:struct pipe_screen* fence:struct pipe_fence_handle*
+  pipe_screen.fence_get_win32_handle return:void* screen:struct pipe_screen* fence:struct pipe_fence_handle* fence_value:uint64_t*
+  pipe_screen.fence_get_win32_event return:void* screen:struct pipe_screen* fence:struct pipe_fence_handle*
+  pipe_screen.fence_wait_multiple return:int screen:struct pipe_screen* fences:struct pipe_fence_handle** num_fences:unsigned wait_all:bool
+  pipe_screen.create_fence_win32 return:void screen:struct pipe_screen* fence:struct pipe_fence_handle** handle:void* name:const void* type:enum pipe_fd_type
+  pipe_screen.get_driver_query_info return:int screen:struct pipe_screen* index:unsigned info:struct pipe_driver_query_info*
+  pipe_screen.get_driver_query_group_info return:int screen:struct pipe_screen* index:unsigned info:struct pipe_driver_query_group_info*
+  pipe_screen.query_memory_info return:void screen:struct pipe_screen* info:struct pipe_memory_info*
+  pipe_screen.get_disk_shader_cache return:struct disk_cache* screen:struct pipe_screen*
+  pipe_screen.resource_create_with_modifiers return:struct pipe_resource* :struct pipe_screen* templat:const struct pipe_resource* modifiers:const uint64_t* count:int
+  pipe_screen.query_dmabuf_modifiers return:void screen:struct pipe_screen* format:enum pipe_format max:int modifiers:uint64_t* external_only:unsigned int* count:int*
+  pipe_screen.memobj_create_from_handle return:struct pipe_memory_object* screen:struct pipe_screen* handle:struct winsys_handle* dedicated:bool
+  pipe_screen.memobj_destroy return:void screen:struct pipe_screen* memobj:struct pipe_memory_object*
+  pipe_screen.resource_from_memobj return:struct pipe_resource* screen:struct pipe_screen* t:const struct pipe_resource* memobj:struct pipe_memory_object* offset:uint64_t
+  pipe_screen.get_driver_uuid return:void screen:struct pipe_screen* uuid:char*
+  pipe_screen.get_device_uuid return:void screen:struct pipe_screen* uuid:char*
+  pipe_screen.get_device_luid return:void screen:struct pipe_screen* luid:char*
+  pipe_screen.get_device_node_mask return:uint32_t screen:struct pipe_screen*
+  pipe_screen.set_max_shader_compiler_threads return:void screen:struct pipe_screen* max_threads:unsigned
+  pipe_screen.is_parallel_shader_compilation_finished return:bool screen:struct pipe_screen* shader:void* shader_type:mesa_shader_stage
+  pipe_screen.driver_thread_add_job return:void screen:struct pipe_screen* job:void* fence:struct util_queue_fence* execute:pipe_driver_thread_func cleanup:pipe_driver_thread_func job_size:const size_t
+  pipe_screen.set_damage_region return:void screen:struct pipe_screen* resource:struct pipe_resource* nrects:unsigned int rects:const struct pipe_box*
+  pipe_screen.finalize_nir return:void screen:struct pipe_screen* nir:struct nir_shader* optimize:bool
+  pipe_screen.resource_create_unbacked return:struct pipe_resource* :struct pipe_screen* templat:const struct pipe_resource* size_required:uint64_t*
+  pipe_screen.allocate_memory return:struct pipe_memory_allocation* screen:struct pipe_screen* size:uint64_t
+  pipe_screen.free_memory return:void screen:struct pipe_screen* :struct pipe_memory_allocation*
+  pipe_screen.allocate_memory_fd return:struct pipe_memory_allocation* screen:struct pipe_screen* size:uint64_t fd:int* dmabuf:bool
+  pipe_screen.import_memory_fd return:bool screen:struct pipe_screen* fd:int pmem:struct pipe_memory_allocation** size:uint64_t* dmabuf:bool
+  pipe_screen.free_memory_fd return:void screen:struct pipe_screen* pmem:struct pipe_memory_allocation*
+  pipe_screen.resource_bind_backing return:bool screen:struct pipe_screen* pt:struct pipe_resource* pmem:struct pipe_memory_allocation* fd_offset:uint64_t size:uint64_t offset:uint64_t
+  pipe_screen.map_memory return:void* screen:struct pipe_screen* pmem:struct pipe_memory_allocation*
+  pipe_screen.unmap_memory return:void screen:struct pipe_screen* pmem:struct pipe_memory_allocation*
+  pipe_screen.is_dmabuf_modifier_supported return:bool screen:struct pipe_screen* modifier:uint64_t :enum pipe_format external_only:bool*
+  pipe_screen.get_dmabuf_modifier_planes return:unsigned int screen:struct pipe_screen* modifier:uint64_t format:enum pipe_format
+  pipe_screen.get_sparse_texture_virtual_page_size return:int screen:struct pipe_screen* target:enum pipe_texture_target multi_sample:bool format:enum pipe_format offset:unsigned size:unsigned x:int* y:int* z:int*
+  pipe_screen.create_vertex_state return:struct pipe_vertex_state* screen:struct pipe_screen* buffer:struct pipe_vertex_buffer* elements:const struct pipe_vertex_element* num_elements:unsigned indexbuf:struct pipe_resource* full_velem_mask:uint32_t
+  pipe_screen.vertex_state_destroy return:void screen:struct pipe_screen* :struct pipe_vertex_state*
+  pipe_screen.interop_query_device_info return:uint32_t screen:struct pipe_screen* in_data_size:uint32_t data:void*
+  pipe_screen.interop_export_object return:uint32_t screen:struct pipe_screen* res:struct pipe_resource* in_data_size:uint32_t data:void* need_export_dmabuf:bool*
+  pipe_screen.query_compression_rates return:void screen:struct pipe_screen* format:enum pipe_format max:int rates:uint32_t* count:int*
+  pipe_screen.query_compression_modifiers return:void screen:struct pipe_screen* format:enum pipe_format rate:uint32_t max:int modifiers:uint64_t* count:int*
+  pipe_screen.alloc_vm return:struct pipe_vm_allocation* screen:struct pipe_screen* start:uint64_t size:uint64_t
+  pipe_screen.free_vm return:void screen:struct pipe_screen* alloc:struct pipe_vm_allocation*
+  pipe_screen.resource_assign_vma return:bool screen:struct pipe_screen* resource:struct pipe_resource* address:uint64_t
+  pipe_screen.resource_get_address return:uint64_t screen:struct pipe_screen* resource:struct pipe_resource*
+  pipe_screen.clientptr_heap_create return:struct pipe_clientptr_heap* screen:struct pipe_screen*
+  pipe_screen.clientptr_heap_destroy return:void screen:struct pipe_screen* clientptr_heap:struct pipe_clientptr_heap*
+  pipe_screen.clientptr_range_reclaim return:bool screen:struct pipe_screen* clientptr_heap:struct pipe_clientptr_heap* reclaim_all:bool range:struct pipe_clientptr_range*
+  pipe_screen.get_driver_pipe_screen return:struct pipe_screen* screen:struct pipe_screen*
+STRUCTURE u_transfer_vtbl: 8 function pointers
+  u_transfer_vtbl.resource_create return:struct pipe_resource* pscreen:struct pipe_screen* templ:const struct pipe_resource*
+  u_transfer_vtbl.resource_destroy return:void pscreen:struct pipe_screen* prsc:struct pipe_resource*
+  u_transfer_vtbl.transfer_map return:void* pctx:struct pipe_context* prsc:struct pipe_resource* level:unsigned usage:unsigned box:const struct pipe_box* pptrans:struct pipe_transfer**
+  u_transfer_vtbl.transfer_flush_region return:void pctx:struct pipe_context* ptrans:struct pipe_transfer* box:const struct pipe_box*
+  u_transfer_vtbl.transfer_unmap return:void pctx:struct pipe_context* ptrans:struct pipe_transfer*
+  u_transfer_vtbl.get_internal_format return:enum pipe_format prsc:struct pipe_resource*
+  u_transfer_vtbl.set_stencil return:void prsc:struct pipe_resource* stencil:struct pipe_resource*
+  u_transfer_vtbl.get_stencil return:struct pipe_resource* prsc:struct pipe_resource*
+FUNCTION POINTERS 246
+TYPES 128
+  158 struct pipe_context*
+  143 void
+  120 unsigned
+  84 struct pipe_screen*
+  57 void*
+  48 struct pipe_resource*
+  46 bool
+  25 uint64_t
+  16 int
+  15 struct pipe_query*
+  14 enum pipe_format
+  12 uint32_t
+  12 uint32_t*
+  10 const struct pipe_box*
+  10 const struct pipe_resource*
+  8 struct pipe_fence_handle*
+  7 const struct pipe_shader_state*
+  7 const void*
+  7 int*
+  7 mesa_shader_stage
+  7 struct pipe_memory_allocation*
+  7 struct pipe_transfer*
+  7 uint64_t*
+  6 const char*
+  6 struct pipe_ml_device*
+  6 struct pipe_ml_subgraph*
+  5 struct pipe_fence_handle**
+  4 struct pipe_sampler_view*
+  4 struct winsys_handle*
+  3 char*
+  3 const char**
+  3 const struct pipe_draw_start_count_bias*
+  3 const struct pipe_scissor_state*
+  3 const struct pipe_video_buffer*
+  3 size_t
+  3 struct pipe_clientptr_heap*
+  3 struct pipe_memory_object*
+  3 struct pipe_stream_output_target*
+  3 struct pipe_transfer**
+  3 struct pipe_vertex_state*
+  3 struct pipe_video_buffer*
+  3 unsigned int
+  3 unsigned*
+  2 bool*
+  2 bool[]
+  2 const struct pipe_draw_info*
+  2 const struct pipe_grid_info*
+  2 const struct pipe_image_view*
+  2 const struct pipe_ml_operation*
+  2 const struct pipe_sampler_state*
+  2 const struct pipe_shader_buffer*
+  2 const struct pipe_vertex_buffer*
+  2 const struct pipe_vertex_element*
+  2 const uint64_t*
+  2 const uint8_t*
+  2 const union pipe_color_union*
+  2 double
+  2 enum pipe_fd_type
+  2 enum pipe_reset_status
+  2 enum pipe_texture_target
+  2 enum pipe_video_entrypoint
+  2 enum pipe_video_profile
+  2 pipe_driver_thread_func
+  2 struct pipe_box*
+  2 struct pipe_clientptr_range*
+  2 struct pipe_surface*
+  2 struct pipe_vm_allocation*
+  2 uint
+  2 uint8_t
+  2 unsigned[]
+  2 void**
+  2 void*[]
+  1 FILE*
+  1 const float[2]
+  1 const float[4]
+  1 const size_t
+  1 const size_t*
+  1 const struct pipe_blend_color*
+  1 const struct pipe_blend_state*
+  1 const struct pipe_blit_info*
+  1 const struct pipe_clip_state*
+  1 const struct pipe_compute_state*
+  1 const struct pipe_constant_buffer*
+  1 const struct pipe_depth_stencil_alpha_state*
+  1 const struct pipe_device_reset_callback*
+  1 const struct pipe_draw_indirect_info*
+  1 const struct pipe_framebuffer_state*
+  1 const struct pipe_poly_stipple*
+  1 const struct pipe_rasterizer_state*
+  1 const struct pipe_sampler_view*
+  1 const struct pipe_stencil_ref
+  1 const struct pipe_video_codec*
+  1 const struct pipe_viewport_state*
+  1 const struct util_debug_callback*
+  1 const uint32_t[3]
+  1 const unsigned*
+  1 const void**
+  1 enum mesa_prim
+  1 enum pipe_context_param
+  1 enum pipe_query_flags
+  1 enum pipe_query_value_type
+  1 enum pipe_render_cond_flag
+  1 enum pipe_resource_param
+  1 enum pipe_video_cap
+  1 float
+  1 float*
+  1 size_t*
+  1 struct disk_cache*
+  1 struct nir_shader*
+  1 struct pipe_compute_state_object_info*
+  1 struct pipe_draw_vertex_state_info
+  1 struct pipe_driver_query_group_info*
+  1 struct pipe_driver_query_info*
+  1 struct pipe_memory_allocation**
+  1 struct pipe_memory_info*
+  1 struct pipe_resource**
+  1 struct pipe_sampler_view**
+  1 struct pipe_stream_output_target**
+  1 struct pipe_vertex_buffer*
+  1 struct pipe_video_codec*
+  1 struct u_log_context*
+  1 struct util_queue_fence*
+  1 uint32_t**
+  1 uint8_t*
+  1 uintptr_t
+  1 union pipe_query_result*
+  1 unsigned int*
+  1 void ( fn)(void**

@@ -1,0 +1,17 @@
+  NOT OFFERED wc_flat_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_init: called once by the implementation's `new`: it takes a reference on Mesa's type tables for the process
+  NOT OFFERED wc_finish: never called: the type tables stay for the process, as every compiler of the process shares them
+  NOT OFFERED wc_compiler_options: the address of Mesa's options for a Gallium screen, which only Mesa reads: AC8's Gallium trait (NEEDED B1)
+  NOT OFFERED wc_spirv_common_form_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_glsl_program_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_prepared_form_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_variant_form_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_squares_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_spirv_shader_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_spirv_common_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_received_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_prepared_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_made_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_variant_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+  NOT OFFERED wc_bytes_free: a free: a shader type's drop, or inside the copy that reads what the bridge filled
+MESA COMPILER: functions 29, offered 24, marks 30

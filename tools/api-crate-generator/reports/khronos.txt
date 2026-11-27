@@ -1,0 +1,61 @@
+VALUES egl: 176
+CRATE egl: methods 15 (+0 composed), inside 2, marks 39
+  part AttributeList: 3
+  part CountOf: 1
+  part Handle: 23
+  part HandlesOut: 1
+  part NullOnly: 1
+  part SingleOut: 4
+  part Value: 5
+  part WrittenOf: 1
+  return Handle: 3
+  return Success: 10
+  return Text: 1
+  return Value: 1
+  NOT OFFERED eglCreateWindowSurface: the native window is a loan the surface keeps: its shape is the owner's question (docs/status-graphics-implementations.md, a window given through the interface)
+  NOT OFFERED eglTerminate: the display is the process's, shared by every context; terminating it would end every other user's objects
+  NOT OFFERED eglGetProcAddress: loads the OpenGL ES entry points inside the OpenGL ES crate's glue; no pointer reaches safe code
+  NOT OFFERED eglGetCurrentContext: tells the OpenGL ES glue whether its context is current on the thread before each call
+  FORCED eglCreateContext EGL_CONTEXT_OPENGL_ROBUST_ACCESS=EGL_TRUE: OpenGL ES leaves a shader's or a draw's read outside a buffer undefined (it may end the program) unless the context has robust buffer access (EGL 1.5 §3.7.1.5); every context is made with it, and none is made where the implementation cannot (test robust_access_is_forced)
+VALUES opengl-es: 1116
+  VALUE BY NAME GL_UNMASKED_RENDERER_WEBGL 0x9246: WebGL's WEBGL_debug_renderer_info value, which gl.xml declares and no OpenGL ES feature or extension requires: the browser route asks the renderer's name with it
+CRATE opengl-es: methods 156 (+1 composed), inside 2, marks 322
+  COMPOSED map_buffer_range_read of glMapBufferRange, glUnmapBuffer: glMapBufferRange returns memory lent until glUnmapBuffer; the method maps the range for reading only, copies it into the caller's bytes and unmaps, so nothing is lent past the call
+  part ArrayBufferOffset: 2
+  part BoundedIn: 3
+  part BytesIn: 1
+  part CompressedUnpack: 2
+  part CountOf: 44
+  part ElementBufferOffset: 1
+  part GuardedOut: 10
+  part Handle: 3
+  part LengthsOf: 1
+  part OptionalBytes: 1
+  part PixelPack: 1
+  part PixelUnpack: 2
+  part SingleOut: 3
+  part SizeOf: 2
+  part SliceIn: 30
+  part SliceOut: 11
+  part TextIn: 2
+  part TextsIn: 2
+  part Value: 347
+  return Handle: 1
+  return Text: 2
+  return Unit: 146
+  return Value: 7
+  EXTENSION glBlendEquationSeparateiOES: GL_OES_draw_buffers_indexed
+  EXTENSION glBlendFuncSeparateiOES: GL_OES_draw_buffers_indexed
+  EXTENSION glClipControlEXT: GL_EXT_clip_control
+  EXTENSION glColorMaskiOES: GL_OES_draw_buffers_indexed
+  EXTENSION glDisableiOES: GL_OES_draw_buffers_indexed GL_OES_viewport_array
+  EXTENSION glEnableiOES: GL_OES_draw_buffers_indexed GL_OES_viewport_array
+  EXTENSION glGetQueryObjectui64vEXT: GL_EXT_disjoint_timer_query
+  EXTENSION glGetQueryivEXT: GL_EXT_disjoint_timer_query GL_EXT_occlusion_query_boolean
+  EXTENSION glPolygonModeANGLE: GL_ANGLE_polygon_mode
+  EXTENSION glPolygonOffsetClampEXT: GL_EXT_polygon_offset_clamp
+  EXTENSION glProvokingVertexANGLE: GL_ANGLE_provoking_vertex
+  EXTENSION glQueryCounterEXT: GL_EXT_disjoint_timer_query
+  NOT OFFERED glMapBufferRange: lends memory until glUnmapBuffer: offered only inside map_buffer_range_read, which copies it out
+  NOT OFFERED glUnmapBuffer: ends the lending of glMapBufferRange: called only inside map_buffer_range_read
+

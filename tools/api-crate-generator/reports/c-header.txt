@@ -1,0 +1,73 @@
+C HEADER: functions 29, structures 24, enumerations 28, defines 13
+FUNCTION wc_flat_free: return=nothing flat=the bridge's memory given back
+FUNCTION wc_init: return=nothing
+FUNCTION wc_finish: return=nothing
+FUNCTION wc_compiler_options: return=the compiler's options for a Gallium screen
+FUNCTION wc_spirv_read: return=shader made words=words read during the call, with the count beside them count=number or bool by value stage=a declared value entry_point=zero-ended text read during the call alpha_to_one=number or bool by value
+FUNCTION wc_spirv_shader_key: return=number or bool by value shader=shader read out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_spirv_to_common_form: return=nothing taken=shader taken set=number or bool by value ranges=plain data read during the call out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_spirv_common_form_free: return=nothing form=the bridge's memory given back
+FUNCTION wc_spirv_common_flatten: return=number or bool by value taken=shader taken out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_glsl_to_nir: return=number or bool by value sources=texts by stage, each zero-ended or none out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_glsl_program_free: return=nothing program=the bridge's memory given back
+FUNCTION wc_received_prepare: return=nothing taken=shader taken out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_prepared_form_free: return=nothing form=the bridge's memory given back
+FUNCTION wc_prepared_variant: return=nothing shader=shader read settings=plain data by value swizzles=plain data read during the call, with the count beside it swizzle_count=number or bool by value samplers=plain data read during the call, with the count beside it sampler_count=number or bool by value out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_variant_form_free: return=nothing form=the bridge's memory given back
+FUNCTION wc_prepared_points_as_squares: return=nothing vs=shader read at=number or bool by value largest=number or bool by value out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_prepared_geometry_points_as_squares: return=nothing gs=shader read at=number or bool by value largest=number or bool by value block=number or bool by value out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_squares_free: return=nothing squares=the bridge's memory given back
+FUNCTION wc_made_key: return=number or bool by value shader=shader read out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_made_named_layer_location: return=number or bool by value shader=shader read
+FUNCTION wc_made_variant: return=nothing shader=shader read settings=plain data by value swizzles=plain data read during the call, with the count beside it swizzle_count=number or bool by value samplers=plain data read during the call, with the count beside it sampler_count=number or bool by value out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_variant_flatten: return=number or bool by value taken=shader taken points_in=number or bool by value out=the bridge's memory, copied out whole into owned Rust values, then given back once
+FUNCTION wc_spirv_shader_free: return=nothing shader=shader given back
+FUNCTION wc_spirv_common_free: return=nothing shader=shader given back
+FUNCTION wc_received_free: return=nothing shader=shader given back
+FUNCTION wc_prepared_free: return=nothing shader=shader given back
+FUNCTION wc_made_free: return=nothing shader=shader given back
+FUNCTION wc_variant_free: return=nothing shader=shader given back
+FUNCTION wc_bytes_free: return=nothing bytes=the bridge's memory given back
+ROWS
+  1 a declared value: a Rust enumeration
+  21 nothing
+  19 number or bool by value
+  2 plain data by value: a #[repr(C)] mirror
+  4 plain data read during the call, with the count beside it: &[Mirror]
+  1 plain data read during the call: [Mirror; N]
+  6 shader given back: the shader type's drop
+  1 shader made: an owned shader of its place, given back by its free on drop, or None
+  7 shader read: &Shader of its place
+  4 shader taken: the shader of its place by value, given back by the bridge
+  1 texts by stage, each zero-ended or none: [Option<&CStr>; N]
+  7 the bridge's memory given back: inside the copy that reads it
+  11 the bridge's memory, copied out whole into owned Rust values, then given back once: Vec or an owned structure
+  1 the compiler's options for a Gallium screen: AC8's Gallium trait
+  1 words read during the call, with the count beside them: &[u32]
+  1 zero-ended text read during the call: &CStr
+UNMAPPED 0
+STRUCTURE wc_binding: 6 fields
+STRUCTURE wc_bindings: 2 fields
+STRUCTURE wc_bytes: 2 fields
+STRUCTURE wc_flat: 16 fields
+STRUCTURE wc_flat_field: 2 fields
+STRUCTURE wc_flat_geometry: 6 fields
+STRUCTURE wc_flat_instr: 15 fields
+STRUCTURE wc_flat_src: 2 fields
+STRUCTURE wc_flat_tessellation: 6 fields
+STRUCTURE wc_flat_type: 14 fields
+STRUCTURE wc_flat_var: 17 fields
+STRUCTURE wc_glsl_name: 7 fields
+STRUCTURE wc_glsl_names: 2 fields
+STRUCTURE wc_glsl_program: 3 fields
+STRUCTURE wc_nearest_sampler: 6 fields
+STRUCTURE wc_position_transform: 4 fields
+STRUCTURE wc_prepared_form: 18 fields
+STRUCTURE wc_slot_range: 2 fields
+STRUCTURE wc_spirv_common_form: 3 fields
+STRUCTURE wc_squares: 4 fields
+STRUCTURE wc_stream_output: 6 fields
+STRUCTURE wc_texture_swizzle: 2 fields
+STRUCTURE wc_variant_form: 4 fields
+STRUCTURE wc_variant_settings: 8 fields
+SEVERAL NAMES: 0 declarations, 0 fields the reader dropped before (all but the last of each)

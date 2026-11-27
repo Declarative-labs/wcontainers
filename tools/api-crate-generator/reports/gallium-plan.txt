@@ -1,0 +1,184 @@
+KIND Screen (the library: made by the loader, given back by destroy): made by [] given back by [destroy] used by 0
+KIND Context (a rendering context): made by [context_create] given back by [destroy] used by 0
+KIND Resource (a buffer or texture, counted (Mesa's pipe_reference): the implementation keeps one by cloning its handle, and the last handle dropped ends it): made by [resource_create] given back by [resource_destroy resource_release] used by 22
+KIND Fence (a point in a context's commands, counted (fence_reference): kept by cloning its handle): made by [flush] given back by [fence_reference] used by 2
+KIND Blend (a blend state): made by [create_blend_state] given back by [delete_blend_state] used by 1
+KIND DepthStencilAlpha (a depth, stencil and alpha state): made by [create_depth_stencil_alpha_state] given back by [delete_depth_stencil_alpha_state] used by 1
+KIND Rasterizer (a rasterizer state): made by [create_rasterizer_state] given back by [delete_rasterizer_state] used by 1
+KIND Sampler (a sampler state): made by [create_sampler_state] given back by [delete_sampler_state] used by 1
+KIND VertexElements (a vertex elements state): made by [create_vertex_elements_state] given back by [delete_vertex_elements_state] used by 1
+KIND VertexShader (a vertex program, made from mesa-compiler's Received of that stage): made by [create_vs_state] given back by [delete_vs_state] used by 1
+KIND FragmentShader (a fragment program, from a Received of that stage): made by [create_fs_state] given back by [delete_fs_state] used by 1
+KIND GeometryShader (a geometry program, from a Received of that stage): made by [create_gs_state] given back by [delete_gs_state] used by 1
+KIND TessControlShader (a tessellation control program, from a Received of that stage): made by [create_tcs_state] given back by [delete_tcs_state] used by 1
+KIND TessEvaluationShader (a tessellation evaluation program, from a Received of that stage): made by [create_tes_state] given back by [delete_tes_state] used by 1
+KIND ComputeShader (a compute program, from a Received of that stage): made by [create_compute_state] given back by [delete_compute_state] used by 1
+KIND SamplerView (a view of a resource for sampling, counted (pipe_sampler_view_reference): kept by cloning its handle): made by [create_sampler_view] given back by [sampler_view_destroy sampler_view_release] used by 3
+KIND StreamOutputTarget (a range of a buffer that streamed outputs are written to, counted (pipe_so_target_reference): kept by cloning its handle): made by [create_stream_output_target] given back by [stream_output_target_destroy] used by 2
+KIND Query (a query that is begun and ended (begin_query, end_query)): made by [create_query end_query] given back by [begin_query destroy_query] used by 2
+KIND ActiveQuery (a query between its begin and its end): made by [begin_query] given back by [destroy_query end_query] used by 0
+KIND EndOnlyQuery (a query only ended (PIPE_QUERY_TIMESTAMP, PIPE_QUERY_GPU_FINISHED: queryobj.c:269 to 277)): made by [create_query] given back by [destroy_query] used by 3
+KIND Mapping (a resource's bytes mapped for the CPU, between a map and its unmap): made by [buffer_map transfer_map] given back by [buffer_unmap transfer_unmap] used by 1
+GALLIUM PLAN: 100 pointers planned (95 of the 232 of pipe_screen and pipe_context, 5 of u_transfer_vtbl), 21 kinds
+  pipe_screen.context_create [Makes(["Context"])] called at mesa/state_tracker/st_manager.c:1023
+  pipe_screen.destroy [GivesBack(["Screen"])] called at gallium/frontends/dri/dri_screen.c:580
+  pipe_screen.fence_finish [Reads(["Fence"])] called at mesa/state_tracker/st_manager.c:819
+  pipe_screen.fence_reference [Counts("Fence")] called at mesa/state_tracker/st_interop.c:440
+  pipe_screen.flush_frontbuffer [Reads(["Resource"])] called at gallium/frontends/dri/drisw.c:173
+  pipe_screen.get_device_vendor [Reads([])] called at gallium/frontends/dri/dri_util.c:1140
+  pipe_screen.get_name [Reads([])] called at mesa/main/getstring.c:149
+  pipe_screen.get_vendor [Reads([])] called at mesa/main/getstring.c:143
+  pipe_screen.is_format_supported [Reads([])] called at mesa/state_tracker/st_cb_eglimage.c:48
+  pipe_screen.resource_create [Makes(["Resource"])] called at mesa/state_tracker/st_texture.c:106
+  pipe_screen.resource_destroy [Counts("Resource")] called at gallium/auxiliary/util/u_inlines.h:183
+  pipe_context.begin_query [TurnsOrGivesBack("Query", "ActiveQuery", "a failed begin leaves q->pq set and free_queries destroys it, never begun (mesa/main/queryobj.c:239 to 247)")] called at mesa/main/performance_monitor.c:198
+  pipe_context.bind_blend_state [Binds("Blend")] called at gallium/auxiliary/cso_cache/cso_context.c:449
+  pipe_context.bind_compute_state [Binds("ComputeShader")] called at gallium/auxiliary/cso_cache/cso_context.c:525
+  pipe_context.bind_depth_stencil_alpha_state [Binds("DepthStencilAlpha")] called at gallium/auxiliary/cso_cache/cso_context.c:510
+  pipe_context.bind_fs_state [Binds("FragmentShader")] called at gallium/auxiliary/cso_cache/cso_context.c:513
+  pipe_context.bind_gs_state [Binds("GeometryShader")] called at mesa/state_tracker/st_context.c:957
+  pipe_context.bind_rasterizer_state [Binds("Rasterizer")] called at gallium/auxiliary/cso_cache/cso_context.c:450
+  pipe_context.bind_sampler_states [Binds("Sampler")] called at gallium/auxiliary/cso_cache/cso_context.c:493
+  pipe_context.bind_tcs_state [Binds("TessControlShader")] called at gallium/auxiliary/cso_cache/cso_context.c:521
+  pipe_context.bind_tes_state [Binds("TessEvaluationShader")] called at gallium/auxiliary/cso_cache/cso_context.c:522
+  pipe_context.bind_vertex_elements_state [Binds("VertexElements")] called at gallium/auxiliary/cso_cache/cso_context.c:531
+  pipe_context.bind_vs_state [Binds("VertexShader")] called at gallium/auxiliary/cso_cache/cso_context.c:515
+  pipe_context.blit [Reads(["Resource"])] called at mesa/state_tracker/st_cb_readpixels.c:350
+  pipe_context.buffer_map [Makes(["Mapping"]), Reads(["Resource"])] called at gallium/auxiliary/util/u_inlines.h:530
+  pipe_context.buffer_subdata [Reads(["Resource"])] called at mesa/main/bufferobj.c:116
+  pipe_context.buffer_unmap [GivesBack(["Mapping"])] called at gallium/auxiliary/util/u_inlines.h:565
+  pipe_context.clear [Reads([])] called at mesa/state_tracker/st_cb_clear.c:521
+  pipe_context.clear_depth_stencil [Reads(["Resource"])] called at gallium/auxiliary/util/u_threaded_context.c:5469
+  pipe_context.clear_render_target [Reads(["Resource"])] called at gallium/auxiliary/util/u_threaded_context.c:5422
+  pipe_context.create_blend_state [Makes(["Blend"])] called at gallium/auxiliary/cso_cache/cso_context.c:649
+  pipe_context.create_compute_state [Makes(["ComputeShader"])] called at gallium/auxiliary/util/u_tests.c:844
+  pipe_context.create_depth_stencil_alpha_state [Makes(["DepthStencilAlpha"])] called at gallium/auxiliary/cso_cache/cso_context.c:709
+  pipe_context.create_fs_state [Makes(["FragmentShader"])] called at mesa/state_tracker/st_program.c:573
+  pipe_context.create_gs_state [Makes(["GeometryShader"])] called at mesa/state_tracker/st_program.c:570
+  pipe_context.create_query [Makes(["Query", "EndOnlyQuery"])] called at mesa/main/performance_monitor.c:125
+  pipe_context.create_rasterizer_state [Makes(["Rasterizer"])] called at gallium/auxiliary/cso_cache/cso_context.c:777
+  pipe_context.create_sampler_state [Makes(["Sampler"])] called at gallium/auxiliary/cso_cache/cso_context.c:1591
+  pipe_context.create_sampler_view [Makes(["SamplerView"]), Reads(["Resource"])] called at mesa/state_tracker/st_sampler_view.c:524
+  pipe_context.create_stream_output_target [Makes(["StreamOutputTarget"]), Reads(["Resource"])] called at mesa/main/transformfeedback.c:445
+  pipe_context.create_tcs_state [Makes(["TessControlShader"])] called at mesa/state_tracker/st_program.c:564
+  pipe_context.create_tes_state [Makes(["TessEvaluationShader"])] called at mesa/state_tracker/st_program.c:567
+  pipe_context.create_vertex_elements_state [Makes(["VertexElements"])] called at gallium/auxiliary/cso_cache/cso_context.c:1409
+  pipe_context.create_vs_state [Makes(["VertexShader"])] called at mesa/state_tracker/st_program.c:561
+  pipe_context.delete_blend_state [GivesBack(["Blend"])] called at gallium/auxiliary/cso_cache/cso_cache.c:46
+  pipe_context.delete_compute_state [GivesBack(["ComputeShader"])] called at mesa/state_tracker/st_context.c:312
+  pipe_context.delete_depth_stencil_alpha_state [GivesBack(["DepthStencilAlpha"])] called at gallium/auxiliary/cso_cache/cso_cache.c:52
+  pipe_context.delete_fs_state [GivesBack(["FragmentShader"])] called at mesa/state_tracker/st_context.c:296
+  pipe_context.delete_gs_state [GivesBack(["GeometryShader"])] called at mesa/state_tracker/st_context.c:300
+  pipe_context.delete_rasterizer_state [GivesBack(["Rasterizer"])] called at gallium/auxiliary/cso_cache/cso_cache.c:56
+  pipe_context.delete_sampler_state [GivesBack(["Sampler"])] called at gallium/auxiliary/cso_cache/cso_cache.c:49
+  pipe_context.delete_tcs_state [GivesBack(["TessControlShader"])] called at mesa/state_tracker/st_context.c:304
+  pipe_context.delete_tes_state [GivesBack(["TessEvaluationShader"])] called at mesa/state_tracker/st_context.c:308
+  pipe_context.delete_vertex_elements_state [GivesBack(["VertexElements"])] called at gallium/auxiliary/cso_cache/cso_cache.c:59
+  pipe_context.delete_vs_state [GivesBack(["VertexShader"])] called at mesa/state_tracker/st_context.c:292
+  pipe_context.destroy [GivesBack(["Context"])] called at mesa/state_tracker/st_context.c:370
+  pipe_context.destroy_query [GivesBack(["Query", "EndOnlyQuery", "ActiveQuery"])] called at mesa/main/performance_monitor.c:159
+  pipe_context.draw_vbo [Reads(["Resource"])] called at gallium/auxiliary/cso_cache/cso_context.h:314
+  pipe_context.end_query [TurnsOrGivesBack("ActiveQuery", "Query", "a failed end leaves q->pq set, and st/mesa ends, reads or destroys that same query later (mesa/main/queryobj.c:277 to 282)"), Reads(["EndOnlyQuery"])] called at mesa/main/performance_monitor.c:223
+  pipe_context.flush [Makes(["Fence"])] called at mesa/state_tracker/st_interop.c:438
+  pipe_context.flush_resource [Reads(["Resource"])] called at mesa/state_tracker/st_interop.c:373
+  pipe_context.generate_mipmap [Reads(["Resource"])] called at mesa/state_tracker/st_gen_mipmap.c:145
+  pipe_context.get_device_reset_status [Reads([])] called at mesa/state_tracker/st_cb_flush.c:162
+  pipe_context.get_query_result [Reads(["Query", "EndOnlyQuery"])] called at mesa/main/performance_monitor.c:259
+  pipe_context.get_sample_position [MesaFills("u_default_get_sample_position")] called at mesa/main/multisample.c:96
+  pipe_context.get_timestamp [Reads([])] called at mesa/main/queryobj.c:417
+  pipe_context.launch_grid [Reads(["Resource"])] called at mesa/state_tracker/st_pbo_compute.c:1170
+  pipe_context.memory_barrier [Reads([])] called at mesa/state_tracker/st_cb_readpixels.c:245
+  pipe_context.render_condition [Reads(["Query", "EndOnlyQuery"])] called at gallium/auxiliary/cso_cache/cso_context.c:1084
+  pipe_context.resource_copy_region [Reads(["Resource"])] called at mesa/state_tracker/st_texture.c:423
+  pipe_context.resource_release [Counts("Resource")] called at gallium/auxiliary/util/u_inlines.h:209
+  pipe_context.sampler_view_destroy [Counts("SamplerView")] called at gallium/auxiliary/util/u_inlines.h:248
+  pipe_context.sampler_view_release [Counts("SamplerView")] called at mesa/state_tracker/st_sampler_view.c:92
+  pipe_context.set_active_query_state [Reads([])] called at gallium/auxiliary/cso_cache/cso_context.c:1919
+  pipe_context.set_blend_color [Reads([])] called at mesa/state_tracker/st_atom_blend.c:367
+  pipe_context.set_clip_state [Reads([])] called at mesa/state_tracker/st_atom_clip.c:67
+  pipe_context.set_constant_buffer [Reads(["Resource"])] called at mesa/state_tracker/st_atom_constbuf.c:60
+  pipe_context.set_framebuffer_state [Reads(["Resource"])] called at gallium/auxiliary/cso_cache/cso_context.c:538
+  pipe_context.set_patch_vertices [Reads([])] called at mesa/state_tracker/st_atom_tess.c:53
+  pipe_context.set_polygon_stipple [Reads([])] called at mesa/state_tracker/st_atom_stipple.c:86
+  pipe_context.set_sample_mask [Reads([])] called at gallium/auxiliary/cso_cache/cso_context.c:573
+  pipe_context.set_sampler_views [Binds("SamplerView")] called at mesa/state_tracker/st_cb_readpixels.c:184
+  pipe_context.set_scissor_states [Reads([])] called at mesa/state_tracker/st_atom_scissor.c:106
+  pipe_context.set_shader_buffers [Reads(["Resource"])] called at mesa/state_tracker/st_draw_hw_select.c:703
+  pipe_context.set_shader_images [Reads(["Resource"])] called at mesa/state_tracker/st_atom_image.c:161
+  pipe_context.set_stencil_ref [Reads([])] called at gallium/auxiliary/cso_cache/cso_context.c:512
+  pipe_context.set_stream_output_targets [Binds("StreamOutputTarget")] called at gallium/auxiliary/cso_cache/cso_context.c:535
+  pipe_context.set_vertex_buffers [Reads(["Resource"])] called at gallium/auxiliary/cso_cache/cso_context.c:532
+  pipe_context.set_viewport_states [Reads([])] called at mesa/state_tracker/st_atom_viewport.c:81
+  pipe_context.stream_output_target_destroy [Counts("StreamOutputTarget")] called at gallium/auxiliary/util/u_inlines.h:293
+  pipe_context.texture_barrier [Reads([])] called at mesa/main/barrier.c:118
+  pipe_context.texture_map [MesaFills("u_transfer_helper_transfer_map")] called at mesa/state_tracker/st_texture.c:364
+  pipe_context.texture_subdata [Reads(["Resource"])] called at mesa/state_tracker/st_texcompress_compute.c:534
+  pipe_context.texture_unmap [MesaFills("u_transfer_helper_transfer_unmap")] called at mesa/state_tracker/st_texture.c:368
+  pipe_context.transfer_flush_region [MesaFills("u_transfer_helper_transfer_flush_region")] called at gallium/auxiliary/util/u_inlines.h:589
+  u_transfer_vtbl.resource_create [SameAs("pipe_screen.resource_create")] called at gallium/auxiliary/util/u_transfer_helper.c:217
+  u_transfer_vtbl.resource_destroy [SameAs("pipe_screen.resource_destroy")] called at gallium/auxiliary/util/u_transfer_helper.c:227
+  u_transfer_vtbl.transfer_map [Makes(["Mapping"]), Reads(["Resource"])] called at gallium/auxiliary/util/u_transfer_helper.c:376
+  u_transfer_vtbl.transfer_unmap [GivesBack(["Mapping"])] called at gallium/auxiliary/util/u_transfer_helper.c:519
+  u_transfer_vtbl.transfer_flush_region [Reads(["Mapping"])] called at gallium/auxiliary/util/u_inlines.h:589
+  FILLED BY THE DIRECT CRATE pipe_context.get_sample_position with Mesa's u_default_get_sample_position
+  FILLED BY THE DIRECT CRATE pipe_context.texture_map with Mesa's u_transfer_helper_transfer_map
+  FILLED BY THE DIRECT CRATE pipe_context.texture_unmap with Mesa's u_transfer_helper_transfer_unmap
+  FILLED BY THE DIRECT CRATE pipe_context.transfer_flush_region with Mesa's u_transfer_helper_transfer_flush_region
+GALLIUM PLAIN DATA: each structure a planned pointer reads, its fields as read, the objects it names
+  pipe_blend_color: 1 fields (0 bit-fields), names objects at []
+  pipe_blend_state: 12 fields (11 bit-fields), names objects at []
+  pipe_blit_info: 15 fields (0 bit-fields), names objects at [dst.resource:struct pipe_resource src.resource:struct pipe_resource]
+  pipe_box: 6 fields (0 bit-fields), names objects at []
+  pipe_clip_state: 1 fields (0 bit-fields), names objects at []
+  pipe_color_union (a union): 3 fields (0 bit-fields), names objects at []
+  pipe_compute_state: 3 fields (0 bit-fields), names objects at []
+  pipe_constant_buffer: 4 fields (0 bit-fields), names objects at [buffer:struct pipe_resource]
+  pipe_depth_stencil_alpha_state: 10 fields (6 bit-fields), names objects at []
+  pipe_draw_indirect_info: 7 fields (0 bit-fields), names objects at [buffer:struct pipe_resource indirect_draw_count:struct pipe_resource count_from_stream_output:struct pipe_stream_output_target]
+  pipe_draw_info: 15 fields (7 bit-fields), names objects at [index.resource:struct pipe_resource]
+  pipe_draw_start_count_bias: 3 fields (0 bit-fields), names objects at []
+  pipe_framebuffer_state: 12 fields (3 bit-fields), names objects at [cbufs.texture:struct pipe_resource zsbuf.texture:struct pipe_resource resolve:struct pipe_resource]
+  pipe_grid_info: 14 fields (0 bit-fields), names objects at [indirect:struct pipe_resource indirect_draw_count:struct pipe_resource globals:struct pipe_resource]
+  pipe_image_view: 5 fields (0 bit-fields), names objects at [resource:struct pipe_resource]
+  pipe_poly_stipple: 1 fields (0 bit-fields), names objects at []
+  pipe_query_result (a union): 8 fields (0 bit-fields), names objects at []
+  pipe_rasterizer_state: 54 fields (47 bit-fields), names objects at []
+  pipe_resource: 19 fields (4 bit-fields), names objects at [next:struct pipe_resource]
+  pipe_sampler_state: 19 fields (14 bit-fields), names objects at []
+  pipe_sampler_view: 12 fields (8 bit-fields), names objects at [texture:struct pipe_resource context:struct pipe_context]
+  pipe_scissor_state: 4 fields (0 bit-fields), names objects at []
+  pipe_shader_buffer: 3 fields (0 bit-fields), names objects at [buffer:struct pipe_resource]
+  pipe_shader_state: 6 fields (0 bit-fields), names objects at []
+  pipe_stencil_ref: 1 fields (0 bit-fields), names objects at []
+  pipe_surface: 7 fields (4 bit-fields), names objects at [texture:struct pipe_resource]
+  pipe_vertex_buffer: 3 fields (0 bit-fields), names objects at [buffer.resource:struct pipe_resource]
+  pipe_vertex_element: 6 fields (2 bit-fields), names objects at []
+  pipe_viewport_state: 6 fields (4 bit-fields), names objects at []
+GALLIUM MAPPING: parameters and returns by row
+  11 a declared value, checked
+  2 a fence's place: the fence made by a flush, or the count's old and new fence
+  3 a mapping out: returned with the mapped bytes
+  6 a program: mesa-compiler's Received taken from it, the rest plain data
+  1 a surface: plain data naming a resource, read during the call (u_threaded_context.c:5422)
+  1 a surface: plain data naming a resource, read during the call (u_threaded_context.c:5469)
+  3 a template naming objects, read during the call: each handle a reference of its kind, or none
+  17 an object made: returned by value, None where refused
+  21 an object of the pointer's kind: by value where it gives it back, Option<&> where it binds
+  32 an object of the pointer's kinds: by reference, or by value where it gives it back
+  2 bytes read during the call, the count beside them
+  69 nothing
+  90 number by value
+  1 numbers read during the call, the count beside them
+  3 objects of a kind at slots, with their count
+  1 plain data by value
+  9 plain data naming objects, read during the call: each handle a reference of its kind, refused when it is none
+  2 plain data out: written from the owned value returned
+  21 plain data read during the call, copied into owned values
+  1 plain data read during the call, copied into owned values (not const in C; drisw.c:173 passes a box it does not read back)
+  3 text out: the driver's own text, copied
+  87 the context: &self
+  1 the frontend's own value, carried as a number: the DRI frontend passes its drawable (drisw.c:173); our WGL target reads it as the device context it finds the window by (crates/opengl present.rs:272, 286)
+  1 the frontend's own value: carried as a number, never read (st_manager.c:1023 passes its own pointer)
+  13 the library: &self
+  3 the mapped bytes: a shadow the glue owns, lent to Mesa until the unmap
+UNMAPPED 0

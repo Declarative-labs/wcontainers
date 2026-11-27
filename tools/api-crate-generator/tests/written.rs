@@ -2,7 +2,9 @@
 //! headers and Khronos's registries: crates/gallium (Mesa 26.3.1's Gallium headers), crates/mesa-compiler (the bridge's
 //! headers), crates/egl and crates/opengl-es (gl.xml, egl.xml, ANGLE's gl_angle_ext.xml). Those files are reviewed and
 //! tested in the repository (their crates' suites state the right values), so a change of the generator that changes
-//! what it writes fails here. The inputs come from the environment, and the test fails without them:
+//! what it writes fails here. What it prints (its reports: the counts, every parameter's mapping row, the census of the
+//! headers, what is left out and why) is compared with reports/, as reviewed. The inputs come from the environment,
+//! and the test fails without them:
 //!   WCONTAINERS_GENERATOR_REPOSITORY  the repository's root (the files compared with, and the bridge's headers)
 //!   WCONTAINERS_MESA                  Mesa's Meson build folder (crates/nir/mesa/build): its source folder beside it
 //!   WCONTAINERS_GENERATOR_REGISTRIES  the folder fetch-registries.sh fetched gl.xml, egl.xml and gl_angle_ext.xml into
@@ -32,12 +34,23 @@ fn files(folder: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Runs the generator with `arguments` writing into `out`, and compares every file it wrote under out/crates with the
-/// repository's.
+/// Runs the generator with `arguments`; its report (what it prints) must be reports/<report>.txt.
+fn reported(report: &str, arguments: &[PathBuf]) -> std::process::Output {
+    let run = Command::new(env!("CARGO_BIN_EXE_api-crate-generator")).args(arguments).output().expect("the generator runs");
+    assert!(run.status.success(), "{report}: the generator failed: {}", String::from_utf8_lossy(&run.stderr));
+    let expected = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("reports").join(format!("{report}.txt"))).unwrap_or_default();
+    let printed = String::from_utf8_lossy(&run.stdout);
+    assert!(printed == expected, "{report}: the report differs from reports/{report}.txt; it printed:\n{printed}");
+    run
+}
+
+/// Runs the generator with `arguments` writing into `out` (its report compared as `reported` does), and compares every
+/// file it wrote under out/crates with the repository's.
 fn written_equal(what: &str, arguments: &[PathBuf], out: &Path) {
     let _ = std::fs::remove_dir_all(out);
-    let run = Command::new(env!("CARGO_BIN_EXE_api-crate-generator")).args(arguments).arg(out).output().expect("the generator runs");
-    assert!(run.status.success(), "{what}: the generator failed: {}", String::from_utf8_lossy(&run.stderr));
+    let mut with_out = arguments.to_vec();
+    with_out.push(out.to_path_buf());
+    reported(what, &with_out);
     let repository = input("WCONTAINERS_GENERATOR_REPOSITORY");
     let crates = out.join("crates");
     let written = files(&crates);
@@ -77,12 +90,19 @@ fn gallium_written_as_held() {
         gallium.join("auxiliary/util/u_transfer_helper.h"),
     ]);
     written_equal("gallium", &arguments, &work("written-gallium"));
+    let mut plan = arguments.clone();
+    plan[0] = PathBuf::from("gallium-plan");
+    reported("gallium-plan", &plan);
+    let mut census = vec![PathBuf::from("gallium-census")];
+    census.extend(arguments[2..].iter().cloned());
+    reported("gallium-census", &census);
 }
 
 #[test]
 fn mesa_compiler_written_as_held() {
     let bridge = input("WCONTAINERS_GENERATOR_REPOSITORY").join("crates/mesa-compiler/implementation/direct/bridge");
     written_equal("mesa-compiler", &[PathBuf::from("mesa-compiler"), bridge.join("flat.h"), bridge.join("bridge.h")], &work("written-mesa-compiler"));
+    reported("c-header", &[PathBuf::from("c-header"), bridge.join("flat.h"), bridge.join("bridge.h")]);
 }
 
 #[test]
