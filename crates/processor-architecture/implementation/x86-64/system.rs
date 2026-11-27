@@ -42,6 +42,11 @@ pub struct SystemForm {
 /// What ENTER checks of the stack below its frame, which the manual describes as a page fault "if a write using the
 /// final value of the stack pointer (within the current stack segment) would cause a page fault".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::system)
+)]
 pub enum FrameProbe {
     /// Nothing below the frame pointer's push.
     Unchecked,
@@ -51,6 +56,11 @@ pub enum FrameProbe {
 
 /// A form's behavior: what a store that faults part-way writes, and for ENTER what it checks below the frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::system)
+)]
 pub struct SystemBehavior {
     pub across_fault: StoreAcrossFault,
     pub probe: FrameProbe,

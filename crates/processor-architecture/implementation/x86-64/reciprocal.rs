@@ -29,6 +29,23 @@ impl core::fmt::Debug for ReciprocalTable {
     }
 }
 
+/// Bakes as the path of the static that holds the tables, which every table is, rather than its 4,096 entries.
+#[cfg(feature = "bake")]
+impl databake::Bake for ReciprocalTable {
+    fn bake(&self, env: &databake::CrateEnv) -> databake::TokenStream {
+        env.insert(env!("CARGO_CRATE_NAME"));
+        let name: databake::TokenStream = self.name.parse().expect("a static's name is a path");
+        databake::quote!(wcontainers_processor_architecture_x86_64::reciprocal::#name)
+    }
+}
+
+#[cfg(feature = "bake")]
+impl databake::BakeSize for ReciprocalTable {
+    fn borrows_size(&self) -> usize {
+        0
+    }
+}
+
 /// The tables of an Intel Xeon Platinum 8488C, which an Intel Core i7-8750H shares on every input (an earlier probe).
 pub static XEON_PLATINUM_8488C_RECIPROCALS: ReciprocalTable = ReciprocalTable {
     name: "XEON_PLATINUM_8488C_RECIPROCALS",

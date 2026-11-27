@@ -72,6 +72,11 @@ pub struct ExtensionForm {
 
 /// The flags an extension form leaves undefined, each by its rule; a flag the form defines is never read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::extension)
+)]
 pub struct ExtensionFlags {
     pub overflow: FlagRule,
     pub sign: FlagRule,
@@ -81,6 +86,11 @@ pub struct ExtensionFlags {
 
 /// An extension form's behavior: its undefined flags, and what a store that faults part-way writes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::extension)
+)]
 pub struct ExtensionBehavior {
     pub undefined: ExtensionFlags,
     pub across_fault: StoreAcrossFault,

@@ -47,6 +47,11 @@ pub struct StackForm {
 
 /// What PUSH of a segment register writes with a 64-bit operand size, which the manual leaves to the chip.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::stack)
+)]
 pub enum SegmentPush {
     /// The selector zero-extended to eight bytes.
     ZeroExtended,
@@ -56,6 +61,11 @@ pub enum SegmentPush {
 
 /// A stack form's behavior: what a store that faults part-way writes, and what PUSH of a segment register stores.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::stack)
+)]
 pub struct StackBehavior {
     pub across_fault: StoreAcrossFault,
     pub segment_push: SegmentPush,

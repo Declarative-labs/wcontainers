@@ -54,6 +54,11 @@ impl MmxConvertForm {
 
 /// A form's behavior: what MASKMOVQ writes below a fault and which of its bytes its checks reach.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::mmx_convert)
+)]
 pub struct MmxConvertBehavior {
     pub across_fault: StoreAcrossFault,
     pub masked_faults: MaskedStoreFaults,

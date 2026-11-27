@@ -92,6 +92,11 @@ impl StringForm {
 
 /// A string form's behavior: what a store that faults part-way writes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::string)
+)]
 pub struct StringBehavior {
     pub across_fault: StoreAcrossFault,
 }

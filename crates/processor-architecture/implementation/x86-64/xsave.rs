@@ -240,6 +240,11 @@ pub fn to_tracking(area: u64, unmodified: u64, xinuse: u64) -> Option<XsaveTrack
 /// What XINUSE says of the components VZEROUPPER and VZEROALL put in their initial configuration, which the manual
 /// leaves to the chip: tracked as initial, or still in use.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::xsave)
+)]
 pub enum ZeroedTracking {
     TrackedInitial,
     TrackedInUse,
@@ -328,6 +333,11 @@ pub static STATE_FORMS: &[StateForm] = &[
 /// What the manual leaves to the chip for an area not aligned to 64 while AC is set (CR0.AM is at ring 3): #GP, or
 /// #AC for an address not aligned to the width the chip checks and #GP for one that is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::xsave)
+)]
 pub enum MisalignedArea {
     GeneralProtection,
     AlignmentCheckBelow { width: u64 },
@@ -336,6 +346,11 @@ pub enum MisalignedArea {
 /// What XRSTOR leaves in XINUSE for a requested component it puts in its initial configuration: tracked as initial,
 /// in use, or as initial but PKRU, which a chip may not track; PKRU left in use so is written, and so modified.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::xsave)
+)]
 pub enum RestoredInitial {
     TrackedInitial,
     TrackedInUse,
@@ -344,6 +359,11 @@ pub enum RestoredInitial {
 
 /// What UMWAIT and TPAUSE do at ring 3: wait, or raise #GP(0) because CR4.TSD refuses the time-stamp counter to it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::xsave)
+)]
 pub enum WaitControl {
     Waits,
     FaultsUnderTimeStampDisable,
@@ -351,6 +371,11 @@ pub enum WaitControl {
 
 /// A form's behavior where the manuals leave a choice.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::xsave)
+)]
 pub enum StateBehavior {
     /// XGETBV, which leaves no choice.
     ReadControl,

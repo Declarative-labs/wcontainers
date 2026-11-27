@@ -138,6 +138,11 @@ pub struct X87Form {
 
 /// What a condition code the manual leaves undefined holds after the form.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::x87)
+)]
 pub enum CodeRule {
     Unchanged,
     Cleared,
@@ -145,6 +150,11 @@ pub enum CodeRule {
 
 /// The rules of the undefined condition codes: C1's, and C0's, C2's and C3's together.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::x87)
+)]
 pub struct UndefinedCodes {
     pub c1: CodeRule,
     pub others: CodeRule,
@@ -152,6 +162,11 @@ pub struct UndefinedCodes {
 
 /// When FOP and FDP take the form's opcode and memory operand's address.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::x87)
+)]
 pub enum PointerUpdate {
     /// After every form but the control forms.
     Always,
@@ -163,6 +178,11 @@ pub enum PointerUpdate {
 /// What FXSAVE and FXRSTOR raise for an area not aligned to 16 while AC is set, which the manual leaves to the chip:
 /// #GP(0) always, or #AC.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::x87)
+)]
 pub enum MisalignedArea {
     GeneralProtection,
     AlignmentCheck,
@@ -171,6 +191,11 @@ pub enum MisalignedArea {
 /// An x87 form's behavior: its undefined condition codes, when it records its opcode and data address, what a
 /// store that faults part-way writes, and for FXSAVE and FXRSTOR what a misaligned area raises under AC.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::x87)
+)]
 pub struct X87Behavior {
     pub codes: UndefinedCodes,
     pub opcode: PointerUpdate,

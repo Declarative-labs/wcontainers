@@ -566,6 +566,11 @@ fn compute_aes(step: AesStep, state: u128, key: u128, immediate: u8) -> u128 {
 /// The choices an AVX form leaves open: what a store that faults part-way writes, and how a fused multiply-add
 /// treats NaNs; `zeroed` is read by VZEROUPPER and VZEROALL alone.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::avx)
+)]
 pub struct AvxBehavior {
     pub across_fault: StoreAcrossFault,
     pub fused: FusedChoices,

@@ -20,6 +20,11 @@ const AFTER: u32 = OVERFLOW | UNDERFLOW | INEXACT;
 
 /// The rule that picks the NaN a fused multiply-add returns when more than one operand is a NaN.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::float)
+)]
 pub enum FusedNanOrder {
     /// The first NaN in Intel's operand order: the first operand, the second, the third.
     OperandOrder,
@@ -29,6 +34,11 @@ pub enum FusedNanOrder {
 
 /// Whether a product of zero and infinity added to a quiet NaN signals invalid.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::float)
+)]
 pub enum InfiniteProductOfZero {
     Signals,
     Quiet,
@@ -36,6 +46,11 @@ pub enum InfiniteProductOfZero {
 
 /// The choices a fused multiply-add's lanes leave open.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::float)
+)]
 pub struct FusedChoices {
     pub nan_order: FusedNanOrder,
     pub product_of_zero: InfiniteProductOfZero,

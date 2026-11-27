@@ -49,6 +49,11 @@ pub struct SegmentForm {
 
 /// A form's behavior: what a push that faults part-way writes, and what the far CALL writes of CS's slot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::segment)
+)]
 pub struct SegmentBehavior {
     pub across_fault: StoreAcrossFault,
     pub segment_push: SegmentPush,

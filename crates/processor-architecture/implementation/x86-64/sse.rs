@@ -103,6 +103,11 @@ pub enum Combination {
 /// Which of MASKMOVDQU's 16 bytes its canonical and page checks reach: the SDM leaves it to the chip whether a byte
 /// the mask leaves out can fault, and so whether a mask of zeros can.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64::sse)
+)]
 pub enum MaskedStoreFaults {
     EveryByte,
     SelectedBytes,
