@@ -21,48 +21,48 @@ pub trait Egl: Sized {
     /// Loads the EGL library named libEGL in the folder, or the system's when none is named; None when it cannot be loaded or cannot give every client API's entry point by name.
     fn load(folder: Option<&std::path::Path>) -> Option<Self>;
 
-    /// [`eglBindAPI`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglBindAPI`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn bind_api(&self, api: u32) -> bool;
 
-    /// [`eglChooseConfig`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglChooseConfig`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn choose_config(&self, dpy: &Self::Display, attrib_list: &[i32], configs: &mut [Option<Self::Config>]) -> Option<i32>;
 
-    /// [`eglCreateContext`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglCreateContext`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn create_context(&self, dpy: &Self::Display, config: &Self::Config, share_context: Option<&Self::Context>, attrib_list: &[i32]) -> Option<Self::Context>;
 
-    /// [`eglCreatePbufferSurface`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglCreatePbufferSurface`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn create_pbuffer_surface(&self, dpy: &Self::Display, config: &Self::Config, attrib_list: &[i32]) -> Option<Self::Surface>;
 
-    /// [`eglDestroyContext`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglDestroyContext`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn destroy_context(&self, dpy: &Self::Display, ctx: &Self::Context) -> bool;
 
-    /// [`eglDestroySurface`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglDestroySurface`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn destroy_surface(&self, dpy: &Self::Display, surface: &Self::Surface) -> bool;
 
-    /// [`eglGetConfigAttrib`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglGetConfigAttrib`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn get_config_attrib(&self, dpy: &Self::Display, config: &Self::Config, attribute: i32) -> Option<i32>;
 
-    /// [`eglGetDisplay`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglGetDisplay`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn get_display(&self) -> Option<Self::Display>;
 
-    /// [`eglGetError`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglGetError`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn get_error(&self) -> i32;
 
-    /// [`eglInitialize`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglInitialize`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn initialize(&self, dpy: &Self::Display) -> Option<(i32, i32)>;
 
-    /// [`eglMakeCurrent`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglMakeCurrent`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn make_current(&self, dpy: &Self::Display, draw: Option<&Self::Surface>, read: Option<&Self::Surface>, ctx: Option<&Self::Context>) -> bool;
 
-    /// [`eglQueryString`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglQueryString`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn query_string(&self, dpy: Option<&Self::Display>, name: i32) -> Option<Vec<u8>>;
 
-    /// [`eglQuerySurface`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglQuerySurface`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn query_surface(&self, dpy: &Self::Display, surface: &Self::Surface, attribute: i32) -> Option<i32>;
 
-    /// [`eglSwapBuffers`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglSwapBuffers`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn swap_buffers(&self, dpy: &Self::Display, surface: &Self::Surface) -> bool;
 
-    /// [`eglSwapInterval`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
+    /// Calls [`eglSwapInterval`](https://github.com/KhronosGroup/EGL-Registry/blob/8e56e86e65687697ef54114cdb1afabdfac756bf/api/egl.xml).
     fn swap_interval(&self, dpy: &Self::Display, interval: i32) -> bool;
 }

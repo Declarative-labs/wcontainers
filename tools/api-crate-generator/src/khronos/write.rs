@@ -120,7 +120,7 @@ fn write_constants(registry: &Registry, set: &Set, report: &mut String) -> Strin
             continue;
         }
         let link = if registry.commands.keys().any(|c| c.ends_with("ANGLE")) && name.ends_with("_ANGLE") { SOURCES.angle } else { source_of(set) };
-        let _ = writeln!(text, "/// [`{name}`]({link})\npub const {rust}: {ty} = {number};");
+        let _ = writeln!(text, "/// Declared as [`{name}`]({link}).\npub const {rust}: {ty} = {number};");
         written += 1;
     }
     let _ = writeln!(report, "VALUES {}: {written}", set.folder);
@@ -220,7 +220,7 @@ fn doc(set: &Set, method: &Method) -> String {
         notes.push("refused while an enabled vertex attribute has no buffer".to_string());
     }
     let notes = if notes.is_empty() { String::new() } else { format!("; {}", notes.join("; ")) };
-    format!("    /// [`{}`]({}){notes}.\n", method.command.name, source_of(set))
+    format!("    /// Calls [`{}`]({}){notes}.\n", method.command.name, source_of(set))
 }
 
 const PIXEL_TYPES: &str = "/// Pixels a call reads: the caller's bytes, or an offset into the pixel unpack buffer bound.
