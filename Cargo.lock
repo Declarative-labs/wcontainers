@@ -5097,14 +5097,20 @@ dependencies = [
  "prettyplease",
  "syn 2.0.119",
  "wcontainers-behavior-source",
+ "wcontainers-behavior-source-kvm-single-step-x86-64",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-distinguishing-state-generator-x86-64",
  "wcontainers-instruction-input-domain-accumulator-machine",
+ "wcontainers-instruction-input-domain-x86-64",
  "wcontainers-observation-collector",
  "wcontainers-precise-instruction-set",
  "wcontainers-precise-instruction-set-conformance",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-accumulator-machine",
+ "wcontainers-processor-architecture-x86-64",
+ "wcontainers-processor-cores",
+ "wcontainers-processor-cores-linux",
 ]
 
 [[package]]
