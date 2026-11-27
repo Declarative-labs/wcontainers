@@ -145,7 +145,7 @@ const FLOATING_POINT: &str = "MEASURED 2026-11-26 on a Neoverse V2 (AWS Graviton
 const ABSENT_FEATURES: &str = "MEASURED 2026-11-26 on a Neoverse V2 (AWS Graviton4, KVM) by the measured set's default_behaviors, the model agreeing on every generated state: QEMU runs the SM3 and SM4 instructions, which the chip lacks: it raises an undefined instruction";
 
 /// How many instructions are set aside: one more is a change of this count, never a silent one.
-const SET_ASIDE_COUNT: usize = 353;
+const SET_ASIDE_COUNT: usize = 352;
 
 /// The instructions where QEMU's `max` model differs from the chip, each with the measurement that shows it, set aside
 /// from the agreement test; the list of known behaviors holds real chips' behaviors only.
@@ -464,7 +464,6 @@ const SET_ASIDE: [(Instruction<Infallible>, &str); SET_ASIDE_COUNT] = [
     (Instruction::St2dImmediate, SVE_STORES_ACROSS_FAULT),
     (Instruction::St3dImmediate, SVE_STORES_ACROSS_FAULT),
     (Instruction::St4dImmediate, SVE_STORES_ACROSS_FAULT),
-    (Instruction::Hint, POINTER_STRIP),
     (Instruction::Xpaci, POINTER_STRIP),
     (Instruction::Xpacd, POINTER_STRIP),
     (Instruction::Sys, SYSTEM_INSTRUCTION),
