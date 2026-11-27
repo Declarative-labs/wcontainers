@@ -4761,6 +4761,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-mesa-compiler"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-mesa-compiler-direct"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-mesa-compiler",
+]
+
+[[package]]
 name = "wcontainers-negative-route-advisable"
 version = "0.1.0"
 dependencies = [
@@ -4852,6 +4863,16 @@ dependencies = [
  "wcontainers-egl-direct",
  "wcontainers-opengl-es",
  "wcontainers-opengl-es-conformance",
+]
+
+[[package]]
+name = "wcontainers-opengl-es-webgl"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "wcontainers-opengl-es",
+ "web-sys",
 ]
 
 [[package]]

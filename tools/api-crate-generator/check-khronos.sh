@@ -11,7 +11,7 @@ generator=$repository/tools/api-crate-generator
 has() { case " $steps " in *" $1 "*) return 0 ;; esac; return 1; }
 step() { echo; echo "=== $*"; }
 jobs=${ARM_JOBS:-12}
-crates=(-p wcontainers-egl -p wcontainers-egl-direct -p wcontainers-opengl-es -p wcontainers-opengl-es-direct -p wcontainers-opengl-es-conformance)
+crates=(-p wcontainers-egl -p wcontainers-egl-direct -p wcontainers-opengl-es -p wcontainers-opengl-es-direct -p wcontainers-opengl-es-conformance -p wcontainers-opengl-es-webgl)
 
 step "versions and load"
 rustc --version; cut -d" " -f1-3 /proc/loadavg
@@ -30,17 +30,19 @@ if has generate; then
     "$binary" khronos "${inputs[@]}" "$work/second" > /dev/null; echo "second status $?"
     diff -r "$work/first" "$work/second" > /dev/null && echo "IDENTICAL: the two runs wrote the same files" || echo "DIFFERENT: the two runs differ"
     cat "$work/report.txt"
-    for crate in egl opengl-es; do rm -rf "crates/$crate"; cp -r "$work/first/crates/$crate" crates/; done
+    # The browser implementation (crates/opengl-es/implementation/webgl) is written by hand: kept as it is.
+    for crate in egl opengl-es; do mkdir -p "crates/$crate"; rsync -a --delete --exclude /implementation/webgl "$work/first/crates/$crate/" "crates/$crate/"; done
     find crates/egl crates/opengl-es -name '*.rs' | sort | xargs wc -l | tail -1
 fi
 if has check; then
     step "check, Linux and wasm32"
     cargo check -j "$jobs" "${crates[@]}" --all-targets --message-format short 2>&1 | grep -E ': (warning|error)|^error' | sort | uniq | sort -t: -k4 | head -120; echo "check status ${PIPESTATUS[0]}"
-    cargo check -j "$jobs" -p wcontainers-egl -p wcontainers-opengl-es -p wcontainers-egl-direct -p wcontainers-opengl-es-direct --target wasm32-unknown-unknown 2>&1 | grep -E '^(warning|error)|-->' | head -20; echo "wasm32 check status ${PIPESTATUS[0]}"
+    cargo check -j "$jobs" -p wcontainers-egl -p wcontainers-opengl-es -p wcontainers-egl-direct -p wcontainers-opengl-es-direct -p wcontainers-opengl-es-webgl --target wasm32-unknown-unknown 2>&1 | grep -E '^(warning|error)|-->' | head -20; echo "wasm32 check status ${PIPESTATUS[0]}"
 fi
 if has clippy; then
     step "clippy -D warnings, all targets"
     cargo clippy -j "$jobs" "${crates[@]}" --all-targets --message-format short -- -D warnings 2>&1 | grep -E ': (warning|error)|^error' | sort | uniq | head -120; echo "clippy status ${PIPESTATUS[0]}"
+    cargo clippy -j "$jobs" -p wcontainers-opengl-es-webgl --target wasm32-unknown-unknown --message-format short -- -D warnings 2>&1 | grep -E ': (warning|error)|^error' | sort | uniq | head -60; echo "wasm32 clippy status ${PIPESTATUS[0]}"
 fi
 # Mesa's EGL from the repository's own nixpkgs (libglvnd's libEGL with Mesa's vendor library, llvmpipe), with no
 # window system.
@@ -61,7 +63,7 @@ if has asan; then
 fi
 if has unsafe; then
     step "lines naming unsafe per crate (the root manifest's way: comments included)"
-    for crate in crates/egl crates/egl/implementation/direct crates/opengl-es crates/opengl-es/implementation/direct crates/opengl-es/conformance crates/gpu-webgl crates/nir; do
+    for crate in crates/egl crates/egl/implementation/direct crates/opengl-es crates/opengl-es/implementation/direct crates/opengl-es/implementation/webgl crates/opengl-es/conformance crates/gpu-webgl crates/nir; do
         [ -d "$crate" ] || continue
         echo "$(find "$crate" -name '*.rs' -not -path "$crate/implementation/*" -exec grep -c unsafe /dev/null {} + 2>/dev/null | awk -F: '{s+=$NF} END {print s+0}') $crate"
     done
