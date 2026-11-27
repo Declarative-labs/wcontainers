@@ -5,9 +5,9 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use wcontainers_direct3d_11::desc::*;
-use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{Device, cache};
+use wcontainers_direct3d_11_translated::desc::*;
+use wcontainers_direct3d_11_translated::record::Recorder;
+use wcontainers_direct3d_11_translated::{Device, cache};
 use wcontainers_gpu::SourceStage;
 use wcontainers_shaders::cache::Cache;
 
@@ -30,7 +30,7 @@ impl Write for File {
 
 fn corpus(name: &str) -> Vec<u8> {
     let path = format!(
-        "{}/../graphics-test/shaders/dxbc/{name}.dxbc",
+        "{}/../../../graphics-test/shaders/dxbc/{name}.dxbc",
         env!("CARGO_MANIFEST_DIR")
     );
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))

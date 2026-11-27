@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-gpu = { path = "../gpu" }
-wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure" }
+wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure/implementation/translated", package = "wcontainers-directx-graphics-infrastructure-translated" }
 wcontainers-shaders = { path = "../shaders" }
 slab = "0.4"
 half = { version = "2.7.1", default-features = false }

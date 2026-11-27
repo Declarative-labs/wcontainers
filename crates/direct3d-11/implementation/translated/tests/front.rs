@@ -4,10 +4,10 @@
 
 use std::rc::Rc;
 
-use wcontainers_direct3d_11::desc::*;
-use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
-use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{
+use wcontainers_direct3d_11_translated::desc::*;
+use wcontainers_direct3d_11_translated::object::{Buffer, Resource, ShaderView, Texture, View};
+use wcontainers_direct3d_11_translated::record::Recorder;
+use wcontainers_direct3d_11_translated::{
     DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, level_texture_limits, shader,
 };
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
@@ -16,7 +16,7 @@ type Dev = Device<Recorder>;
 
 fn corpus(name: &str) -> Vec<u8> {
     let path = format!(
-        "{}/../graphics-test/shaders/dxbc/{name}.dxbc",
+        "{}/../../../graphics-test/shaders/dxbc/{name}.dxbc",
         env!("CARGO_MANIFEST_DIR")
     );
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
@@ -143,7 +143,7 @@ fn solid(dev: &mut Dev) {
 #[test]
 fn shader_stages_are_read_from_the_container() {
     let dir = format!(
-        "{}/../graphics-test/shaders/dxbc",
+        "{}/../../../graphics-test/shaders/dxbc",
         env!("CARGO_MANIFEST_DIR")
     );
     let mut count = 0;
@@ -1749,7 +1749,7 @@ fn a_counted_occlusion_query_answers_once_the_gpu_has_its_count_and_a_flushing_p
         28,
     );
     let q = dev
-        .create_query(wcontainers_direct3d_11::query::kind::OCCLUSION, 0)
+        .create_query(wcontainers_direct3d_11_translated::query::kind::OCCLUSION, 0)
         .unwrap();
     dev.begin_query(&q);
     dev.draw(3, 0);
@@ -3002,7 +3002,7 @@ fn a_sample_mask_draws_through_a_raster_block_made_with_it_once() {
 /// One of the shaders crate's own compiled test shaders.
 fn own(name: &str) -> Vec<u8> {
     let path = format!(
-        "{}/../shaders/tests/own/{name}.dxbc",
+        "{}/../../../shaders/tests/own/{name}.dxbc",
         env!("CARGO_MANIFEST_DIR")
     );
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
@@ -3151,7 +3151,7 @@ fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
     // domain stage runs as compute too, its output is streamed, and the tessellated points are
     // still drawn.
     let dsb = corpus("tessellation.ds_tri");
-    let entry = wcontainers_direct3d_11::stream::DeclEntry {
+    let entry = wcontainers_direct3d_11_translated::stream::DeclEntry {
         stream: 0,
         semantic: Some("SV_Position".into()),
         semantic_index: 0,
@@ -3205,7 +3205,7 @@ fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
 
 #[test]
 fn stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold() {
-    use wcontainers_direct3d_11::stream::DeclEntry;
+    use wcontainers_direct3d_11_translated::stream::DeclEntry;
     let mut dev = device();
     let vsb = own("vs_geometry");
     let vs = dev.create_shader(&vsb, SourceStage::Vertex).unwrap();
@@ -3553,7 +3553,7 @@ fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
 /// halves toward zero, as the RTX 3080 clears (the halves measured there).
 #[test]
 fn clear_values_of_integer_twins_are_encoded_as_direct3d_converts_them() {
-    use wcontainers_direct3d_11::format::encode_norm;
+    use wcontainers_direct3d_11_translated::format::encode_norm;
     use wcontainers_gpu::Format;
     let half = 0.5;
     assert_eq!(encode_norm(Format::R16Unorm, half), u32::from(u16::MAX / 2));
@@ -3601,7 +3601,7 @@ fn creation_refuses_what_direct3d_refuses() {
     line.format = dxgi::R8G8B8A8_UNORM;
     assert!(dev.check_texture(&line, false).is_ok());
     let mut faces = tex2d(side, side, dxgi::R10G10B10_XR_BIAS_A2_UNORM, 0);
-    faces.array_size = wcontainers_direct3d_11::CUBE_FACES;
+    faces.array_size = wcontainers_direct3d_11_translated::CUBE_FACES;
     faces.misc_flags = MISC_TEXTURECUBE;
     assert!(invalid(dev.check_texture(&faces, false)));
     let stored = tex2d(side, side, dxgi::B5G6R5_UNORM, bind::UNORDERED_ACCESS);

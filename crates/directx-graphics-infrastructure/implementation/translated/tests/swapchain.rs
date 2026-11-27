@@ -6,7 +6,7 @@ mod support {
 }
 
 use support::record::Recorder;
-use wcontainers_directx_graphics_infrastructure::*;
+use wcontainers_directx_graphics_infrastructure_translated::*;
 use wcontainers_gpu::{Backend, Format, TextureUsage};
 
 fn desc(format: u32, buffers: u32, model: Model) -> SwapChainDesc {
@@ -241,7 +241,7 @@ fn outputs_offer_their_current_mode() {
 #[test]
 fn format_support_follows_the_back_ends_format_uses() {
     use support1::*;
-    use wcontainers_directx_graphics_infrastructure::dxgi;
+    use wcontainers_directx_graphics_infrastructure_translated::dxgi;
     let caps = Recorder::new().caps().clone();
     // R8G8B8A8_UNORM: a vertex format; sampled, rendered, blended, multisampled, resolved and
     // shown; no storage.

@@ -1,5 +1,5 @@
 [package]
-name = "wcontainers-direct3d-11"
+name = "wcontainers-direct3d-11-translated"
 description = "Our Direct3D 11 front (also serving Direct3D 10), drawing through the wcontainers-gpu interface."
 version.workspace = true
 edition.workspace = true
@@ -11,9 +11,9 @@ publish = false
 [dependencies]
 # The host's clock unit, which timestamps count in.
 wcontainers-abi.workspace = true
-wcontainers-gpu = { path = "../gpu" }
-wcontainers-shaders = { path = "../shaders" }
-wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure" }
+wcontainers-gpu = { path = "../../../gpu" }
+wcontainers-shaders = { path = "../../../shaders" }
+wcontainers-directx-graphics-infrastructure = { path = "../../../directx-graphics-infrastructure/implementation/translated", package = "wcontainers-directx-graphics-infrastructure-translated" }
 blake3 = { version = "1", default-features = false }
 naga = { workspace = true }
 serde = { version = "1", features = ["derive"] }

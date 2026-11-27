@@ -16,8 +16,8 @@ crate-type = ["cdylib", "rlib"]
 webgl = ["dep:wcontainers-gpu-webgl"]
 
 [dependencies]
-wcontainers-direct3d-11 = { path = "../direct3d-11" }
-wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure" }
+wcontainers-direct3d-11 = { path = "../direct3d-11/implementation/translated", package = "wcontainers-direct3d-11-translated" }
+wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infrastructure/implementation/translated", package = "wcontainers-directx-graphics-infrastructure-translated" }
 wcontainers-gpu = { path = "../gpu" }
 wcontainers-gpu-webgpu = { path = "../gpu-webgpu" }
 wcontainers-gpu-webgl = { path = "../gpu-webgl", optional = true }
