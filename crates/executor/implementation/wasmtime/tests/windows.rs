@@ -369,6 +369,23 @@ fn one_permission_change_across_window_ends_gives_each_window_its_place() {
 }
 
 #[test]
+fn many_pages_of_window_0_given_leave_every_other_window_unplaced() {
+    // The window table lies just before the permission table, so many pages' permissions sit beside its entries.
+    let (mut executor, memory, mut table) = with_code(&[LOAD]);
+    let many = 0x1000_0000..0x2000_0000;
+    writable_range(&mut table, many.clone());
+    for window in [0x4100, 0x5000, 0xFFFF] {
+        let address = window * WINDOW + many.start + PAGE_SIZE;
+        let (_, handler) = run(&mut executor, &memory, address);
+        assert_eq!(
+            handler.fault,
+            Some((address, Access::Read)),
+            "window {window:#x}"
+        );
+    }
+}
+
+#[test]
 fn addresses_past_the_space_are_refused() {
     let executor = WasmtimeExecutor::new(WasmtimeTranslatorConfig::default());
     let (memory, mut table) = executor.create_guest_memory().expect("a space");
