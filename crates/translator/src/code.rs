@@ -2129,11 +2129,10 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
         let allowed = self.local(ValType::I32);
         let windows = G::address_windows(self.offer);
         let mut s = self.sink();
+        // Only guests without address windows (x86-64, the test guest) check a range.
+        assert!(!windows, "a range is checked only without address windows");
         G::data_address(&mut s, address);
         s.local_set(address);
-        if windows {
-            place_in_window(&mut s, Table::GLOBALS, address, page);
-        }
         permission_range(
             &mut s,
             Table::GLOBALS,

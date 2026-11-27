@@ -303,7 +303,7 @@ impl Reservation {
 
     /// Maps `length` bytes of the file from the offset at `start` bytes into the reservation, shared and writable.
     ///
-    /// The caller checked both ranges.
+    /// The mapping is also readable. The caller checked both ranges.
     fn map_over(
         &self,
         start: usize,

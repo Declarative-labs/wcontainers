@@ -48,6 +48,12 @@ pub(crate) fn plan<'a, G: Guest>(
     omit: Omit,
     optimise: Optimise,
 ) -> Planned<'a, G> {
+    // The module's exact permission function is given an address's place in the guest memory, which an address as
+    // the program computed it is only in window 0: with address windows every exact test is in place.
+    assert!(
+        !(G::address_windows(code.offer) && optimise == Optimise::Size),
+        "a translation with address windows is optimised for speed"
+    );
     let mut finder = Finder {
         code,
         decoded: Decodes::default(),
@@ -2427,7 +2433,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         let at = self.temporary(ValType::I64);
         let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let table = self.table();
-        let exact = self.exact_as_computed(table, page);
+        let exact = self.exact(table, page);
         for chunk in (0..len).step_by(wcontainers_abi::PAGE_SIZE as usize) {
             let piece = (len - chunk).min(wcontainers_abi::PAGE_SIZE as _);
             self.sink()
@@ -2477,16 +2483,6 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             at: self.fixed(G_PERMISSIONS),
             pages: self.fixed(G_PERMISSION_PAGES),
             windows: G::address_windows(self.code.offer),
-        }
-    }
-
-    /// Where an exact permission test of an address as the program computed it goes: with address windows in place,
-    /// since the module's function is given an address's place in the guest memory.
-    fn exact_as_computed(&mut self, table: Table, page: u32) -> Exact {
-        if table.windows {
-            Exact::InPlace(table, (page, self.temporary(ValType::I32)))
-        } else {
-            self.exact(table, page)
         }
     }
 
@@ -2998,12 +2994,6 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 }
             }
             CheckPlan::Group { from, len } => {
-                // With address windows the start is as the program computed it, which the module's function is not given.
-                let exact = if table.windows {
-                    Exact::InPlace(table, (page, self.temporary(ValType::I32)))
-                } else {
-                    exact
-                };
                 let start = self.temporary(ValType::I64);
                 self.sink()
                     .local_get(address)
@@ -3031,11 +3021,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let allowed = self.temporary(ValType::I32);
         let table = self.table();
         let mut s = self.sink();
+        // Only guests without address windows (x86-64, the test guest) check a range.
+        assert!(!table.windows, "a range is checked only without address windows");
         G::data_address(&mut s, address);
         s.local_set(address);
-        if table.windows {
-            place_in_window(&mut s, table, address, page);
-        }
         permission_range(
             &mut s,
             table,
