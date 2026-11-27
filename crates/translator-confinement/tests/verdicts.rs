@@ -2,7 +2,7 @@
 //! encoding tables (Arm ARM, "A64 instruction set encoding"), not by the translator's encoder.
 
 use wcontainers_translator_confinement::{
-    Breach, FLOOR_PAGE, FLOOR_ENTRY_BYTES, Found, PROCESS_SLOTS, Place, State, check,
+    Breach, FLOOR_ENTRY_BYTES, FLOOR_PAGE, Found, PROCESS_SLOTS, Place, State, check,
 };
 
 /// Slot 3's window, a frame far from it, and the instructions in the code area.
@@ -127,7 +127,10 @@ fn an_access_through_an_overwritten_base_breaches() {
 
 #[test]
 fn a_register_outside_the_list_breaches() {
-    assert_eq!(breaches(&[MSR_TPIDR2]), vec![(0, Breach::ForbiddenRegister)]);
+    assert_eq!(
+        breaches(&[MSR_TPIDR2]),
+        vec![(0, Breach::ForbiddenRegister)]
+    );
     assert_eq!(breaches(&[MSR_DIT]), vec![(0, Breach::ForbiddenRegister)]);
     assert_eq!(breaches(&[MSR_TPIDR, MSR_NZCV]), vec![]);
 }
@@ -148,7 +151,10 @@ fn a_branch_inside_the_sequence_is_followed() {
 #[test]
 fn going_on_past_the_end_breaches() {
     let (found, _) = check(&bytes(&[mov(0, 1)]), &PLACE, &[(0, State::entry(&PLACE))]);
-    assert_eq!(found.iter().map(|f| f.breach).collect::<Vec<_>>(), [Breach::FallsOffEnd]);
+    assert_eq!(
+        found.iter().map(|f| f.breach).collect::<Vec<_>>(),
+        [Breach::FallsOffEnd]
+    );
 }
 
 #[test]
@@ -182,7 +188,10 @@ fn a_jump_through_its_slot_is_an_exit() {
 #[test]
 fn a_window_access_cut_by_an_add_is_inside() {
     assert_eq!(breaches(&[add_uxtw(X23, X24, 0), ldr(1, X23, 8)]), vec![]);
-    assert_eq!(breaches(&[add_uxtw(X23, X24, 0), str_x(1, X23, 32760)]), vec![]);
+    assert_eq!(
+        breaches(&[add_uxtw(X23, X24, 0), str_x(1, X23, 32760)]),
+        vec![]
+    );
 }
 
 #[test]
@@ -197,12 +206,18 @@ fn a_window_access_cut_by_its_own_addressing_is_inside_unless_scaled() {
 #[test]
 fn the_frame_s_words_are_inside_and_past_them_is_not() {
     assert_eq!(breaches(&[ldr(X23, X28, 248)]), vec![]);
-    assert_eq!(breaches(&[ldr(X23, X28, 256)]), vec![(0, Breach::AccessOutside)]);
+    assert_eq!(
+        breaches(&[ldr(X23, X28, 256)]),
+        vec![(0, Breach::AccessOutside)]
+    );
 }
 
 #[test]
 fn the_mark_is_inside_the_slot() {
-    assert_eq!(breaches(&[eor_bit(15, X24, 32), ldrb(ZR, 15, 4095)]), vec![]);
+    assert_eq!(
+        breaches(&[eor_bit(15, X24, 32), ldrb(ZR, 15, 4095)]),
+        vec![]
+    );
 }
 
 #[test]
@@ -248,7 +263,10 @@ fn a_raised_signal_ends_the_run() {
 fn without_the_entry_rule_the_page_and_the_window_are_unknown() {
     let words = bytes(&[ldr(X23, X28, 8), UDF]);
     let (found, _) = check(&words, &PLACE, &[(0, State::anything())]);
-    assert_eq!(found.iter().map(|f| f.breach).collect::<Vec<_>>(), [Breach::AccessOutside]);
+    assert_eq!(
+        found.iter().map(|f| f.breach).collect::<Vec<_>>(),
+        [Breach::AccessOutside]
+    );
 }
 
 #[test]

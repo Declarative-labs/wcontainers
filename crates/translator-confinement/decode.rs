@@ -44,21 +44,30 @@ pub enum Made {
     /// The instructions' first byte plus this.
     Code(i64),
     /// The page of the instructions' byte at this offset, plus a multiple of 4 KiB (`adrp`).
-    CodePage { at: i64, plus: i64 },
+    CodePage {
+        at: i64,
+        plus: i64,
+    },
     /// A constant.
     Constant(u64),
     /// `movk`: 16 bits of the register replaced.
-    Keep { rd: u8, value: u16, shift: u32 },
-    /// `ubfx`: `width` bits of `rn` from `lsb` moved to the bottom.
-    Extract { rn: Source, lsb: u32, width: u32 },
+    Keep {
+        rd: u8,
+        value: u16,
+        shift: u32,
+    },
     /// `ubfiz`: the low `width` bits of `rn` moved up to `lsb`.
-    Insert { rn: Source, lsb: u32, width: u32 },
+    Insert {
+        rn: Source,
+        lsb: u32,
+        width: u32,
+    },
     /// `bfxil`: `width` bits of `rn` from `lsb` into the bottom of `rd`, its other bits kept.
-    ExtractInto { rd: u8, width: u32 },
-    /// `bfi`: the low `width` bits of `rn` into `rd` at `lsb`, its other bits kept.
-    InsertInto { rd: u8, lsb: u32, width: u32 },
+    ExtractInto {
+        rd: u8,
+        width: u32,
+    },
     And(Source, u64),
-    Or(Source, u64),
     Xor(Source, u64),
 }
 
@@ -116,7 +125,10 @@ pub enum Step {
         link: bool,
     },
     /// A branch to the address in `rn`; with `link`, x30 gets the next instruction's address.
-    Jump { rn: u8, link: bool },
+    Jump {
+        rn: u8,
+        link: bool,
+    },
     /// Raises a signal (`brk`, `udf`, `hlt`): the run ends there.
     Leaves,
     SystemCall,
@@ -218,7 +230,11 @@ fn bit_mask(sf: bool, n: u32, immr: u32, imms: u32) -> Option<u64> {
     let element = if r == 0 {
         ones
     } else {
-        let mask = if size == 64 { u64::MAX } else { (1u64 << size) - 1 };
+        let mask = if size == 64 {
+            u64::MAX
+        } else {
+            (1u64 << size) - 1
+        };
         ((ones >> r) | (ones << (size - r))) & mask
     };
     let mut value = element;
@@ -266,13 +282,14 @@ fn immediate(word: u32) -> Step {
         }
         0b100 => {
             let opc = bits(word, 29, 2);
-            let Some(mask) = bit_mask(sf, bits(word, 22, 1), bits(word, 16, 6), bits(word, 10, 6)) else {
+            let Some(mask) = bit_mask(sf, bits(word, 22, 1), bits(word, 16, 6), bits(word, 10, 6))
+            else {
                 return Step::Unknown;
             };
             let made = match (sf, opc) {
                 (false, _) => WORD,
                 (true, 0b00 | 0b11) => Made::And(or_zero(rn), mask),
-                (true, 0b01) => Made::Or(or_zero(rn), mask),
+                (true, 0b01) => Made::Unknown,
                 (true, _) => Made::Xor(or_zero(rn), mask),
             };
             Step::Plain(if opc == 0b11 {
@@ -311,11 +328,8 @@ fn immediate(word: u32) -> Step {
             let imms = bits(word, 10, 6);
             let made = match bits(word, 29, 2) {
                 _ if !sf => WORD,
-                0b10 if imms >= immr => Made::Extract {
-                    rn: or_zero(rn),
-                    lsb: immr,
-                    width: imms - immr + 1,
-                },
+                // ubfx: only tests read it.
+                0b10 if imms >= immr => Made::Unknown,
                 0b10 => Made::Insert {
                     rn: or_zero(rn),
                     lsb: 64 - immr,
@@ -325,12 +339,8 @@ fn immediate(word: u32) -> Step {
                     rd: rd as u8,
                     width: imms - immr + 1,
                 },
-                0b01 => Made::InsertInto {
-                    rd: rd as u8,
-                    lsb: 64 - immr,
-                    width: imms + 1,
-                },
-                0b00 => Made::Unknown,
+                // bfi, sbfm: no address is built by them.
+                0b01 | 0b00 => Made::Unknown,
                 _ => return Step::Unknown,
             };
             Step::Plain(write_or_zero(rd, made))
@@ -541,7 +551,11 @@ fn load_store(word: u32) -> Step {
         let Some((bytes, ..)) = single() else {
             return Step::Unknown;
         };
-        let shift = if bit(word, 12) { bytes.trailing_zeros() } else { 0 };
+        let shift = if bit(word, 12) {
+            bytes.trailing_zeros()
+        } else {
+            0
+        };
         return plain(
             Offset::Index {
                 rm: or_zero(rs),
@@ -780,7 +794,9 @@ fn register(word: u32) -> Step {
         return Step::Plain(write_or_zero(rd, made));
     }
     // Data processing, two sources: subp, irg and gmi (FEAT_MTE) are not followed.
-    if word & 0x5fe0_0000 == 0x1ac0_0000 && matches!(bits(word, 10, 6), 0b000000 | 0b000100 | 0b000101) {
+    if word & 0x5fe0_0000 == 0x1ac0_0000
+        && matches!(bits(word, 10, 6), 0b000000 | 0b000100 | 0b000101)
+    {
         return Step::Unknown;
     }
     // Conditional compare: flags alone.

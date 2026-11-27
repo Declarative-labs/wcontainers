@@ -83,6 +83,52 @@ pub fn translate_native_for<G: Native>(
     translate_native_request::<G>(code, address, &request, way, target)
 }
 
+/// Instructions only the translator makes: the native output of one piece, whose bytes no one changes once it is
+/// returned, and the way it was made for. A run of them stays confined from the entry its way names (crates/
+/// translator-confinement, statement and measurement).
+#[derive(Debug)]
+pub struct TranslatedInstructions<W> {
+    code: HostCode,
+    way: W,
+}
+
+impl<W: Copy> TranslatedInstructions<W> {
+    /// The bytes as the translator wrote them.
+    pub fn bytes(&self) -> &[u8] {
+        &self.code.bytes
+    }
+
+    /// The code with its position map, to read.
+    pub fn code(&self) -> &HostCode {
+        &self.code
+    }
+
+    /// The way the instructions were made for.
+    pub fn way(&self) -> W {
+        self.way
+    }
+
+    /// The bytes followed by zero words (`udf` on ARM64) up to a whole number of `page` bytes: what a mapping of
+    /// them holds.
+    pub fn padded(&self, page: usize) -> Vec<u8> {
+        let mut bytes = self.code.bytes.clone();
+        bytes.resize(bytes.len().next_multiple_of(page), 0);
+        bytes
+    }
+}
+
+/// [`translate_native_request`] as instructions only the translator makes.
+pub fn translate_instructions<G: Native>(
+    code: &[u8],
+    address: u64,
+    request: &NativeRequest,
+    way: &G::Way,
+    target: &G::Target,
+) -> Option<TranslatedInstructions<G::Way>> {
+    translate_native_request::<G>(code, address, request, way, target)
+        .map(|code| TranslatedInstructions { code, way: *way })
+}
+
 /// What a piece is asked for besides its bytes, address, way and target; all of it is part of the cache key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeRequest {

@@ -2,10 +2,14 @@
 //! decoder finds is one access to the checker, at the same base, offset and size, and every general register an
 //! instruction's meaning writes is one the checker lets it write. Two decoders written apart, each the other's check.
 
-use wcontainers_arm64::{Address, Arm64, Host, Reg as TheirReg, decode as theirs, forms};
+use wcontainers_arm64::way::{self, Kept};
+use wcontainers_arm64::{
+    Address, Arm64, Host, Reg as TheirReg, decode as theirs, forms, mirror, thread_state,
+};
 use wcontainers_guest_cpu::effects;
 use wcontainers_translator_confinement::{
-    Access, Base, Extend, Moved, Offset, Reg, Source, Step, decode,
+    Access, BASE, Base, Extend, FLOOR_ENTRY_BYTES, FLOOR_PAGE, FRAME, FRAME_BYTES, Moved, Offset,
+    PROCESS_SLOTS, Reg, SLOT_BYTES, SLOT_SHIFT, Source, Step, WINDOW_BITS, decode,
 };
 
 /// The hardware's own answer to what the meanings leave open.
@@ -27,15 +31,21 @@ fn source(r: TheirReg) -> Source {
 /// The access the translator's decoder finds, as the checker writes one, its loads and size aside.
 fn expected(address: Address) -> (Base, Offset, Option<Moved>) {
     match address {
-        Address::Offset { base, offset } => (Base::Reg(source(base)), Offset::Constant(offset, offset), None),
+        Address::Offset { base, offset } => (
+            Base::Reg(source(base)),
+            Offset::Constant(offset, offset),
+            None,
+        ),
         Address::PreIndex { base, offset } => (
             Base::Reg(source(base)),
             Offset::Constant(offset, offset),
             Some(Moved::By(offset)),
         ),
-        Address::PostIndex { base, offset } => {
-            (Base::Reg(source(base)), Offset::Constant(0, 0), Some(Moved::By(offset)))
-        }
+        Address::PostIndex { base, offset } => (
+            Base::Reg(source(base)),
+            Offset::Constant(0, 0),
+            Some(Moved::By(offset)),
+        ),
         Address::Indexed {
             base,
             index,
@@ -75,7 +85,9 @@ fn written(step: &Step) -> Option<u32> {
             }
             Some(bits)
         }
-        Step::Branch { link, .. } | Step::Jump { link, .. } => Some(if *link { 1 << 30 } else { 0 }),
+        Step::Branch { link, .. } | Step::Jump { link, .. } => {
+            Some(if *link { 1 << 30 } else { 0 })
+        }
         // The checker refuses these, or the run ends at them.
         Step::Leaves | Step::SystemCall | Step::ForbiddenRegister | Step::Unknown => None,
     }
@@ -85,7 +97,11 @@ fn words() -> Vec<u32> {
     let mut rng = fastrand::Rng::with_seed(0x5eed_c0f1);
     forms::all()
         .iter()
-        .flat_map(|form| (0..WORDS_PER_FORM).map(|_| form.word(rng.u32(..))).collect::<Vec<_>>())
+        .flat_map(|form| {
+            (0..WORDS_PER_FORM)
+                .map(|_| form.word(rng.u32(..)))
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
@@ -107,7 +123,12 @@ fn every_access_the_translator_finds_is_the_checker_s() {
             other => differences.push(format!("{word:#010x}: translator {m:?}, checker {other:?}")),
         }
     }
-    assert!(differences.is_empty(), "{} differ: {:#?}", differences.len(), &differences[..differences.len().min(20)]);
+    assert!(
+        differences.is_empty(),
+        "{} differ: {:#?}",
+        differences.len(),
+        &differences[..differences.len().min(20)]
+    );
 }
 
 #[test]
@@ -121,8 +142,30 @@ fn every_register_a_meaning_writes_the_checker_lets_it_write() {
         let defs = effects::<Arm64>(&theirs(word), HARDWARE, ()).defs.0;
         let general = (0..32).fold(0u32, |b, n| b | (((defs >> n) & 1) as u32) << n);
         if general & !mine != 0 {
-            differences.push(format!("{word:#010x}: meaning writes {general:#x}, checker {mine:#x} ({step:?})"));
+            differences.push(format!(
+                "{word:#010x}: meaning writes {general:#x}, checker {mine:#x} ({step:?})"
+            ));
         }
     }
-    assert!(differences.is_empty(), "{} differ: {:#?}", differences.len(), &differences[..differences.len().min(20)]);
+    assert!(
+        differences.is_empty(),
+        "{} differ: {:#?}",
+        differences.len(),
+        &differences[..differences.len().min(20)]
+    );
+}
+
+#[test]
+fn the_checker_s_constants_are_the_translator_s_and_the_executor_s() {
+    assert_eq!(PROCESS_SLOTS, way::PROCESS_SLOTS);
+    assert_eq!(SLOT_BYTES, 1 << way::SLOT_BITS);
+    assert_eq!(WINDOW_BITS, way::WINDOW_BITS);
+    assert_eq!(SLOT_SHIFT, mirror::SLOT_SHIFT);
+    assert_eq!(FLOOR_PAGE, way::IN_PROCESS_ENTRIES & !0xfff);
+    assert_eq!(FLOOR_ENTRY_BYTES, way::PROCESS_ENTRY_BYTES);
+    assert_eq!(FRAME, thread_state::PAGE);
+    assert_eq!(BASE, Kept::USUAL.base);
+    // The frame's own words: 32 of them (linux-process RUN_FRAME_WORDS), the page and the words after it inside.
+    assert_eq!(FRAME_BYTES, 32 * 8);
+    assert!((way::IN_PROCESS_WITHHELD_AT + 8 * way::AFTER_PAGE_WORDS) as u64 <= FRAME_BYTES);
 }

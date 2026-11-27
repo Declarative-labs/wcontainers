@@ -49,7 +49,7 @@ impl Place {
         let start = if self.displaced {
             PROCESS_SLOTS
         } else {
-            PROCESS_SLOTS | self.base << SLOT_SHIFT
+            PROCESS_SLOTS + (self.base << SLOT_SHIFT)
         };
         (start, start + (SLOT_BYTES << SLOT_SHIFT))
     }
@@ -151,7 +151,10 @@ fn wrapped(lo: i128, hi: i128) -> Value {
 
 fn add_signed(value: Value, by: i64) -> Value {
     let (lo, hi) = value?;
-    wrapped(i128::from(lo) + i128::from(by), i128::from(hi) + i128::from(by))
+    wrapped(
+        i128::from(lo) + i128::from(by),
+        i128::from(hi) + i128::from(by),
+    )
 }
 
 /// The range of `value` extended as `extend` says, then shifted left.
@@ -194,13 +197,11 @@ fn add(a: Value, b: Value, subtract: bool) -> Value {
     }
 }
 
-/// `width` bits from `lsb` of every value of the range.
-fn field(value: Value, lsb: u32, width: u32) -> (u64, u64) {
-    let mask = if width >= 64 { u64::MAX } else { (1 << width) - 1 };
+/// The low `width` bits (fewer than 64) of every value of the range.
+fn low_bits(value: Value, width: u32) -> (u64, u64) {
+    let mask = (1u64 << width) - 1;
     match value {
-        Some((lo, hi)) if lsb + width >= 64 || lo >> (lsb + width) == hi >> (lsb + width) => {
-            ((lo >> lsb) & mask, (hi >> lsb) & mask)
-        }
+        Some((lo, hi)) if lo >> width == hi >> width => (lo & mask, hi & mask),
         _ => (0, mask),
     }
 }
@@ -216,7 +217,11 @@ fn evaluate(made: Made, state: &State, place: &Place, at: usize) -> Value {
             extend,
             shift,
             subtract,
-        } => add(state.get(rn), extended(state.get(rm), extend, shift), subtract),
+        } => add(
+            state.get(rn),
+            extended(state.get(rm), extend, shift),
+            subtract,
+        ),
         Made::AddConstant(rn, by) => add_signed(state.get(rn), by),
         Made::Code(by) => add_signed(Some((here, here)), by),
         Made::CodePage { at, plus } => {
@@ -231,9 +236,9 @@ fn evaluate(made: Made, state: &State, place: &Place, at: usize) -> Value {
             }
             _ => None,
         },
-        Made::Extract { rn, lsb, width } => Some(field(state.get(rn), lsb, width)),
+        // `ubfiz` is decoded only where `width + lsb` is at most 64.
         Made::Insert { rn, lsb, width } => {
-            let (lo, hi) = field(state.get(rn), 0, width);
+            let (lo, hi) = low_bits(state.get(rn), width);
             Some((lo << lsb, hi << lsb))
         }
         Made::ExtractInto { rd, width } => {
@@ -241,23 +246,10 @@ fn evaluate(made: Made, state: &State, place: &Place, at: usize) -> Value {
             let mask = (1u64 << width) - 1;
             Some((lo & !mask, (hi & !mask) | mask))
         }
-        Made::InsertInto { rd, lsb, width } => {
-            let (lo, hi) = state.0[usize::from(rd)]?;
-            let above = lsb + width;
-            if above >= 64 {
-                return None;
-            }
-            let keep = |v: u64| v >> above << above;
-            Some((keep(lo), keep(hi) | ((1 << above) - 1)))
-        }
         Made::And(rn, mask) => match state.get(rn) {
             Some((lo, hi)) if lo == hi => Some((lo & mask, lo & mask)),
             Some((_, hi)) => Some((0, hi.min(mask))),
             None => Some((0, mask)),
-        },
-        Made::Or(rn, mask) => match state.get(rn)? {
-            (lo, hi) if lo == hi => Some((lo | mask, lo | mask)),
-            _ => None,
         },
         Made::Xor(rn, mask) => {
             let (lo, hi) = state.get(rn)?;
@@ -284,8 +276,10 @@ fn evaluate(made: Made, state: &State, place: &Place, at: usize) -> Value {
 /// its own instructions.
 fn allowed(lo: u64, hi: u64, place: &Place, length: usize) -> bool {
     let inside = |start: u64, end: u64| start <= lo && hi < end;
-    inside(place.base.saturating_sub(place.below), place.base + SLOT_BYTES)
-        || inside(place.frame, place.frame + FRAME_BYTES)
+    inside(
+        place.base.saturating_sub(place.below),
+        place.base + SLOT_BYTES,
+    ) || inside(place.frame, place.frame + FRAME_BYTES)
         || inside(place.code, place.code + length as u64)
 }
 
@@ -356,7 +350,8 @@ fn step(
             }
             // An access that did not fault touched the window, the only mapped part of the slot: its base was where
             // that puts it.
-            let in_slot = first_lo >= place.base.saturating_sub(place.below) && last < place.base + SLOT_BYTES;
+            let in_slot = first_lo >= place.base.saturating_sub(place.below)
+                && last < place.base + SLOT_BYTES;
             if let (Base::Reg(Source::Reg(reg)), Offset::Constant(offset_lo, offset_hi), true) =
                 (access.base, access.offset, in_slot)
             {
@@ -471,32 +466,33 @@ pub fn check(
     let mut grown: BTreeMap<usize, u32> = BTreeMap::new();
     let mut work: Vec<usize> = Vec::new();
     let mut found: BTreeMap<usize, Found> = BTreeMap::new();
-    let mut arrive = |states: &mut BTreeMap<usize, State>, work: &mut Vec<usize>, at: usize, state: &State| {
-        let merged = match states.get(&at) {
-            None => state.clone(),
-            Some(old) => {
-                let joined = old.join(state);
-                if joined == *old {
-                    return;
-                }
-                let times = grown.entry(at).or_insert(0);
-                *times += 1;
-                if *times > WIDEN_AFTER {
-                    let mut widened = joined.clone();
-                    for (w, o) in widened.0.iter_mut().zip(&old.0) {
-                        if *w != *o {
-                            *w = None;
-                        }
+    let mut arrive =
+        |states: &mut BTreeMap<usize, State>, work: &mut Vec<usize>, at: usize, state: &State| {
+            let merged = match states.get(&at) {
+                None => state.clone(),
+                Some(old) => {
+                    let joined = old.join(state);
+                    if joined == *old {
+                        return;
                     }
-                    widened
-                } else {
-                    joined
+                    let times = grown.entry(at).or_insert(0);
+                    *times += 1;
+                    if *times > WIDEN_AFTER {
+                        let mut widened = joined.clone();
+                        for (w, o) in widened.0.iter_mut().zip(&old.0) {
+                            if *w != *o {
+                                *w = None;
+                            }
+                        }
+                        widened
+                    } else {
+                        joined
+                    }
                 }
-            }
+            };
+            states.insert(at, merged);
+            work.push(at);
         };
-        states.insert(at, merged);
-        work.push(at);
-    };
     for (at, state) in entries {
         arrive(&mut states, &mut work, *at, state);
     }
