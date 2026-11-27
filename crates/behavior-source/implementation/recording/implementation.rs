@@ -1,5 +1,6 @@
 //! What one ARM64 chip did with each instruction on each state it was given, played back as the chip.
 
+use std::cell::OnceCell;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::io;
@@ -12,6 +13,9 @@ use wcontainers_processor_architecture::{
 };
 use wcontainers_processor_architecture_arm64::{Arm64, Instruction, Processor, User};
 
+use crate::generated::{GeneratedCases, to_fingerprint};
+
+mod generated;
 #[cfg(test)]
 mod tests;
 mod text;
@@ -26,9 +30,26 @@ type RecordedCase = (
 #[derive(Debug)]
 pub struct NotRecorded;
 
+/// The cases of one instruction.
+enum Cases {
+    /// Each state before as it was written, with the state the chip gave after.
+    Written(Vec<RecordedCase>),
+    /// What the chip gave after each state a generator gives, the states before held as fingerprints.
+    Generated(GeneratedCases),
+}
+
+impl Cases {
+    fn len(&self) -> usize {
+        match self {
+            Cases::Written(cases) => cases.len(),
+            Cases::Generated(cases) => cases.len(),
+        }
+    }
+}
+
 /// Each listed instruction with every state it was run on and what the chip gave, in the order they were run.
 pub struct Recording {
-    instructions: Vec<(Instruction<Infallible>, Vec<RecordedCase>)>,
+    instructions: Vec<(Instruction<Infallible>, Cases)>,
     /// Where the next state is looked for first: the instruction and the case after the one played last.
     next: (usize, usize),
     /// The instruction and the case played last, where the next state is looked for second.
@@ -36,7 +57,17 @@ pub struct Recording {
 }
 
 impl Recording {
+    fn new(instructions: Vec<(Instruction<Infallible>, Cases)>) -> Self {
+        Recording {
+            instructions,
+            next: (0, 0),
+            played: None,
+        }
+    }
+
     /// Runs each of the instructions on the source from every state the generator gives for it, up to the first error.
+    ///
+    /// The recording keeps no state before, so reading it back needs the same generator.
     pub fn record<Source: BehaviorSource<Architecture = Arm64<User>>>(
         source: &mut Source,
         generator: &impl DistinguishingStateGenerator<Arm64<User>>,
@@ -45,73 +76,99 @@ impl Recording {
         let instructions = instructions
             .into_iter()
             .map(|instruction| {
-                let cases = generator
-                    .generate_states(instruction)
-                    .map(|before| run_case(source, before))
-                    .collect::<Result<_, _>>()?;
-                Ok((instruction, cases))
+                let cases = GeneratedCases::record(source, generator, instruction)?;
+                Ok((instruction, Cases::Generated(cases)))
             })
             .collect::<Result<_, _>>()?;
-        Ok(Recording {
-            instructions,
-            next: (0, 0),
-            played: None,
-        })
+        Ok(Recording::new(instructions))
     }
 
     /// Runs every state this recording was made from on the source again, in the same order, up to the first error.
+    ///
+    /// The states of an instruction recorded from a generator are the ones the generator gives now.
     pub fn record_again<Source: BehaviorSource<Architecture = Arm64<User>>>(
         &self,
         source: &mut Source,
+        generator: &impl DistinguishingStateGenerator<Arm64<User>>,
     ) -> Result<Recording, Source::Error> {
         let instructions = self
             .instructions
             .iter()
             .map(|(instruction, cases)| {
-                let cases = cases
-                    .iter()
-                    .map(|(before, _)| run_case(source, before.clone()))
-                    .collect::<Result<_, _>>()?;
+                let cases = match cases {
+                    Cases::Written(cases) => Cases::Written(
+                        cases
+                            .iter()
+                            .map(|(before, _)| run_case(source, before.clone()))
+                            .collect::<Result<_, _>>()?,
+                    ),
+                    Cases::Generated(_) => {
+                        Cases::Generated(GeneratedCases::record(source, generator, *instruction)?)
+                    }
+                };
                 Ok((*instruction, cases))
             })
             .collect::<Result<_, _>>()?;
-        Ok(Recording {
-            instructions,
-            next: (0, 0),
-            played: None,
-        })
+        Ok(Recording::new(instructions))
     }
 
-    /// Reads the recording of each listed instruction that has a file in the folder `write` wrote.
+    /// Reads the recording of each listed instruction that has a file in the folder `write` wrote, where each file
+    /// writes its states before.
     ///
     /// A listed instruction with no file is not in the recording, which gives `NotRecorded` on any state of it, as on
     /// any other state it holds no case for.
     pub fn read(folder: &Path) -> io::Result<Recording> {
+        Self::read_files(folder, |path, text| {
+            if text::is_generated_text(text) {
+                return Err(to_invalid_data(
+                    path,
+                    &"made from a generator, so read with read_generated",
+                ));
+            }
+            let (instruction, cases) =
+                text::from_text(text).map_err(|error| to_invalid_data(path, &error))?;
+            Ok((instruction, Cases::Written(cases)))
+        })
+    }
+
+    /// Reads the folder as `read` does, also each file made from a generator's states, which must be this generator's.
+    pub fn read_generated(
+        folder: &Path,
+        generator: &impl DistinguishingStateGenerator<Arm64<User>>,
+    ) -> io::Result<Recording> {
+        Self::read_files(folder, |path, text| {
+            if !text::is_generated_text(text) {
+                let (instruction, cases) =
+                    text::from_text(text).map_err(|error| to_invalid_data(path, &error))?;
+                return Ok((instruction, Cases::Written(cases)));
+            }
+            let (instruction, cases) = GeneratedCases::from_text(text, generator)
+                .map_err(|error| to_invalid_data(path, &error.to_string()))?;
+            Ok((instruction, Cases::Generated(cases)))
+        })
+    }
+
+    /// Reads the file of each listed instruction that has one, in the listed order; a missing folder is an error.
+    fn read_files(
+        folder: &Path,
+        read_file: impl Fn(&Path, &str) -> io::Result<(Instruction<Infallible>, Cases)>,
+    ) -> io::Result<Recording> {
+        std::fs::read_dir(folder)?;
         let mut instructions = Vec::new();
         for instruction in Arm64::<User>::list_instructions() {
             let path = folder.join(text::to_file_name(instruction));
-            let malformed = |what: &dyn Debug| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}: {what:?}", path.display()),
-                )
-            };
             let text = match std::fs::read_to_string(&path) {
                 Ok(text) => text,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            let (named, cases) = text::from_text(&text).map_err(|error| malformed(&error))?;
+            let (named, cases) = read_file(&path, &text)?;
             if named != instruction {
-                return Err(malformed(&named));
+                return Err(to_invalid_data(&path, &named));
             }
             instructions.push((instruction, cases));
         }
-        Ok(Recording {
-            instructions,
-            next: (0, 0),
-            played: None,
-        })
+        Ok(Recording::new(instructions))
     }
 
     /// Returns each instruction the recording holds, in its order.
@@ -121,18 +178,25 @@ impl Recording {
             .map(|(instruction, _)| *instruction)
     }
 
+    /// Returns how many states the recording holds.
+    pub fn count_cases(&self) -> usize {
+        self.instructions.iter().map(|(_, cases)| cases.len()).sum()
+    }
+
     /// Writes each instruction's recording into the file named after it in the folder.
     pub fn write(&self, folder: &Path) -> io::Result<()> {
         for (instruction, cases) in &self.instructions {
-            std::fs::write(
-                folder.join(text::to_file_name(*instruction)),
-                text::to_text(*instruction, cases),
-            )?;
+            let text = match cases {
+                Cases::Written(cases) => text::to_text(*instruction, cases),
+                Cases::Generated(cases) => cases.to_text(*instruction),
+            };
+            std::fs::write(folder.join(text::to_file_name(*instruction)), text)?;
         }
         Ok(())
     }
 
-    /// Returns each recorded instruction with a state before and the state the chip gave after.
+    /// Returns each instruction with a state before and the state the chip gave after, of the instructions whose
+    /// states before are written; `generate_cases` also gives those recorded from a generator.
     pub fn cases(
         &self,
     ) -> impl Iterator<
@@ -143,40 +207,89 @@ impl Recording {
         ),
     > {
         self.instructions.iter().flat_map(|(instruction, cases)| {
-            cases
-                .iter()
-                .map(move |(before, after)| (*instruction, before, after))
+            match cases {
+                Cases::Written(cases) => cases.as_slice(),
+                Cases::Generated(_) => &[],
+            }
+            .iter()
+            .map(move |(before, after)| (*instruction, before, after))
         })
     }
 
+    /// Returns each recorded instruction with a state before and the state the chip gave after, the states of an
+    /// instruction recorded from a generator made again by this one.
+    pub fn generate_cases<'cases>(
+        &'cases self,
+        generator: &'cases impl DistinguishingStateGenerator<Arm64<User>>,
+    ) -> impl Iterator<
+        Item = (
+            Instruction<Infallible>,
+            ExecutionState<'static, Arm64<User>>,
+            ExecutionState<'static, Arm64<User>>,
+        ),
+    > + 'cases {
+        self.instructions
+            .iter()
+            .flat_map(move |(instruction, cases)| {
+                let instruction = *instruction;
+                let cases: Box<dyn Iterator<Item = RecordedCase> + 'cases> = match cases {
+                    Cases::Written(cases) => Box::new(cases.iter().cloned()),
+                    Cases::Generated(cases) => {
+                        Box::new(cases.generate_cases(generator, instruction))
+                    }
+                };
+                cases.map(move |(before, after)| (instruction, before, after))
+            })
+    }
+
     /// Returns where the case recorded from exactly this processor and memory lies, looking first at the case after
-    /// the one played last and at that one.
+    /// the one played last and at that one, then at the first case of each instruction, then everywhere.
     fn find_case(
         &self,
         processor: &Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
     ) -> Option<(usize, usize)> {
-        let is_recorded_from = |(before, _): &RecordedCase| {
-            before.processor == *processor && before.memory_mutations.as_slice() == memory
+        let fingerprint = OnceCell::new();
+        let is_recorded_from = |cases: &Cases, case: usize| match cases {
+            Cases::Written(cases) => cases.get(case).is_some_and(|(before, _)| {
+                before.processor == *processor && before.memory_mutations.as_slice() == memory
+            }),
+            Cases::Generated(cases) => cases.is_recorded_from(
+                case,
+                *fingerprint.get_or_init(|| to_fingerprint(processor, memory)),
+            ),
         };
         let is_at = |&(instruction, case): &(usize, usize)| {
             self.instructions
                 .get(instruction)
-                .and_then(|(_, cases)| cases.get(case))
-                .is_some_and(is_recorded_from)
+                .is_some_and(|(_, cases)| is_recorded_from(cases, case))
         };
         let likely = [Some(self.next), self.played];
-        if let Some(found) = likely.into_iter().flatten().find(is_at) {
+        let first_cases = (0..self.instructions.len()).map(|instruction| Some((instruction, 0)));
+        if let Some(found) = likely.into_iter().chain(first_cases).flatten().find(is_at) {
             return Some(found);
         }
         self.instructions
             .iter()
             .enumerate()
             .find_map(|(instruction, (_, cases))| {
-                let case = cases.iter().position(is_recorded_from)?;
+                let case = match cases {
+                    Cases::Written(_) => {
+                        (0..cases.len()).find(|&case| is_recorded_from(cases, case))
+                    }
+                    Cases::Generated(generated) => generated
+                        .find(*fingerprint.get_or_init(|| to_fingerprint(processor, memory))),
+                }?;
                 Some((instruction, case))
             })
     }
+}
+
+fn to_invalid_data(path: &Path, what: &dyn Debug) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{}: {what:?}", path.display()),
+    )
 }
 
 /// Runs one state on the source, giving the state before and the state after.
@@ -208,10 +321,21 @@ impl BehaviorSource for Recording {
             .find_case(processor, memory.mutations)
             .ok_or(NotRecorded)?;
         let cases = &self.instructions[instruction].1;
-        let (before, after) = &cases[case];
-        processor.clone_from(&after.processor);
-        for mutation in &after.memory_mutations[before.memory_mutations.len()..] {
-            mutation_hook.on_memory_mutated(mutation.clone());
+        match cases {
+            Cases::Written(written) => {
+                let (before, after) = &written[case];
+                processor.clone_from(&after.processor);
+                for mutation in &after.memory_mutations[before.memory_mutations.len()..] {
+                    mutation_hook.on_memory_mutated(mutation.clone());
+                }
+            }
+            Cases::Generated(generated) => {
+                let (after, made) = generated.play(case, processor).ok_or(NotRecorded)?;
+                *processor = after;
+                for mutation in made {
+                    mutation_hook.on_memory_mutated(mutation);
+                }
+            }
         }
         self.played = Some((instruction, case));
         self.next = if case + 1 < cases.len() {

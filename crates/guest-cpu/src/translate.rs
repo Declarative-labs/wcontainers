@@ -377,6 +377,9 @@ pub enum Target {
 pub enum Access {
     Read,
     Write,
+    /// Read and written by one instruction (an atomic read-modify-write): a fault is a read where the page
+    /// cannot be read, and a write where it can.
+    Modify,
 }
 
 /// Where control can go from an instruction.

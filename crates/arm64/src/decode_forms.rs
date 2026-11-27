@@ -242,7 +242,14 @@ fn system_move(f: &Fields) -> Instruction {
         (3, 3, 13, 0, 2) => SystemRegister::TpidrEl0,
         (3, 3, 13, 0, 3) if read => SystemRegister::Fixed(0),
         (3, 3, 14, 0, 2) if read => SystemRegister::Counter,
-        (3, 3, 14, 0, 0) if read => SystemRegister::Fixed(COUNTER_FREQUENCY),
+        (3, 3, 14, 0, 0) if read => SystemRegister::CounterFrequency,
+        (3, 3, 14, 0, 1) if read => SystemRegister::PhysicalCounter,
+        // MDCCSR_EL0, DBGDTR_EL0 and DBGDTRRX_EL0 (DBGDTRTX_EL0 when written): with MDSCR_EL1.TDCC clear, as
+        // Linux leaves it, EL0 reaches the debug communication channel, which with no debugger reads zero and
+        // takes writes to the data registers without effect.
+        (2, 3, 0, 1, 0) if read => SystemRegister::Fixed(0),
+        (2, 3, 0, 4 | 5, 0) if read => SystemRegister::Fixed(0),
+        (2, 3, 0, 4 | 5, 0) => return Instruction::Nothing,
         (3, 3, 0, 0, 1) if read => SystemRegister::Fixed(CACHE_TYPE),
         (3, 3, 0, 0, 7) if read => SystemRegister::Fixed(ZERO_BLOCK_ID),
         // SSBS, DIT, TCO, RNDR, RNDRRS and CNTVCTSS_EL0: EL0 may use them on CPUs with their features.

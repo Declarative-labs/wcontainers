@@ -30,6 +30,9 @@ pub enum PlantedBy {
     ScalableLoadsAndStores,
     /// The SVE floating-point and SVE2 instructions of `sve_remaining`, whose bugs are numbered from 3201 and 3101.
     ScalableRemaining,
+    /// The per-lane expectation of first-fault and non-fault loads and the 32-bit vector bases with bit 31 set, whose
+    /// bugs are numbered from 3601, with the fourth check's 9008 and 9010 again.
+    LanesAndBases,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.

@@ -81,7 +81,7 @@ pub fn memory_fault_stop(fault: MemoryFault) -> &'static str {
 /// The signal Linux sends for a trap of each kind.
 pub fn trap_signal(trap: TrapKind) -> u32 {
     match trap {
-        TrapKind::Undefined | TrapKind::Unsupported => SIGILL,
+        TrapKind::Undefined | TrapKind::Unsupported | TrapKind::SystemAccess => SIGILL,
         TrapKind::Breakpoint => SIGTRAP,
         TrapKind::Alignment => SIGBUS,
         TrapKind::DivideError | TrapKind::FloatException => SIGFPE,

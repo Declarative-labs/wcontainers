@@ -410,7 +410,7 @@ fn a_bad_unwind_entry_loses_only_itself_arm64() {
 #[test]
 #[ignore]
 fn measure_binaries_arm64() {
-    measure_binaries::<Arm64>(&[("", ())], |_| {});
+    measure_binaries::<Arm64>(&[("", wcontainers_arm64::Offer::default())], |_| {});
 }
 
 #[test]

@@ -477,14 +477,48 @@ pub enum SystemRegister {
     Fpsr,
     /// The virtual counter, ticking at [`COUNTER_FREQUENCY`].
     Counter,
-    /// A register that reads as a fixed value and ignores writes or cannot be written: the counter's
-    /// frequency, the cache type, the zeroing block size, the read-only thread pointer, and the identity
-    /// registers as Linux answers them.
+    /// The counter's frequency, [`COUNTER_FREQUENCY`].
+    CounterFrequency,
+    /// The physical counter, which Linux keeps from EL0.
+    PhysicalCounter,
+    /// A register that reads as a fixed value and ignores writes or cannot be written: the cache type, the
+    /// zeroing block size, the read-only thread pointer, the debug communication channel with no debugger,
+    /// and the identity registers as Linux answers them.
     Fixed(u64),
 }
 
 /// The counter frequency we present, in Hz: one tick a nanosecond.
 pub const COUNTER_FREQUENCY: u64 = 1_000_000_000;
+
+/// What a program is told its processor has, beyond the base every program gets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Offer {
+    pub counter: CounterAccess,
+}
+
+impl Offer {
+    /// Every offer, in the order of their keys.
+    pub const ALL: [Offer; 2] = [
+        Offer {
+            counter: CounterAccess::Read,
+        },
+        Offer {
+            counter: CounterAccess::Trapped,
+        },
+    ];
+}
+
+/// Whether EL0 reads the counter registers, as [CNTKCTL_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CNTKCTL-EL1--Counter-timer-Kernel-Control-Register)
+/// sets it for the program.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CounterAccess {
+    /// EL0VCTEN set, as Linux sets it: CNTVCT_EL0 reads the runner's clock and CNTFRQ_EL0 its frequency.
+    #[default]
+    Read,
+    /// EL0VCTEN and EL0PCTEN clear: a read of CNTFRQ_EL0, CNTPCT_EL0 or CNTVCT_EL0 traps, and the kernel answers
+    /// it from its own clock, which replay needs.
+    Trapped,
+}
 
 pub use crate::thread_state::{FPCR_BITS, FPSR_BITS};
 

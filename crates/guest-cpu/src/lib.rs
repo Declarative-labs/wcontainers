@@ -170,6 +170,9 @@ pub enum TrapKind {
     /// x86 `int 4` (`into` has no 64-bit form): `SIGSEGV`, `SI_KERNEL`, a trap with pc after the
     /// instruction, which the kernel tells from general protection by its trap number. Detail 0.
     Overflow = 7,
+    /// A read of a system register the guest's offer keeps from its level, which the kernel answers (ARM64's
+    /// counter registers, as CNTKCTL_EL1 refusing EL0 the counter makes them). Detail: the instruction's bytes.
+    SystemAccess = 8,
 }
 
 impl TrapKind {
@@ -182,6 +185,7 @@ impl TrapKind {
         Self::GeneralProtection,
         Self::FloatException,
         Self::Overflow,
+        Self::SystemAccess,
     ];
 
     pub fn from_i32(value: i32) -> Option<Self> {
@@ -198,6 +202,7 @@ impl TrapKind {
         "general protection",
         "float exception",
         "overflow",
+        "system access",
     ];
 
     pub const fn name(self) -> &'static str {
