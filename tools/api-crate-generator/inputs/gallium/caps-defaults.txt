@@ -1,0 +1,75 @@
+# Mesa 26.3.1's defaults of pipe_caps, as u_init_pipe_screen_caps (src/gallium/auxiliary/util/u_screen.c:41 to 236, MIT)
+# sets them for a screen whose driver calls it with accel = 1 (crates/opengl/src/screen.rs:573 on graphics-layout) and has
+# set no shader capability before: one line a field, `field = Rust expression`, in the function's order. A field not
+# listed is zero. Fields the function computes from the shader capabilities take those of zero capabilities
+# (max_constant_buffer_size from the fragment stage's max_const_buffer0_size: 0; hardware_gl_select needs the geometry
+# stage's indirect_temp_addr: false); performance_monitor needs driver query functions, which the served screen does not
+# set (false); dmabuf is set only from a screen file descriptor (zero). The direct crate's test `caps_defaults_agree`
+# compares Caps::default() with what the C function writes.
+accelerated = 1
+graphics = true
+fragment_shader_depth = true
+gl_clamp = true
+max_render_targets = 1
+mixed_colorbuffer_formats = true
+dithering = true
+# BITFIELD_MASK(MESA_PRIM_COUNT): MESA_PRIM_POINTS (0) to MESA_PRIM_PATCHES (14).
+supported_prim_modes_with_restart = 0x7FFF
+supported_prim_modes = 0x7FFF
+min_texel_offset = -8
+max_texel_offset = 7
+max_stream_output_separate_components = 4
+max_stream_output_interleaved_components = 64
+glsl_feature_level = 120
+glsl_feature_level_compatibility = 120
+vertex_input_alignment = values::VertexInputAlignment::PIPE_VERTEX_INPUT_ALIGNMENT_NONE
+constant_buffer_offset_alignment = 1
+min_map_buffer_alignment = 64
+texture_buffer_offset_alignment = 256
+texture_transfer_modes = values::TextureTransferMode::PIPE_TEXTURE_TRANSFER_BLIT.0
+max_texel_buffer_elements = 65536
+max_viewports = 1
+device_type = values::DeviceType::PIPE_DEVICE_TYPE_UNKNOWN
+endianness = values::Endian::PIPE_ENDIAN_LITTLE
+buffer_map_persistent_coherent = true
+min_texture_gather_offset = -8
+max_texture_gather_offset = 7
+vendor_id = 0xFFFF_FFFF
+device_id = 0xFFFF_FFFF
+max_vertex_attrib_stride = 2048
+shareable_shaders = true
+multi_draw_indirect_partial_stride = true
+rasterizer_subpixel_bits = 4
+prefer_back_buffer_reuse = true
+allow_mapped_buffers_during_execution = true
+prefer_imm_arrays_as_constbuf = true
+max_gs_invocations = 32
+max_shader_buffer_size = 1 << 27
+max_vertex_element_src_offset = 2047
+dest_surface_srgb_control = true
+max_varyings = 8
+max_texture_upload_memory_budget = 64 * 1024 * 1024
+# By MESA_SHADER_* (vertex 0, tess control 1, tess evaluation 2, geometry 3, fragment 4, compute 5, task 6, mesh 7): the
+# pre-rasterization stages VARYING_BIT_ POS (slot 0), PSIZ (12), CLIP_VERTEX (16), CLIP_DIST0 (17), CLIP_DIST1 (18),
+# CULL_DIST0 (19), CULL_DIST1 (20), LAYER (22), VIEWPORT (23), PRIMITIVE_INDICES (27, = TESS_LEVEL_INNER), VIEWPORT_MASK
+# (31); tess control TESS_LEVEL_INNER (27), TESS_LEVEL_OUTER (26), BOUNDING_BOX0 (28), BOUNDING_BOX1 (29).
+ignored_output_varyings = [0x88DF_1001, 0x3C00_0000, 0x88DF_1001, 0x88DF_1001, 0, 0, 0, 0x88DF_1001]
+throttle = true
+texture_shadow_map = true
+native_fp32_depth = true
+flatshade = true
+alpha_test = true
+# `caps->point_size_fixed = true`: the enumeration's value 1.
+point_size_fixed = values::PointSizeLowerMode::PIPE_POINT_SIZE_LOWER_NEVER
+two_sided_color = true
+clip_planes = 1
+max_vertex_buffers = 16
+nir_images_as_deref = true
+packed_stream_output = true
+gl_begin_end_buffer_size = 512 * 1024
+texrect = true
+allow_dynamic_vao_fastpath = true
+query_timestamp_bits = 64
+texture_sampler_independent = true
+max_label_length = 256
+max_texture_mb = 1024

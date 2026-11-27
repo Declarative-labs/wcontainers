@@ -49,19 +49,9 @@ const EXPECTED: &[&[&str]] = &[
     &["context_create", "destroy", "destroy"],
 ];
 
-/// Arguments the first case's calls must have reached the implementation with (Mesa's values, flattened by C and
-/// made owned by Rust): the sampler's level range (both of `float min_lod, max_lod;`), the blend, depth and
-/// rasterizer fields, the vertex element's offset and the stage and slots of the bound samplers.
-const ARGUMENTS: &[&str] = &[
-    "min_lod: 1.5",
-    "max_lod: 9.25",
-    "rgb_src_factor: Blendfactor(1)",
-    "independent_blend_enable: 1",
-    "depth_func: CompareFunc(1)",
-    "cull_face: 2",
-    "src_offset: 16",
-    "shader MesaShaderStage(4)",
-];
+// FILLED
+/// How the first case binds its two samplers: the vertex stage (MESA_SHADER_VERTEX, 0), from slot 3.
+const BOUND_SAMPLERS: &str = "bind_sampler_states shader MesaShaderStage(0) start_slot 3 samplers [Some(";
 
 /// One case on a new screen of the recording implementation: the case's status and the log.
 fn run(which: i32) -> (i32, Vec<String>) {
@@ -87,10 +77,15 @@ fn holds(which: i32) -> Result<(), String> {
         return Err(format!("case {which}: calls {names:?}, expected {expected:?}"));
     }
     if which == 0 {
-        let all = calls.join("\n");
-        let missing: Vec<&&str> = ARGUMENTS.iter().filter(|argument| !all.contains(**argument)).collect();
-        if !missing.is_empty() {
-            return Err(format!("case 0: arguments not received {missing:?}:\n{all}"));
+        // Each state's call as received, in full and in order: every field of every state the value caller.c set.
+        let made: Vec<&String> = calls.iter().filter(|call| call.starts_with("create_")).collect();
+        if made.len() != FILLED.len() || made.iter().zip(FILLED).any(|(call, expected)| call.as_str() != *expected) {
+            let all = calls.join("\n");
+            return Err(format!("case 0: the states as received differ from the states caller.c made:\nreceived:\n{all}\nexpected:\n{}", FILLED.join("\n")));
+        }
+        let bound: Vec<&String> = calls.iter().filter(|call| call.starts_with("bind_sampler_states")).collect();
+        if bound.len() != 1 || !bound[0].starts_with(BOUND_SAMPLERS) || bound[0].matches("Some(").count() != 2 {
+            return Err(format!("case 0: the samplers bound as {bound:?}, expected two from {BOUND_SAMPLERS}"));
         }
     }
     Ok(())

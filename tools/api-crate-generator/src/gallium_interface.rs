@@ -315,12 +315,14 @@ impl Structures<'_> {
         let generics = if kinds.is_empty() { String::new() } else { format!("<'a, {}>", kinds.join(", ")) };
         let union = self.header.unions.iter().any(|union| union == name);
         let mut body = String::new();
+        let mut carried: Vec<(String, String)> = Vec::new();
         for field in &fields {
             if let Some(reason) = left_out(name, &field.name) {
                 let _ = writeln!(body, "    // `{}` is not carried: {reason}.", field.name);
                 continue;
             }
             let Some(ty) = self.field_type(name, field) else { continue };
+            carried.push((field_name(&field.name), ty.clone()));
             let bits = field.bits.as_ref().map(|bits| format!(" ({bits} bits in C: a value past them is refused)")).unwrap_or_default();
             let memory = client_memory(name, &field.name).map(|reason| format!(": {reason}")).unwrap_or_default();
             let _ = writeln!(body, "    /// The `{}` of `{name}`{bits}{memory}.\n    pub {}: {ty},", field.name, field_name(&field.name));
@@ -334,6 +336,145 @@ impl Structures<'_> {
             if kinds.is_empty() { String::new() } else { ", each object it names a reference of its kind".to_string() },
             type_name(name)
         );
+        if let Some(filled) = crate::gallium::FILLED.iter().find(|filled| filled.structure == name) {
+            self.write_defaults(filled.structure, filled.defaults, &carried);
+        } else if HELD_IN_FILLED.contains(&name) {
+            self.write_defaults(name, "zero (Mesa sets none)", &carried);
+        }
+    }
+
+    /// `impl Default` of a structure the driver fills (G5): Mesa's defaults, from `inputs/gallium/caps-defaults.txt`
+    /// for pipe_caps (u_init_pipe_screen_caps's values), zero for the others (Mesa sets none).
+    fn write_defaults(&mut self, structure: &str, defaults: &str, carried: &[(String, String)]) {
+        let table: BTreeMap<&str, &str> = if structure == "pipe_caps" {
+            CAPS_DEFAULTS.lines().filter(|line| !line.starts_with('#') && !line.trim().is_empty()).filter_map(|line| line.split_once(" = ")).map(|(field, value)| (field.trim(), value.trim())).collect()
+        } else {
+            BTreeMap::new()
+        };
+        for field in table.keys() {
+            if !carried.iter().any(|(name, _)| name == field) {
+                self.unmapped.push(format!("{structure}: the default of {field}, which the structure does not carry"));
+            }
+        }
+        let name = type_name(structure);
+        let mut fields = String::new();
+        for (field, ty) in carried {
+            let value = table.get(field.as_str()).map_or_else(|| zero_of(ty), |value| (*value).to_string());
+            let _ = writeln!(fields, "            {field}: {value},");
+        }
+        let _ = writeln!(self.text, "/// Mesa's defaults of `{structure}`: {defaults}.\nimpl Default for {name} {{\n    fn default() -> {name} {{\n        {name} {{\n{fields}        }}\n    }}\n}}\n");
+    }
+}
+
+/// For the hostile C caller (caller.c) and its test (tests/served.rs): C assignments that set every field of Mesa's
+/// structure `name` the trait carries, through `path` (`blend.`), to a value of its own (each value its counter's next,
+/// within the field's width: a bit-field of one bit is 1), and the Debug text of the owned structure the trait must
+/// receive for it. The fields left out are left zero by the caller's memset.
+pub fn filled(header: &Header, name: &str, path: &str, counter: &mut u64) -> Result<(String, String), String> {
+    let mut structures = Structures { header, written: BTreeSet::new(), text: String::new(), unmapped: Vec::new(), defines: header.defines.clone() };
+    let mut assignments = String::new();
+    let debug = structures.filled(name, path, counter, &mut assignments)?;
+    Ok((assignments, debug))
+}
+
+impl Structures<'_> {
+    fn filled(&mut self, name: &str, path: &str, counter: &mut u64, assignments: &mut String) -> Result<String, String> {
+        let fields = self.header.structures.get(name).cloned().ok_or_else(|| format!("{name}: no structure read"))?;
+        let mut parts = Vec::new();
+        for field in &fields {
+            if left_out(name, &field.name).is_some() {
+                continue;
+            }
+            let ty = self.field_type(name, field).ok_or_else(|| format!("{name}.{}: no type", field.name))?;
+            let lengths: Vec<usize> = match &field.array {
+                Some(array) => array.split("][").map(|length| self.length(length.trim()).ok_or_else(|| format!("{name}.{}: array length {array}", field.name))).collect::<Result<_, _>>()?,
+                None => Vec::new(),
+            };
+            let element = ty.trim_start_matches('[').split(';').next().unwrap_or_default().trim_start_matches('[').to_string();
+            let base = declared_type(&field.base);
+            let nested = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union ")).map(str::to_string);
+            // A width may be a define's name (`clip_plane_enable:PIPE_MAX_CLIP_PLANES`).
+            let width: Option<u32> = match &field.bits {
+                Some(bits) => Some(self.length(bits.trim()).and_then(|width| u32::try_from(width).ok()).ok_or_else(|| format!("{name}.{}: width {bits}", field.name))?),
+                None => None,
+            };
+            let debug = self.filled_value(name, &field.name, &format!("{path}{}", field.name), &lengths, &element, nested.as_deref(), width, counter, assignments)?;
+            parts.push(format!("{}: {debug}", field_name(&field.name)));
+        }
+        Ok(format!("{} {{ {} }}", type_name(name), parts.join(", ")))
+    }
+
+    /// One field (an element of it where `lengths` remain): the C assignments and the Debug text.
+    #[expect(clippy::too_many_arguments, reason = "the field, where it is, its shape and the counter")]
+    fn filled_value(&mut self, structure: &str, field: &str, place: &str, lengths: &[usize], element: &str, nested: Option<&str>, width: Option<u32>, counter: &mut u64, assignments: &mut String) -> Result<String, String> {
+        if let Some((first, rest)) = lengths.split_first() {
+            let mut items = Vec::new();
+            for at in 0..*first {
+                items.push(self.filled_value(structure, field, &format!("{place}[{at}]"), rest, element, nested, width, counter, assignments)?);
+            }
+            return Ok(format!("[{}]", items.join(", ")));
+        }
+        if nested.is_some_and(|inner| inner == "pipe_color_union" || (self.header.unions.iter().any(|union| union == inner) && !inner.contains('.'))) {
+            // A union of four words (pipe_color_union): its words.
+            let mut words = Vec::new();
+            for at in 0..4 {
+                *counter += 1;
+                let _ = writeln!(assignments, "    {place}.ui[{at}] = {}u;", 1000 + *counter);
+                words.push((1000 + *counter).to_string());
+            }
+            return Ok(format!("[{}]", words.join(", ")));
+        }
+        if let Some(inner) = nested {
+            return self.filled(inner, &format!("{place}."), counter, assignments);
+        }
+        *counter += 1;
+        let value = match width {
+            Some(bits) if bits < 32 => 1 + *counter % ((1_u64 << bits) - 1),
+            _ => 1000 + *counter,
+        };
+        let numeric = element.trim();
+        let (c, debug) = match numeric {
+            "f32" | "f64" => (format!("{value}.25f"), format!("{value}.25")),
+            "bool" => ("1".to_string(), "true".to_string()),
+            "u8" | "i8" if width.is_none() => {
+                let small = 1 + *counter % 100;
+                (small.to_string(), small.to_string())
+            }
+            "u8" | "i8" => (value.to_string(), value.to_string()),
+            values if values.starts_with("values::") => (value.to_string(), format!("{}({value})", values.trim_start_matches("values::"))),
+            "u32" | "i32" | "u16" | "i16" | "u64" | "i64" => (value.to_string(), value.to_string()),
+            other => return Err(format!("{structure}.{field}: no value for a field of {other}")),
+        };
+        let _ = writeln!(assignments, "    {place} = {c};");
+        Ok(debug)
+    }
+}
+
+/// The structures a filled structure holds by value, which take defaults too (pipe_caps holds pipe_mesh_caps).
+const HELD_IN_FILLED: &[&str] = &["pipe_mesh_caps"];
+
+/// Mesa's defaults of pipe_caps (u_init_pipe_screen_caps), one field a line.
+const CAPS_DEFAULTS: &str = include_str!("../inputs/gallium/caps-defaults.txt");
+
+/// Whether a Rust type is one of the numbers `number` gives.
+fn is_number(ty: &str) -> bool {
+    matches!(ty, "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "u64" | "i64")
+}
+
+/// The zero of a field's Rust type.
+fn zero_of(ty: &str) -> String {
+    if let Some(inner) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']'))
+        && let Some((element, length)) = inner.rsplit_once("; ")
+    {
+        return format!("[{}; {length}]", zero_of(element));
+    }
+    match ty {
+        "bool" => "false".to_string(),
+        "f32" | "f64" => "0.0".to_string(),
+        values if values.starts_with("values::") => format!("{values}(0)"),
+        number if is_number(number) => "0".to_string(),
+        // A structure held by value: its own defaults (written with it).
+        structure => format!("{structure}::default()"),
     }
 }
 

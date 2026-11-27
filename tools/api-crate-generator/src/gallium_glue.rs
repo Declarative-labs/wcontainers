@@ -429,13 +429,51 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gal
     let (serve_rust, serve_c, served) = crate::gallium_serve::generate(header)?;
     write(direct.join("serve.rs"), &serve_rust)?;
     write(direct.join("serve.c"), &serve_c)?;
-    write(direct.join("caller.c"), &format!("{HEADER_C}{}", include_str!("../templates/gallium/caller.c")))?;
-    write(direct.join("tests").join("served.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/served.rs")))?;
+    let (fills_c, fills_rust) = caller_fills(header)?;
+    write(direct.join("caller.c"), &format!("{HEADER_C}{}", include_str!("../templates/gallium/caller.c").replace("/* FILLED */\n", &fills_c)))?;
+    write(direct.join("tests").join("served.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/served.rs").replace("// FILLED\n", &fills_rust)))?;
     write(direct.join("build.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/build.rs")))?;
     write(direct.join("Cargo.toml"), include_str!("../templates/gallium/direct.toml"))?;
     write(direct.join("tests").join("layouts.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/layouts.rs")))?;
+    std::fs::create_dir_all(direct.join("tests").join("clang_layouts")).map_err(|error| error.to_string())?;
+    write(direct.join("tests").join("clang_layouts").join("mod.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/clang_layouts.rs")))?;
     let counted: Vec<&str> = COUNTED.to_vec();
     Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function), {field_count} fields; counted kinds {}\n{served}", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
+}
+
+/// The served states the hostile caller's first case makes, each filled field by field: (the C function, its
+/// parameter, the structure, how many it fills, the method and argument the trait receives them as).
+const FILLED_STATES: &[(&str, &str, &str, usize, &str)] = &[
+    ("filled_blend", "blend", "pipe_blend_state", 1, "create_blend_state arg1"),
+    ("filled_depth_stencil_alpha", "dsa", "pipe_depth_stencil_alpha_state", 1, "create_depth_stencil_alpha_state arg1"),
+    ("filled_rasterizer", "rasterizer", "pipe_rasterizer_state", 1, "create_rasterizer_state arg1"),
+    ("filled_sampler_first", "sampler", "pipe_sampler_state", 1, "create_sampler_state arg1"),
+    ("filled_sampler_second", "sampler", "pipe_sampler_state", 1, "create_sampler_state arg1"),
+    ("filled_vertex_elements", "elements", "pipe_vertex_element", 2, "create_vertex_elements_state arg2"),
+];
+
+/// The hostile caller's filling functions (caller.c) and the calls the implementation must receive for them
+/// (tests/served.rs's `FILLED`): every field the trait carries a value of its own, stated in full.
+fn caller_fills(header: &Header) -> Result<(String, String), String> {
+    let mut c = String::from("/* Every field the trait carries of each served state set to a value of its own (written by the generator, which\n * states in tests/served.rs the owned structure each must reach the implementation as). */\n");
+    let mut rust = String::from("/// The calls the first case's states must reach the implementation as, in full: every field caller.c's `filled_*`\n/// sets, with the value it sets.\nconst FILLED: &[&str] = &[\n");
+    let mut counter = 0_u64;
+    for (function, parameter, structure, count, call) in FILLED_STATES {
+        let mut body = String::new();
+        let mut debugs = Vec::new();
+        for at in 0..*count {
+            let path = if *count == 1 { format!("{parameter}->") } else { format!("{parameter}[{at}].") };
+            let (assignments, debug) = crate::gallium_interface::filled(header, structure, &path, &mut counter)?;
+            body.push_str(&assignments);
+            debugs.push(debug);
+        }
+        let (declared, size) = if *count == 1 { (format!("struct {structure} *{parameter}"), format!("sizeof *{parameter}")) } else { (format!("struct {structure} {parameter}[{count}]"), format!("{count} * sizeof {parameter}[0]")) };
+        let _ = writeln!(c, "static void {function}({declared})\n{{\n    memset({parameter}, 0, {size});\n{body}}}\n");
+        let received = if *count == 1 { debugs.join("") } else { format!("[{}]", debugs.join(", ")) };
+        let _ = writeln!(rust, "    {:?},", format!("{call} {received}"));
+    }
+    rust.push_str("];\n");
+    Ok((c, rust))
 }
 
 /// The C type of a Mesa structure by the generator's name (`pipe_draw_info.index` is reached from `struct pipe_draw_info`).

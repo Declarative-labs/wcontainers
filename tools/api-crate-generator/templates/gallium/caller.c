@@ -14,6 +14,7 @@
 int wc_caller_cases(void);
 int wc_caller_case(uintptr_t address, int which);
 
+/* FILLED */
 /* A key no call ever handed out. */
 #define WC_NEVER_HANDED_OUT ((void *)(uintptr_t)0x7f00ff)
 
@@ -48,46 +49,47 @@ static void *made_sampler(struct pipe_context *ctx, float min_lod, float max_lod
     return ctx->create_sampler_state(ctx, &sampler);
 }
 
-/* Every state made, bound (and unbound) and given back, as st/mesa does. */
+/* Every state made with every field set, bound (and unbound) and given back, as st/mesa does. */
 static int states(struct pipe_context *ctx)
 {
-    void *blend = made_blend(ctx);
-    if (!blend)
+    struct pipe_blend_state blend;
+    filled_blend(&blend);
+    void *made = ctx->create_blend_state(ctx, &blend);
+    if (!made)
         return 10;
-    ctx->bind_blend_state(ctx, blend);
+    ctx->bind_blend_state(ctx, made);
     ctx->bind_blend_state(ctx, NULL);
-    ctx->delete_blend_state(ctx, blend);
+    ctx->delete_blend_state(ctx, made);
 
     struct pipe_depth_stencil_alpha_state dsa;
-    memset(&dsa, 0, sizeof dsa);
-    dsa.depth_enabled = 1;
-    dsa.depth_func = PIPE_FUNC_LESS;
+    filled_depth_stencil_alpha(&dsa);
     void *depth = ctx->create_depth_stencil_alpha_state(ctx, &dsa);
     if (!depth)
         return 11;
     ctx->bind_depth_stencil_alpha_state(ctx, depth);
     ctx->delete_depth_stencil_alpha_state(ctx, depth);
 
-    void *rasterizer = made_rasterizer(ctx);
-    if (!rasterizer)
+    struct pipe_rasterizer_state rasterizer;
+    filled_rasterizer(&rasterizer);
+    void *raster = ctx->create_rasterizer_state(ctx, &rasterizer);
+    if (!raster)
         return 12;
-    ctx->bind_rasterizer_state(ctx, rasterizer);
-    ctx->delete_rasterizer_state(ctx, rasterizer);
+    ctx->bind_rasterizer_state(ctx, raster);
+    ctx->delete_rasterizer_state(ctx, raster);
 
-    void *samplers[2] = {made_sampler(ctx, 1.5f, 9.25f), made_sampler(ctx, 0.0f, 2.0f)};
+    struct pipe_sampler_state first, second;
+    filled_sampler_first(&first);
+    filled_sampler_second(&second);
+    void *samplers[2] = {ctx->create_sampler_state(ctx, &first), ctx->create_sampler_state(ctx, &second)};
     if (!samplers[0] || !samplers[1])
         return 13;
-    ctx->bind_sampler_states(ctx, MESA_SHADER_FRAGMENT, 0, 2, samplers);
+    /* At slots 3 and 4 of the vertex stage, so the stage and the first slot are values of their own. */
+    ctx->bind_sampler_states(ctx, MESA_SHADER_VERTEX, 3, 2, samplers);
     ctx->delete_sampler_state(ctx, samplers[0]);
     ctx->delete_sampler_state(ctx, samplers[1]);
 
     struct pipe_vertex_element elements[2];
-    memset(elements, 0, sizeof elements);
-    elements[0].src_format = (uint8_t)PIPE_FORMAT_R32G32B32A32_FLOAT;
-    elements[0].src_stride = 24;
-    elements[1].src_offset = 16;
-    elements[1].src_format = (uint8_t)PIPE_FORMAT_R32G32_FLOAT;
-    elements[1].src_stride = 24;
+    filled_vertex_elements(elements);
     void *vertex = ctx->create_vertex_elements_state(ctx, 2, elements);
     if (!vertex)
         return 14;

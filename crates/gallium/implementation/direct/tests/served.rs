@@ -50,19 +50,18 @@ const EXPECTED: &[&[&str]] = &[
     &["context_create", "destroy", "destroy"],
 ];
 
-/// Arguments the first case's calls must have reached the implementation with (Mesa's values, flattened by C and
-/// made owned by Rust): the sampler's level range (both of `float min_lod, max_lod;`), the blend, depth and
-/// rasterizer fields, the vertex element's offset and the stage and slots of the bound samplers.
-const ARGUMENTS: &[&str] = &[
-    "min_lod: 1.5",
-    "max_lod: 9.25",
-    "rgb_src_factor: Blendfactor(1)",
-    "independent_blend_enable: 1",
-    "depth_func: CompareFunc(1)",
-    "cull_face: 2",
-    "src_offset: 16",
-    "shader MesaShaderStage(4)",
+/// The calls the first case's states must reach the implementation as, in full: every field caller.c's `filled_*`
+/// sets, with the value it sets.
+const FILLED: &[&str] = &[
+    "create_blend_state arg1 BlendState { independent_blend_enable: 1, logicop_enable: 1, logicop_func: Logicop(4), dither: 1, alpha_to_coverage: 1, alpha_to_coverage_dither: 1, alpha_to_one: 1, max_rt: 2, advanced_blend_func: 10, blend_coherent: 1, is_yuv: 1, rt: [RtBlendState { blend_enable: 1, rgb_func: 7, rgb_src_factor: Blendfactor(15), rgb_dst_factor: Blendfactor(16), alpha_func: 3, alpha_src_factor: Blendfactor(18), alpha_dst_factor: Blendfactor(19), colormask: 5 }, RtBlendState { blend_enable: 1, rgb_func: 1, rgb_src_factor: Blendfactor(23), rgb_dst_factor: Blendfactor(24), alpha_func: 4, alpha_src_factor: Blendfactor(26), alpha_dst_factor: Blendfactor(27), colormask: 13 }, RtBlendState { blend_enable: 1, rgb_func: 2, rgb_src_factor: Blendfactor(31), rgb_dst_factor: Blendfactor(1), alpha_func: 5, alpha_src_factor: Blendfactor(3), alpha_dst_factor: Blendfactor(4), colormask: 6 }, RtBlendState { blend_enable: 1, rgb_func: 3, rgb_src_factor: Blendfactor(8), rgb_dst_factor: Blendfactor(9), alpha_func: 6, alpha_src_factor: Blendfactor(11), alpha_dst_factor: Blendfactor(12), colormask: 14 }, RtBlendState { blend_enable: 1, rgb_func: 4, rgb_src_factor: Blendfactor(16), rgb_dst_factor: Blendfactor(17), alpha_func: 7, alpha_src_factor: Blendfactor(19), alpha_dst_factor: Blendfactor(20), colormask: 7 }, RtBlendState { blend_enable: 1, rgb_func: 5, rgb_src_factor: Blendfactor(24), rgb_dst_factor: Blendfactor(25), alpha_func: 1, alpha_src_factor: Blendfactor(27), alpha_dst_factor: Blendfactor(28), colormask: 15 }, RtBlendState { blend_enable: 1, rgb_func: 6, rgb_src_factor: Blendfactor(1), rgb_dst_factor: Blendfactor(2), alpha_func: 2, alpha_src_factor: Blendfactor(4), alpha_dst_factor: Blendfactor(5), colormask: 8 }, RtBlendState { blend_enable: 1, rgb_func: 7, rgb_src_factor: Blendfactor(9), rgb_dst_factor: Blendfactor(10), alpha_func: 3, alpha_src_factor: Blendfactor(12), alpha_dst_factor: Blendfactor(13), colormask: 1 }] }",
+    "create_depth_stencil_alpha_state arg1 DepthStencilAlphaState { stencil: [StencilState { enabled: 1, func: CompareFunc(1), fail_op: StencilOp(2), zpass_op: StencilOp(3), zfail_op: StencilOp(4), valuemask: 82, writemask: 83 }, StencilState { enabled: 1, func: CompareFunc(1), fail_op: StencilOp(2), zpass_op: StencilOp(3), zfail_op: StencilOp(4), valuemask: 89, writemask: 90 }], alpha_enabled: 1, alpha_func: CompareFunc(1), depth_enabled: 1, depth_writemask: 1, depth_func: CompareFunc(4), depth_bounds_test: 1, alpha_ref_value: 1096.25, depth_bounds_min: 1097.25, depth_bounds_max: 1098.25 }",
+    "create_rasterizer_state arg1 RasterizerState { flatshade: 1, light_twoside: 1, clamp_vertex_color: 1, clamp_fragment_color: 1, front_ccw: 1, cull_face: 3, fill_front: 1, fill_back: 2, offset_point: 1, offset_line: 1, offset_tri: 1, scissor: 1, poly_smooth: 1, poly_stipple_enable: 1, point_smooth: 1, sprite_coord_mode: SpriteCoordMode(1), point_quad_rasterization: 1, point_line_tri_clip: 1, point_size_per_vertex: 1, multisample: 1, no_ms_sample_mask_out: 1, force_persample_interp: 1, line_smooth: 1, line_stipple_enable: 1, line_last_pixel: 1, line_rectangular: 1, conservative_raster_mode: ConservativeRasterMode(3), flatshade_first: 1, half_pixel_center: 1, bottom_edge_rule: 1, subpixel_precision_x: 10, subpixel_precision_y: 11, rasterizer_discard: 1, rasterization_stream: 1, tile_raster_order_fixed: 1, tile_raster_order_increasing_x: 1, tile_raster_order_increasing_y: 1, depth_clip_near: 1, depth_clip_far: 1, depth_clamp: 1, clip_halfz: 1, offset_units_unscaled: 1, unclamped_fragment_depth_values: 1, clip_plane_enable: 143, representative_fragment_test: 1, line_stipple_factor: 145, line_stipple_pattern: 146, sprite_coord_enable: 1146, line_width: 1147.25, point_size: 1148.25, offset_units: 1149.25, offset_scale: 1150.25, offset_clamp: 1151.25, conservative_raster_dilate: 1152.25 }",
+    "create_sampler_state arg1 SamplerState { wrap_s: TexWrap(7), wrap_t: TexWrap(1), wrap_r: TexWrap(2), min_img_filter: TexFilter(1), min_mip_filter: TexMipfilter(2), mag_img_filter: TexFilter(1), compare_mode: TexCompare(1), compare_func: CompareFunc(7), unnormalized_coords: 1, max_anisotropy: 8, seamless_cube_map: 1, border_color_is_integer: 1, reduction_mode: TexReductionMode(1), pad: 12, lod_bias: 1167.25, min_lod: 1168.25, max_lod: 1169.25, border_color: [1170, 1171, 1172, 1173], border_color_format: Format(1174) }",
+    "create_sampler_state arg1 SamplerState { wrap_s: TexWrap(1), wrap_t: TexWrap(2), wrap_r: TexWrap(3), min_img_filter: TexFilter(1), min_mip_filter: TexMipfilter(3), mag_img_filter: TexFilter(1), compare_mode: TexCompare(1), compare_func: CompareFunc(1), unnormalized_coords: 1, max_anisotropy: 30, seamless_cube_map: 1, border_color_is_integer: 1, reduction_mode: TexReductionMode(2), pad: 3, lod_bias: 1189.25, min_lod: 1190.25, max_lod: 1191.25, border_color: [1192, 1193, 1194, 1195], border_color_format: Format(1196) }",
+    "create_vertex_elements_state arg2 [VertexElement { src_offset: 1197, vertex_buffer_index: 72, dual_slot: true, src_format: 1, src_stride: 1201, instance_divisor: 1202 }, VertexElement { src_offset: 1203, vertex_buffer_index: 78, dual_slot: true, src_format: 7, src_stride: 1207, instance_divisor: 1208 }]",
 ];
+/// How the first case binds its two samplers: the vertex stage (MESA_SHADER_VERTEX, 0), from slot 3.
+const BOUND_SAMPLERS: &str = "bind_sampler_states shader MesaShaderStage(0) start_slot 3 samplers [Some(";
 
 /// One case on a new screen of the recording implementation: the case's status and the log.
 fn run(which: i32) -> (i32, Vec<String>) {
@@ -88,10 +87,15 @@ fn holds(which: i32) -> Result<(), String> {
         return Err(format!("case {which}: calls {names:?}, expected {expected:?}"));
     }
     if which == 0 {
-        let all = calls.join("\n");
-        let missing: Vec<&&str> = ARGUMENTS.iter().filter(|argument| !all.contains(**argument)).collect();
-        if !missing.is_empty() {
-            return Err(format!("case 0: arguments not received {missing:?}:\n{all}"));
+        // Each state's call as received, in full and in order: every field of every state the value caller.c set.
+        let made: Vec<&String> = calls.iter().filter(|call| call.starts_with("create_")).collect();
+        if made.len() != FILLED.len() || made.iter().zip(FILLED).any(|(call, expected)| call.as_str() != *expected) {
+            let all = calls.join("\n");
+            return Err(format!("case 0: the states as received differ from the states caller.c made:\nreceived:\n{all}\nexpected:\n{}", FILLED.join("\n")));
+        }
+        let bound: Vec<&String> = calls.iter().filter(|call| call.starts_with("bind_sampler_states")).collect();
+        if bound.len() != 1 || !bound[0].starts_with(BOUND_SAMPLERS) || bound[0].matches("Some(").count() != 2 {
+            return Err(format!("case 0: the samplers bound as {bound:?}, expected two from {BOUND_SAMPLERS}"));
         }
     }
     Ok(())
