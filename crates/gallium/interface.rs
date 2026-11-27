@@ -3,8 +3,12 @@
 //! `GalliumContext` (a rendering context), limited to the function pointers our driver sets. Every object Mesa
 //! passes is a value of one of the implementation's kinds, made only by the methods that make it and given back only
 //! by those that take it by value; a shader of one stage is a type of its own, made from mesa-compiler's received
-//! program of that stage. Plain data is owned, each object it names a reference of its kind. Declared values are
+//! program of that stage. Plain data is owned, each object it names a reference of its kind. A kind Mesa counts
+//! (Resource, Fence, SamplerView, StreamOutputTarget) is passed as an `Arc` of it: an implementation keeps one past
+//! the call by cloning the handle, and the object ends where its last handle is dropped. Declared values are
 //! `u32`, checked by the glue.
+
+use std::sync::Arc;
 
 /// Mesa's `struct pipe_box`, owned.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,7 +68,7 @@ pub struct ResourceTemplate {
 #[derive(Debug)]
 pub struct BlitInfoDst<'a, Resource> {
     /// The `resource` of `pipe_blit_info.dst`.
-    pub resource: Option<&'a Resource>,
+    pub resource: Option<&'a Arc<Resource>>,
     /// The `level` of `pipe_blit_info.dst`.
     pub level: u32,
     /// The `box` of `pipe_blit_info.dst`.
@@ -77,7 +81,7 @@ pub struct BlitInfoDst<'a, Resource> {
 #[derive(Debug)]
 pub struct BlitInfoSrc<'a, Resource> {
     /// The `resource` of `pipe_blit_info.src`.
-    pub resource: Option<&'a Resource>,
+    pub resource: Option<&'a Arc<Resource>>,
     /// The `level` of `pipe_blit_info.src`.
     pub level: u32,
     /// The `box` of `pipe_blit_info.src`.
@@ -157,7 +161,7 @@ pub struct Surface<'a, Resource> {
     /// The `level` of `pipe_surface`.
     pub level: u32,
     /// The `texture` of `pipe_surface`.
-    pub texture: Option<&'a Resource>,
+    pub texture: Option<&'a Arc<Resource>>,
 }
 
 /// Mesa's `struct pipe_rt_blend_state`, owned.
@@ -553,8 +557,9 @@ pub struct VertexElement {
 #[derive(Debug)]
 pub struct DrawInfoIndex<'a, Resource> {
     /// The `resource` of `pipe_draw_info.index`.
-    pub resource: Option<&'a Resource>,
-    // `user` is not carried: client memory as indices: refused, the driver reports no user index buffers (PIPE_CAP has_user_indices false).
+    pub resource: Option<&'a Arc<Resource>>,
+    /// The `user` of `pipe_draw_info.index`: the indices in client memory, when `has_user_indices`: from index 0 to the end of the furthest draw (start plus count, times index_size). No capability turns them off: st/mesa sets has_user_indices whenever no element buffer is bound (main/draw.c:1662, 2043; MEASURED on llvmpipe).
+    pub user: Option<&'a [u8]>,
 }
 
 /// Mesa's `struct pipe_draw_info`, owned, each object it names a reference of its kind.
@@ -604,11 +609,11 @@ pub struct DrawIndirectInfo<'a, Resource, StreamOutputTarget> {
     /// The `indirect_draw_count_offset` of `pipe_draw_indirect_info`.
     pub indirect_draw_count_offset: u32,
     /// The `buffer` of `pipe_draw_indirect_info`.
-    pub buffer: Option<&'a Resource>,
+    pub buffer: Option<&'a Arc<Resource>>,
     /// The `indirect_draw_count` of `pipe_draw_indirect_info`.
-    pub indirect_draw_count: Option<&'a Resource>,
+    pub indirect_draw_count: Option<&'a Arc<Resource>>,
     /// The `count_from_stream_output` of `pipe_draw_indirect_info`.
-    pub count_from_stream_output: Option<&'a StreamOutputTarget>,
+    pub count_from_stream_output: Option<&'a Arc<StreamOutputTarget>>,
 }
 
 /// Mesa's `struct pipe_draw_start_count_bias`, owned.
@@ -638,7 +643,7 @@ pub struct GridInfo<'a, Resource> {
     /// The `grid_base` of `pipe_grid_info`.
     pub grid_base: [u32; 3],
     /// The `indirect` of `pipe_grid_info`.
-    pub indirect: Option<&'a Resource>,
+    pub indirect: Option<&'a Arc<Resource>>,
     /// The `indirect_offset` of `pipe_grid_info`.
     pub indirect_offset: u32,
     /// The `indirect_stride` of `pipe_grid_info`.
@@ -648,7 +653,7 @@ pub struct GridInfo<'a, Resource> {
     /// The `indirect_draw_count_offset` of `pipe_grid_info`.
     pub indirect_draw_count_offset: u32,
     /// The `indirect_draw_count` of `pipe_grid_info`.
-    pub indirect_draw_count: Option<&'a Resource>,
+    pub indirect_draw_count: Option<&'a Arc<Resource>>,
     // `num_globals` is not carried: the count of `globals`, left out with it.
     // `globals` is not carried: global buffers of OpenCL's frontend (none from st/mesa).
 }
@@ -671,12 +676,13 @@ pub struct ClipState {
 #[derive(Debug)]
 pub struct ConstantBuffer<'a, Resource> {
     /// The `buffer` of `pipe_constant_buffer`.
-    pub buffer: Option<&'a Resource>,
+    pub buffer: Option<&'a Arc<Resource>>,
     /// The `buffer_offset` of `pipe_constant_buffer`.
     pub buffer_offset: u32,
     /// The `buffer_size` of `pipe_constant_buffer`.
     pub buffer_size: u32,
-    // `user_buffer` is not carried: client memory as a constant buffer: refused, the driver reports no user constant buffers.
+    /// The `user_buffer` of `pipe_constant_buffer`: the constants in client memory, `buffer_size` bytes from `buffer_offset`. st/mesa uploads its own when the driver reports prefer_real_buffer_in_constbuf0 (u_inlines.h:749, st_atom_constbuf.c:124), but Mesa's blitter, a helper the driver calls, passes its clear color so (u_blitter.c:1607, 2501, 2939).
+    pub user_buffer: Option<&'a [u8]>,
 }
 
 /// Mesa's `struct pipe_framebuffer_state`, owned, each object it names a reference of its kind.
@@ -703,7 +709,7 @@ pub struct FramebufferState<'a, Resource> {
     /// The `zsbuf` of `pipe_framebuffer_state`.
     pub zsbuf: Surface<'a, Resource>,
     /// The `resolve` of `pipe_framebuffer_state`.
-    pub resolve: Option<&'a Resource>,
+    pub resolve: Option<&'a Arc<Resource>>,
 }
 
 /// Mesa's `struct pipe_poly_stipple`, owned.
@@ -717,7 +723,7 @@ pub struct PolyStipple {
 #[derive(Debug)]
 pub struct ShaderBuffer<'a, Resource> {
     /// The `buffer` of `pipe_shader_buffer`.
-    pub buffer: Option<&'a Resource>,
+    pub buffer: Option<&'a Arc<Resource>>,
     /// The `buffer_offset` of `pipe_shader_buffer`.
     pub buffer_offset: u32,
     /// The `buffer_size` of `pipe_shader_buffer`.
@@ -763,7 +769,7 @@ pub struct ImageViewU {
 #[derive(Debug)]
 pub struct ImageView<'a, Resource> {
     /// The `resource` of `pipe_image_view`.
-    pub resource: Option<&'a Resource>,
+    pub resource: Option<&'a Arc<Resource>>,
     /// The `format` of `pipe_image_view`.
     pub format: u32,
     /// The `access` of `pipe_image_view`.
@@ -785,7 +791,7 @@ pub struct StencilRef {
 #[derive(Debug)]
 pub struct VertexBufferBuffer<'a, Resource> {
     /// The `resource` of `pipe_vertex_buffer.buffer`.
-    pub resource: Option<&'a Resource>,
+    pub resource: Option<&'a Arc<Resource>>,
     // `user` is not carried: client memory as a vertex buffer: refused, the driver reports no user vertex buffers.
 }
 
@@ -839,11 +845,11 @@ pub trait Gallium: Sized {
     /// A rendering context.
     type Context: GalliumContext<Screen = Self>;
 
-    /// A buffer or texture, counted by Mesa (pipe_reference) and given back by resource_destroy at zero.
+    /// A buffer or texture, counted (Mesa's pipe_reference): the implementation keeps one by cloning its handle, and the last handle dropped ends it.
     type Resource;
 
-    /// A point in a context's commands, counted by fence_reference.
-    type Fence: Clone;
+    /// A point in a context's commands, counted (fence_reference): kept by cloning its handle.
+    type Fence;
 
     /// A blend state.
     type Blend;
@@ -878,10 +884,10 @@ pub trait Gallium: Sized {
     /// A compute program, from a Received of that stage.
     type ComputeShader;
 
-    /// A view of a resource for sampling.
+    /// A view of a resource for sampling, counted (pipe_sampler_view_reference): kept by cloning its handle.
     type SamplerView;
 
-    /// A range of a buffer that streamed outputs are written to.
+    /// A range of a buffer that streamed outputs are written to, counted (pipe_so_target_reference): kept by cloning its handle.
     type StreamOutputTarget;
 
     /// A query that is begun and ended (begin_query, end_query).
@@ -903,10 +909,10 @@ pub trait Gallium: Sized {
     fn destroy(&self);
 
     /// Mesa's `pipe_screen.fence_finish`, called first at mesa/state_tracker/st_manager.c:819.
-    fn fence_finish(&self, ctx: Option<&Self::Context>, fence: &Self::Fence, timeout: u64) -> bool;
+    fn fence_finish(&self, ctx: Option<&Self::Context>, fence: &Arc<Self::Fence>, timeout: u64) -> bool;
 
     /// Mesa's `pipe_screen.flush_frontbuffer`, called first at gallium/frontends/dri/drisw.c:173.
-    fn flush_frontbuffer(&self, ctx: Option<&Self::Context>, resource: &Self::Resource, level: u32, layer: u32, winsys_drawable_handle: u64, subbox: Option<&PipeBox>);
+    fn flush_frontbuffer(&self, ctx: Option<&Self::Context>, resource: &Arc<Self::Resource>, level: u32, layer: u32, winsys_drawable_handle: u64, subbox: Option<&PipeBox>);
 
     /// Mesa's `pipe_screen.get_device_vendor`, called first at gallium/frontends/dri/dri_util.c:1140.
     fn get_device_vendor(&self) -> Vec<u8>;
@@ -923,9 +929,6 @@ pub trait Gallium: Sized {
     /// Mesa's `pipe_screen.resource_create`, called first at mesa/state_tracker/st_texture.c:106.
     fn resource_create(&self, templat: &ResourceTemplate) -> Option<Self::Resource>;
 
-    /// Mesa's `pipe_screen.resource_destroy`, called first at gallium/auxiliary/util/u_inlines.h:183.
-    fn resource_destroy(&self, pt: Self::Resource);
-
 }
 
 /// A rendering context of a screen.
@@ -934,7 +937,7 @@ pub trait GalliumContext: Sized {
     type Screen: Gallium<Context = Self>;
 
     /// Mesa's `pipe_context.begin_query`, called first at mesa/main/performance_monitor.c:198.
-    fn begin_query(&self, q: <Self::Screen as Gallium>::Query) -> Option<<Self::Screen as Gallium>::ActiveQuery>;
+    fn begin_query(&self, q: <Self::Screen as Gallium>::Query) -> Result<<Self::Screen as Gallium>::ActiveQuery, <Self::Screen as Gallium>::Query>;
 
     /// Mesa's `pipe_context.bind_blend_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:449.
     fn bind_blend_state(&self, arg1: Option<&<Self::Screen as Gallium>::Blend>);
@@ -973,10 +976,10 @@ pub trait GalliumContext: Sized {
     fn blit(&self, info: &BlitInfo<'_, <Self::Screen as Gallium>::Resource>);
 
     /// Mesa's `pipe_context.buffer_map`, called first at gallium/auxiliary/util/u_inlines.h:530.
-    fn buffer_map(&self, resource: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, arg4: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
+    fn buffer_map(&self, resource: &Arc<<Self::Screen as Gallium>::Resource>, level: u32, usage: u32, arg4: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
 
     /// Mesa's `pipe_context.buffer_subdata`, called first at mesa/main/bufferobj.c:116.
-    fn buffer_subdata(&self, arg1: &<Self::Screen as Gallium>::Resource, usage: u32, offset: u32, size: u32, data: &[u8]);
+    fn buffer_subdata(&self, arg1: &Arc<<Self::Screen as Gallium>::Resource>, usage: u32, offset: u32, size: u32, data: &[u8]);
 
     /// Mesa's `pipe_context.buffer_unmap`, called first at gallium/auxiliary/util/u_inlines.h:565.
     fn buffer_unmap(&self, transfer: <Self::Screen as Gallium>::Mapping, written: &[u8]);
@@ -1021,10 +1024,10 @@ pub trait GalliumContext: Sized {
     fn create_sampler_state(&self, arg1: &SamplerState) -> Option<<Self::Screen as Gallium>::Sampler>;
 
     /// Mesa's `pipe_context.create_sampler_view`, called first at mesa/state_tracker/st_sampler_view.c:524.
-    fn create_sampler_view(&self, texture: &<Self::Screen as Gallium>::Resource, templat: &SamplerViewTemplate) -> Option<<Self::Screen as Gallium>::SamplerView>;
+    fn create_sampler_view(&self, texture: &Arc<<Self::Screen as Gallium>::Resource>, templat: &SamplerViewTemplate) -> Option<<Self::Screen as Gallium>::SamplerView>;
 
     /// Mesa's `pipe_context.create_stream_output_target`, called first at mesa/main/transformfeedback.c:445.
-    fn create_stream_output_target(&self, arg1: &<Self::Screen as Gallium>::Resource, buffer_offset: u32, buffer_size: u32) -> Option<<Self::Screen as Gallium>::StreamOutputTarget>;
+    fn create_stream_output_target(&self, arg1: &Arc<<Self::Screen as Gallium>::Resource>, buffer_offset: u32, buffer_size: u32) -> Option<<Self::Screen as Gallium>::StreamOutputTarget>;
 
     /// Mesa's `pipe_context.create_tcs_state`, called first at mesa/state_tracker/st_program.c:564.
     fn create_tcs_state(&self, program: <<Self::Screen as Gallium>::Compiler as wcontainers_mesa_compiler::MesaCompiler>::ReceivedTessControl, arg1: &ShaderState) -> Option<<Self::Screen as Gallium>::TessControlShader>;
@@ -1093,10 +1096,10 @@ pub trait GalliumContext: Sized {
     fn flush(&self, flags: u32) -> Option<<Self::Screen as Gallium>::Fence>;
 
     /// Mesa's `pipe_context.flush_resource`, called first at mesa/state_tracker/st_interop.c:373.
-    fn flush_resource(&self, resource: &<Self::Screen as Gallium>::Resource);
+    fn flush_resource(&self, resource: &Arc<<Self::Screen as Gallium>::Resource>);
 
     /// Mesa's `pipe_context.generate_mipmap`, called first at mesa/state_tracker/st_gen_mipmap.c:145.
-    fn generate_mipmap(&self, resource: &<Self::Screen as Gallium>::Resource, format: u32, base_level: u32, last_level: u32, first_layer: u32, last_layer: u32) -> bool;
+    fn generate_mipmap(&self, resource: &Arc<<Self::Screen as Gallium>::Resource>, format: u32, base_level: u32, last_level: u32, first_layer: u32, last_layer: u32) -> bool;
 
     /// Mesa's `pipe_context.get_device_reset_status`, called first at mesa/state_tracker/st_cb_flush.c:162.
     fn get_device_reset_status(&self) -> u32;
@@ -1106,9 +1109,6 @@ pub trait GalliumContext: Sized {
 
     /// Mesa's `pipe_context.get_query_result`, on a EndOnlyQuery, called first at mesa/main/performance_monitor.c:259.
     fn get_query_result_end_only_query(&self, q: &<Self::Screen as Gallium>::EndOnlyQuery, wait: bool, result: &mut [u8]) -> bool;
-
-    /// Mesa's `pipe_context.get_sample_position`, called first at mesa/main/multisample.c:96.
-    fn get_sample_position(&self, sample_count: u32, sample_index: u32) -> [f32; 2];
 
     /// Mesa's `pipe_context.get_timestamp`, called first at mesa/main/queryobj.c:417.
     fn get_timestamp(&self) -> u64;
@@ -1127,10 +1127,7 @@ pub trait GalliumContext: Sized {
 
     /// Mesa's `pipe_context.resource_copy_region`, called first at mesa/state_tracker/st_texture.c:423.
     #[expect(clippy::too_many_arguments, reason = "the pointer's parameters, as Mesa's header declares them")]
-    fn resource_copy_region(&self, dst: &<Self::Screen as Gallium>::Resource, dst_level: u32, dstx: u32, dsty: u32, dstz: u32, src: &<Self::Screen as Gallium>::Resource, src_level: u32, src_box: &PipeBox);
-
-    /// Mesa's `pipe_context.sampler_view_destroy`, called first at gallium/auxiliary/util/u_inlines.h:248.
-    fn sampler_view_destroy(&self, view: <Self::Screen as Gallium>::SamplerView);
+    fn resource_copy_region(&self, dst: &Arc<<Self::Screen as Gallium>::Resource>, dst_level: u32, dstx: u32, dsty: u32, dstz: u32, src: &Arc<<Self::Screen as Gallium>::Resource>, src_level: u32, src_box: &PipeBox);
 
     /// Mesa's `pipe_context.set_active_query_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:1919.
     fn set_active_query_state(&self, enable: bool);
@@ -1157,7 +1154,7 @@ pub trait GalliumContext: Sized {
     fn set_sample_mask(&self, sample_mask: u32);
 
     /// Mesa's `pipe_context.set_sampler_views`, called first at mesa/state_tracker/st_cb_readpixels.c:184.
-    fn set_sampler_views(&self, shader: u32, start_slot: u32, num_views: u32, unbind_num_trailing_slots: u32, views: Option<&[Option<&<Self::Screen as Gallium>::SamplerView>]>);
+    fn set_sampler_views(&self, shader: u32, start_slot: u32, num_views: u32, unbind_num_trailing_slots: u32, views: Option<&[Option<&Arc<<Self::Screen as Gallium>::SamplerView>>]>);
 
     /// Mesa's `pipe_context.set_scissor_states`, called first at mesa/state_tracker/st_atom_scissor.c:106.
     fn set_scissor_states(&self, start_slot: u32, arg3: &[ScissorState]);
@@ -1172,7 +1169,7 @@ pub trait GalliumContext: Sized {
     fn set_stencil_ref(&self, ref_: StencilRef);
 
     /// Mesa's `pipe_context.set_stream_output_targets`, called first at gallium/auxiliary/cso_cache/cso_context.c:535.
-    fn set_stream_output_targets(&self, targets: &[Option<&<Self::Screen as Gallium>::StreamOutputTarget>], offsets: &[u32], output_prim: u32);
+    fn set_stream_output_targets(&self, targets: &[Option<&Arc<<Self::Screen as Gallium>::StreamOutputTarget>>], offsets: &[u32], output_prim: u32);
 
     /// Mesa's `pipe_context.set_vertex_buffers`, called first at gallium/auxiliary/cso_cache/cso_context.c:532.
     fn set_vertex_buffers(&self, arg2: &[VertexBuffer<'_, <Self::Screen as Gallium>::Resource>]);
@@ -1180,27 +1177,15 @@ pub trait GalliumContext: Sized {
     /// Mesa's `pipe_context.set_viewport_states`, called first at mesa/state_tracker/st_atom_viewport.c:81.
     fn set_viewport_states(&self, start_slot: u32, arg3: &[ViewportState]);
 
-    /// Mesa's `pipe_context.stream_output_target_destroy`, called first at gallium/auxiliary/util/u_inlines.h:293.
-    fn stream_output_target_destroy(&self, arg1: <Self::Screen as Gallium>::StreamOutputTarget);
-
     /// Mesa's `pipe_context.texture_barrier`, called first at mesa/main/barrier.c:118.
     fn texture_barrier(&self, flags: u32);
 
-    /// Mesa's `pipe_context.texture_map`, called first at mesa/state_tracker/st_texture.c:364.
-    fn texture_map(&self, resource: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, arg4: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
-
     /// Mesa's `pipe_context.texture_subdata`, called first at mesa/state_tracker/st_texcompress_compute.c:534.
     #[expect(clippy::too_many_arguments, reason = "the pointer's parameters, as Mesa's header declares them")]
-    fn texture_subdata(&self, arg1: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, arg4: &PipeBox, data: &[u8], stride: u32, layer_stride: u64);
-
-    /// Mesa's `pipe_context.texture_unmap`, called first at mesa/state_tracker/st_texture.c:368.
-    fn texture_unmap(&self, transfer: <Self::Screen as Gallium>::Mapping, written: &[u8]);
-
-    /// Mesa's `pipe_context.transfer_flush_region`, called first at gallium/auxiliary/util/u_inlines.h:589.
-    fn transfer_flush_region(&self, transfer: &<Self::Screen as Gallium>::Mapping, written: &[u8], arg2: &PipeBox);
+    fn texture_subdata(&self, arg1: &Arc<<Self::Screen as Gallium>::Resource>, level: u32, usage: u32, arg4: &PipeBox, data: &[u8], stride: u32, layer_stride: u64);
 
     /// Mesa's `u_transfer_vtbl.transfer_map`, called first at gallium/auxiliary/util/u_transfer_helper.c:376.
-    fn helper_transfer_map(&self, prsc: &<Self::Screen as Gallium>::Resource, level: u32, usage: u32, box_: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
+    fn helper_transfer_map(&self, prsc: &Arc<<Self::Screen as Gallium>::Resource>, level: u32, usage: u32, box_: &PipeBox) -> Option<Mapped<<Self::Screen as Gallium>::Mapping>>;
 
     /// Mesa's `u_transfer_vtbl.transfer_unmap`, called first at gallium/auxiliary/util/u_transfer_helper.c:519.
     fn helper_transfer_unmap(&self, ptrans: <Self::Screen as Gallium>::Mapping, written: &[u8]);

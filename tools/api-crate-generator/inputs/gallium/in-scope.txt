@@ -96,3 +96,5 @@ context transfer_flush_region
 helper transfer_map
 helper transfer_unmap
 helper transfer_flush_region
+helper resource_create
+helper resource_destroy

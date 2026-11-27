@@ -17,8 +17,8 @@ use crate::cheader;
 pub const KINDS: &[(&str, &str)] = &[
     ("Screen", "the library: made by the loader, given back by destroy"),
     ("Context", "a rendering context"),
-    ("Resource", "a buffer or texture, counted by Mesa (pipe_reference) and given back by resource_destroy at zero"),
-    ("Fence", "a point in a context's commands, counted by fence_reference"),
+    ("Resource", "a buffer or texture, counted (Mesa's pipe_reference): the implementation keeps one by cloning its handle, and the last handle dropped ends it"),
+    ("Fence", "a point in a context's commands, counted (fence_reference): kept by cloning its handle"),
     ("Blend", "a blend state"),
     ("DepthStencilAlpha", "a depth, stencil and alpha state"),
     ("Rasterizer", "a rasterizer state"),
@@ -30,13 +30,18 @@ pub const KINDS: &[(&str, &str)] = &[
     ("TessControlShader", "a tessellation control program, from a Received of that stage"),
     ("TessEvaluationShader", "a tessellation evaluation program, from a Received of that stage"),
     ("ComputeShader", "a compute program, from a Received of that stage"),
-    ("SamplerView", "a view of a resource for sampling"),
-    ("StreamOutputTarget", "a range of a buffer that streamed outputs are written to"),
+    ("SamplerView", "a view of a resource for sampling, counted (pipe_sampler_view_reference): kept by cloning its handle"),
+    ("StreamOutputTarget", "a range of a buffer that streamed outputs are written to, counted (pipe_so_target_reference): kept by cloning its handle"),
     ("Query", "a query that is begun and ended (begin_query, end_query)"),
     ("ActiveQuery", "a query between its begin and its end"),
     ("EndOnlyQuery", "a query only ended (PIPE_QUERY_TIMESTAMP, PIPE_QUERY_GPU_FINISHED: queryobj.c:269 to 277)"),
     ("Mapping", "a resource's bytes mapped for the CPU, between a map and its unmap"),
 ];
+
+/// The kinds Mesa counts (a `pipe_reference` in the object, or fence_reference): the trait passes each as a counted handle
+/// (`Arc` of the kind), so an implementation keeps one past the call by cloning it, and the object ends where its last
+/// handle is dropped, which may be inside the implementation. The glue holds one handle for all of Mesa's references.
+pub const COUNTED: &[&str] = &["Resource", "Fence", "SamplerView", "StreamOutputTarget"];
 
 /// What one function pointer does with the kinds.
 #[derive(Debug)]
@@ -53,6 +58,16 @@ pub enum Role {
     Reads(&'static [&'static str]),
     /// Counts references to an object of the kind (the glue's clone and drop); the last release ends it.
     Counts(&'static str),
+    /// Like `Turns`, but a failure gives the first kind back (begin_query returning false: st/mesa then destroys the
+    /// query, which never became active, queryobj.c:239 to 247).
+    TurnsOrGivesBack(&'static str, &'static str),
+    /// Filled by the direct crate with Mesa's own function of this name, not a method of the implementation (our
+    /// driver sets these pointers to Mesa's helpers: crates/opengl context.rs:225 to 227 and its sample position).
+    MesaFills(&'static str),
+    /// The same function as another planned pointer (structure.pointer): served by that pointer's glue, no method of
+    /// its own (our driver sets u_transfer_vtbl's resource_create and resource_destroy to the screen's, screen.rs:547
+    /// to 548).
+    SameAs(&'static str),
 }
 
 pub struct Entry {
@@ -75,8 +90,8 @@ pub const PLAN: &[Entry] = &[
     Entry { structure: "pipe_screen", pointer: "get_vendor", roles: &[Role::Reads(&[])], caller: "mesa/main/getstring.c:143" },
     Entry { structure: "pipe_screen", pointer: "is_format_supported", roles: &[Role::Reads(&[])], caller: "mesa/state_tracker/st_cb_eglimage.c:48" },
     Entry { structure: "pipe_screen", pointer: "resource_create", roles: &[Role::Makes(&["Resource"])], caller: "mesa/state_tracker/st_texture.c:106" },
-    Entry { structure: "pipe_screen", pointer: "resource_destroy", roles: &[Role::GivesBack(&["Resource"])], caller: "gallium/auxiliary/util/u_inlines.h:183" },
-    Entry { structure: "pipe_context", pointer: "begin_query", roles: &[Role::Turns("Query", "ActiveQuery")], caller: "mesa/main/performance_monitor.c:198" },
+    Entry { structure: "pipe_screen", pointer: "resource_destroy", roles: &[Role::Counts("Resource")], caller: "gallium/auxiliary/util/u_inlines.h:183" },
+    Entry { structure: "pipe_context", pointer: "begin_query", roles: &[Role::TurnsOrGivesBack("Query", "ActiveQuery")], caller: "mesa/main/performance_monitor.c:198" },
     Entry { structure: "pipe_context", pointer: "bind_blend_state", roles: &[Role::Binds("Blend")], caller: "gallium/auxiliary/cso_cache/cso_context.c:449" },
     Entry { structure: "pipe_context", pointer: "bind_compute_state", roles: &[Role::Binds("ComputeShader")], caller: "gallium/auxiliary/cso_cache/cso_context.c:525" },
     Entry { structure: "pipe_context", pointer: "bind_depth_stencil_alpha_state", roles: &[Role::Binds("DepthStencilAlpha")], caller: "gallium/auxiliary/cso_cache/cso_context.c:510" },
@@ -129,14 +144,14 @@ pub const PLAN: &[Entry] = &[
     Entry { structure: "pipe_context", pointer: "generate_mipmap", roles: &[Role::Reads(&["Resource"])], caller: "mesa/state_tracker/st_gen_mipmap.c:145" },
     Entry { structure: "pipe_context", pointer: "get_device_reset_status", roles: &[Role::Reads(&[])], caller: "mesa/state_tracker/st_cb_flush.c:162" },
     Entry { structure: "pipe_context", pointer: "get_query_result", roles: &[Role::Reads(&["Query", "EndOnlyQuery"])], caller: "mesa/main/performance_monitor.c:259" },
-    Entry { structure: "pipe_context", pointer: "get_sample_position", roles: &[Role::Reads(&[])], caller: "mesa/main/multisample.c:96" },
+    Entry { structure: "pipe_context", pointer: "get_sample_position", roles: &[Role::MesaFills("u_default_get_sample_position")], caller: "mesa/main/multisample.c:96" },
     Entry { structure: "pipe_context", pointer: "get_timestamp", roles: &[Role::Reads(&[])], caller: "mesa/main/queryobj.c:417" },
     Entry { structure: "pipe_context", pointer: "launch_grid", roles: &[Role::Reads(&["Resource"])], caller: "mesa/state_tracker/st_pbo_compute.c:1170" },
     Entry { structure: "pipe_context", pointer: "memory_barrier", roles: &[Role::Reads(&[])], caller: "mesa/state_tracker/st_cb_readpixels.c:245" },
     Entry { structure: "pipe_context", pointer: "render_condition", roles: &[Role::Reads(&["Query", "EndOnlyQuery"])], caller: "gallium/auxiliary/cso_cache/cso_context.c:1084" },
     Entry { structure: "pipe_context", pointer: "resource_copy_region", roles: &[Role::Reads(&["Resource"])], caller: "mesa/state_tracker/st_texture.c:423" },
     Entry { structure: "pipe_context", pointer: "resource_release", roles: &[Role::Counts("Resource")], caller: "gallium/auxiliary/util/u_inlines.h:209" },
-    Entry { structure: "pipe_context", pointer: "sampler_view_destroy", roles: &[Role::GivesBack(&["SamplerView"])], caller: "gallium/auxiliary/util/u_inlines.h:248" },
+    Entry { structure: "pipe_context", pointer: "sampler_view_destroy", roles: &[Role::Counts("SamplerView")], caller: "gallium/auxiliary/util/u_inlines.h:248" },
     Entry { structure: "pipe_context", pointer: "sampler_view_release", roles: &[Role::Counts("SamplerView")], caller: "mesa/state_tracker/st_sampler_view.c:92" },
     Entry { structure: "pipe_context", pointer: "set_active_query_state", roles: &[Role::Reads(&[])], caller: "gallium/auxiliary/cso_cache/cso_context.c:1919" },
     Entry { structure: "pipe_context", pointer: "set_blend_color", roles: &[Role::Reads(&[])], caller: "mesa/state_tracker/st_atom_blend.c:367" },
@@ -154,12 +169,14 @@ pub const PLAN: &[Entry] = &[
     Entry { structure: "pipe_context", pointer: "set_stream_output_targets", roles: &[Role::Binds("StreamOutputTarget")], caller: "gallium/auxiliary/cso_cache/cso_context.c:535" },
     Entry { structure: "pipe_context", pointer: "set_vertex_buffers", roles: &[Role::Reads(&["Resource"])], caller: "gallium/auxiliary/cso_cache/cso_context.c:532" },
     Entry { structure: "pipe_context", pointer: "set_viewport_states", roles: &[Role::Reads(&[])], caller: "mesa/state_tracker/st_atom_viewport.c:81" },
-    Entry { structure: "pipe_context", pointer: "stream_output_target_destroy", roles: &[Role::GivesBack(&["StreamOutputTarget"])], caller: "gallium/auxiliary/util/u_inlines.h:293" },
+    Entry { structure: "pipe_context", pointer: "stream_output_target_destroy", roles: &[Role::Counts("StreamOutputTarget")], caller: "gallium/auxiliary/util/u_inlines.h:293" },
     Entry { structure: "pipe_context", pointer: "texture_barrier", roles: &[Role::Reads(&[])], caller: "mesa/main/barrier.c:118" },
-    Entry { structure: "pipe_context", pointer: "texture_map", roles: &[Role::Makes(&["Mapping"]), Role::Reads(&["Resource"])], caller: "mesa/state_tracker/st_texture.c:364" },
+    Entry { structure: "pipe_context", pointer: "texture_map", roles: &[Role::MesaFills("u_transfer_helper_transfer_map")], caller: "mesa/state_tracker/st_texture.c:364" },
     Entry { structure: "pipe_context", pointer: "texture_subdata", roles: &[Role::Reads(&["Resource"])], caller: "mesa/state_tracker/st_texcompress_compute.c:534" },
-    Entry { structure: "pipe_context", pointer: "texture_unmap", roles: &[Role::GivesBack(&["Mapping"])], caller: "mesa/state_tracker/st_texture.c:368" },
-    Entry { structure: "pipe_context", pointer: "transfer_flush_region", roles: &[Role::Reads(&["Mapping"])], caller: "gallium/auxiliary/util/u_inlines.h:589" },
+    Entry { structure: "pipe_context", pointer: "texture_unmap", roles: &[Role::MesaFills("u_transfer_helper_transfer_unmap")], caller: "mesa/state_tracker/st_texture.c:368" },
+    Entry { structure: "pipe_context", pointer: "transfer_flush_region", roles: &[Role::MesaFills("u_transfer_helper_transfer_flush_region")], caller: "gallium/auxiliary/util/u_inlines.h:589" },
+    Entry { structure: "u_transfer_vtbl", pointer: "resource_create", roles: &[Role::SameAs("pipe_screen.resource_create")], caller: "gallium/auxiliary/util/u_transfer_helper.c:217" },
+    Entry { structure: "u_transfer_vtbl", pointer: "resource_destroy", roles: &[Role::SameAs("pipe_screen.resource_destroy")], caller: "gallium/auxiliary/util/u_transfer_helper.c:227" },
     Entry { structure: "u_transfer_vtbl", pointer: "transfer_map", roles: &[Role::Makes(&["Mapping"]), Role::Reads(&["Resource"])], caller: "gallium/auxiliary/util/u_transfer_helper.c:376" },
     Entry { structure: "u_transfer_vtbl", pointer: "transfer_unmap", roles: &[Role::GivesBack(&["Mapping"])], caller: "gallium/auxiliary/util/u_transfer_helper.c:519" },
     Entry { structure: "u_transfer_vtbl", pointer: "transfer_flush_region", roles: &[Role::Reads(&["Mapping"])], caller: "gallium/auxiliary/util/u_inlines.h:589" },
@@ -198,6 +215,15 @@ pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String>
             None => problems.push(format!("no structure {} read", entry.structure)),
         }
     }
+    for entry in PLAN {
+        for role in entry.roles {
+            if let Role::SameAs(other) = role
+                && !planned.iter().any(|(structure, pointer)| format!("{structure}.{pointer}") == *other)
+            {
+                problems.push(format!("{}.{} is the same as {other}, which is not planned", entry.structure, entry.pointer));
+            }
+        }
+    }
     let kinds: BTreeSet<&str> = KINDS.iter().map(|(kind, _)| *kind).collect();
     let mut made: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut ended: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -207,7 +233,8 @@ pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String>
             let (makes, ends, uses): (Vec<&str>, Vec<&str>, Vec<&str>) = match role {
                 Role::Makes(of) => (of.to_vec(), vec![], vec![]),
                 Role::GivesBack(of) => (vec![], of.to_vec(), vec![]),
-                Role::Turns(from, to) => (vec![to], vec![from], vec![]),
+                Role::Turns(from, to) | Role::TurnsOrGivesBack(from, to) => (vec![to], vec![from], vec![]),
+                Role::MesaFills(_) | Role::SameAs(_) => (vec![], vec![], vec![]),
                 Role::Binds(of) => (vec![], vec![], vec![of]),
                 // A count's last release is the object's end (fence_reference with no new fence).
                 Role::Counts(of) => (vec![], vec![of], vec![of]),
@@ -248,6 +275,13 @@ pub fn check(in_scope: &str, header: &cheader::Header) -> Result<String, String>
     for entry in PLAN {
         let _ = writeln!(report, "  {}.{} {:?} called at {}", entry.structure, entry.pointer, entry.roles, entry.caller);
     }
+    for entry in PLAN {
+        for role in entry.roles {
+            if let Role::MesaFills(function) = role {
+                let _ = writeln!(report, "  FILLED BY THE DIRECT CRATE {}.{} with Mesa's {function}", entry.structure, entry.pointer);
+            }
+        }
+    }
     let _ = writeln!(report, "GALLIUM PLAIN DATA: each structure a planned pointer reads, its fields as read, the objects it names");
     for (name, (fields, bits, handles)) in plain_structures(header) {
         let union = if header.unions.contains(&name) { " (a union)" } else { "" };
@@ -275,7 +309,8 @@ fn kinds_of(entry: &Entry) -> Vec<&'static str> {
         .flat_map(|role| match role {
             Role::Makes(of) | Role::GivesBack(of) | Role::Reads(of) => of.to_vec(),
             Role::Binds(of) | Role::Counts(of) => vec![*of],
-            Role::Turns(from, to) => vec![*from, *to],
+            Role::Turns(from, to) | Role::TurnsOrGivesBack(from, to) => vec![*from, *to],
+            Role::MesaFills(_) | Role::SameAs(_) => vec![],
         })
         .collect()
 }
@@ -302,6 +337,12 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
 
 /// One row of the Gallium mapping rule for a parameter (or the return) of a planned pointer.
 fn row(entry: &Entry, param: &cheader::CParam, first: bool, header: &cheader::Header) -> Option<&'static str> {
+    // The same function as another pointer: that pointer's rows.
+    if let Some(other) = entry.roles.iter().find_map(|role| if let Role::SameAs(other) = role { Some(*other) } else { None })
+        && let Some(same) = PLAN.iter().find(|planned| format!("{}.{}", planned.structure, planned.pointer) == other)
+    {
+        return row(same, param, first, header);
+    }
     if let Some((_, _, row)) = EXCEPTIONS.iter().find(|(pointer, name, _)| *pointer == entry.pointer && *name == param.name) {
         return Some(row);
     }
