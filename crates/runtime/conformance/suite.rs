@@ -174,6 +174,16 @@ pub fn a_busy_background_process_does_not_keep_its_container_running<R: Runtime>
     assert_eq!(container.run(), exited());
 }
 
+/// Checks that a container whose only process sleeps before it exits waits out the sleep and ends with that exit.
+///
+/// It sleeps as long as a container that only exits took, so every runner is idle for a while before the end.
+pub fn a_sleeping_process_ends_its_container_after_its_sleep<R: Runtime>(subject: Subject<R>) {
+    let seconds = time_to_exit(&subject).as_secs_f64();
+    let (mut container, _interrupter) =
+        made(&subject, shell(&format!("{SLEEP} {seconds}; exit {EXIT_CODE}")));
+    assert_eq!(container.run(), exited());
+}
+
 /// Checks that a pipeline of processes working at once runs to its end and passes every byte on unchanged.
 ///
 /// It copies the shell's own program through one more stage than the runtime has runners, so the runners take turns.
@@ -224,6 +234,10 @@ macro_rules! tests {
         #[test]
         fn a_busy_background_process_does_not_keep_its_container_running() {
             $crate::a_busy_background_process_does_not_keep_its_container_running($value);
+        }
+        #[test]
+        fn a_sleeping_process_ends_its_container_after_its_sleep() {
+            $crate::a_sleeping_process_ends_its_container_after_its_sleep($value);
         }
         #[test]
         fn work_side_by_side_runs_to_its_end() {
