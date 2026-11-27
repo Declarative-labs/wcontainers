@@ -18,21 +18,22 @@ pub enum Trap {
     Breakpoint(u16),
     /// An alignment fault at the address in this i64 local.
     Alignment(u32),
-    /// A read of a register the offer keeps from EL0, which the kernel answers.
+    /// An access to a register the offer keeps from EL0, which the kernel answers.
     SystemAccess,
 }
 
-/// The trap a read of the register raises under the offer, if it raises one: every counter register when the offer
-/// keeps the counter from EL0, and the physical counter, which Linux keeps from EL0, always.
-fn counter_trap(offer: Offer, register: SystemRegister) -> Option<Trap> {
-    let counter = matches!(
+/// The trap a read of the register raises under the offer, if it raises one: every counter and identity register
+/// when the offer traps them, and the physical counter, which Linux keeps from EL0, always.
+fn kept_trap(offer: Offer, register: SystemRegister) -> Option<Trap> {
+    let kept = matches!(
         register,
         SystemRegister::Counter
             | SystemRegister::CounterFrequency
             | SystemRegister::PhysicalCounter
+            | SystemRegister::Identity(_)
     );
-    match offer.counter {
-        CounterAccess::Trapped if counter => Some(Trap::SystemAccess),
+    match offer.kept_registers {
+        KeptRegisters::Trapped if kept => Some(Trap::SystemAccess),
         _ if register == SystemRegister::PhysicalCounter => Some(Trap::Undefined),
         _ => None,
     }
@@ -1443,7 +1444,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
         I::Breakpoint { comment } => e.trap(Trap::Breakpoint(comment)),
         I::Nothing => e.next(),
         I::ReadSystem { register, rt } => {
-            if let Some(trap) = counter_trap(e.offer(), register) {
+            if let Some(trap) = kept_trap(e.offer(), register) {
                 e.trap(trap);
                 return;
             }
@@ -1485,7 +1486,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
                 SystemRegister::PhysicalCounter => {
                     unreachable!("a read of the physical counter traps")
                 }
-                SystemRegister::Fixed(value) => {
+                SystemRegister::Fixed(value) | SystemRegister::Identity(value) => {
                     e.sink().i64_const(value as i64);
                 }
             }
@@ -1519,12 +1520,17 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
                 SystemRegister::Counter
                 | SystemRegister::CounterFrequency
                 | SystemRegister::PhysicalCounter
-                | SystemRegister::Fixed(_) => {
+                | SystemRegister::Fixed(_)
+                | SystemRegister::Identity(_) => {
                     unreachable!("a register that cannot be written")
                 }
             }
             e.next();
         }
+        I::KeptFromEl0 => e.trap(match e.offer().kept_registers {
+            KeptRegisters::AnsweredInPlace => Trap::Undefined,
+            KeptRegisters::Trapped => Trap::SystemAccess,
+        }),
         I::Undefined => e.trap(Trap::Undefined),
         I::Unsupported => e.trap(Trap::Unsupported),
     }

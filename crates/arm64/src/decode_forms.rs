@@ -176,6 +176,8 @@ fn ordered(f: &Fields) -> Instruction {
 fn pstate(f: &Fields) -> Instruction {
     match (f.get("op1"), f.get("op2")) {
         (3, 1..=4) => Instruction::Unsupported,
+        // DAIFSet and DAIFClr: SCTLR_EL1.UMA is clear, as Linux leaves it.
+        (3, 6 | 7) => Instruction::KeptFromEl0,
         _ => Instruction::Undefined,
     }
 }
@@ -188,7 +190,9 @@ fn system_instruction(f: &Fields) -> Instruction {
     let rn = f.zr("Rt");
     match (f.get("op1"), f.get("CRn"), f.get("CRm"), f.get("op2")) {
         (3, 7, 4, 1) => Instruction::ZeroBlock { rn },
-        (3, 7, 11, 1) | (3, 7, 10, 1) | (3, 7, 14, 1) => Instruction::CleanCache { rn },
+        (3, 7, 10, 1) | (3, 7, 14, 1) => Instruction::CleanCache { rn },
+        // DC CVAU never faults at EL0, as IC IVAU never does.
+        (3, 7, 11, 1) => Instruction::Nothing,
         (3, 7, 5, 1) => Instruction::CodeChanged { rn },
         // The tag (MTE) and persistence (DPB, DPB2) cache operations EL0 may use on CPUs with them.
         (3, 7, 4, 3 | 4) | (3, 7, 10 | 14, 3 | 5) | (3, 7, 12 | 13, 1 | 3 | 5) => {
@@ -209,6 +213,9 @@ const MULTIPROCESSOR_ID: u64 = 0x8000_0000;
 const PROCESSOR_FEATURES_0: u64 = 0x11;
 /// `ID_AA64ISAR0_EL1`: CRC32 (bits 19:16 = 1) and the single instruction atomics (bits 23:20 = 2).
 const INSTRUCTION_SET_0: u64 = 0x0021_0000;
+
+/// The first CRm past the identity registers' space.
+const IDENTITY_CRM_END: u32 = 8;
 
 /// What `mrs` of an identity register gives under Linux, which traps and answers them: `None` where it
 /// raises illegal instruction.
@@ -241,6 +248,20 @@ fn system_move(f: &Fields) -> Instruction {
         (3, 3, 4, 4, 1) => SystemRegister::Fpsr,
         (3, 3, 13, 0, 2) => SystemRegister::TpidrEl0,
         (3, 3, 13, 0, 3) if read => SystemRegister::Fixed(0),
+        // DAIF (SCTLR_EL1.UMA clear), SCXTNUM_EL0 (SCTLR_EL1.TSCXT set) and the timers (CNTKCTL_EL1 gives EL0 none),
+        // as Linux leaves them.
+        (3, 3, 4, 2, 1) | (3, 3, 13, 0, 7) | (3, 3, 14, 2 | 3, 0..=2) => {
+            return Instruction::KeptFromEl0;
+        }
+        // The activity monitors, AMUSERENR_EL0.EN clear: a read traps and a write is undefined.
+        (3, 3, 13, 2, 0 | 1 | 2 | 4 | 5)
+        | (3, 3, 13, 3, 0 | 1)
+        | (3, 3, 13, 4 | 6, 0..=3)
+        | (3, 3, 13, 12 | 14, 0..=2)
+            if read =>
+        {
+            return Instruction::KeptFromEl0;
+        }
         (3, 3, 14, 0, 2) if read => SystemRegister::Counter,
         (3, 3, 14, 0, 0) if read => SystemRegister::CounterFrequency,
         (3, 3, 14, 0, 1) if read => SystemRegister::PhysicalCounter,
@@ -255,12 +276,12 @@ fn system_move(f: &Fields) -> Instruction {
         // SSBS, DIT, TCO, RNDR, RNDRRS and CNTVCTSS_EL0: EL0 may use them on CPUs with their features.
         (3, 3, 4, 2, 5..=7) | (3, 3, 14, 0, 6) => return Instruction::Unsupported,
         (3, 3, 2, 4, 0 | 1) if read => return Instruction::Unsupported,
-        (3, 0, 0, crm, op2) if read && (crm == 0 || (2..8).contains(&crm)) => {
-            match identity(crm, op2) {
-                Some(value) => SystemRegister::Fixed(value),
-                None => return Instruction::Undefined,
-            }
-        }
+        // The identity registers' space, which FEAT_IDST traps where EL0 may read no register.
+        (3, 0, 0, crm @ 0..IDENTITY_CRM_END, op2) if read => match identity(crm, op2) {
+            Some(value) => SystemRegister::Identity(value),
+            None => return Instruction::KeptFromEl0,
+        },
+        (3, 1 | 3, 0, 0..IDENTITY_CRM_END, _) if read => return Instruction::KeptFromEl0,
         _ => return Instruction::Undefined,
     };
     if read {

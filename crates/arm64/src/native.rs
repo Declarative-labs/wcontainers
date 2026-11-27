@@ -168,7 +168,7 @@ impl Native for Arm64 {
                 Route::Exclusive
             }
             I::CodeChanged { .. } | I::Syscall => Route::Kernel,
-            I::Breakpoint { .. } | I::Undefined | I::Unsupported => Route::Trap,
+            I::Breakpoint { .. } | I::KeptFromEl0 | I::Undefined | I::Unsupported => Route::Trap,
             I::Nothing => Route::Nothing,
             I::ReadSystem { register, .. } => match register {
                 SystemRegister::Nzcv | SystemRegister::TpidrEl0 | SystemRegister::Fpcr => {
@@ -176,7 +176,9 @@ impl Native for Arm64 {
                 }
                 SystemRegister::Fpsr => Route::FloatStatus,
                 SystemRegister::Counter => Route::Kernel,
-                SystemRegister::CounterFrequency | SystemRegister::Fixed(_) => Route::Constant,
+                SystemRegister::CounterFrequency
+                | SystemRegister::Fixed(_)
+                | SystemRegister::Identity(_) => Route::Constant,
                 SystemRegister::PhysicalCounter => Route::Trap,
             },
             I::WriteSystem { register, .. } => match register {
@@ -185,7 +187,8 @@ impl Native for Arm64 {
                 SystemRegister::Counter
                 | SystemRegister::CounterFrequency
                 | SystemRegister::PhysicalCounter
-                | SystemRegister::Fixed(_) => {
+                | SystemRegister::Fixed(_)
+                | SystemRegister::Identity(_) => {
                     unreachable!("a register that cannot be written is never decoded as a write")
                 }
             },

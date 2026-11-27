@@ -791,7 +791,7 @@ fn carry_route(out: &mut Out, route: Route, i: &I, word: u32) {
         Route::Constant => match *i {
             I::ReadSystem {
                 rt,
-                register: SystemRegister::Fixed(value),
+                register: SystemRegister::Fixed(value) | SystemRegister::Identity(value),
             } => out.build(rt, value, next),
             I::ReadSystem {
                 rt,
