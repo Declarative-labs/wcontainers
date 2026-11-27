@@ -53,3 +53,5 @@ mod states;
 mod stream;
 #[cfg(mesa)]
 mod view;
+#[cfg(mesa)]
+mod views;

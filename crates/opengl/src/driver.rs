@@ -31,6 +31,7 @@ use crate::resources::{self, Mapping, Resource};
 use crate::screen::{DRIVER_NAME, whole};
 use crate::state::Stage;
 use crate::states::{self, Blend, DepthStencil, Elements, Raster, Retired, Sampler, retire};
+use crate::views::{self, SamplerView};
 
 /// A kind of the Gallium trait whose calls are not yet moved onto it: no value of it is ever made,
 /// so every call taking one cannot be made, and every call making one is refused.
@@ -109,6 +110,8 @@ struct Set<B: Gpu> {
     elements: Option<Arc<Elements<B>>>,
     /// Each stage's samplers, by slot.
     samplers: [Vec<Option<Arc<Sampler<B>>>>; Stage::ALL.len()],
+    /// Each stage's sampler views, by slot.
+    views: [Vec<Option<Arc<SamplerView<B>>>>; Stage::ALL.len()],
     blend_color: [u32; states::COLOR_CHANNELS],
     stencil_ref: [u8; 2],
     sample_mask: u32,
@@ -129,6 +132,7 @@ impl<B: Gpu> Default for Set<B> {
             raster: None,
             elements: None,
             samplers: std::array::from_fn(|_| vec![None; PIPE_MAX_SAMPLERS as usize]),
+            views: std::array::from_fn(|_| vec![None; PIPE_MAX_SHADER_SAMPLER_VIEWS as usize]),
             blend_color: [0; states::COLOR_CHANNELS],
             stencil_ref: [0; 2],
             sample_mask: u32::MAX,
@@ -268,7 +272,7 @@ impl<B: HostWindows> Gallium for Driver<B> {
     type TessControlShader = Unmoved;
     type TessEvaluationShader = Unmoved;
     type ComputeShader = Unmoved;
-    type SamplerView = Unmoved;
+    type SamplerView = SamplerView<B>;
     type StreamOutputTarget = Unmoved;
     type Query = Unmoved;
     type ActiveQuery = Unmoved;
@@ -709,10 +713,18 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn create_sampler_view(
         &self,
-        _: &Arc<Resource<B>>,
-        _: &SamplerViewTemplate,
-    ) -> Option<Unmoved> {
-        self.call(None, || not_moved("create_sampler_view"))
+        texture: &Arc<Resource<B>>,
+        templ: &SamplerViewTemplate,
+    ) -> Option<SamplerView<B>> {
+        self.call(None, || {
+            let mut backend = self.shared.backend();
+            Some(views::create(
+                &mut *backend,
+                &self.shared.retired,
+                texture,
+                templ,
+            ))
+        })
     }
 
     fn create_stream_output_target(&self, _: &Arc<Resource<B>>, _: u32, _: u32) -> Option<Unmoved> {
@@ -968,16 +980,34 @@ impl<B: HostWindows> GalliumContext for DriverContext<B> {
 
     fn set_sampler_views(
         &self,
-        _: values::MesaShaderStage,
-        _: u32,
-        _: u32,
-        _: u32,
-        views: Option<&[Option<&Arc<Unmoved>>]>,
+        shader: values::MesaShaderStage,
+        start_slot: u32,
+        num_views: u32,
+        unbind_num_trailing_slots: u32,
+        views: Option<&[Option<&Arc<SamplerView<B>>>]>,
     ) {
-        if let Some(view) = views.into_iter().flatten().flatten().next() {
-            match ***view {}
-        }
-        self.call((), || not_moved("set_sampler_views"));
+        self.call((), || {
+            let Some(stage) = stage(shader) else {
+                return;
+            };
+            let mut set = self.set.borrow_mut();
+            let slots = &mut set.views[stage as usize];
+            let (start, count) = (start_slot as usize, num_views as usize);
+            let end = start + count + unbind_num_trailing_slots as usize;
+            let Some(slots) = slots.get_mut(start..end) else {
+                refuse(format_args!(
+                    "sampler views past the {} the screen reports",
+                    PIPE_MAX_SHADER_SAMPLER_VIEWS
+                ));
+            };
+            // The views given (none for each where none are), then the trailing slots emptied.
+            for (at, slot) in slots.iter_mut().enumerate() {
+                *slot = match views {
+                    Some(views) if at < count => views.get(at).copied().flatten().cloned(),
+                    _ => None,
+                };
+            }
+        });
     }
 
     /// The first scissor: the host has one.
