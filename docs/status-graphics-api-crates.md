@@ -1367,6 +1367,114 @@ fec8830e9 with its assertions on):
 | **Fuzzing, 12 seeds x 100,000 calls under AddressSanitizer** | **12 of 12 status 0, no report**; no method `made 0` in any seed (e.g. seed 11: prepared_geometry_points_as_squares 135 of 333, prepared_tess_evaluation_points_as_squares 183 of 337, prepared_compute_variant 787 of 1,614) |
 | Lines naming `unsafe` | mesa-compiler 0, conformance 0, **direct 68** (132 before, 72 before the stage types); marks 34 (66 before) |
 
+## The two checks of 2026-11-27 ~12:00, fixed; Gallium's capabilities and values (2026-11-27, logs wcontainers-scratch/graphics-api-crates/r16/)
+
+Fixed in the order asked (commits 5b75c9924, 0428682c1, 22fa18f7e; then 542c9c4e5 and ff4b6fa2d):
+
+1. **A call that can fail hands back what it took.** `end_query(&self, q: ActiveQuery) -> Result<Query, ActiveQuery>`
+   (a failed end leaves `q->pq` set and st/mesa ends, reads or destroys that query later, queryobj.c:277 to 282). The
+   plan's `Turns` is gone: both turns are `TurnsOrGivesBack(from, to, why)`, and the method's doc gives the why. Also
+   found: an end-only query was ended by no method, though st/mesa ends it (queryobj.c:227, `pq_begin`, and every
+   timestamp): `end_query_end_only_query(&self, q: &EndOnlyQuery) -> bool`. Every method of the three traits that takes
+   a value by move and can fail (READ):
+   | Method | Takes | On failure |
+   |---|---|---|
+   | gallium `begin_query` | Query | hands it back (`Err(Query)`) |
+   | gallium `end_query` | ActiveQuery | hands it back (`Err(ActiveQuery)`), new this run |
+   | gallium `create_{vs,fs,gs,tcs,tes,compute}_state` | the Received program | nothing: the driver owns the NIR from the call on (p_state.h:302, "the driver takes ownership of the nir_shader"); st/mesa never uses it again |
+   | mesa-compiler `spirv_to_common_form` | SpirvShader | nothing: the bridge frees it on failure (bridge.c:2745), changed in place by then |
+   | mesa-compiler `spirv_common_flatten`, `variant_flatten` | SpirvCommon, Variant | nothing: freed whatever the result (bridge.c:2762, 3009) |
+   | mesa-compiler `received_*_prepare` (6) | Received | nothing: freed on failure (bridge.c:2789, 2814), half prepared by then |
+   The deletes, destroys and unmaps (gallium) cannot fail (void in C); EGL and OpenGL ES take no value by move.
+2. **G10, declarations of several names.** The C front end (src/cheader.rs, every API it reads: Gallium's headers and
+   the Mesa compiler's bridge headers; the Khronos and Win32 front ends read no C declarations) now makes a field of
+   every name of `float min_lod, max_lod;` (each later name takes the first's type words, not its stars, array or width;
+   a unit test). Every field it had dropped (MEASURED, `SEVERAL NAMES` of the run): **`pipe_framebuffer_state.width`**
+   and **`pipe_sampler_state.min_lod`**; none in the bridge's headers. Found by the new check and fixed too: Mesa's
+   `EXCLUSIVE_CACHELINE(decl)` (util/u_memory.h:103) is read as its anonymous union (the padding `__cl_space` left out
+   with its reason), and a define continued over lines (p_defines.h:178) no longer hides the statement after it (it
+   hid `enum pipe_map_flags`). **The class of defect is checked**: the direct crate's test `fields_agree` compares, for
+   every field of every flat structure, its offset and size in the flat form by C's `offsetof`/`sizeof` with the Rust
+   mirror's `offset_of!`/`size_of`, and its size in Mesa's own structure with the flat one (an enumeration only at least:
+   Mesa packs `enum mesa_prim`, one byte, p_state.h:864); and the independent count: `api-crate-generator
+   gallium-layouts` compares clang's own record layouts of Mesa's headers (`-fdump-record-layouts`, every structure laid
+   out by a static assertion) with the test's rows, structure by structure: the same field names and count (carried
+   plus left out), every offset equal, every bit-field's width equal, every row read (a unit test plants the dropped
+   `min_lod` and a moved offset: both fail).
+3. **Weak tests in the Mesa compiler suite.** `every_argument_tells`: for every argument of every method, two values
+   that give two results the test tells apart (99 of 99, MEASURED), and a plant per argument, the argument ignored in
+   the glue (a constant passed in its place), each alone against the suite (`.gack/plants.py`): **53 of 53 caught**.
+   To reach `settings.fetch_unit` and `fetch_multisampled` (no program fetched its target before), the bridge's GLSL
+   context offers EXT_shader_framebuffer_fetch_non_coherent, as st/mesa does for our driver (it reports fbfetch,
+   graphics-layout crates/opengl/src/screen.rs:378; st_extensions.c:1654).
+   | Method (stages) | Arguments told apart, each with its plant caught |
+   |---|---|
+   | spirv_read | words, stage, entry_point, alpha_to_one |
+   | spirv_shader_key, spirv_common_flatten, made_key, made_named_layer_location | the shader (two shaders; no plant: a handle the glue cannot replace) |
+   | spirv_to_common_form | taken (two), set, ranges[].first, ranges[].slots |
+   | glsl_to_nir | sources[vertex], [fragment], [compute], [geometry], [tess_control], [tess_evaluation] (and each received_*_prepare's taken) |
+   | prepared_{vertex,geometry,tess_evaluation}_variant, made_variant | shader; settings.transform and key_transform: flip_y, half_z, reverse_z, fixed_point_size (8); set, ranges[].first, ranges[].slots (vertex, made) |
+   | prepared_fragment_variant | shader; set, ranges (2); single_sampled, samples, fetch_unit, fetch_multisampled; swizzles[].unit, .swizzle; samplers[].unit, .wrap, .mipmapped, .min_lod, .max_lod, .border |
+   | prepared_compute_variant | shader; set, ranges (2) |
+   | prepared_tess_control_variant | shader (it writes no position and binds nothing: no other field reaches it) |
+   | prepared_{vertex,tess_evaluation}_points_as_squares | vs, at, largest |
+   | prepared_geometry_points_as_squares | gs, at, largest, block |
+   | variant_flatten | taken, points_in |
+4. **The unreachable C checks: removed.** The stage test of `wc_nir_point_square` (bridge.c:2348) and of
+   `wc_nir_geometry_squares`, which only the typed glue reaches (`prepared_points_as_squares<S:
+   TakesPreparedPointsAsSquares>`, Vertex and TessEvaluation; the geometry one Geometry alone), and the repeated `at`
+   test of the first; steps.h says the callers' types give no other stage.
+5. **Defaults that asserted nothing.** The Mesa probe's default runs every case with seed 0 and asserts each ran to
+   its end and made a call; the OpenGL ES fuzz default asserts every call picked, every one of the 156 OpenGL ES and
+   15 EGL methods called, and refusals by the implementation itself; its measure default asserts the timed draws drew
+   (every pixel read back) and every cost finite; Chrome's `measure` asserts every query passed and the reads waited
+   (it is counted as a test), the `measure without JSPI` line is gone (no wait can happen there), and `query_results_wait
+   without JSPI` is counted and must fail at its first read, as implementation.rs says.
+6. **The generator's own `cargo clippy --all-targets -D warnings`**: its 12 errors fixed (six of them in the Direct3D
+   generator's files emit.rs, glue.rs, glue_hostile.rs, glue_write.rs: small changes; `git merge-tree` with
+   origin/graphics-api-crates-direct3d ffa1fb064 merges those files cleanly, only Cargo.lock conflicts, as at ce6790aaa).
+
+For the implementations track (what changed in crates/gallium, 542c9c4e5):
+- **G5**: `Gallium::caps(&self, caps: &mut Caps)` (holds Mesa's defaults of u_init_pipe_screen_caps for the driver to
+  change), `shader_caps(&self, stage: values::MesaShaderStage, caps: &mut ShaderCaps)`, `compute_caps(&self, caps: &mut
+  ComputeCaps)`: Mesa's pipe_caps, pipe_shader_caps and pipe_compute_caps as owned structures (so
+  `prefer_real_buffer_in_constbuf0` is `caps.prefer_real_buffer_in_constbuf0`). The glue writes them at the screen's
+  making (with the serving glue).
+- **The values**: `crates/gallium/values.rs`, every enumeration of the headers named `pipe_*` (and `mesa_shader_stage`,
+  `mesa_prim`) a type of its own (`values::CompareFunc(pub u32)`) holding its enumerators under their C names in upper
+  case (`CompareFunc::PIPE_FUNC_LESS`, `Format::PIPE_FORMAT_R8G8B8A8_UNORM`, `Blendfactor::PIPE_BLENDFACTOR_ONE`,
+  `MesaShaderStage::MESA_SHADER_FRAGMENT`; `PIPE_FORMAT_ASTC_4x4` is `PIPE_FORMAT_ASTC_4X4`), and the anonymous
+  enumerations' and `PIPE_*` defines' values as constants (`PIPE_BIND_RENDER_TARGET`, `PIPE_POLYGON_MODE_FILL`,
+  `PIPE_FACE_BACK`). 48 enumerations, 1,098 values, **each compared with C's own value** (flat.c's `wc_value`, test
+  `values_agree`). In the trait, a field or parameter C declares with an enumeration takes its type (`format:
+  values::Format`, `shader: values::MesaShaderStage`), and so does an `unsigned` field whose comment names one
+  enumeration's values (`func: values::CompareFunc` of `/**< PIPE_FUNC_x */`, `wrap_s: values::TexWrap`, `swizzle_r:
+  values::Swizzle`) or a parameter of the table `PARAM_VALUES` (`create_query`'s `query_type: values::QueryType`, the
+  maps' `usage: values::MapFlags`, `flush`'s `flags: values::FlushFlags`); 65 places. Fields whose values are defines
+  or an anonymous enumeration (`cull_face`, PIPE_FACE_*; `fill_front`, PIPE_POLYGON_MODE_*) stay `u32` with their
+  constants by name.
+- **G8**: `render_condition(&self, query: Option<&Query>, ...)`: None ends the condition (main/condrender.c:99).
+- G6 and G10 as above; G7's row was corrected at ce6790aaa (the drawable handle carried as a number, read by the WGL
+  target); G4 (Mesa's helpers calling back into the context) waits on the serving glue.
+
+MEASURED at ff4b6fa2d (pushed; x86-64 job gac-s/20261127-123559-2249566, log r16/claim-j3-ff4b6fa2d.log):
+| Bar | Result |
+|---|---|
+| Generator: build, tests (21), clippy `--all-targets -D warnings` | 0, 0, **0** (101 with 12 errors at ce6790aaa, log of job gac-s/20261127-115003-1581031) |
+| Gallium written twice, equal to the tree | IDENTICAL; SAME AS WRITTEN (11 files) |
+| Gallium check (without Mesa), clippy `-D warnings` (with Mesa) | 0, 0 |
+| `layouts_agree`, `fields_agree`, `values_agree` | Ok(47), 683 fields, Ok(1098) |
+| `gallium-layouts` against clang 21's records | 47 structures, 683 fields (545 offsets, 138 widths equal), PROBLEMS 0 |
+| Mesa compiler written twice, equal; check, clippy; suite | IDENTICAL, SAME AS WRITTEN (5); 0, 0; 6 of 6, ARGUMENTS 99 of 99 |
+| Plants, each alone | **53 of 53 caught** |
+| Lines naming `unsafe` | gallium 0, gallium direct 8 (6 at ce6790aaa: `wc_flat_layout` and `wc_value`, one marked call each); mesa-compiler direct 68, marks 34 (unchanged) |
+
+MEASURED at 22fa18f7e (pushed; logs r16/claim-mc-22fa18f7e.log, r16/claim-es-22fa18f7e.log), the runtime bars after the
+bridge's changes: the Mesa compiler under AddressSanitizer 6 of 6 (HOSTILE 16 rounds, 1,810 calls), every hostile case
+alone PROBES 640 calls 7,460 ENDED 0, **fuzzing 12 seeds x 100,000 calls under AddressSanitizer: 12 of 12 status 0**;
+OpenGL ES and EGL written equal (SAME AS WRITTEN), check, clippy (also wasm32) 0, the suite 17 of 17 by default and
+under AddressSanitizer, **Chrome 14 passed 0 failed**, `measure: ok ... queries 200, each passed 200; ... turns 23289`.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
