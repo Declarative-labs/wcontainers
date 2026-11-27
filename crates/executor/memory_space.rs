@@ -11,6 +11,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
 /// An address space, shared by everyone who runs on it: every address is all zeros and allows nothing until it is written or given permissions.
 ///
 /// Bytes borrowed from the space ignore the permissions, which bind only the code executed on it.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait MemorySpace: Sized {
     /// A borrowed part of the space, which its guest may be changing while it is held.
     type Bytes<'space>: VolatileBytes
@@ -41,6 +42,7 @@ pub trait MemorySpace: Sized {
     reason = "an address outside the space is the one way each of these methods fails"
 )]
 /// The pages of one address space, held by the one party that may change them.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait PageTable: Sized {
     fn set_permissions(
         &mut self,

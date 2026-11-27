@@ -1,17 +1,15 @@
 {
-  // TEMPORARY (2026-11-22): the full `cargo reviewable check` on every save is too slow until it is incremental.
-  // Until then a save checks only the crate being edited with plain cargo. To put the linter back, delete the
-  // next line and uncomment the one after it.
-  "rust-analyzer.check.workspace": false,
-  // "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"],
-  "rust-analyzer.vfs.extraIncludes": [
-    "${workspaceFolder}"
-  ],
-  "cmake.sourceDirectory": "/Users/thomaseaton/Documents/GitHub/wcontainers/crates/shaders/dxil-spirv",
-  "rust-analyzer.rustfmt.overrideCommand": ["cargo", "reviewable", "format"],
-  "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"],
-  // The Rust tools must run with the Nix shell's environment that `.envrc` loads. The direnv extension loads it, but
-  // by default it only offers to restart the other extensions; without that restart rust-analyzer keeps the old
-  // environment, one dependency's build script fails, and every check takes seconds longer.
+  "[rust]": { "editor.defaultFormatter": "verus-lang.verus-analyzer" },
+  "verus-analyzer.check.workspace": false,
+  "verus-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"],
+  "verus-analyzer.rustfmt.overrideCommand": ["cargo", "reviewable", "format"],
+  "verus-analyzer.vfs.extraIncludes": ["${workspaceFolder}"],
+  // The extension's own run of Verus on save checks one file without cargo, so it cannot find the crates that file imports.
+  "verus-analyzer.verus.enable": false,
+  // verus-analyzer is this workspace's analyzer, so an installed rust-analyzer does not start here.
+  "rust-analyzer.initializeStopped": true,
+  "rust-analyzer.statusBar.showStatusBar": "never",
+  "cmake.sourceDirectory": "${workspaceFolder}/crates/shaders/dxil-spirv",
+  // Restarts the other extensions once the Nix shell's environment from `.envrc` is loaded, so the analyzer runs in it.
   "direnv.restart.automatic": true
 }

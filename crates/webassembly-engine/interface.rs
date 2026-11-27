@@ -20,6 +20,7 @@ use crate::global::GlobalStore;
 use crate::memory::MemoryStore;
 use crate::table::TableStore;
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait WebAssemblyEngine:
     Sized + FunctionStore + MemoryStore + TableStore + GlobalStore
 {

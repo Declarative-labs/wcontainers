@@ -6,6 +6,7 @@ use wcontainers_kernel::{ExecutionConfig, Kernel, ReplayDeterminism, StopReason,
 use wcontainers_system::{ProcessTracer, StreamTransport, System};
 
 /// A maker of containers that run on one kind of executor for one kind of system.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Runtime {
     type System: System;
     type Image: Image;
@@ -23,6 +24,7 @@ pub trait Runtime {
     ) -> Result<(Self::Container, Self::Interrupter), ContainerError>;
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Image {
     /// Returns the runtime configuration that the image's own configuration [converts](https://github.com/opencontainers/image-spec/blob/main/conversion.md) to.
     fn to_runtime_spec(&self) -> Result<Spec, Refusal>;
@@ -36,11 +38,13 @@ pub struct Refusal {
     pub reason: String,
 }
 
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Container {
     fn run(&mut self) -> StopReason;
 }
 
 /// A handle that interrupts a container's run, idempotently.
+#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Interrupter: Send + Sync {
     fn interrupt(&self);
 }
