@@ -58,3 +58,30 @@ withheld.rs @@ stand-in-frame-past-end @@ !f.moves ==> 0 <= f.off && f.off + 8 <
 withheld.rs @@ stand-in-writes-frame-register @@     &&& 0 <= f.rt < 32 && f.rt != frame_register()\n @@     &&& 0 <= f.rt < 32\n
 withheld.rs @@ stand-in-claims-false @@     ensures\n        is_confined(step, stand_in( @@     ensures\n        false,\n        is_confined(step, stand_in(
 branch.rs @@ displaced-jump-without-table @@ (m.x[n as int] & 0xffff_ffffu64) << 2u64)\n    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))\n    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64) @@ (m.x[n as int] & 0xffff_ffffu64) << 2u64)\n    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))\n    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23])
+rest.rs @@ post-pair-probe-past-slot @@ PROBE_LOAD_X23_31, 31, |m: Machine| (m.x[23] + 31) % 0x1_0000_0000_0000_0000int, 1) @@ PROBE_LOAD_X23_31, 31, |m: Machine| (m.x[23] + 0x1_0000_0000) % 0x1_0000_0000_0000_0000int, 1)
+rest.rs @@ post-pair-claims-false @@     ensures\n        is_confined(step, stack_pair_post( @@     ensures\n        false,\n        is_confined(step, stack_pair_post(
+rest.rs @@ displaced-byte-uncut @@ |m: Machine| (m.x[24] + (m.x[23] & 0xffff_ffffu64)) % two_to_64(), 1) @@ |m: Machine| (m.x[24] + m.x[23]) % two_to_64(), 1)
+rest.rs @@ displaced-byte-loads-base @@         registers(23, t, store),\n @@         t < 32,\n
+rest.rs @@ displaced-byte-claims-false @@     ensures\n        is_confined(step, displaced_byte( @@     ensures\n        false,\n        is_confined(step, displaced_byte(
+rest.rs @@ unscaled-uncut @@     &&& writes(step, add_cut(23), 23, |m: Machine| ((m.x[24] + (m.x[23] & 0xffff_ffffu64)) % two_to_64()) as u64) @@     &&& writes(step, add_cut(23), 23, |m: Machine| ((m.x[24] + m.x[23]) % two_to_64()) as u64)
+rest.rs @@ unscaled-last-probe-past-slot @@ probe_x15_at(bytes - 1), 31, |m: Machine| (m.x[15] + bytes - 1) % two_to_64(), 1) @@ probe_x15_at(bytes - 1), 31, |m: Machine| (m.x[15] + 0x1_0000_0000) % two_to_64(), 1)
+rest.rs @@ unscaled-claims-false @@     ensures\n        is_confined(step, register_unscaled( @@     ensures\n        false,\n        is_confined(step, register_unscaled(
+rest.rs @@ literal-crossing-probe-past-slot @@ probe_x23_at(bytes - 1), 31, |m: Machine| (m.x[23] + bytes - 1) % two_to_64(), 1), @@ probe_x23_at(bytes - 1), 31, |m: Machine| (m.x[23] + 0x1_0000_0000) % two_to_64(), 1),
+rest.rs @@ literal-crossing-any-length @@         1 <= bytes <= 16,\n @@         1 <= bytes,\n
+rest.rs @@ literal-crossing-claims-false @@     ensures\n        is_confined(step, literal_crossing( @@     ensures\n        false,\n        is_confined(step, literal_crossing(
+withheld_access.rs @@ stand-in-base-moved-from-anywhere @@ before[j].moves && before[j].rt == bb && before[j].off == 24 @@ before[j].moves && before[j].rt == bb
+withheld_access.rs @@ stand-in-check-is-base @@     &&& 0 <= bb < 31 && bb != 23 && bb != 28 && bb != c\n @@     &&& 0 <= bb < 31 && bb != 23 && bb != 28\n
+withheld_access.rs @@ stand-in-offset-unbounded @@         0 <= off && off + 7 < 4096 && off % 8 == 0,\n @@         0 <= off && off % 8 == 0,\n
+withheld_access.rs @@ stand-in-mark-past-slot @@ |m: Machine| (m.x[c] + 4095) % two_to_64(), 1) @@ |m: Machine| (m.x[c] + 0x1_0000_0000) % two_to_64(), 1)
+withheld_access.rs @@ byte-stand-in-uncut @@ |m: Machine| (m.x[bb] + (m.x[n as int] & 0xffff_ffffu64)) % two_to_64(), 1) @@ |m: Machine| (m.x[bb] + m.x[n as int]) % two_to_64(), 1)
+withheld_access.rs @@ stand-in-after-any-word @@ frame_access_means(step, #[trigger] after[k]) || copied_means(step, after[k].word, after[k].rt) @@ true
+withheld_access.rs @@ byte-stand-in-claims-false @@     ensures\n        is_confined(step, byte_stand_in( @@     ensures\n        false,\n        is_confined(step, byte_stand_in(
+withheld_access.rs @@ wide-stand-in-claims-false @@     ensures\n        is_confined(step, wide_stand_in( @@     ensures\n        false,\n        is_confined(step, wide_stand_in(
+look_ahead.rs @@ line-words-touch-anything @@ ==> copied_means(step, #[trigger] words[k], rds[k]) && rds[k] != base_register() @@ ==> rds[k] != base_register() && #[trigger] words[k] == words[k]
+look_ahead.rs @@ line-claims-false @@     ensures\n        is_confined(step, line( @@     ensures\n        false,\n        is_confined(step, line(
+look_ahead.rs @@ counted-loop-branches-before-piece @@         branches_either(step, back, -(words.len() + 1) * 4),\n @@         branches_either(step, back, -(words.len() + 2) * 4),\n
+look_ahead.rs @@ counted-loop-claims-false @@     ensures\n        is_confined(step, counted_loop( @@     ensures\n        false,\n        is_confined(step, counted_loop(
+look_ahead.rs @@ tested-loop-copy-uncut @@ |m: Machine| (m.x[24] + (m.x[n as int] & 0xffff_ffffu64)) % two_to_64(), 8) @@ |m: Machine| (m.x[24] + m.x[n as int]) % two_to_64(), 8)
+look_ahead.rs @@ tested-loop-word-writes-base @@         rd != base_register(),\n @@         rd < 31,\n
+look_ahead.rs @@ tested-loop-branches-before-piece @@     &&& branches_either(step, back, -40)\n @@     &&& branches_either(step, back, -44)\n
+look_ahead.rs @@ tested-loop-claims-false @@     ensures\n        is_confined(step, tested_loop( @@     ensures\n        false,\n        is_confined(step, tested_loop(
