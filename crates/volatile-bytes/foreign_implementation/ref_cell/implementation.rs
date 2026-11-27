@@ -11,17 +11,23 @@ impl VolatileBytes for RefCell<&mut [u8]> {
         self.borrow().len() as u64
     }
 
-    fn read(&self, into: &mut [u8]) -> usize {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize {
         let held = self.borrow();
-        let count = into.len().min(held.len());
-        into[..count].copy_from_slice(&held[..count]);
+        let Some(from) = usize::try_from(offset).ok().and_then(|offset| held.get(offset..)) else {
+            return usize::MIN;
+        };
+        let count = into.len().min(from.len());
+        into[..count].copy_from_slice(&from[..count]);
         count
     }
 
-    fn write(&self, bytes: &[u8]) -> usize {
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize {
         let mut held = self.borrow_mut();
-        let count = bytes.len().min(held.len());
-        held[..count].copy_from_slice(&bytes[..count]);
+        let Some(to) = usize::try_from(offset).ok().and_then(|offset| held.get_mut(offset..)) else {
+            return usize::MIN;
+        };
+        let count = bytes.len().min(to.len());
+        to[..count].copy_from_slice(&bytes[..count]);
         count
     }
 

@@ -17,11 +17,21 @@ pub trait VolatileBytes {
         self.len() == u64::MIN
     }
 
+    /// Copies bytes from the offset into the buffer, as many as the shorter of the two holds, and returns the number of bytes read; none from an offset past the end.
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> usize;
+
+    /// Copies bytes from the buffer to the offset, as many as the shorter of the two holds, and returns the number of bytes written; none to an offset past the end.
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> usize;
+
     /// Copies bytes from the start into the buffer, as many as the shorter of the two holds, and returns the number of bytes read.
-    fn read(&self, into: &mut [u8]) -> usize;
+    fn read(&self, into: &mut [u8]) -> usize {
+        self.read_at(u64::MIN, into)
+    }
 
     /// Copies bytes from the buffer to the start, as many as the shorter of the two holds, and returns the number of bytes written.
-    fn write(&self, bytes: &[u8]) -> usize;
+    fn write(&self, bytes: &[u8]) -> usize {
+        self.write_at(u64::MIN, bytes)
+    }
 
     /// Reads to the sink in one write of all the bytes, and returns the number of bytes read.
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error>;
