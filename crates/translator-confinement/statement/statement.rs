@@ -5,7 +5,8 @@
 //! instruction-proof model. Each proof states, as a hypothesis on `step`, what the words of its piece do (the Arm ARM's
 //! meaning, written out by hand), so a proof here holds for every `step` meeting those hypotheses, the model's one
 //! included only once it is shown to meet them. Binding `step` to the model waits on its decode tables
-//! (`to_integer_operation`, `to_load_store_operation`) moving inside `verus!`.
+//! (`to_branch_operation`, `to_integer_operation`, `to_load_store_operation`) moving inside `verus!`: all three are
+//! outside it at instruction-proof `c6e2bda01`, where only the branch family's meaning (`branch_outcome`) is inside.
 
 #![no_std]
 
@@ -157,5 +158,11 @@ mod indexed;
 mod stack;
 #[cfg(verus_keep_ghost)]
 mod branch;
+#[cfg(verus_keep_ghost)]
+mod displaced;
+#[cfg(verus_keep_ghost)]
+mod offset;
+#[cfg(verus_keep_ghost)]
+mod withheld;
 #[cfg(verus_keep_ghost)]
 mod plants;

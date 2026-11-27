@@ -14,19 +14,47 @@ copy.rs @@ exit-to-next-window @@     slot_table(a) + guest * 4\n @@     slot_ta
 copy.rs @@ integer-writes-frame @@     &&& 0 <= rd < 31 && rd != frame_register()\n @@     &&& 0 <= rd < 31\n
 copy.rs @@ integer-claims-false @@         a.length == 20,\n    ensures\n @@         a.length == 20,\n    ensures\n        false,\n
 meaning.rs @@ rule-without-keeping @@         &&& runs(a, s.after) ==> inv(s.after)\n @@         &&& true\n
-indexed.rs @@ indexed-without-below @@         a.below >= 256,\n @@         a.below >= 0,\n
+indexed.rs @@ indexed-without-below @@         a.below >= 256,\n        a.length == if store { 100int } @@         a.below >= 0,\n        a.length == if store { 100int }
 indexed.rs @@ indexed-access-past-slot @@ |m: Machine| (m.x[23] + off) % two_to_64(), 8) @@ |m: Machine| (m.x[23] + off + 0x1_0000_0000) % two_to_64(), 8)
-indexed.rs @@ indexed-base-moved-to-frame @@         registers(n, t, store) && n != 24 && n != 28,\n @@         registers(n, t, store) && n != 24,\n
+indexed.rs @@ indexed-base-moved-to-frame @@         registers(n, t, store) && n != 24 && n != 28,\n        -256 <= imm < 256,\n        indexed_means @@         registers(n, t, store) && n != 24,\n        -256 <= imm < 256,\n        indexed_means
 indexed.rs @@ indexed-claims-false @@         a.length == if store { 100int } else { 96int },\n    ensures\n @@         a.length == if store { 100int } else { 96int },\n    ensures\n        false,\n
-stack.rs @@ stack-without-below @@         a.below >= 1024 && !a.displaced,\n @@         a.below >= 0 && !a.displaced,\n
+stack.rs @@ stack-without-below @@         a.below >= 1024 && !a.displaced,\n        stack_means @@         a.below >= 0 && !a.displaced,\n        stack_means
 stack.rs @@ step-without-below @@         a.below >= k && !a.displaced,\n @@         a.below >= 0 && !a.displaced,\n
 stack.rs @@ stack-claims-false @@         a.length == 20,\n    ensures\n @@         a.length == 20,\n    ensures\n        false,\n
-stack.rs @@ step-claims-false @@         a.length == 24,\n    ensures\n @@         a.length == 24,\n    ensures\n        false,\n
+stack.rs @@ step-claims-false @@     ensures\n        is_confined(step, stepped(k @@     ensures\n        false,\n        is_confined(step, stepped(k
 branch.rs @@ jump-without-cut @@ writes(step, UBFIZ_X23, 23, |m: Machine| (m.x[23] & 0xfff_ffff_ffffu64) << 2u64) @@ writes(step, UBFIZ_X23, 23, |m: Machine| m.x[23] << 2u64)
-branch.rs @@ jump-without-table @@ writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64) @@ writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23])
+branch.rs @@ jump-without-table @@ (m.x[23] & 0xfff_ffff_ffffu64) << 2u64)\n    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))\n    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64) @@ (m.x[23] & 0xfff_ffff_ffffu64) << 2u64)\n    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))\n    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23])
 branch.rs @@ floor-call-past-frame @@ |m: Machine| (m.x[28] + 88) % two_to_64(), 8) @@ |m: Machine| (m.x[28] + 252) % two_to_64(), 8)
 branch.rs @@ floor-entry-unaligned @@     (FLOOR_PAGE as int + 16 * code) as u64\n @@     (FLOOR_PAGE as int + 16 * code + 8) as u64\n
 branch.rs @@ system-call-resumable @@         &&& (o == 0 || 20 <= o < 40)\n @@         &&& (o == 0 || 20 <= o < 48)\n
 branch.rs @@ jump-claims-false @@         a.length == 64,\n    ensures\n @@         a.length == 64,\n    ensures\n        false,\n
 branch.rs @@ branch-claims-false @@         a.length == 16,\n    ensures\n @@         a.length == 16,\n    ensures\n        false,\n
 branch.rs @@ backward-claims-false @@         a.length == 20,\n    ensures\n        is_confined(step, seq![COUNT_UP] @@         a.length == 20,\n    ensures\n        false,\n        is_confined(step, seq![COUNT_UP]
+branch.rs @@ self-loop-escapes @@ branches(step, B_BACK_4, -4), @@ branches(step, B_BACK_4, 8),
+branch.rs @@ self-loop-claims-false @@     ensures\n        is_confined(step, self_loop( @@     ensures\n        false,\n        is_confined(step, self_loop(
+branch.rs @@ displaced-jump-uncut @@ writes(step, ubfiz_x23(n), 23, |m: Machine| (m.x[n as int] & 0xffff_ffffu64) << 2u64) @@ writes(step, ubfiz_x23(n), 23, |m: Machine| m.x[n as int] << 2u64)
+branch.rs @@ displaced-jump-claims-false @@     ensures\n        is_confined(step, displaced_jump(n), a), @@     ensures\n        false,\n        is_confined(step, displaced_jump(n), a),
+indexed.rs @@ unaligned-reaches-below @@ (m.x[23] + imm) % two_to_64(), 8) @@ (m.x[23] + imm - 512) % two_to_64(), 8)
+indexed.rs @@ unaligned-no-below @@         a.below >= 256,\n        a.length == if store { 88int } @@         a.length == if store { 88int }
+indexed.rs @@ unaligned-probe-tail-leaves @@ branches(step, B_BACK_56, -56) @@ branches(step, B_BACK_56, 8)
+indexed.rs @@ unaligned-claims-false @@     ensures\n        is_confined(step, unaligned_access( @@     ensures\n        false,\n        is_confined(step, unaligned_access(
+stack.rs @@ step-up-probe-far-below @@ stack_means(step, PROBE_SP_BELOW, 31, 31, -4, 4) @@ stack_means(step, PROBE_SP_BELOW, 31, 31, -0x2_0000, 4)
+stack.rs @@ step-up-claims-false @@     ensures\n        is_confined(step, stepped_up( @@     ensures\n        false,\n        is_confined(step, stepped_up(
+stack.rs @@ pair-writes-frame @@ stack_means(step, word, 31, 31, off, 32) @@ stack_means(step, word, 31, 28, off, 32)
+stack.rs @@ pair-no-below @@         a.below >= 1024 && !a.displaced,\n        pair_means @@         !a.displaced,\n        pair_means
+stack.rs @@ pair-probe-past-slot @@ |m: Machine| (m.x[23] + 31) % 0x1_0000_0000_0000_0000int, 1) @@ |m: Machine| (m.x[23] + 0x2_0000_0000) % 0x1_0000_0000_0000_0000int, 1)
+stack.rs @@ pair-claims-false @@     ensures\n        is_confined(step, stack_pair( @@     ensures\n        false,\n        is_confined(step, stack_pair(
+displaced.rs @@ displaced-stack-reaches-below @@ ((m.x[23] + off) % 0x1_0000_0000_0000_0000int, bytes) @@ ((m.x[23] + off - 0x2_0000) % 0x1_0000_0000_0000_0000int, bytes)
+displaced.rs @@ displaced-stack-uncut @@ ((m.x[24] + (m.x[23] & 0xffff_ffffu64)) % two_to_64()) as u64) @@ ((m.x[24] + m.x[23]) % two_to_64()) as u64)
+displaced.rs @@ displaced-stack-resumable @@     &&& o < 84 + d\n @@     &&& o < 92 + d\n
+displaced.rs @@ displaced-stack-claims-false @@     ensures\n        is_confined(step, displaced_stack( @@     ensures\n        false,\n        is_confined(step, displaced_stack(
+offset.rs @@ register-byte-claims-false @@     ensures\n        is_confined(step, register_byte( @@     ensures\n        false,\n        is_confined(step, register_byte(
+offset.rs @@ register-wide-unchecked @@ accesses(step, access, loaded(t, store), |m: Machine| m.x[23] as int, 8) @@ accesses(step, access, loaded(t, store), |m: Machine| m.x[22] as int, 8)
+offset.rs @@ register-wide-claims-false @@     ensures\n        is_confined(step, register_wide( @@     ensures\n        false,\n        is_confined(step, register_wide(
+offset.rs @@ literal-unchecked @@ accesses(step, load, t, |m: Machine| m.x[23] as int, bytes) @@ accesses(step, load, t, |m: Machine| m.x[22] as int, bytes)
+offset.rs @@ literal-any-length @@         1 <= bytes <= 16,\n        label @@         1 <= bytes,\n        label
+offset.rs @@ literal-claims-false @@     ensures\n        is_confined(step, literal( @@     ensures\n        false,\n        is_confined(step, literal(
+withheld.rs @@ stand-in-frame-past-end @@ !f.moves ==> 0 <= f.off && f.off + 8 <= FRAME_BYTES @@ !f.moves ==> 0 <= f.off && f.off <= FRAME_BYTES
+withheld.rs @@ stand-in-writes-frame-register @@     &&& 0 <= f.rt < 32 && f.rt != frame_register()\n @@     &&& 0 <= f.rt < 32\n
+withheld.rs @@ stand-in-claims-false @@     ensures\n        is_confined(step, stand_in( @@     ensures\n        false,\n        is_confined(step, stand_in(
+branch.rs @@ displaced-jump-without-table @@ (m.x[n as int] & 0xffff_ffffu64) << 2u64)\n    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))\n    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64) @@ (m.x[n as int] & 0xffff_ffffu64) << 2u64)\n    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))\n    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23])

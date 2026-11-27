@@ -62,7 +62,7 @@ pub open spec fn stops(step: spec_fn(Machine, u32) -> Stepped, word: u32) -> boo
 
 /// `word` touches `bytes` bytes from `address` of the machine (a load, a store, or both, as an atomic does). A fault
 /// ends the run there; else it goes on at the next word. Either way it writes no register but `rt` (none for 31, the
-/// zero register) and no unlisted one, and is no system call.
+/// zero register), not the stack pointer and no unlisted one, and is no system call.
 pub open spec fn accesses(step: spec_fn(Machine, u32) -> Stepped, word: u32, rt: int, address: spec_fn(Machine) -> int, bytes: nat) -> bool {
     forall|m: Machine| m.x.len() == 31 ==> {
         let s = #[trigger] step(m, word);
@@ -70,6 +70,7 @@ pub open spec fn accesses(step: spec_fn(Machine, u32) -> Stepped, word: u32, rt:
         &&& !s.system_call
         &&& s.after.unlisted == m.unlisted
         &&& s.after.x.len() == 31
+        &&& s.after.sp == m.sp
         &&& forall|r: int| 0 <= r < 31 && r != rt ==> s.after.x[r] == m.x[r]
         &&& s.after.ended || s.after.pc == (m.pc + 4) as u64
     }

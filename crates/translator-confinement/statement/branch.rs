@@ -360,7 +360,153 @@ pub proof fn jump_is_confined(step: spec_fn(Machine, u32) -> Stepped, n: u32, a:
     lemma_invariant_confines(step, instructions, a, inv);
 }
 
+/// `b .-4`: a branch to itself, linked inside its piece (the exit's first move overwritten by it).
+pub const B_BACK_4: u32 = 0x17ff_ffff;
+
+/// The piece of `b .` (a branch to itself): the progress count, the branch back to it, and what the link left of the
+/// exit to the instruction's own slot (never reached).
+pub open spec fn self_loop(slot: u64) -> Seq<u32> {
+    seq![COUNT_UP, B_BACK_4] + exit_words(slot).subrange(1, 4)
+}
+
+/// THE BRANCH TO ITSELF IS CONFINED: the count and the branch back, for ever.
+pub proof fn self_loop_is_confined(step: spec_fn(Machine, u32) -> Stepped, a: Allowed, guest: int)
+    requires
+        writes(step, COUNT_UP, 18, |m: Machine| ((m.x[18] + 1) % two_to_64()) as u64),
+        branches(step, B_BACK_4, -4),
+        in_reach(a, guest),
+        a.length == 20,
+    ensures
+        is_confined(step, self_loop(exit_slot(a, guest) as u64), a),
+{
+    let slot = exit_slot(a, guest) as u64;
+    let instructions = self_loop(slot);
+    let inv = |m: Machine| kept(a, m) && m.pc - a.code < 8;
+    assert(instructions.len() == 5);
+    assert forall|m: Machine| #[trigger] inv(m) && runs(a, m) implies {
+        let s = step(m, word_at(instructions, a, m.pc));
+        &&& confined_step(a, m, s)
+        &&& runs(a, s.after) ==> inv(s.after)
+    } by {
+        if m.pc - a.code == 0 {
+            assert(word_at(instructions, a, m.pc) == COUNT_UP);
+        } else {
+            assert(word_at(instructions, a, m.pc) == B_BACK_4);
+        }
+    }
+    lemma_invariant_confines(step, instructions, a, inv);
+}
+
+/// `ubfiz x23, xN, #2, #32`: the displaced jump's entry slot, four times the low word of xN.
+pub open spec fn ubfiz_x23(n: u32) -> u32 {
+    (0xd37e_7c17u32 | (n << 5u32)) as u32
+}
+
+/// The displaced jump's piece (slot 0's table): 15 words, xN's low word made the slot with no cut.
+pub open spec fn displaced_jump(n: u32) -> Seq<u32> {
+    seq![COUNT_UP, check_x23(n), CBNZ_X23_20, ubfiz_x23(n), BFXIL_X23, EOR_X23_TABLE, BR_X23, B_4]
+        + floor_call(floor_entry(7)) + seq![LDR_X30_FRAME, B_BACK_24]
+}
+
+/// `cbnz x23, .+20`.
+pub const CBNZ_X23_20: u32 = 0xb500_00b7;
+
+/// What the displaced jump's words do (Arm ARM).
+pub open spec fn displaced_jump_means(step: spec_fn(Machine, u32) -> Stepped, n: u32) -> bool {
+    &&& writes(step, COUNT_UP, 18, |m: Machine| ((m.x[18] + 1) % two_to_64()) as u64)
+    &&& writes(step, check_x23(n), 23, |m: Machine| (m.x[n as int] >> 32u64) & 0xff_ffffu64)
+    &&& branches_if(step, CBNZ_X23_20, 23, 20, true)
+    &&& writes(step, ubfiz_x23(n), 23, |m: Machine| (m.x[n as int] & 0xffff_ffffu64) << 2u64)
+    &&& writes(step, BFXIL_X23, 23, |m: Machine| (m.x[23] & !3u64) | ((m.x[23] >> 2u64) & 3u64))
+    &&& writes(step, EOR_X23_TABLE, 23, |m: Machine| m.x[23] ^ 0x4000_0000_0000u64)
+    &&& jumps(step, BR_X23, 23)
+    &&& branches(step, B_4, 4)
+    &&& floor_means(step)
+}
+
+/// Four times a low word is below 2^34 and a multiple of 4.
+proof fn lemma_low_word_times_four(v: u64)
+    ensures
+        ((v & 0xffff_ffffu64) << 2u64) < 0x4_0000_0000u64,
+        ((v & 0xffff_ffffu64) << 2u64) & 3u64 == 0,
+{
+    assert(((v & 0xffff_ffffu64) << 2u64) < 0x4_0000_0000u64) by (bit_vector);
+    assert(((v & 0xffff_ffffu64) << 2u64) & 3u64 == 0) by (bit_vector);
+}
+
+/// Where the displaced jump's run stands.
+pub open spec fn displaced_jump_inv(a: Allowed, m: Machine) -> bool {
+    let o = m.pc - a.code;
+    &&& kept(a, m)
+    &&& o < 52
+    &&& o == 16 ==> m.x[23] < 0x4_0000_0000u64 && m.x[23] & 3u64 == 0
+    &&& o == 20 ==> m.x[23] < 0x4_0000_0003
+    &&& o == 24 ==> PROCESS_SLOTS <= m.x[23] && m.x[23] < PROCESS_SLOTS + 0x4_0000_0003
+    &&& 32 <= o < 52 ==> at_floor_call(m, floor_entry(7), (o - 32) / 4)
+}
+
+/// THE DISPLACED JUMP'S PIECE IS CONFINED: it lands in slot 0's table or in the floor.
+pub proof fn displaced_jump_is_confined(step: spec_fn(Machine, u32) -> Stepped, n: u32, a: Allowed, guest: int)
+    requires
+        n < 31,
+        displaced_jump_means(step, n),
+        in_reach(a, guest) && a.displaced,
+        frame_in_reach(a),
+        a.length == 60,
+    ensures
+        is_confined(step, displaced_jump(n), a),
+{
+    let instructions = displaced_jump(n);
+    let inv = |m: Machine| displaced_jump_inv(a, m);
+    assert(instructions.len() == 15);
+    assert(instructions.subrange(8, 13) =~= floor_call(floor_entry(7)));
+    assert forall|m: Machine| #[trigger] inv(m) && runs(a, m) implies {
+        let s = step(m, word_at(instructions, a, m.pc));
+        &&& confined_step(a, m, s)
+        &&& runs(a, s.after) ==> inv(s.after)
+    } by {
+        let o = m.pc - a.code;
+        let w = word_at(instructions, a, m.pc);
+        if o == 0 {
+            assert(w == COUNT_UP);
+        } else if o == 4 {
+            assert(w == check_x23(n));
+        } else if o == 8 {
+            assert(w == CBNZ_X23_20);
+        } else if o == 12 {
+            assert(w == ubfiz_x23(n));
+            lemma_low_word_times_four(m.x[n as int]);
+        } else if o == 16 {
+            assert(w == BFXIL_X23);
+            let u = m.x[23];
+            assert(u <= ((u & !3u64) | ((u >> 2u64) & 3u64)) && ((u & !3u64) | ((u >> 2u64) & 3u64)) <= u + 3) by (bit_vector)
+                requires
+                    u & 3u64 == 0,
+                    u < 0x4_0000_0000u64,
+            ;
+        } else if o == 20 {
+            assert(w == EOR_X23_TABLE);
+            let u = m.x[23];
+            assert(u ^ 0x4000_0000_0000u64 == u + 0x4000_0000_0000u64) by (bit_vector)
+                requires
+                    u < 0x4_0000_0003u64,
+            ;
+        } else if o == 24 {
+            assert(w == BR_X23);
+        } else if o == 28 {
+            assert(w == B_4);
+        } else {
+            lemma_floor_step(step, instructions, a, 7, 32, m);
+        }
+    }
+    lemma_invariant_confines(step, instructions, a, inv);
+}
+
 /// The pins (see copy.rs): one line each, the piece's function and its arguments, the words.
+pub open spec fn self_loop_at(base: int, guest: int, displaced: bool) -> Seq<u32> {
+    self_loop(exit_slot(Allowed { base, below: 0, frame: 0, code: 0, length: 0, displaced }, guest) as u64)
+}
+
 pub open spec fn exit_words_at(target: int, base: int, displaced: bool) -> Seq<u32> {
     exit_words(exit_slot(Allowed { base, below: 0, frame: 0, code: 0, length: 0, displaced }, target) as u64)
 }
@@ -372,6 +518,9 @@ pub open spec fn system_call_at(base: int, guest: int, displaced: bool) -> Seq<u
 proof fn pin_branch_forward() { assert(exit_words_at(0x40_1008int, 0x6_0000_0000int, false) =~= seq![0xd288_0417u32, 0xf2a0_2017u32, 0xf2c8_0317u32, 0xd61f_02e0u32]) by (compute); }
 proof fn pin_branch_displaced() { assert(exit_words_at(0x40_1008int, 0x6_0000_0000int, true) =~= seq![0xd288_0417u32, 0xf2a0_2017u32, 0xf2c8_0017u32, 0xd61f_02e0u32]) by (compute); }
 proof fn pin_system_call() { assert(system_call_at(0x6_0000_0000int, 0x40_1000int, false) =~= seq![0x1400_0005u32, 0xd288_0217u32, 0xf2a0_2017u32, 0xf2c8_0317u32, 0xd61f_02e0u32, 0xf900_2f9eu32, 0xd280_041eu32, 0xf2a0_001eu32, 0xf2c4_003eu32, 0xd63f_03c0u32, 0xf940_2f9eu32, 0x17ff_fff6u32]) by (compute); }
+proof fn pin_self_loop() { assert(self_loop_at(0x6_0000_0000int, 0x40_1000int, false) =~= seq![0x9100_0652u32, 0x17ff_ffffu32, 0xf2a0_2017u32, 0xf2c8_0317u32, 0xd61f_02e0u32]) by (compute); }
+proof fn pin_self_loop_displaced() { assert(self_loop_at(0x6_0000_0000int, 0x40_1000int, true) =~= seq![0x9100_0652u32, 0x17ff_ffffu32, 0xf2a0_2017u32, 0xf2c8_0017u32, 0xd61f_02e0u32]) by (compute); }
+proof fn pin_displaced_jump_x0() { assert(displaced_jump(0u32) =~= seq![0x9100_0652u32, 0xd360_dc17u32, 0xb500_00b7u32, 0xd37e_7c17u32, 0xb342_0ef7u32, 0xd252_02f7u32, 0xd61f_02e0u32, 0x1400_0001u32, 0xf900_2f9eu32, 0xd280_0e1eu32, 0xf2a0_001eu32, 0xf2c4_003eu32, 0xd63f_03c0u32, 0xf940_2f9eu32, 0x17ff_fffau32]) by (compute); }
 proof fn pin_jump_x1() { assert(jump(1u32) =~= seq![0x9100_0652u32, 0xd360_dc37u32, 0xb500_00d7u32, 0x8b21_4317u32, 0xd37e_aef7u32, 0xb342_0ef7u32, 0xd252_02f7u32, 0xd61f_02e0u32, 0x1400_0001u32, 0xf900_2f9eu32, 0xd280_0e1eu32, 0xf2a0_001eu32, 0xf2c4_003eu32, 0xd63f_03c0u32, 0xf940_2f9eu32, 0x17ff_fffau32]) by (compute); }
 
 } // verus!
