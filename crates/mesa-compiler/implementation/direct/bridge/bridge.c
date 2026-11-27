@@ -2707,3 +2707,313 @@ wc_nir_stream_outputs(const nir_shader *nir, struct wc_stream_output *outputs, u
    }
    return xfb->output_count;
 }
+
+/* ----- The typed chain (bridge.h): each function takes the shader of its place and runs our callers' steps on it,
+ * in their order. ----- */
+
+bool
+wc_io_fits(const nir_shader *nir)
+{
+   nir_shader *copy = nir_shader_clone(NULL, nir);
+   if (!copy)
+      return false;
+   NIR_PASS(_, copy, nir_split_per_member_structs);
+   bool fits = true;
+   nir_foreach_variable_with_modes(var, copy, nir_var_shader_in | nir_var_shader_out) {
+      const unsigned slots = glsl_count_attribute_slots(var->type, false);
+      if (var->data.location < 0 || slots > 63 || (unsigned)var->data.location + slots > NUM_TOTAL_VARYING_SLOTS)
+         fits = false;
+   }
+   ralloc_free(copy);
+   return fits;
+}
+
+bool
+wc_spirv_shader_key(const struct wc_spirv_shader *shader, struct wc_bytes *out)
+{
+   return wc_nir_serialize((const nir_shader *)shader, out);
+}
+
+void
+wc_spirv_to_common_form(struct wc_spirv_shader *taken, uint32_t set, const struct wc_slot_range ranges[WC_SLOT_KINDS],
+                        struct wc_spirv_common_form *out)
+{
+   nir_shader *nir = (nir_shader *)taken;
+   out->result = wc_nir_to_common_form(nir, set, ranges, &out->bindings);
+   if (out->result == WC_BIND_OK)
+      out->shader = (struct wc_spirv_common *)nir;
+   else
+      ralloc_free(nir);
+}
+
+void
+wc_spirv_common_form_free(struct wc_spirv_common_form *form)
+{
+   ralloc_free(form->shader);
+   form->shader = NULL;
+   wc_bindings_free(&form->bindings);
+}
+
+bool
+wc_spirv_common_flatten(struct wc_spirv_common *taken, struct wc_flat *out)
+{
+   nir_shader *nir = (nir_shader *)taken;
+   /* A program read from SPIR-V is a vertex, fragment or compute program: no input patch. */
+   const bool flattened = wc_nir_flatten(nir, 0, out);
+   ralloc_free(nir);
+   return flattened;
+}
+
+void
+wc_received_prepare(struct wc_received *taken, struct wc_prepared_form *out)
+{
+   nir_shader *nir = (nir_shader *)taken;
+   const mesa_shader_stage stage = nir->info.stage;
+   out->named_layer = UINT32_MAX;
+   wc_nir_drop_name(nir);
+   wc_nir_uniform_blocks_as_words(nir);
+   wc_nir_split_resource_arrays(nir);
+   wc_nir_textures_1d_as_2d(nir);
+   if (stage == MESA_SHADER_VERTEX)
+      wc_nir_number_vertex_elements(nir);
+   else if (stage == MESA_SHADER_FRAGMENT)
+      wc_nir_fragcolor_to_buffers(nir, PIPE_MAX_COLOR_BUFS);
+   /* The last stage before the rasterizer streams its outputs. */
+   if (stage == MESA_SHADER_VERTEX || stage == MESA_SHADER_GEOMETRY || stage == MESA_SHADER_TESS_EVAL) {
+      wc_nir_stream_point_size_at_a_location(nir);
+      const uint32_t count = wc_nir_stream_outputs(nir, NULL, 0, out->strides, WC_STREAM_BUFFERS);
+      if (count == UINT32_MAX) {
+         out->streams_elsewhere = true;
+      } else if (count) {
+         out->streamed = calloc(count, sizeof(*out->streamed));
+         if (!out->streamed) {
+            ralloc_free(nir);
+            return;
+         }
+         const uint32_t written = wc_nir_stream_outputs(nir, out->streamed, count, out->strides, WC_STREAM_BUFFERS);
+         out->streams_elsewhere = written == UINT32_MAX;
+         out->streamed_count = written == UINT32_MAX ? 0 : MIN2(written, count);
+      }
+   }
+   out->reads_sample_positions = wc_nir_reads_sample_positions(nir);
+   out->writes_sample_mask = wc_nir_writes_sample_mask(nir);
+   out->fetches_target = wc_nir_fetches_target(nir);
+   out->formatless_images = wc_nir_formatless_images(nir);
+   out->integer_sampled_units = wc_nir_integer_sampled_units(nir);
+   out->named_layer = wc_nir_named_layer_location(nir);
+   if (stage == MESA_SHADER_VERTEX || stage == MESA_SHADER_TESS_EVAL) {
+      nir_shader *made[WC_PASS_THROUGH_INPUTS];
+      out->passes_through = wc_nir_storage_pass_through(nir, made);
+      for (unsigned i = 0; i < WC_PASS_THROUGH_INPUTS; i++)
+         out->pass_through[i] = (struct wc_made *)made[i];
+   }
+   out->generic_end = wc_nir_generic_end(nir);
+   out->geometry_vertices_out = wc_nir_geometry_vertices_out(nir);
+   out->control_points_out = wc_nir_control_points_out(nir);
+   out->makes_points = wc_nir_makes_points(nir);
+   if (!wc_nir_serialize(nir, &out->key)) {
+      ralloc_free(nir);
+      return;
+   }
+   out->shader = (struct wc_prepared *)nir;
+}
+
+void
+wc_prepared_form_free(struct wc_prepared_form *form)
+{
+   ralloc_free(form->shader);
+   form->shader = NULL;
+   wc_bytes_free(&form->key);
+   free(form->streamed);
+   form->streamed = NULL;
+   for (unsigned i = 0; i < WC_PASS_THROUGH_INPUTS; i++) {
+      ralloc_free(form->pass_through[i]);
+      form->pass_through[i] = NULL;
+   }
+}
+
+static bool
+transforms_alike(struct wc_position_transform a, struct wc_position_transform b)
+{
+   return a.flip_y == b.flip_y && a.half_z == b.half_z && a.reverse_z == b.reverse_z &&
+          a.fixed_point_size == b.fixed_point_size;
+}
+
+static const struct wc_position_transform no_transform = {0};
+
+/* The driver's steps at a draw (draw.rs:779 to 818) on a copy of `from`. */
+static void
+variant_of(const nir_shader *from, struct wc_variant_settings settings, const struct wc_texture_swizzle *swizzles,
+           size_t swizzle_count, const struct wc_nearest_sampler *samplers, size_t sampler_count,
+           struct wc_variant_form *out)
+{
+   out->result = WC_VARIANT_OUT_OF_MEMORY;
+   nir_shader *nir = nir_shader_clone(NULL, from);
+   if (!nir)
+      return;
+   if (!transforms_alike(settings.transform, no_transform))
+      wc_nir_transform_position(nir, settings.transform);
+   if (sampler_count && !wc_nir_nearest_integer_textures(nir, samplers, sampler_count)) {
+      out->result = WC_VARIANT_GATHERS_INTEGER_CUBE;
+      ralloc_free(nir);
+      return;
+   }
+   if (swizzle_count)
+      wc_nir_swizzle_textures(nir, swizzles, swizzle_count);
+   if (wc_nir_fetches_target(nir))
+      wc_nir_fetch_from_texture(nir, settings.fetch_unit, settings.fetch_multisampled);
+   wc_nir_fit_sample_masks(nir, settings.single_sampled);
+   if (!wc_nir_interpolate_elsewhere(nir, settings.samples)) {
+      out->result = WC_VARIANT_SAMPLES_UNKNOWN;
+      ralloc_free(nir);
+      return;
+   }
+   bool keyed;
+   if (transforms_alike(settings.transform, settings.key_transform)) {
+      keyed = wc_nir_serialize(nir, &out->key);
+   } else {
+      nir_shader *copy = nir_shader_clone(NULL, nir);
+      keyed = copy != NULL;
+      if (copy) {
+         wc_nir_transform_position(copy, settings.key_transform);
+         keyed = wc_nir_serialize(copy, &out->key);
+         ralloc_free(copy);
+      }
+   }
+   if (!keyed) {
+      ralloc_free(nir);
+      return;
+   }
+   switch (wc_nir_to_common_form(nir, settings.set, settings.ranges, &out->bindings)) {
+   case WC_BIND_OK:
+      out->result = WC_VARIANT_MADE;
+      out->shader = (struct wc_variant *)nir;
+      return;
+   case WC_BIND_BEYOND_LIMIT:
+      out->result = WC_VARIANT_BEYOND_LIMIT;
+      break;
+   case WC_BIND_UNBOUNDED:
+      out->result = WC_VARIANT_UNBOUNDED;
+      break;
+   case WC_BIND_OUT_OF_MEMORY:
+      out->result = WC_VARIANT_OUT_OF_MEMORY;
+      break;
+   }
+   ralloc_free(nir);
+}
+
+void
+wc_prepared_variant(const struct wc_prepared *shader, struct wc_variant_settings settings,
+                    const struct wc_texture_swizzle *swizzles, size_t swizzle_count,
+                    const struct wc_nearest_sampler *samplers, size_t sampler_count, struct wc_variant_form *out)
+{
+   variant_of((const nir_shader *)shader, settings, swizzles, swizzle_count, samplers, sampler_count, out);
+}
+
+void
+wc_made_variant(const struct wc_made *shader, struct wc_variant_settings settings,
+                const struct wc_texture_swizzle *swizzles, size_t swizzle_count,
+                const struct wc_nearest_sampler *samplers, size_t sampler_count, struct wc_variant_form *out)
+{
+   variant_of((const nir_shader *)shader, settings, swizzles, swizzle_count, samplers, sampler_count, out);
+}
+
+void
+wc_variant_form_free(struct wc_variant_form *form)
+{
+   ralloc_free(form->shader);
+   form->shader = NULL;
+   wc_bytes_free(&form->key);
+   wc_bindings_free(&form->bindings);
+}
+
+/* Points every one of which is a pixel are the back end's own (the driver's ONE_PIXEL, draw.rs:99). */
+#define WC_ONE_PIXEL 1.0f
+
+void
+wc_prepared_points_as_squares(const struct wc_prepared *vs, uint32_t at, float largest, struct wc_squares *out)
+{
+   const nir_shader *from = (const nir_shader *)vs;
+   out->kind = WC_SQUARES_REFUSED;
+   nir_shader *copy = nir_shader_clone(NULL, from);
+   if (!copy)
+      return;
+   out->sized = wc_nir_point_size_also_at(copy, at);
+   if (wc_nir_point_size_at_most(copy, WC_ONE_PIXEL)) {
+      out->kind = WC_SQUARES_ONE_PIXEL;
+      ralloc_free(copy);
+      return;
+   }
+   nir_shader *square = wc_nir_point_square(out->sized ? copy : from, at, largest);
+   if (!square) {
+      ralloc_free(copy);
+      return;
+   }
+   wc_nir_uniform_blocks_as_words(square);
+   out->kind = WC_SQUARES_MADE;
+   out->geometry = (struct wc_made *)square;
+   if (out->sized)
+      out->before = (struct wc_made *)copy;
+   else
+      ralloc_free(copy);
+}
+
+void
+wc_prepared_geometry_points_as_squares(const struct wc_prepared *gs, uint32_t at, float largest, uint32_t block,
+                                       struct wc_squares *out)
+{
+   const nir_shader *from = (const nir_shader *)gs;
+   out->kind = WC_SQUARES_REFUSED;
+   nir_shader *probe = nir_shader_clone(NULL, from);
+   if (!probe)
+      return;
+   out->sized = wc_nir_point_size_also_at(probe, at);
+   const bool one_pixel = wc_nir_point_size_at_most(probe, WC_ONE_PIXEL);
+   ralloc_free(probe);
+   if (one_pixel) {
+      out->kind = WC_SQUARES_ONE_PIXEL;
+      return;
+   }
+   nir_shader *squares = wc_nir_geometry_squares(from, at, largest, block);
+   if (squares) {
+      out->kind = WC_SQUARES_MADE;
+      out->geometry = (struct wc_made *)squares;
+   }
+}
+
+void
+wc_squares_free(struct wc_squares *squares)
+{
+   ralloc_free(squares->before);
+   ralloc_free(squares->geometry);
+   squares->before = NULL;
+   squares->geometry = NULL;
+}
+
+bool
+wc_made_key(const struct wc_made *shader, struct wc_bytes *out)
+{
+   return wc_nir_serialize((const nir_shader *)shader, out);
+}
+
+uint32_t
+wc_made_named_layer_location(const struct wc_made *shader)
+{
+   return wc_nir_named_layer_location((const nir_shader *)shader);
+}
+
+bool
+wc_variant_flatten(struct wc_variant *taken, uint32_t points_in, struct wc_flat *out)
+{
+   nir_shader *nir = (nir_shader *)taken;
+   const bool flattened = wc_nir_flatten(nir, points_in, out);
+   ralloc_free(nir);
+   return flattened;
+}
+
+void wc_spirv_shader_free(struct wc_spirv_shader *shader) { ralloc_free(shader); }
+void wc_spirv_common_free(struct wc_spirv_common *shader) { ralloc_free(shader); }
+void wc_received_free(struct wc_received *shader) { ralloc_free(shader); }
+void wc_prepared_free(struct wc_prepared *shader) { ralloc_free(shader); }
+void wc_made_free(struct wc_made *shader) { ralloc_free(shader); }
+void wc_variant_free(struct wc_variant *shader) { ralloc_free(shader); }

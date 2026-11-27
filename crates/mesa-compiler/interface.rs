@@ -56,7 +56,7 @@ pub struct FlatVar {
     pub builtin: u32,
     /// The bridge's `location`.
     pub location: u32,
-    /// The bridge's `set`.
+    /// The common form's set and each kind's range.
     pub set: u32,
     /// The bridge's `binding`.
     pub binding: u32,
@@ -189,6 +189,43 @@ pub struct Flat {
     pub tessellation: FlatTessellation,
 }
 
+/// A kind's range of binding numbers in a set.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotRange {
+    /// The bridge's `first`.
+    pub first: u32,
+    /// The bridge's `slots`.
+    pub slots: u32,
+}
+
+/// One resource as the program declared it (set, binding, count) and where it now binds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Binding {
+    /// The bridge's `kind`.
+    pub kind: u32,
+    /// The common form's set and each kind's range.
+    pub set: u32,
+    /// The bridge's `binding`.
+    pub binding: u32,
+    /// The bridge's `count`.
+    pub count: u32,
+    /// The bridge's `new_binding`.
+    pub new_binding: u32,
+    /// For a storage buffer, the stride of its runtime-sized array, else its block's size.
+    pub stride: u32,
+}
+
+/// A program read from SPIR-V in the common form, with its bindings; the shader NULL when it is refused.
+#[derive(Debug)]
+pub struct SpirvCommonForm<SpirvCommon> {
+    /// The bridge's `shader`.
+    pub shader: Option<SpirvCommon>,
+    /// The bridge's `bindings`.
+    pub bindings: Vec<Binding>,
+    /// The bridge's `result`.
+    pub result: u32,
+}
+
 /// The bridge's `struct wc_glsl_name`, owned.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlslName {
@@ -210,39 +247,69 @@ pub struct GlslName {
 
 /// One GLSL program's stages as the OpenGL driver receives them, by enum wc_stage (NULL where the program has none), each stage's names, and the compiler's and linker's messages; given back with wc_glsl_program_free.
 #[derive(Debug)]
-pub struct GlslProgram<S> {
+pub struct GlslProgram<Received> {
     /// The bridge's `stages`.
-    pub stages: [Option<S>; 3],
+    pub stages: [Option<Received>; 3],
     /// The bridge's `names`.
     pub names: [Vec<GlslName>; 3],
     /// The bridge's `log`.
     pub log: Option<Vec<u8>>,
 }
 
-/// A kind's range of binding numbers in a set.
+/// One output a vertex program streams: the buffer, its byte offset in each vertex there, where the route places the output (a generic location, or the position), and its components.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SlotRange {
-    /// The bridge's `first`.
-    pub first: u32,
-    /// The bridge's `slots`.
-    pub slots: u32,
+pub struct StreamOutput {
+    /// The bridge's `buffer`.
+    pub buffer: u32,
+    /// The bridge's `offset`.
+    pub offset: u32,
+    /// The bridge's `location`.
+    pub location: u32,
+    /// The bridge's `position`.
+    pub position: bool,
+    /// The bridge's `first_component`.
+    pub first_component: u8,
+    /// The bridge's `components`.
+    pub components: u8,
 }
 
-/// One resource as the program declared it (set, binding, count) and where it now binds.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Binding {
-    /// The bridge's `kind`.
-    pub kind: u32,
-    /// The bridge's `set`.
-    pub set: u32,
-    /// The bridge's `binding`.
-    pub binding: u32,
-    /// The bridge's `count`.
-    pub count: u32,
-    /// The bridge's `new_binding`.
-    pub new_binding: u32,
-    /// For a storage buffer, the stride of its runtime-sized array, else its block's size.
-    pub stride: u32,
+/// A stage after the driver's steps at its creation, and what the driver reads of it then and at its draws.
+#[derive(Debug)]
+pub struct PreparedForm<Prepared, Made> {
+    /// NULL when the cache's key could not be made (out of memory).
+    pub shader: Option<Prepared>,
+    /// The cache's key: NIR's serialised form (a prepared stage's after every step, state.rs:1178 to 1180; a variant's as the settings say, draw.rs:807 to 815).
+    pub key: Vec<u8>,
+    /// The outputs it streams and each buffer's bytes a vertex (state.rs:1157 to 1162); none when it streams a value the route places neither at a location nor as the position (`streams_elsewhere`).
+    pub streamed: Vec<StreamOutput>,
+    /// The bridge's `strides`.
+    pub strides: [u32; 4],
+    /// The bridge's `streams_elsewhere`.
+    pub streams_elsewhere: bool,
+    /// state.rs:1164 to 1169.
+    pub reads_sample_positions: bool,
+    /// The bridge's `writes_sample_mask`.
+    pub writes_sample_mask: bool,
+    /// The bridge's `fetches_target`.
+    pub fetches_target: bool,
+    /// The bridge's `formatless_images`.
+    pub formatless_images: u64,
+    /// The bridge's `integer_sampled_units`.
+    pub integer_sampled_units: u64,
+    /// UINT32_MAX for a program naming no layer.
+    pub named_layer: u32,
+    /// A vertex or evaluation program using storage: the pass-through geometry programs by the primitive taken (state.rs:1174 to 1176); `passes_through` false for any other.
+    pub passes_through: bool,
+    /// The bridge's `pass_through`.
+    pub pass_through: [Option<Made>; 5],
+    /// What the driver reads at its draws (draw.rs:2346, 2393, 2414, 2576, 3422 and 3509).
+    pub generic_end: u32,
+    /// The bridge's `geometry_vertices_out`.
+    pub geometry_vertices_out: u32,
+    /// The bridge's `control_points_out`.
+    pub control_points_out: u32,
+    /// The bridge's `makes_points`.
+    pub makes_points: bool,
 }
 
 /// How a vertex program's position (and point size) is changed to meet the host's clip space, viewport and points.
@@ -256,6 +323,27 @@ pub struct PositionTransform {
     pub reverse_z: bool,
     /// The point size output removed: the host draws points of one size, to which OpenGL clamps every size a program writes.
     pub fixed_point_size: bool,
+}
+
+/// What a draw makes a variant of a program for (draw.rs:779 to 818).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantSettings {
+    /// The position's transform (none when every field is false).
+    pub transform: PositionTransform,
+    /// The transform the cache's key is taken with: where it is not `transform`, the key is of a copy with it applied after `transform` (a geometry program's records, draw.rs:807 to 815).
+    pub key_transform: PositionTransform,
+    /// A program reading its first target's texels reads them from the texture at this unit, multisampled where the target is.
+    pub fetch_unit: u32,
+    /// The bridge's `fetch_multisampled`.
+    pub fetch_multisampled: bool,
+    /// Targets of one sample, and their sample count.
+    pub single_sampled: bool,
+    /// The bridge's `samples`.
+    pub samples: u32,
+    /// The common form's set and each kind's range.
+    pub set: u32,
+    /// The bridge's `ranges`.
+    pub ranges: [SlotRange; 4],
 }
 
 /// The swizzle of the texture bound at one texture unit.
@@ -284,146 +372,128 @@ pub struct NearestSampler {
     pub border: [u32; 4],
 }
 
-/// One output a vertex program streams: the buffer, its byte offset in each vertex there, where the route places the output (a generic location, or the position), and its components.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StreamOutput {
-    /// The bridge's `buffer`.
-    pub buffer: u32,
-    /// The bridge's `offset`.
-    pub offset: u32,
-    /// The bridge's `location`.
-    pub location: u32,
-    /// The bridge's `position`.
-    pub position: bool,
-    /// The bridge's `first_component`.
-    pub first_component: u8,
-    /// The bridge's `components`.
-    pub components: u8,
+/// A draw's variant, its key and its bindings; the shader NULL when `result` is not WC_VARIANT_MADE.
+#[derive(Debug)]
+pub struct VariantForm<Variant> {
+    /// The bridge's `shader`.
+    pub shader: Option<Variant>,
+    /// The bridge's `result`.
+    pub result: u32,
+    /// The cache's key: NIR's serialised form (a prepared stage's after every step, state.rs:1178 to 1180; a variant's as the settings say, draw.rs:807 to 815).
+    pub key: Vec<u8>,
+    /// The bridge's `bindings`.
+    pub bindings: Vec<Binding>,
+}
+
+/// The bridge's `struct wc_squares`, owned.
+#[derive(Debug)]
+pub struct Squares<Made> {
+    /// The bridge's `kind`.
+    pub kind: u32,
+    /// Whether the program writes a point size (then also at `at`).
+    pub sized: bool,
+    /// The vertex program drawn before the squares where it writes a point size: a copy also writing it at `at`.
+    pub before: Option<Made>,
+    /// The bridge's `geometry`.
+    pub geometry: Option<Made>,
 }
 
 pub mod constants;
 
-/// Mesa's compiler through the bridge: one method a bridge function, each shader a value of the implementation's
-/// own type that owns one NIR shader and gives it back when dropped.
+/// Mesa's compiler through the bridge: one method a bridge function. A shader is a value of one of the
+/// implementation's types, one a place of the bridge's typed chain (bridge.h), each owning one NIR shader and giving it
+/// back when dropped; a method takes only the type of its place, so a shader goes only through the orders the bridge's
+/// callers take.
 pub trait MesaCompiler: Sized {
-    /// One NIR shader, owned.
-    type Shader;
+    /// A program read from SPIR-V for Vulkan: the corpus's first step (run.rs:493 to 496).
+    type SpirvShader;
+
+    /// A program read from SPIR-V in the common form: what the corpus's candidates convert (run.rs:570 and 671).
+    type SpirvCommon;
+
+    /// A stage as the OpenGL driver receives it from st/mesa (state.rs:1124 to 1138): here from Mesa's GLSL compiler and st/mesa's steps (glsl.cpp).
+    type Received;
+
+    /// A stage after the driver's steps at its creation (state.rs:1139 to 1180), which nothing changes after.
+    type Prepared;
+
+    /// A program the driver's steps make: a pass-through geometry program (state.rs:1175), a vertex program with its point size also at a location, or a geometry program drawing points as squares (draw.rs:3426 to 3441 and 3514 to 3522).
+    type Made;
+
+    /// A draw's variant of a prepared or made program, in the common form (draw.rs:779 to 818).
+    type Variant;
 
     /// The compiler, ready (Mesa's type tables taken for the process).
     fn new() -> Self;
 
-    /// Calls the bridge's `wc_nir_flatten`.
-    fn flatten(&self, nir: &mut Self::Shader, points_in: u32) -> Option<Flat>;
+    /// Reads one entry point of a SPIR-V module for Vulkan, and, with `alpha_to_one`, makes Vulkan's alphaToOne in a fragment program: the corpus reads each program, then makes alphaToOne in those of its folder for it (run.rs:493 to 496). NULL for words that are no valid module for Vulkan, or that Mesa's reader refuses.
+    ///
+    /// Calls the bridge's `wc_spirv_read`.
+    fn spirv_read(&self, words: &[u32], stage: u32, entry_point: &core::ffi::CStr, alpha_to_one: bool) -> Option<Self::SpirvShader>;
 
-    /// Calls the bridge's `wc_spirv_to_nir`.
-    fn spirv_to_nir(&self, words: &[u32], stage: u32, entry_point: &core::ffi::CStr) -> Option<Self::Shader>;
+    /// The cache's key of a program read: NIR's serialised form, taken before the common form (run.rs:567).
+    ///
+    /// Calls the bridge's `wc_spirv_shader_key`.
+    fn spirv_shader_key(&self, shader: &Self::SpirvShader) -> Option<Vec<u8>>;
 
+    /// Gives the program the common form's meaning and bindings in `set` (each kind from its range's first binding), the step both candidates take first (run.rs:570 and 671).
+    ///
+    /// Calls the bridge's `wc_spirv_to_common_form`.
+    fn spirv_to_common_form(&self, taken: Self::SpirvShader, set: u32, ranges: &[SlotRange; 4]) -> SpirvCommonForm<Self::SpirvCommon>;
+
+    /// Candidate A: the program written as SPIR-V by Zink's compiler in its native Vulkan mode (run.rs:672). False for a program not in the form that mode takes.
+    ///
+    /// Calls the bridge's `wc_spirv_common_to_spirv`.
+    fn spirv_common_to_spirv(&self, taken: Self::SpirvCommon) -> Option<Vec<u32>>;
+
+    /// Candidate B: the program out of SSA and flattened (run.rs:571, through crates/nir/src/direct.rs:974 to 984).
+    ///
+    /// Calls the bridge's `wc_spirv_common_flatten`.
+    fn spirv_common_flatten(&self, taken: Self::SpirvCommon) -> Option<Flat>;
+
+    /// Compiles and links the sources (by enum wc_stage, NULL for none) with Mesa's GLSL compiler, then takes st/mesa's steps for the OpenGL driver's capabilities; false when either step fails.
+    ///
     /// Calls the bridge's `wc_glsl_to_nir`.
-    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<Self::Shader>, Vec<u8>>;
+    fn glsl_to_nir(&self, sources: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<Self::Received>, Vec<u8>>;
 
-    /// Calls the bridge's `wc_nir_to_common_form`.
-    fn to_common_form(&self, nir: &mut Self::Shader, set: u32, ranges: &[SlotRange; 4]) -> Result<Vec<Binding>, u32>;
+    /// The driver's steps at a stage's creation, in its order (state.rs:1139 to 1180): the name dropped, uniform blocks as words, resource arrays split, 1D textures as 2D; a vertex program's inputs numbered as vertex elements, a fragment program's gl_FragColor written to every draw buffer; the last stage before the rasterizer's point size streamed at a location; the facts read; a vertex or evaluation program's pass-through programs made.
+    ///
+    /// Calls the bridge's `wc_received_prepare`.
+    fn received_prepare(&self, taken: Self::Received) -> PreparedForm<Self::Prepared, Self::Made>;
 
-    /// Calls the bridge's `wc_nir_lower_io`.
-    fn lower_io(&self, nir: &mut Self::Shader);
+    /// The driver's steps at a draw, in its order (draw.rs:779 to 818), on a copy of the program: the position transformed, integer textures' samplings made nearest loads at the units of `samplers`, the textures at the units of `swizzles` swizzled, the first target's texels read from `fetch_unit` (a program that reads them), the sample masks fitted, reads at offsets and samples made from the interpolated values; the key taken; the common form.
+    ///
+    /// Calls the bridge's `wc_prepared_variant`.
+    fn prepared_variant(&self, shader: &Self::Prepared, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
 
-    /// Calls the bridge's `wc_nir_alpha_to_one`.
-    fn alpha_to_one(&self, nir: &mut Self::Shader);
+    /// A vertex program's points drawn as squares where the back end draws points of one size (draw.rs:3426 to 3441): a copy writing its point size also at the generic slot `at`; nothing where every point is a pixel; the geometry program drawing the squares (sized to at most `largest`), its uniform blocks as words.
+    ///
+    /// Calls the bridge's `wc_prepared_points_as_squares`.
+    fn prepared_points_as_squares(&self, vs: &Self::Prepared, at: u32, largest: f32) -> Squares<Self::Made>;
 
-    /// Calls the bridge's `wc_nir_serialize`.
-    fn serialize(&self, nir: &Self::Shader) -> Option<Vec<u8>>;
+    /// A geometry program's points drawn as squares (draw.rs:3514 to 3522): nothing where every point is a pixel; the program rewritten to draw squares, of at most `largest`, its size else read from uniform block `block`.
+    ///
+    /// Calls the bridge's `wc_prepared_geometry_points_as_squares`.
+    fn prepared_geometry_points_as_squares(&self, gs: &Self::Prepared, at: u32, largest: f32, block: u32) -> Squares<Self::Made>;
 
-    /// Calls the bridge's `wc_nir_to_spirv`.
-    fn to_spirv(&self, nir: &mut Self::Shader) -> Option<Vec<u32>>;
+    /// The cache's key of a made program (state.rs:1186, draw.rs:3445 and 3525).
+    ///
+    /// Calls the bridge's `wc_made_key`.
+    fn made_key(&self, shader: &Self::Made) -> Option<Vec<u8>>;
 
-    /// Calls the bridge's `wc_nir_clone`.
-    fn cloned(&self, nir: &Self::Shader) -> Option<Self::Shader>;
+    /// For a made geometry program writing gl_Layer, the location after its generic outputs (state.rs:1195); UINT32_MAX for one naming no layer.
+    ///
+    /// Calls the bridge's `wc_made_named_layer_location`.
+    fn made_named_layer_location(&self, shader: &Self::Made) -> u32;
 
-    /// Calls the bridge's `wc_nir_number_vertex_elements`.
-    fn number_vertex_elements(&self, nir: &mut Self::Shader) -> u64;
+    /// The driver's steps at a draw on a made program, as on a prepared one (draw.rs:779 to 818).
+    ///
+    /// Calls the bridge's `wc_made_variant`.
+    fn made_variant(&self, shader: &Self::Made, settings: VariantSettings, swizzles: &[TextureSwizzle], samplers: &[NearestSampler]) -> VariantForm<Self::Variant>;
 
-    /// Calls the bridge's `wc_nir_geometry_vertices_out`.
-    fn geometry_vertices_out(&self, nir: &Self::Shader) -> u32;
-
-    /// Calls the bridge's `wc_nir_named_layer_location`.
-    fn named_layer_location(&self, nir: &Self::Shader) -> u32;
-
-    /// Calls the bridge's `wc_nir_control_points_out`.
-    fn control_points_out(&self, nir: &Self::Shader) -> u32;
-
-    /// Calls the bridge's `wc_nir_makes_points`.
-    fn makes_points(&self, nir: &Self::Shader) -> bool;
-
-    /// Calls the bridge's `wc_nir_fragcolor_to_buffers`.
-    fn fragcolor_to_buffers(&self, nir: &mut Self::Shader, buffers: u32);
-
-    /// Calls the bridge's `wc_nir_split_resource_arrays`.
-    fn split_resource_arrays(&self, nir: &mut Self::Shader);
-
-    /// Calls the bridge's `wc_nir_textures_1d_as_2d`.
-    fn textures_1d_as_2d(&self, nir: &mut Self::Shader);
-
-    /// Calls the bridge's `wc_nir_drop_name`.
-    fn drop_name(&self, nir: &mut Self::Shader);
-
-    /// Calls the bridge's `wc_nir_uniform_blocks_as_words`.
-    fn uniform_blocks_as_words(&self, nir: &mut Self::Shader);
-
-    /// Calls the bridge's `wc_nir_transform_position`.
-    fn transform_position(&self, nir: &mut Self::Shader, transform: PositionTransform);
-
-    /// Calls the bridge's `wc_nir_reads_sample_positions`.
-    fn reads_sample_positions(&self, nir: &mut Self::Shader) -> bool;
-
-    /// Calls the bridge's `wc_nir_interpolate_elsewhere`.
-    fn interpolate_elsewhere(&self, nir: &mut Self::Shader, samples: u32) -> bool;
-
-    /// Calls the bridge's `wc_nir_fit_sample_masks`.
-    fn fit_sample_masks(&self, nir: &mut Self::Shader, single_sampled: bool);
-
-    /// Calls the bridge's `wc_nir_writes_sample_mask`.
-    fn writes_sample_mask(&self, nir: &mut Self::Shader) -> bool;
-
-    /// Calls the bridge's `wc_nir_fetches_target`.
-    fn fetches_target(&self, nir: &mut Self::Shader) -> bool;
-
-    /// Calls the bridge's `wc_nir_formatless_images`.
-    fn formatless_images(&self, nir: &mut Self::Shader) -> u64;
-
-    /// Calls the bridge's `wc_nir_fetch_from_texture`.
-    fn fetch_from_texture(&self, nir: &mut Self::Shader, unit: u32, multisampled: bool);
-
-    /// Calls the bridge's `wc_nir_swizzle_textures`.
-    fn swizzle_textures(&self, nir: &mut Self::Shader, swizzles: &[TextureSwizzle]);
-
-    /// Calls the bridge's `wc_nir_nearest_integer_textures`.
-    fn nearest_integer_textures(&self, nir: &mut Self::Shader, samplers: &[NearestSampler]) -> bool;
-
-    /// Calls the bridge's `wc_nir_integer_sampled_units`.
-    fn integer_sampled_units(&self, nir: &mut Self::Shader) -> u64;
-
-    /// Calls the bridge's `wc_nir_stream_point_size_at_a_location`.
-    fn stream_point_size_at_a_location(&self, nir: &mut Self::Shader);
-
-    /// Calls the bridge's `wc_nir_generic_end`.
-    fn generic_end(&self, nir: &Self::Shader) -> u32;
-
-    /// Calls the bridge's `wc_nir_point_size_also_at`.
-    fn point_size_also_at(&self, nir: &mut Self::Shader, at: u32) -> bool;
-
-    /// Calls the bridge's `wc_nir_point_size_at_most`.
-    fn point_size_at_most(&self, nir: &Self::Shader, size: f32) -> bool;
-
-    /// Calls the bridge's `wc_nir_point_square`.
-    fn point_square(&self, vs: &Self::Shader, at: u32, largest: f32) -> Option<Self::Shader>;
-
-    /// Calls the bridge's `wc_nir_geometry_squares`.
-    fn geometry_squares(&self, gs: &Self::Shader, at: u32, largest: f32, block: u32) -> Option<Self::Shader>;
-
-    /// Calls the bridge's `wc_nir_storage_pass_through`.
-    fn storage_pass_through(&self, last: &mut Self::Shader) -> Option<[Option<Self::Shader>; 5]>;
-
-    /// Calls the bridge's `wc_nir_stream_outputs`.
-    fn stream_outputs(&self, nir: &Self::Shader, outputs: &mut [StreamOutput], strides: &mut [u32]) -> u32;
+    /// A variant out of SSA and flattened: the route the driver converts it by (draw.rs:840, 978, 1034 and 1081, through crates/nir/src/direct.rs:974 to 984), `points_in` a tessellation program's input control points.
+    ///
+    /// Calls the bridge's `wc_variant_flatten`.
+    fn variant_flatten(&self, taken: Self::Variant, points_in: u32) -> Option<Flat>;
 
 }

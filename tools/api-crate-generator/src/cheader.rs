@@ -31,6 +31,23 @@ pub struct Header {
     pub structures: BTreeMap<String, Vec<CParam>>,
     pub enumerations: BTreeMap<String, Vec<String>>,
     pub defines: BTreeMap<String, String>,
+    /// The structures declared without a body (`struct wc_spirv_shader;`): each a shader at one place of the bridge's
+    /// typed chain, opaque to Rust.
+    pub handles: Vec<String>,
+}
+
+impl Header {
+    /// The handle a type names (`struct wc_made` or `const struct wc_made`), if it is one.
+    pub fn handle(&self, base: &str) -> Option<&str> {
+        let name = base.trim_start_matches("const ").trim().strip_prefix("struct ")?;
+        self.handles.iter().find(|handle| handle.as_str() == name).map(String::as_str)
+    }
+
+    /// Whether the bridge declares `<name>_free`, which gives back what it filled into a structure of that name.
+    pub fn freed(&self, name: &str) -> bool {
+        let free = format!("{name}_free");
+        self.functions.iter().any(|function| function.name == free)
+    }
 }
 
 /// The text without comments, preprocessor lines (the defines kept apart) and `extern "C"` braces.
@@ -102,6 +119,13 @@ pub fn read(texts: &[String]) -> Header {
             let Some(open) = open else {
                 let statement = &rest[..end];
                 rest = rest.get(end + 1..).unwrap_or("");
+                if let Some(name) = statement.trim().strip_prefix("struct ")
+                    && name.starts_with("wc_")
+                    && !name.contains(char::is_whitespace)
+                {
+                    header.handles.push(name.to_string());
+                    continue;
+                }
                 if let (Some(paren), Some(close)) = (statement.find('('), statement.rfind(')')) {
                     let mut ret = declaration(&statement[..paren]);
                     let name = std::mem::take(&mut ret.name);
@@ -140,14 +164,16 @@ pub fn row_of(function: &CFunction, param: &CParam, header: &Header) -> Option<&
 fn row(function: &CFunction, param: &CParam, header: &Header) -> Option<&'static str> {
     let base = param.base.trim_start_matches("const ").trim();
     let is_const = param.base.starts_with("const ");
+    if let Some(handle) = header.handle(base) {
+        return Some(match (param.pointers, param.array.is_some(), is_const) {
+            (1, false, false) if param.name == "return" => "shader made: an owned shader of its place, given back by its free on drop, or None",
+            (1, false, true) if param.name != "return" => "shader read: &Shader of its place",
+            (1, false, false) if function.name == format!("{handle}_free") => "shader given back: the shader type's drop",
+            (1, false, false) if param.name == "taken" => "shader taken: the shader of its place by value, given back by the bridge",
+            _ => return None,
+        });
+    }
     Some(match (base, param.pointers, param.array.is_some(), is_const) {
-        ("struct nir_shader", 1, false, true) if param.name == "return" => return None,
-        ("struct nir_shader", 1, false, false) if param.name == "return" => "shader made: an owned shader, freed by wc_nir_free on drop, or None",
-        ("struct nir_shader", 1, false, true) => "shader read: &Shader",
-        ("struct nir_shader", 1, false, false) if function.name == "wc_nir_free" => "shader given back: the shader type's drop",
-        ("struct nir_shader", 1, false, false) if function.name == "wc_nir_to_spirv" => "shader read and changed: &mut Shader",
-        ("struct nir_shader", 1, false, false) => "shader changed: &mut Shader",
-        ("struct nir_shader", 1, true, false) => "shaders made into the caller's array: [Option<Shader>; N]",
         ("struct nir_shader_compiler_options", 1, false, true) => "the compiler's options for a Gallium screen: AC8's Gallium trait",
         ("void" | "", 0, false, _) => "nothing",
         ("bool" | "uint32_t" | "uint64_t" | "int32_t" | "unsigned" | "float" | "size_t" | "uint8_t", 0, false, _) => "number or bool by value",
@@ -165,12 +191,10 @@ fn row(function: &CFunction, param: &CParam, header: &Header) -> Option<&'static
             "plain data read during the call, with the count beside it: &[Mirror]"
         }
         (structure, 0, true, true) if header.structures.contains_key(structure.trim_start_matches("struct ")) => "plain data read during the call: [Mirror; N]",
-        ("struct wc_bytes" | "struct wc_words" | "struct wc_bindings" | "struct wc_glsl_program" | "struct wc_flat", 1, false, false)
-            if function.name.ends_with("_free") =>
-        {
+        (structure, 1, false, false) if header.freed(structure.trim_start_matches("struct ")) && function.name.ends_with("_free") => {
             "the bridge's memory given back: inside the copy that reads it"
         }
-        ("struct wc_bytes" | "struct wc_words" | "struct wc_bindings" | "struct wc_glsl_program" | "struct wc_flat", 1, false, false) => {
+        (structure, 1, false, false) if header.freed(structure.trim_start_matches("struct ")) => {
             "the bridge's memory, copied out whole into owned Rust values, then given back once: Vec or an owned structure"
         }
         (structure, 1, false, false) if header.structures.contains_key(structure.trim_start_matches("struct ")) => {

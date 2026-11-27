@@ -1,23 +1,86 @@
-//! The tests every implementation of wcontainers-mesa-compiler runs, written against the trait alone: programs
-//! compiled from GLSL and SPIR-V and read back in every form the trait gives; every method called, by a hostile
-//! caller, on shaders of every stage the trait can make and with edge arguments (values past every enumeration,
-//! empty and long lists, units past every limit); and a seeded fuzzer of the same, with SPIR-V words changed.
+//! The tests every implementation of wcontainers-mesa-compiler runs, written against the trait alone. The trait's
+//! shaders are typed by their place in the bridge's chain, so a caller can write only the orders the bridge's callers
+//! take (the doctests below show the others do not compile); the tests walk every one of those orders: programs
+//! compiled from GLSL and SPIR-V and read back in every form the trait gives; a hostile caller taking every walk from
+//! every program with edge arguments at every step (values past every enumeration, empty and long lists, units past
+//! every limit); and a seeded fuzzer of the same, from SPIR-V whose words were changed and GLSL whose numbers were.
+//!
+//! The orders that do not compile:
+//!
+//! ```compile_fail,E0308
+//! // Zink's writer on a program not in the common form.
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, read: M::SpirvShader) {
+//!     let _ = compiler.spirv_common_to_spirv(read);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0382
+//! // Zink's writer twice on one program (it is taken by the first).
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, common: M::SpirvCommon) {
+//!     let _ = compiler.spirv_common_to_spirv(common);
+//!     let _ = compiler.spirv_common_to_spirv(common);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // Zink's writer on the OpenGL driver's form.
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, variant: M::Variant) {
+//!     let _ = compiler.spirv_common_to_spirv(variant);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // The driver's steps at a creation on a program read from SPIR-V.
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, read: M::SpirvShader) {
+//!     let _ = compiler.received_prepare(read);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // A draw's variant of a stage the driver's creation steps have not taken.
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, received: &M::Received, settings: wcontainers_mesa_compiler::VariantSettings) {
+//!     let _ = compiler.prepared_variant(received, settings, &[], &[]);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // Points as squares from a program the driver's steps made (a pass-through or a square).
+//! fn order<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, made: &M::Made) {
+//!     let _ = compiler.prepared_points_as_squares(made, 0, 1.0);
+//! }
+//! ```
+//!
+//! The orders the callers take compile:
+//!
+//! ```
+//! fn candidate_a<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, words: &[u32], ranges: &[wcontainers_mesa_compiler::SlotRange; 4]) -> Option<Vec<u32>> {
+//!     let read = compiler.spirv_read(words, 0, c"main", false)?;
+//!     let _key = compiler.spirv_shader_key(&read)?;
+//!     let common = compiler.spirv_to_common_form(read, 0, ranges).shader?;
+//!     compiler.spirv_common_to_spirv(common)
+//! }
+//! fn draw<M: wcontainers_mesa_compiler::MesaCompiler>(compiler: &M, received: M::Received, settings: wcontainers_mesa_compiler::VariantSettings) -> Option<wcontainers_mesa_compiler::Flat> {
+//!     let prepared = compiler.received_prepare(received).shader?;
+//!     let variant = compiler.prepared_variant(&prepared, settings, &[], &[]).shader?;
+//!     compiler.variant_flatten(variant, 0)
+//! }
+//! ```
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 
-use wcontainers_mesa_compiler::{MesaCompiler, NearestSampler, PositionTransform, SlotRange, StreamOutput, TextureSwizzle};
+use wcontainers_mesa_compiler::{MesaCompiler, NearestSampler, PositionTransform, SlotRange, TextureSwizzle, VariantSettings, constants};
 
 /// The first word of every SPIR-V module.
 const SPIRV_MAGIC: u32 = 0x0723_0203;
 /// The bridge's stages (enum wc_stage).
-const VERTEX: u32 = 0;
-const FRAGMENT: u32 = 1;
-const COMPUTE: u32 = 2;
+const VERTEX: u32 = constants::STAGE_VERTEX;
+const FRAGMENT: u32 = constants::STAGE_FRAGMENT;
+const COMPUTE: u32 = constants::STAGE_COMPUTE;
 /// The entry point every program here names.
 const MAIN: &CStr = c"main";
 
 /// A vertex program with a uniform block, a point size, two inputs and an output.
-const VERTEX_SOURCE: &CStr = c"#version 450
+const VERTEX_SOURCE: &str = "#version 450
 layout(location = 0) in vec4 at;
 layout(location = 1) in vec2 coordinate;
 layout(location = 0) out vec2 passed;
@@ -31,7 +94,7 @@ void main() {
 
 /// A fragment program sampling a float, an integer, a 1D and a cube texture, reading sample positions,
 /// interpolating at an offset and writing the sample mask.
-const FRAGMENT_SOURCE: &CStr = c"#version 450
+const FRAGMENT_SOURCE: &str = "#version 450
 layout(location = 0) in vec2 passed;
 layout(location = 0) out vec4 colour;
 layout(binding = 0) uniform sampler2D picture;
@@ -48,7 +111,7 @@ void main() {
 ";
 
 /// A compute program writing a storage block and an image.
-const COMPUTE_SOURCE: &CStr = c"#version 450
+const COMPUTE_SOURCE: &str = "#version 450
 layout(local_size_x = 4) in;
 layout(std430, binding = 0) buffer Results { uint values[]; };
 layout(binding = 0, rgba8) uniform writeonly image2D written;
@@ -59,17 +122,61 @@ void main() {
 ";
 
 /// An older program: the vertex built-ins and gl_FragColor (written to every draw buffer).
-const OLD_VERTEX_SOURCE: &CStr = c"#version 110
+const OLD_VERTEX_SOURCE: &str = "#version 110
 void main() { gl_Position = gl_Vertex; gl_PointSize = 4.0; }
 ";
-const OLD_FRAGMENT_SOURCE: &CStr = c"#version 110
+const OLD_FRAGMENT_SOURCE: &str = "#version 110
 void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }
+";
+
+/// A vertex program writing a storage block (drawn before pass-through geometry programs) and a point size.
+const STORING_VERTEX_SOURCE: &str = "#version 450
+layout(std430, binding = 0) buffer Seen { uint seen[]; };
+layout(location = 0) in vec4 at;
+layout(location = 0) out vec4 passed;
+void main() {
+    seen[gl_VertexID] = 1u;
+    gl_Position = at;
+    gl_PointSize = 3.0;
+    passed = at;
+}
+";
+
+/// A fragment program sampling and gathering integer cube maps and an integer array.
+const INTEGER_FRAGMENT_SOURCE: &str = "#version 450
+layout(binding = 0) uniform isamplerCube cube;
+layout(binding = 1) uniform isampler2DArray layers;
+layout(binding = 2) uniform usamplerCubeArray cubes;
+layout(location = 0) in vec3 at;
+layout(location = 0) out ivec4 colour;
+void main() {
+    colour = texture(cube, at) + textureGather(cube, at) + texture(layers, at) + ivec4(texture(cubes, vec4(at, 1.0)));
+}
+";
+
+/// A vertex program feeding the integer program's input.
+const INTEGER_VERTEX_SOURCE: &str = "#version 450
+layout(location = 0) in vec4 position;
+layout(location = 0) out vec3 at;
+void main() {
+    gl_Position = position;
+    at = position.xyz;
+}
 ";
 
 /// A source the compiler refuses.
 const BROKEN_SOURCE: &CStr = c"#version 450
 void main() { this is not GLSL }
 ";
+
+/// The GLSL programs the walks start from, by enum wc_stage.
+const PROGRAMS: [[Option<&str>; 3]; 5] = [
+    [Some(VERTEX_SOURCE), Some(FRAGMENT_SOURCE), None],
+    [None, None, Some(COMPUTE_SOURCE)],
+    [Some(OLD_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None],
+    [Some(STORING_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None],
+    [Some(INTEGER_VERTEX_SOURCE), Some(INTEGER_FRAGMENT_SOURCE), None],
+];
 
 /// The three programs above as SPIR-V for Vulkan, written by glslang 16.4.0 (`glslangValidator -V --target-env
 /// vulkan1.1`, the files beside each in spirv/).
@@ -87,85 +194,282 @@ fn modules() -> [(u32, Vec<u32>); 3] {
     [(VERTEX, words(VERTEX_SPIRV)), (FRAGMENT, words(FRAGMENT_SPIRV)), (COMPUTE, words(COMPUTE_SPIRV))]
 }
 
-/// The numbers the method calls pick from.
+/// The numbers the calls pick from.
 const NUMBERS: [u32; 9] = [0, 1, 2, 4, 31, 32, 64, 1000, u32::MAX];
+const SAMPLES: [u32; 8] = [0, 1, 2, 3, 4, 8, 16, u32::MAX];
 const FLOATS: [f32; 7] = [0.0, 1.0, 64.0, -1.0, f32::MAX, f32::INFINITY, f32::NAN];
 const BYTES: [u8; 7] = [0, 1, 3, 5, 6, 200, u8::MAX];
 const LENGTHS: [usize; 5] = [0, 1, 4, 33, 300];
+/// Ranges the common form takes every program here into, and the bridge's own refusals past them.
+const SLOTS: [u32; 5] = [64, 16, 1, 0, u32::MAX];
 
-fn pick<T: Copy>(values: &[T], seed: usize) -> T {
-    values[seed.wrapping_mul(0x9E37_79B9) % values.len()]
+/// Arguments picked by a seed: each call takes the next.
+struct Picks {
+    state: u64,
 }
 
-/// A program's stages compiled from GLSL, which must compile.
-fn compiled<M: MesaCompiler>(compiler: &M, sources: [Option<&CStr>; 3]) -> [Option<M::Shader>; 3] {
-    match compiler.glsl_to_nir(sources) {
-        Ok(program) => program.stages,
-        Err(log) => panic!("the program compiles: {}", String::from_utf8_lossy(&log)),
+impl Picks {
+    fn new(seed: u64) -> Picks {
+        Picks { state: seed }
     }
-}
 
-/// Every shader the trait can make that the hostile calls start from: a vertex, a fragment and a compute
-/// program from GLSL (new and old), each again from SPIR-V the trait wrote, the geometry program that draws a
-/// vertex program's points, and the programs storage_pass_through makes.
-fn pool<M: MesaCompiler>(compiler: &M) -> Vec<M::Shader> {
-    let mut made = Vec::new();
-    let [vertex, fragment, _] = compiled(compiler, [Some(VERTEX_SOURCE), Some(FRAGMENT_SOURCE), None]);
-    let [_, _, compute] = compiled(compiler, [None, None, Some(COMPUTE_SOURCE)]);
-    let [old_vertex, old_fragment, _] = compiled(compiler, [Some(OLD_VERTEX_SOURCE), Some(OLD_FRAGMENT_SOURCE), None]);
-    made.extend([vertex, fragment, compute, old_vertex, old_fragment].into_iter().flatten());
-    for (stage, words) in modules() {
-        made.extend(compiler.spirv_to_nir(&words, stage, MAIN));
+    /// The next number of the sequence (SplitMix64).
+    fn next(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
-    let mut shaders = Vec::new();
-    for shader in made {
-        if let Some(mut copy) = compiler.cloned(&shader)
-            && let Some(passed) = compiler.storage_pass_through(&mut copy)
-        {
-            shaders.extend(passed.into_iter().flatten());
+
+    fn below(&mut self, count: usize) -> usize {
+        usize::try_from(self.next() % u64::try_from(count.max(1)).unwrap_or(1)).unwrap_or(0)
+    }
+
+    fn of<T: Copy>(&mut self, values: &[T]) -> T {
+        values[self.below(values.len())]
+    }
+
+    fn flag(&mut self) -> bool {
+        self.next().is_multiple_of(2)
+    }
+
+    fn transform(&mut self) -> PositionTransform {
+        // Mostly none, as most draws take.
+        if self.next().is_multiple_of(3) {
+            return PositionTransform { flip_y: false, half_z: false, reverse_z: false, fixed_point_size: false };
         }
-        shaders.extend(compiler.point_square(&shader, 1, 64.0));
-        shaders.push(shader);
+        PositionTransform { flip_y: self.flag(), half_z: self.flag(), reverse_z: self.flag(), fixed_point_size: self.flag() }
     }
-    shaders
+
+    fn ranges(&mut self) -> [SlotRange; 4] {
+        let first = self.of(&NUMBERS);
+        [0, 1, 2, 3].map(|_| SlotRange { first: if self.flag() { 0 } else { first }, slots: self.of(&SLOTS) })
+    }
+
+    fn settings(&mut self) -> VariantSettings {
+        let transform = self.transform();
+        VariantSettings {
+            transform: transform.clone(),
+            key_transform: if self.flag() { transform } else { self.transform() },
+            fetch_unit: self.of(&NUMBERS),
+            fetch_multisampled: self.flag(),
+            single_sampled: self.flag(),
+            samples: self.of(&SAMPLES),
+            set: self.of(&NUMBERS),
+            ranges: self.ranges(),
+        }
+    }
+
+    fn swizzles(&mut self) -> Vec<TextureSwizzle> {
+        let length = if self.flag() { 0 } else { self.of(&LENGTHS) };
+        (0..length).map(|_| TextureSwizzle { unit: self.of(&NUMBERS), swizzle: [0, 1, 2, 3].map(|_| self.of(&BYTES)) }).collect()
+    }
+
+    fn samplers(&mut self) -> Vec<NearestSampler> {
+        let length = if self.flag() { 0 } else { self.of(&LENGTHS) };
+        (0..length)
+            .map(|_| NearestSampler {
+                unit: self.of(&NUMBERS),
+                wrap: [0, 1, 2].map(|_| self.of(&BYTES)),
+                mipmapped: self.flag(),
+                min_lod: self.of(&FLOATS),
+                max_lod: self.of(&FLOATS),
+                border: [0, 1, 2, 3].map(|_| self.of(&NUMBERS)),
+            })
+            .collect()
+    }
 }
 
-/// Compiles a program of each stage, reads each back as a flat form, serialises, clones, writes SPIR-V and
-/// reads that SPIR-V back.
+/// Counts the trait's calls a walk makes, and by method the calls and those that made what they make (the walk then
+/// went on from it).
+struct Calls(u64, std::collections::BTreeMap<&'static str, (u64, u64)>);
+
+impl Calls {
+    fn new() -> Calls {
+        Calls(0, std::collections::BTreeMap::new())
+    }
+
+    fn one(&mut self, method: &'static str) {
+        self.0 += 1;
+        self.1.entry(method).or_default().0 += 1;
+    }
+
+    /// The call of `method` just counted made what it makes; returns `made`.
+    fn made<T>(&mut self, method: &'static str, made: Option<T>) -> Option<T> {
+        if made.is_some() {
+            self.1.entry(method).or_default().1 += 1;
+        }
+        made
+    }
+
+    fn report(&self, label: &str) {
+        for (method, (calls, made)) in &self.1 {
+            println!("{label} {method} calls {calls} made {made}");
+        }
+    }
+}
+
+/// The SPIR-V candidates' walk (the corpus's, run.rs): a module read (alphaToOne made in a fragment program where the
+/// picks say), its key, the common form, then Zink's writer or the flat form (or nothing: the program dropped).
+fn spirv_walk<M: MesaCompiler>(compiler: &M, stage: u32, words: &[u32], picks: &mut Picks, calls: &mut Calls) {
+    calls.one("spirv_read");
+    let alpha_to_one = picks.flag();
+    let Some(read) = calls.made("spirv_read", compiler.spirv_read(words, stage, MAIN, alpha_to_one)) else { return };
+    if picks.flag() {
+        calls.one("spirv_shader_key");
+        let _ = calls.made("spirv_shader_key", compiler.spirv_shader_key(&read));
+    }
+    calls.one("spirv_to_common_form");
+    let form = compiler.spirv_to_common_form(read, picks.of(&NUMBERS), &picks.ranges());
+    let Some(common) = calls.made("spirv_to_common_form", form.shader) else { return };
+    match picks.below(3) {
+        0 => {
+            calls.one("spirv_common_to_spirv");
+            let _ = calls.made("spirv_common_to_spirv", compiler.spirv_common_to_spirv(common));
+        }
+        1 => {
+            calls.one("spirv_common_flatten");
+            let _ = calls.made("spirv_common_flatten", compiler.spirv_common_flatten(common));
+        }
+        _ => drop(common),
+    }
+}
+
+/// A draw's walk on a prepared or made program: its variant, then the flat form (or nothing).
+fn flatten_variant<M: MesaCompiler>(compiler: &M, form: wcontainers_mesa_compiler::VariantForm<M::Variant>, picks: &mut Picks, calls: &mut Calls) {
+    if let Some(variant) = form.shader
+        && !picks.next().is_multiple_of(4)
+    {
+        calls.one("variant_flatten");
+        let _ = calls.made("variant_flatten", compiler.variant_flatten(variant, picks.of(&NUMBERS)));
+    }
+}
+
+/// A made program's walk: its key, its named layer, and draws of it.
+fn made_walk<M: MesaCompiler>(compiler: &M, made: &M::Made, picks: &mut Picks, calls: &mut Calls) {
+    calls.one("made_key");
+    let _ = calls.made("made_key", compiler.made_key(made));
+    calls.one("made_named_layer_location");
+    let _ = compiler.made_named_layer_location(made);
+    for _ in 0..1 + picks.below(2) {
+        let (settings, swizzles, samplers) = (picks.settings(), picks.swizzles(), picks.samplers());
+        calls.one("made_variant");
+        let form = compiler.made_variant(made, settings, &swizzles, &samplers);
+        let _ = calls.made("made_variant", form.shader.as_ref());
+        flatten_variant(compiler, form, picks, calls);
+    }
+}
+
+/// The OpenGL driver's walk on one stage (state.rs, draw.rs): its creation steps, its pass-through programs, draws of
+/// it, and its points drawn as squares.
+fn stage_walk<M: MesaCompiler>(compiler: &M, received: M::Received, picks: &mut Picks, calls: &mut Calls) {
+    calls.one("received_prepare");
+    let form = compiler.received_prepare(received);
+    let _ = calls.made("received_prepare", form.shader.as_ref());
+    for made in form.pass_through.iter().flatten() {
+        made_walk(compiler, made, picks, calls);
+    }
+    let Some(prepared) = form.shader else { return };
+    for _ in 0..1 + picks.below(3) {
+        let (settings, swizzles, samplers) = (picks.settings(), picks.swizzles(), picks.samplers());
+        calls.one("prepared_variant");
+        let variant = compiler.prepared_variant(&prepared, settings, &swizzles, &samplers);
+        let _ = calls.made("prepared_variant", variant.shader.as_ref());
+        flatten_variant(compiler, variant, picks, calls);
+    }
+    if picks.flag() {
+        calls.one("prepared_points_as_squares");
+        let squares = compiler.prepared_points_as_squares(&prepared, picks.of(&NUMBERS), picks.of(&FLOATS));
+        let _ = calls.made("prepared_points_as_squares", squares.geometry.as_ref());
+        for made in squares.before.iter().chain(&squares.geometry) {
+            made_walk(compiler, made, picks, calls);
+        }
+    }
+    if picks.flag() {
+        calls.one("prepared_geometry_points_as_squares");
+        let squares = compiler.prepared_geometry_points_as_squares(&prepared, picks.of(&NUMBERS), picks.of(&FLOATS), picks.of(&NUMBERS));
+        let _ = calls.made("prepared_geometry_points_as_squares", squares.geometry.as_ref());
+        for made in squares.before.iter().chain(&squares.geometry) {
+            made_walk(compiler, made, picks, calls);
+        }
+    }
+}
+
+/// A GLSL program's walk: compiled, then the driver's walk on each stage.
+fn glsl_walk<M: MesaCompiler>(compiler: &M, sources: [Option<&str>; 3], picks: &mut Picks, calls: &mut Calls) {
+    let owned: Vec<Option<CString>> = sources.iter().map(|source| source.and_then(|text| CString::new(text).ok())).collect();
+    let texts: [Option<&CStr>; 3] = std::array::from_fn(|at| owned.get(at).and_then(|text| text.as_deref()));
+    calls.one("glsl_to_nir");
+    let Some(program) = calls.made("glsl_to_nir", compiler.glsl_to_nir(texts).ok()) else { return };
+    for received in program.stages.into_iter().flatten() {
+        stage_walk(compiler, received, picks, calls);
+    }
+}
+
+/// Compiles a program of each stage, takes it through the driver's steps and a draw's to the flat form; reads each
+/// SPIR-V module, writes it through the common form as SPIR-V and reads that back, and flattens it.
 pub fn compiles_and_reads_back<M: MesaCompiler>() {
     let compiler = M::new();
-    let program = compiler.glsl_to_nir([Some(VERTEX_SOURCE), Some(FRAGMENT_SOURCE), None]).expect("the program compiles");
-    assert!(program.stages[0].is_some() && program.stages[1].is_some() && program.stages[2].is_none());
-    assert!(!program.names[0].is_empty(), "the vertex program's names");
-    let [vertex, fragment, _] = program.stages;
-    let [_, _, compute] = compiled(&compiler, [None, None, Some(COMPUTE_SOURCE)]);
-    for shader in [vertex, fragment, compute] {
-        let shader = shader.expect("the stage compiled");
-        let serialised = compiler.serialize(&shader).expect("the shader serialises");
-        let copy = compiler.cloned(&shader).expect("the shader clones");
-        assert_eq!(compiler.serialize(&copy), Some(serialised), "a clone serialises alike");
-        let mut flattened = compiler.cloned(&shader).expect("the shader clones");
-        let flat = compiler.flatten(&mut flattened, 0).expect("the shader flattens");
-        assert!(!flat.instrs.is_empty(), "the flat form has instructions");
-    }
-    // SPIR-V for Vulkan read, then written by the trait as SPIR-V and read back.
-    for (stage, words) in modules() {
-        let mut shader = compiler.spirv_to_nir(&words, stage, MAIN).expect("the SPIR-V reads");
-        let serialised = compiler.serialize(&shader).expect("the shader serialises");
-        assert!(!serialised.is_empty());
-        let copy = compiler.cloned(&shader).expect("the shader clones");
-        assert_eq!(compiler.serialize(&copy), Some(serialised), "a clone serialises alike");
-        let mut flattened = compiler.cloned(&shader).expect("the shader clones");
-        let flat = compiler.flatten(&mut flattened, 0).expect("the shader flattens");
-        assert!(!flat.instrs.is_empty(), "the flat form has instructions");
-        let words = compiler.to_spirv(&mut shader).unwrap_or_else(|| panic!("the program of stage {stage} is written as SPIR-V"));
-        assert_eq!(words.first(), Some(&SPIRV_MAGIC));
-        let back = compiler.spirv_to_nir(&words, stage, MAIN);
-        // Mesa's reader refuses the sample mask as Zink writes it (an array of arrays stored as one value):
-        // the fragment program, which writes gl_SampleMask, is not read back; the others are.
-        if stage != FRAGMENT {
-            assert!(back.is_some(), "the SPIR-V of stage {stage} reads back");
+    let ranges = [SlotRange { first: 0, slots: 64 }, SlotRange { first: 0, slots: 16 }, SlotRange { first: 0, slots: 16 }, SlotRange { first: 0, slots: 16 }];
+    let none = PositionTransform { flip_y: false, half_z: false, reverse_z: false, fixed_point_size: false };
+    let settings = VariantSettings {
+        transform: none.clone(),
+        key_transform: none,
+        fetch_unit: 0,
+        fetch_multisampled: false,
+        single_sampled: true,
+        samples: 1,
+        set: 0,
+        ranges: ranges.clone(),
+    };
+    for sources in PROGRAMS {
+        let owned: Vec<Option<CString>> = sources.iter().map(|source| source.map(|text| CString::new(text).expect("no zero byte"))).collect();
+        let texts: [Option<&CStr>; 3] = std::array::from_fn(|at| owned[at].as_deref());
+        let program = compiler.glsl_to_nir(texts).unwrap_or_else(|log| panic!("the program compiles: {}", String::from_utf8_lossy(&log)));
+        for (at, stage) in program.stages.into_iter().enumerate() {
+            assert_eq!(stage.is_some(), sources[at].is_some(), "a stage made for each source");
+            let Some(received) = stage else { continue };
+            let form = compiler.received_prepare(received);
+            assert!(!form.key.is_empty(), "the prepared stage has a key");
+            assert!(!form.streams_elsewhere);
+            let prepared = form.shader.expect("the stage is prepared");
+            let variant = compiler.prepared_variant(&prepared, settings.clone(), &[], &[]);
+            assert_eq!(variant.result, constants::VARIANT_MADE, "the variant is made");
+            assert!(!variant.key.is_empty(), "the variant has a key");
+            let flat = compiler.variant_flatten(variant.shader.expect("made"), 0).expect("the variant flattens");
+            assert!(!flat.instrs.is_empty(), "the flat form has instructions");
+            if sources[at] == Some(STORING_VERTEX_SOURCE) {
+                assert!(form.passes_through && form.pass_through.iter().any(Option::is_some), "a vertex program using storage passes through");
+            }
         }
+    }
+    // A vertex program writing a point size, drawn as squares.
+    let source = CString::new(VERTEX_SOURCE).expect("no zero byte");
+    let program = compiler.glsl_to_nir([Some(&source), None, None]).expect("the program compiles");
+    let [Some(received), _, _] = program.stages else { panic!("a vertex stage") };
+    let prepared = compiler.received_prepare(received).shader.expect("prepared");
+    let squares = compiler.prepared_points_as_squares(&prepared, 1, 64.0);
+    assert_eq!(squares.kind, constants::SQUARES_MADE, "points drawn as squares");
+    let geometry = squares.geometry.expect("the squares' program");
+    assert!(compiler.made_key(&geometry).is_some_and(|key| !key.is_empty()));
+    // SPIR-V for Vulkan read, then written by Zink's writer and read back; and flattened.
+    for (stage, words) in modules() {
+        let read = compiler.spirv_read(&words, stage, MAIN, false).expect("the SPIR-V reads");
+        assert!(compiler.spirv_shader_key(&read).is_some_and(|key| !key.is_empty()));
+        let form = compiler.spirv_to_common_form(read, 0, &ranges);
+        assert_eq!(form.result, constants::BIND_OK, "the common form binds");
+        let written = compiler.spirv_common_to_spirv(form.shader.expect("in the common form")).unwrap_or_else(|| panic!("the program of stage {stage} is written as SPIR-V"));
+        assert_eq!(written.first(), Some(&SPIRV_MAGIC));
+        // Mesa's reader refuses the sample mask as Zink writes it (an array of arrays stored as one value): the
+        // fragment program, which writes gl_SampleMask, is not read back; the others are.
+        if stage != FRAGMENT {
+            assert!(compiler.spirv_read(&written, stage, MAIN, false).is_some(), "the SPIR-V of stage {stage} reads back");
+        }
+        let read = compiler.spirv_read(&words, stage, MAIN, stage == FRAGMENT).expect("the SPIR-V reads");
+        let common = compiler.spirv_to_common_form(read, 0, &ranges).shader.expect("in the common form");
+        let flat = compiler.spirv_common_flatten(common).expect("the program flattens");
+        assert!(!flat.instrs.is_empty(), "the flat form has instructions");
     }
 }
 
@@ -175,98 +479,128 @@ pub fn refuses_what_is_not_a_program<M: MesaCompiler>() {
     let compiler = M::new();
     let words = words(VERTEX_SPIRV);
     for stage in [3, 4, u32::MAX] {
-        assert!(compiler.spirv_to_nir(&words, stage, MAIN).is_none(), "stage {stage} refused");
+        assert!(compiler.spirv_read(&words, stage, MAIN, false).is_none(), "stage {stage} refused");
     }
-    assert!(compiler.spirv_to_nir(&words, VERTEX, c"absent").is_none(), "an entry point the module lacks");
-    assert!(compiler.spirv_to_nir(&[], VERTEX, MAIN).is_none(), "no words");
-    assert!(compiler.spirv_to_nir(&words[..words.len().min(5)], VERTEX, MAIN).is_none(), "a header alone");
+    assert!(compiler.spirv_read(&words, VERTEX, c"absent", false).is_none(), "an entry point the module lacks");
+    assert!(compiler.spirv_read(&[], VERTEX, MAIN, false).is_none(), "no words");
+    assert!(compiler.spirv_read(&words[..words.len().min(5)], VERTEX, MAIN, false).is_none(), "a header alone");
     let mut changed = words.clone();
     // The first instruction's word count past the module's end.
     changed[5] = u32::MAX;
-    assert!(compiler.spirv_to_nir(&changed, VERTEX, MAIN).is_none(), "a module whose first instruction runs past its end");
+    assert!(compiler.spirv_read(&changed, VERTEX, MAIN, false).is_none(), "a module whose first instruction runs past its end");
     let log = compiler.glsl_to_nir([Some(BROKEN_SOURCE), None, None]).err().expect("a broken program is refused");
     assert!(!log.is_empty(), "with the compiler's message");
     let none = compiler.glsl_to_nir([None, None, None]);
     assert!(none.is_err() || none.is_ok_and(|program| program.stages.iter().all(Option::is_none)), "a program of no stage has none");
 }
 
-/// Every method of the trait, called by a hostile caller: each on a fresh copy of every shader of the pool, with
-/// arguments picked by `rounds` seeds; nothing may end the process.
-pub fn every_method_is_called<M: MesaCompiler>(rounds: usize) {
+/// The walks the hostile caller takes, one a case: every SPIR-V module, with and without alphaToOne's pick, and every
+/// GLSL program, each with arguments picked by `seed`. Returns the calls made, or None past the last case.
+fn hostile_case<M: MesaCompiler>(compiler: &M, case: usize, seed: u64) -> Option<Calls> {
+    let mut calls = Calls::new();
+    let mut picks = Picks::new(seed.wrapping_mul(0x2545_F491_4F6C_DD1D).wrapping_add(u64::try_from(case).unwrap_or(0)));
+    let modules = modules();
+    if let Some((stage, words)) = modules.get(case) {
+        spirv_walk(compiler, *stage, words, &mut picks, &mut calls);
+    } else {
+        let sources = PROGRAMS.get(case - modules.len())?;
+        glsl_walk(compiler, *sources, &mut picks, &mut calls);
+    }
+    Some(calls)
+}
+
+/// The cases `hostile_case` takes.
+pub const CASES: usize = 3 + PROGRAMS.len();
+
+/// Every walk the trait allows, taken by a hostile caller from every program, with arguments picked by `rounds`
+/// seeds; nothing may end the process.
+pub fn every_method_is_called<M: MesaCompiler>(rounds: u64) {
     let compiler = M::new();
-    let shaders = pool(&compiler);
-    assert!(shaders.len() >= 10, "the pool has {} shaders", shaders.len());
+    let mut calls = Calls::new();
     for round in 0..rounds {
-        for (at, shader) in shaders.iter().enumerate() {
-            for which in 0..METHODS {
-                if let Some(mut copy) = compiler.cloned(shader) {
-                    call_one(&compiler, &mut copy, which, round.wrapping_mul(METHODS * 64).wrapping_add(at * METHODS + which));
+        for case in 0..CASES {
+            if let Some(case) = hostile_case(&compiler, case, round) {
+                calls.0 += case.0;
+                for (method, (count, made)) in case.1 {
+                    let entry = calls.1.entry(method).or_default();
+                    entry.0 += count;
+                    entry.1 += made;
                 }
             }
         }
     }
+    assert!(calls.0 >= rounds * u64::try_from(CASES).unwrap_or(0), "{} calls", calls.0);
+    println!("HOSTILE rounds {rounds} cases {CASES} calls {}", calls.0);
+    calls.report("HOSTILE");
 }
 
-/// The next number of a seeded sequence (SplitMix64).
-fn next(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
+/// SPIR-V words with one to four bits changed.
+fn changed_words(words: &[u32], picks: &mut Picks) -> Vec<u32> {
+    let mut changed = words.to_vec();
+    for _ in 0..1 + picks.below(4) {
+        let at = picks.below(changed.len());
+        if let Some(word) = changed.get_mut(at) {
+            *word ^= 1 << (picks.next() % 32);
+        }
+    }
+    changed
 }
 
-/// `calls` hostile calls picked by the seed: methods in sequence on the same shaders (each call changes what
-/// the next sees), shaders made from SPIR-V whose words were changed, and the shaders the calls make joining the
-/// pool. Returns the calls made.
+/// GLSL sources with one to three of their digits changed (locations, bindings, sizes, versions).
+fn changed_sources(sources: [Option<&str>; 3], picks: &mut Picks) -> [Option<String>; 3] {
+    let mut changed = sources.map(|source| source.map(str::to_string));
+    for _ in 0..1 + picks.below(3) {
+        let at = picks.below(3);
+        if let Some(text) = changed[at].as_mut() {
+            let digits: Vec<usize> = text.char_indices().filter(|(_, c)| c.is_ascii_digit()).map(|(at, _)| at).collect();
+            if !digits.is_empty() {
+                let place = digits[picks.below(digits.len())];
+                let digit = char::from(b'0' + u8::try_from(picks.below(10)).unwrap_or(0));
+                text.replace_range(place..=place, &digit.to_string());
+            }
+        }
+    }
+    changed
+}
+
+/// Walks picked by the seed until `calls` calls are made: from the modules and programs as they are, from SPIR-V
+/// whose words were changed and from GLSL whose digits were, with arguments picked at every step. Returns the calls
+/// made.
 pub fn fuzz<M: MesaCompiler>(seed: u64, calls: u64) -> u64 {
     let compiler = M::new();
-    let mut shaders = pool(&compiler);
     let modules = modules();
-    let mut state = seed;
-    let mut made = 0;
-    // Each call named on the error stream before it is made, where WCONTAINERS_FUZZ_TRACE is set: the calls a
-    // shader went through before one that ended the process.
+    let mut picks = Picks::new(seed);
+    let mut made = Calls::new();
+    // Each walk named on the error stream before it is taken, where WCONTAINERS_FUZZ_TRACE is set.
     let trace = std::env::var_os("WCONTAINERS_FUZZ_TRACE").is_some();
-    for _ in 0..calls {
-        let choice = next(&mut state);
-        if choice.is_multiple_of(8) {
-            // SPIR-V with one to four words changed, read as a program.
-            let (stage, words) = &modules[usize::try_from(choice >> 8).unwrap_or(0) % modules.len()];
-            let mut changed = words.clone();
-            for _ in 0..1 + (choice >> 4) % 4 {
-                let at = usize::try_from(next(&mut state)).unwrap_or(0) % changed.len().max(1);
-                if let Some(word) = changed.get_mut(at) {
-                    *word ^= 1 << (next(&mut state) % 32);
-                }
-            }
-            if let Some(shader) = compiler.spirv_to_nir(&changed, *stage, MAIN)
-                && shaders.len() < 64
-            {
-                shaders.push(shader);
-            }
-        } else if !shaders.is_empty() {
-            let at = usize::try_from(choice >> 8).unwrap_or(0) % shaders.len();
-            let which = usize::try_from(choice >> 40).unwrap_or(0) % METHODS;
-            let pick_seed = usize::try_from(next(&mut state)).unwrap_or(0);
-            if trace {
-                let shader = &shaders[at];
-                eprintln!(
-                    "CALL shader {at} method {which} seed {pick_seed} (generic end {}, geometry vertices {}, makes points {})",
-                    compiler.generic_end(shader),
-                    compiler.geometry_vertices_out(shader),
-                    compiler.makes_points(shader)
-                );
-            }
-            if let Some(made_one) = call_one(&compiler, &mut shaders[at], which, pick_seed)
-                && shaders.len() < 64
-            {
-                shaders.push(made_one);
-            }
+    let mut walk = 0_u64;
+    while made.0 < calls {
+        let choice = picks.next();
+        let at = usize::try_from(choice >> 8).unwrap_or(0);
+        if trace {
+            eprintln!("WALK {walk} choice {choice} calls {}", made.0);
         }
-        made += 1;
+        walk += 1;
+        match choice % 8 {
+            0..=3 => {
+                let (stage, words) = &modules[at % modules.len()];
+                let changed = changed_words(words, &mut picks);
+                spirv_walk(&compiler, *stage, &changed, &mut picks, &mut made);
+            }
+            4 => {
+                let (stage, words) = &modules[at % modules.len()];
+                spirv_walk(&compiler, *stage, words, &mut picks, &mut made);
+            }
+            5 => {
+                let changed = changed_sources(PROGRAMS[at % PROGRAMS.len()], &mut picks);
+                let sources: [Option<&str>; 3] = std::array::from_fn(|stage| changed[stage].as_deref());
+                glsl_walk(&compiler, sources, &mut picks, &mut made);
+            }
+            _ => glsl_walk(&compiler, PROGRAMS[at % PROGRAMS.len()], &mut picks, &mut made),
+        }
     }
-    made
+    made.report("FUZZ");
+    made.0
 }
 
 /// Runs `fuzz` with the seed and count WCONTAINERS_FUZZ_SEED and WCONTAINERS_FUZZ_CALLS give; nothing without them.
@@ -277,146 +611,17 @@ pub fn fuzz_from_the_environment<M: MesaCompiler>() {
     println!("FUZZ seed {seed} calls {made}");
 }
 
-/// Runs calls alone, as WCONTAINERS_PROBE names them ("shader,seed,method,...": the shader's place in the pool, the
-/// seed of the arguments, then the methods' numbers in `call_one`, made in turn) on a fresh copy, so that calls that
-/// end the process are found by themselves; prints the pool's size first. Nothing without it.
+/// Runs one hostile case alone, as WCONTAINERS_PROBE names it ("case,seed"), so that a case that ends the process is
+/// found by itself; prints the number of cases first ("x" prints only that). Nothing without it.
 pub fn probe_from_the_environment<M: MesaCompiler>() {
     let Ok(probe) = std::env::var("WCONTAINERS_PROBE") else { return };
-    let parts: Vec<usize> = probe.split(',').filter_map(|part| part.parse().ok()).collect();
-    let compiler = M::new();
-    let shaders = pool(&compiler);
-    println!("POOL {}", shaders.len());
-    if let [at, seed, ref methods @ ..] = parts[..]
-        && let Some(mut copy) = shaders.get(at).and_then(|shader| compiler.cloned(shader))
-    {
-        for &which in methods {
-            let _ = call_one(&compiler, &mut copy, which, seed);
-        }
-        println!("PROBE {probe} ended");
+    println!("CASES {CASES}");
+    let parts: Vec<u64> = probe.split(',').filter_map(|part| part.parse().ok()).collect();
+    if let [case, seed] = parts[..] {
+        let compiler = M::new();
+        let calls = hostile_case(&compiler, usize::try_from(case).unwrap_or(usize::MAX), seed).map(|calls| calls.0);
+        println!("PROBE {probe} ended, calls {calls:?}");
     }
-}
-
-/// The methods `call_one` calls (every method of the trait but `new`, `spirv_to_nir` and `glsl_to_nir`, which
-/// make the shaders the calls are made on and are called by the other tests).
-pub const METHODS: usize = 36;
-
-/// Calls the trait's method numbered `which` on the shader, with arguments picked by `seed`; a shader the call
-/// made is returned.
-fn call_one<M: MesaCompiler>(compiler: &M, shader: &mut M::Shader, which: usize, seed: usize) -> Option<M::Shader> {
-    let number = pick(&NUMBERS, seed);
-    let other = pick(&NUMBERS, seed / 7 + 1);
-    let float = pick(&FLOATS, seed / 3);
-    let flag = seed.is_multiple_of(2);
-    let length = pick(&LENGTHS, seed / 5);
-    match which {
-        0 => {
-            let _ = compiler.flatten(shader, number);
-        }
-        1 => {
-            let ranges = [0, 1, 2, 3].map(|kind| SlotRange { first: pick(&NUMBERS, seed + kind), slots: pick(&NUMBERS, seed / 11 + kind) });
-            let _ = compiler.to_common_form(shader, number, &ranges);
-        }
-        2 => compiler.lower_io(shader),
-        3 => compiler.alpha_to_one(shader),
-        4 => {
-            let _ = compiler.serialize(shader);
-        }
-        5 => {
-            let _ = compiler.to_spirv(shader);
-        }
-        6 => return compiler.cloned(shader),
-        7 => {
-            let _ = compiler.number_vertex_elements(shader);
-        }
-        8 => {
-            let _ = compiler.geometry_vertices_out(shader);
-        }
-        9 => {
-            let _ = compiler.named_layer_location(shader);
-        }
-        10 => {
-            let _ = compiler.control_points_out(shader);
-        }
-        11 => {
-            let _ = compiler.makes_points(shader);
-        }
-        12 => compiler.fragcolor_to_buffers(shader, number),
-        13 => compiler.split_resource_arrays(shader),
-        14 => compiler.textures_1d_as_2d(shader),
-        15 => compiler.drop_name(shader),
-        16 => compiler.uniform_blocks_as_words(shader),
-        17 => compiler.transform_position(
-            shader,
-            PositionTransform {
-                flip_y: flag,
-                half_z: seed.is_multiple_of(3),
-                reverse_z: seed.is_multiple_of(5),
-                fixed_point_size: seed.is_multiple_of(7),
-            },
-        ),
-        18 => {
-            let _ = compiler.reads_sample_positions(shader);
-        }
-        19 => {
-            let _ = compiler.interpolate_elsewhere(shader, number);
-        }
-        20 => compiler.fit_sample_masks(shader, flag),
-        21 => {
-            let _ = compiler.writes_sample_mask(shader);
-        }
-        22 => {
-            let _ = compiler.fetches_target(shader);
-        }
-        23 => {
-            let _ = compiler.formatless_images(shader);
-        }
-        24 => compiler.fetch_from_texture(shader, number, flag),
-        25 => {
-            let swizzles: Vec<TextureSwizzle> = (0..length)
-                .map(|at| TextureSwizzle { unit: pick(&NUMBERS, seed + at), swizzle: [0, 1, 2, 3].map(|c| pick(&BYTES, seed + at + c)) })
-                .collect();
-            compiler.swizzle_textures(shader, &swizzles);
-        }
-        26 => {
-            let samplers: Vec<NearestSampler> = (0..length)
-                .map(|at| NearestSampler {
-                    unit: pick(&NUMBERS, seed + at),
-                    wrap: [0, 1, 2].map(|axis| pick(&BYTES, seed + at + axis)),
-                    mipmapped: (seed + at).is_multiple_of(2),
-                    min_lod: pick(&FLOATS, seed + at),
-                    max_lod: pick(&FLOATS, seed / 2 + at),
-                    border: [0, 1, 2, 3].map(|c| pick(&NUMBERS, seed + at + c)),
-                })
-                .collect();
-            let _ = compiler.nearest_integer_textures(shader, &samplers);
-        }
-        27 => {
-            let _ = compiler.integer_sampled_units(shader);
-        }
-        28 => compiler.stream_point_size_at_a_location(shader),
-        29 => {
-            let _ = compiler.generic_end(shader);
-        }
-        30 => {
-            let _ = compiler.point_size_also_at(shader, number);
-        }
-        31 => {
-            let _ = compiler.point_size_at_most(shader, float);
-        }
-        32 => return compiler.point_square(shader, number, float),
-        33 => return compiler.geometry_squares(shader, number, float, other),
-        34 => return compiler.storage_pass_through(shader).and_then(|made| made.into_iter().flatten().next()),
-        35 => {
-            let mut outputs = vec![
-                StreamOutput { buffer: 0, offset: 0, location: 0, position: false, first_component: 0, components: 0 };
-                length
-            ];
-            let mut strides = vec![0_u32; pick(&LENGTHS, seed / 13)];
-            let _ = compiler.stream_outputs(shader, &mut outputs, &mut strides);
-        }
-        _ => {}
-    }
-    None
 }
 
 #[macro_export]

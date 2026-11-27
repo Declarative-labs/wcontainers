@@ -3,6 +3,7 @@
 #define WCONTAINERS_NIR_BRIDGE_PRIVATE_H
 
 #include "bridge.h"
+#include "steps.h"
 #include "flat.h"
 #include "nir.h"
 

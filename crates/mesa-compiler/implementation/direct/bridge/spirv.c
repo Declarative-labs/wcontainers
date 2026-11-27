@@ -123,6 +123,36 @@ native_vulkan_form(nir_shader *nir)
    return true;
 }
 
+/* Whether every resource index of a prepared shader names a variable: the writer looks each up by its (set, binding)
+ * among the block, image and sampler variables, and asserts it finds one (nir_to_spirv.c, emit_vulkan_resource_index). */
+static bool
+resource_indices_found(nir_shader *nir)
+{
+   const nir_variable_mode modes = nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_image | nir_var_uniform;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_vulkan_resource_index)
+               continue;
+            bool found = false;
+            nir_foreach_variable_with_modes(var, nir, modes) {
+               if (var->data.descriptor_set == nir_intrinsic_desc_set(intr) &&
+                   var->data.binding == nir_intrinsic_binding(intr)) {
+                  found = true;
+                  break;
+               }
+            }
+            if (!found)
+               return false;
+         }
+      }
+   }
+   return true;
+}
+
 bool
 wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out)
 {
@@ -147,6 +177,10 @@ wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out)
       ralloc_free(copy);
       return false;
    }
+   if (!resource_indices_found(copy)) {
+      ralloc_free(copy);
+      return false;
+   }
    struct spirv_shader *spirv = nir_to_spirv(copy, &info);
    ralloc_free(copy);
    if (!spirv)
@@ -157,4 +191,30 @@ wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out)
       memcpy(out->data, spirv->words, spirv->num_words * sizeof(*spirv->words));
    spirv_shader_delete(spirv);
    return out->data != NULL;
+}
+
+struct wc_spirv_shader *
+wc_spirv_read(const uint32_t *words, size_t count, enum wc_stage stage, const char *entry_point, bool alpha_to_one)
+{
+   nir_shader *nir = wc_spirv_to_nir(words, count, stage, entry_point);
+   if (!nir)
+      return NULL;
+   /* Both candidates lower its stage values (alphaToOne here, candidate B's flat form, Zink's preparation): a module
+    * whose stage values the lowering does not take is refused here, before any of them. */
+   if (!wc_io_fits(nir)) {
+      ralloc_free(nir);
+      return NULL;
+   }
+   if (alpha_to_one)
+      wc_nir_alpha_to_one(nir);
+   return (struct wc_spirv_shader *)nir;
+}
+
+bool
+wc_spirv_common_to_spirv(struct wc_spirv_common *taken, struct wc_words *out)
+{
+   nir_shader *nir = (nir_shader *)taken;
+   const bool written = wc_nir_to_spirv(nir, out);
+   ralloc_free(nir);
+   return written;
 }

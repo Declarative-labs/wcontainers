@@ -1,12 +1,14 @@
 //! Mesa's compiler through our C bridge (crates/mesa-compiler/implementation/direct/bridge): every bridge function a safe method of
-//! wcontainers-mesa-compiler's trait, each shader a value of `Shader` that owns one NIR shader and gives it back when
-//! dropped, and every structure the bridge fills copied out whole into owned values before the bridge's free.
+//! wcontainers-mesa-compiler's trait, each shader a value of the type of its place in the bridge's typed chain, owning
+//! one NIR shader and giving it back when dropped, and every structure the bridge fills copied out whole into owned
+//! values before the bridge's free.
 //!
 //! What the marks rely on: the bridge's functions have the types bridge.h and flat.h declare; a function reads and
 //! writes only what its parameters name, as far as the count beside each says (or the header's array length); the
 //! arrays and texts it fills are its own until the matching free, which takes a zeroed structure as nothing; a shader
-//! it returns or fills is a nir_shader it made, given back once by wc_nir_free; Mesa's instruction names are static.
-//! The bridge's C is linked by the crate that builds it (crates/nir's build today; see the status for where it moves).
+//! it returns or fills is a shader it made, of the type it names, given back once by that type's free; a function
+//! taking a shader named `taken` gives it back itself; Mesa's instruction names are static. The bridge's C is built
+//! and linked by this crate's build.rs.
 
 use core::ffi::c_void;
 use core::marker::PhantomData;
@@ -31,29 +33,6 @@ impl Bridge {
             unsafe { wc_init() };
         });
         Bridge { _private: () }
-    }
-}
-
-/// One NIR shader the bridge made, given back when dropped. Not `Send`: no fact of the bridge's is relied on for a
-/// shader moved between threads (NEEDED B1 leaves it to this crate; it may be offered once measured).
-#[derive(Debug)]
-pub struct Shader {
-    nir: NonNull<c_void>,
-    _thread: PhantomData<*const ()>,
-}
-
-impl Shader {
-    /// Takes a shader the bridge made; None for null.
-    fn owning(nir: *mut c_void) -> Option<Shader> {
-        NonNull::new(nir).map(|nir| Shader { nir, _thread: PhantomData })
-    }
-}
-
-impl Drop for Shader {
-    fn drop(&mut self) {
-        #[expect(unsafe_code, reason = "bridge.h: wc_nir_free gives back a shader the bridge made")]
-        // SAFETY: the shader is ours alone (made by the bridge, never shared), given back once, here.
-        unsafe { wc_nir_free(self.nir.as_ptr()) };
     }
 }
 

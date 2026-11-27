@@ -378,10 +378,7 @@ struct wc_flat {
    struct wc_flat_tessellation tessellation;
 };
 
-/* Candidate B's preparation (out of SSA, values used outside their block in registers) and the
- * shader flattened; the arrays are the bridge's until wc_flat_free. `points_in` is a tessellation
- * program's input control points (unused for other stages). False when out of memory. */
-bool wc_nir_flatten(struct nir_shader *nir, uint32_t points_in, struct wc_flat *out);
+/* The flat form's arrays given back (wc_spirv_common_flatten and wc_variant_flatten fill it). */
 void wc_flat_free(struct wc_flat *flat);
 
 #endif
