@@ -4227,9 +4227,15 @@ dependencies = [
 name = "wcontainers-direct3d-11-direct"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "wcontainers-component-object-model",
  "wcontainers-component-object-model-direct",
  "wcontainers-direct3d-11",
+ "wcontainers-direct3d-11-hostile",
+ "wcontainers-direct3d-11-recorder",
+ "wcontainers-direct3d-12",
+ "wcontainers-direct3d-12-direct",
+ "wcontainers-direct3d-12-hostile",
  "wcontainers-direct3d-common",
  "wcontainers-direct3d-common-direct",
  "wcontainers-directx-graphics-infrastructure",

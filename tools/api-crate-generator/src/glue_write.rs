@@ -1203,14 +1203,15 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         }
         let _ = writeln!(found_enums, "            UnknownFound::Unknown(foreign) => {path}::Unknown(foreign),\n        }}\n    }}\n}}\n");
     }
-    // The length of memory lent by Map, by the resource's shape: the same rule in both glues.
+    // The length of memory lent by Map, by the resource's shape: the calling glue views what the documentation lets a
+    // program view (`mapped_length_*`), the serving glue lends whole rows and slices at the pitches (`lent_length_*`).
     for exception in spec.exceptions {
         let Exception::Lent { method, resource, .. } = exception else { continue };
         let Some((interface, method_name)) = method.split_once("::") else { continue };
         let Some(method) = g.read.interfaces.iter().find(|(k, _)| k.1 == interface).and_then(|(_, i)| i.methods.iter().find(|m| m.name == method_name)) else { continue };
         let Some(resource_key) = method.params.iter().find(|p| p.name == *resource).and_then(|p| crate::emit::named(&p.ty)) else { continue };
         let path = format!("{}::{}Ref", alias(spec), g.trait_names[&resource_key]);
-        let _ = writeln!(found_enums, "/// The bytes the C side may touch in memory Map lends for a subresource of `resource` whose rows start `row_pitch`\n/// apart and slices `depth_pitch` apart, by the shape's rule from its description; none for a shape no rule covers.");
+        let _ = writeln!(found_enums, "/// The bytes of the system's memory Map lends that the calling glue views, for a subresource of `resource` whose rows\n/// start `row_pitch` apart and slices `depth_pitch` apart, by the shape's rule from its description; none for a shape no\n/// rule covers.");
         let _ = writeln!(found_enums, "pub fn mapped_length<A: {top}>(resource: &{path}<'_, A>, subresource: u32, row_pitch: u32, depth_pitch: u32) -> Option<usize> {{\n    match resource {{");
         for kind in g.kinds_deriving(&resource_key) {
             let kind_name = &g.kinds[kind].name;
@@ -1228,7 +1229,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         let _ = writeln!(found_enums, "    }}\n}}\n");
         // The serving glue's form: the description the caller made the resource with, if recorded.
         let found_path = format!("{}Found", path.rsplit("::").next().unwrap_or(""));
-        let _ = writeln!(found_enums, "/// `mapped_length` for one of our resources: from the description it was made with, when the glue recorded one.");
+        let _ = writeln!(found_enums, "/// The bytes the serving glue lends for a subresource of one of our resources mapped at the implementation's pitches:\n/// whole rows and slices, from the description it was made with, when the glue recorded one.");
         let _ = writeln!(found_enums, "pub fn mapped_length_found<A: {top}>(resource: &{found_path}<A>, subresource: u32, row_pitch: u32, depth_pitch: u32) -> Option<usize> {{\n    match resource {{");
         for kind in g.kinds_deriving(&resource_key) {
             let kind_name = &g.kinds[kind].name;
@@ -1239,7 +1240,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
                     let trait_path = writer.trait_path(root);
                     let desc_path = g.read.interfaces[root].methods.iter().find(|m| m.name == "GetDesc").and_then(|m| m.params.first()).and_then(|p| crate::emit::pointee(&p.ty)).and_then(|(inner, _, _)| crate::emit::named(inner)).map(|k| writer.record_path(&k)).unwrap_or_default();
                     let _ = writeln!(found_enums, "        {found_path}::{kind_name}(found) => {{\n            let desc = found.part::<Recorded<{desc_path}>>().map_or_else(|| {trait_path}::get_desc(found.value()), |recorded| recorded.0);");
-                    let _ = writeln!(found_enums, "            crate::lengths::mapped_length_{0}(&desc, subresource, row_pitch, depth_pitch).filter(|length| crate::lengths::within_served_bound_{0}(&desc, subresource, *length))\n        }}", shape.suffix());
+                    let _ = writeln!(found_enums, "            crate::lengths::lent_length_{0}(&desc, subresource, row_pitch, depth_pitch).filter(|length| crate::lengths::within_served_bound_{0}(&desc, subresource, *length))\n        }}", shape.suffix());
                 }
                 None => {
                     let _ = writeln!(found_enums, "        {found_path}::{kind_name}(_) => None,");
@@ -1337,7 +1338,16 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     serving.push_str(&serve);
     let abi_text = format!("//! {HEADER}\n//!\n//! The C tables of this API's interfaces, and its library's exports.\n\nuse wcontainers_component_object_model_direct::{{Interface, Raw, UnknownTable}};\n\n{abi}{library}");
     let has_lengths = spec.exceptions.iter().any(|e| matches!(e, Exception::InitialData { .. } | Exception::Lent { .. } | Exception::Checked { .. }));
-    let lengths_module = if has_lengths { "#[path = \"lengths.rs\"]\nmod lengths;\n" } else { "" };
+    // The reference the rules are tested against (templates/direct3d-11-direct/lengths_reference.rs) covers every shape, so
+    // it is written only for a set that keeps every shape's rules.
+    let every_shape = [crate::api::Shape::Buffer, crate::api::Shape::Texture1D, crate::api::Shape::Texture2D, crate::api::Shape::Texture3D]
+        .into_iter()
+        .all(|shape| g.kinds.iter().any(|k| k.api == api && k.name == shape.kind()));
+    let lengths_module = match (has_lengths, every_shape) {
+        (true, true) => "#[path = \"lengths.rs\"]\nmod lengths;\n#[cfg(test)]\n#[path = \"lengths_reference.rs\"]\nmod lengths_reference;\n#[cfg(test)]\n#[path = \"lengths_tests.rs\"]\nmod lengths_tests;\n",
+        (true, false) => "#[path = \"lengths.rs\"]\nmod lengths;\n",
+        (false, _) => "",
+    };
     let lib = format!(
         "//! {HEADER}\n//!\n//! {} through its C ABI: the serving glue (raw C calls in, any implementation of the traits out) and the\n//! calling glue (the C side's objects as an implementation of the traits). Every `unsafe` of the API is here, each marked.\n\n#[path = \"abi.rs\"]\npub mod abi;\n#[path = \"call.rs\"]\nmod call;\n#[path = \"data.rs\"]\nmod data;\n{lengths_module}#[path = \"serve.rs\"]\nmod serve;\n\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use abi::*;\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use call::*;\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use serve::*;\n\nuse wcontainers_component_object_model_direct::GlueKey;\n\n#[expect(unsafe_code, reason = \"the glue's key, which only this crate's glue holds\")]\n// SAFETY: kept in this private static and passed only to the COM crate's glue functions.\nstatic KEY: GlueKey = unsafe {{ GlueKey::new() }};\n",
         spec.summary.trim_end_matches('.')
@@ -1363,6 +1373,10 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
             }
         }
         files.push(("lengths.rs", format!("//! {HEADER}\n//!\n{kept}")));
+        if every_shape {
+            files.push(("lengths_reference.rs", format!("//! {HEADER}\n//!\n{}", include_str!("../templates/direct3d-11-direct/lengths_reference.rs"))));
+            files.push(("lengths_tests.rs", format!("//! {HEADER}\n//!\n{}", include_str!("../templates/direct3d-11-direct/lengths_tests.rs"))));
+        }
     }
     let mut all = String::new();
     for (name, text) in &files {

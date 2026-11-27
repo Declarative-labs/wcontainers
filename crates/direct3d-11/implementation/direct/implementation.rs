@@ -11,6 +11,12 @@ mod call;
 mod data;
 #[path = "lengths.rs"]
 mod lengths;
+#[cfg(test)]
+#[path = "lengths_reference.rs"]
+mod lengths_reference;
+#[cfg(test)]
+#[path = "lengths_tests.rs"]
+mod lengths_tests;
 #[path = "serve.rs"]
 mod serve;
 
