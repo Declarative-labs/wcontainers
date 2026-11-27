@@ -26,12 +26,18 @@ use crate::behavior::{
 #[cfg(verus_keep_ghost)]
 use crate::branch::{branch_address, is_outside_lower};
 use crate::branch::{is_outside_lower_addresses, to_untagged_address};
-use crate::encoding::Field;
+use crate::encoding::{Field, concatenate};
+#[cfg(verus_keep_ghost)]
+use crate::encoding::{concatenation, fields_width};
+#[cfg(verus_keep_ghost)]
+use crate::integer::source_value;
 use crate::integer::{low_ones, read_source};
 use crate::memory::{read_bytes_into, read_permission};
 use crate::operand::{Indexing, Operand, RegisterThirtyOne, RegisterWidth, Signedness};
 #[cfg(verus_keep_ghost)]
-use crate::pseudocode::{sint, uint};
+use crate::pseudocode::{immediate_offset, register_offset, sint, uint};
+#[cfg(verus_keep_ghost)]
+use crate::registers::register_read;
 use crate::registers::{is_general_purpose, read_register, write_register};
 use crate::{
     AccessDirection, DataAccess, Exception, ExclusiveMonitor, FaultStatus, Instruction,
@@ -40,12 +46,14 @@ use crate::{
 
 /// The alignment [CheckSPAlignment](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) requires, a check Linux turns on at every level.
 const STACK_POINTER_ALIGNMENT: u64 = 16;
-/// The most registers one load or store names: a compare and swap pair's four.
-const MAXIMUM_REGISTERS: usize = 4;
 /// The most bytes one load or store moves: two quadwords.
 const MAXIMUM_BYTES: usize = 2 * size_of::<u128>();
+vstd::prelude::verus! {
+
 /// The bytes [FEAT_LSE2](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_LSE2) lets an unaligned ordered or atomic access lie anywhere inside.
 const SINGLE_COPY_ATOMIC_BYTES: u64 = 16;
+
+} // verus!
 /// What a failed store exclusive writes to its status register.
 const STORE_EXCLUSIVE_FAILED: u64 = 1;
 
@@ -55,6 +63,8 @@ const HALFWORD: u32 = size_of::<u16>() as u32;
 const WORD: u32 = size_of::<u32>() as u32;
 const DOUBLEWORD: u32 = size_of::<u64>() as u32;
 const QUADWORD: u32 = size_of::<u128>() as u32;
+
+verus! {
 
 /// What a load or store does with the bytes at its address.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,6 +119,8 @@ pub struct LoadStoreOperation {
     pub bytes: u32,
     pub alignment: Alignment,
 }
+
+} // verus!
 
 /// The operation of each modeled load or store of general-purpose registers, none for every other instruction.
 pub const fn to_load_store_operation(
@@ -658,6 +670,11 @@ pub struct OpenCases {
     pub reservation_granule: bool,
 }
 
+verus! {
+
+/// The most registers one load or store names: a compare and swap pair's four.
+pub const MAXIMUM_REGISTERS: usize = 4;
+
 /// The registers, base and offset an encoding of a load or store names.
 struct Addressed {
     registers: [(u32, RegisterWidth); MAXIMUM_REGISTERS],
@@ -669,6 +686,8 @@ struct Addressed {
     /// What the instruction adds to its base, or for a literal to its own address.
     offset: u64,
 }
+
+} // verus!
 
 impl LoadStoreInstruction {
     /// None for an instruction that is not a modeled load or store.
@@ -1012,65 +1031,266 @@ fn to_written_back_address(base: u64, offset: u64, address: u64, indexing: Index
 
 } // verus!
 
+verus! {
+
+/// What a load or store reads from its operands in the word, as its decode does: the registers it moves, with their
+/// widths, whether they are SIMD and floating-point registers, its base register and indexing, and what it adds to its
+/// base, the last offset operand's; none where an operand is UNDEFINED, gives no register or address, or names more
+/// registers than a load or store moves.
+pub open spec fn operands_addressed<L>(processor: Processor<L>, word: u32, operands: Seq<Operand>, bytes: u32)
+    -> Option<(Seq<(u32, RegisterWidth)>, bool, Option<(u32, Indexing)>, int)>
+    decreases operands.len(),
+{
+    if operands.len() == 0 {
+        Some((Seq::empty(), false, None, 0))
+    } else {
+        match operands_addressed(processor, word, operands.drop_last(), bytes) {
+            None => None,
+            Some((registers, vector, base, offset)) => {
+                let operand = operands.last();
+                if !operand.fits() {
+                    None
+                } else {
+                    match operand {
+                        Operand::GeneralPurposeRegister { number, width, .. } => if registers.len() < MAXIMUM_REGISTERS {
+                            Some((registers.push((number.value(word) as u32, width)), vector, base, offset))
+                        } else {
+                            None
+                        },
+                        Operand::VectorRegister { number, .. } => if registers.len() < MAXIMUM_REGISTERS {
+                            Some((registers.push((number.value(word) as u32, RegisterWidth::Bits64)), true, base, offset))
+                        } else {
+                            None
+                        },
+                        Operand::GeneralPurposeRegisterPair { number, width } =>
+                            if registers.len() + 2 <= MAXIMUM_REGISTERS && number.value(word) + 1 < 0x1_0000_0000 {
+                                Some((
+                                    registers.push((number.value(word) as u32, width)).push(((number.value(word) + 1) as u32, width)),
+                                    vector,
+                                    base,
+                                    offset,
+                                ))
+                            } else {
+                                None
+                            },
+                        Operand::AddressBase { number, indexing } =>
+                            Some((registers, vector, Some((number.value(word) as u32, indexing)), offset)),
+                        Operand::AddressOffset { field, signedness, scale } => Some((
+                            registers,
+                            vector,
+                            base,
+                            immediate_offset(word as int / (pow2(field.lowest_bit as nat) as int), field.width as nat, signedness, scale as nat),
+                        )),
+                        Operand::SplitAddressOffset { fields, scale } => Some((
+                            registers,
+                            vector,
+                            base,
+                            uint(sint(concatenation(word, fields@) as int, fields_width(fields@)) * pow2(scale as nat), 64),
+                        )),
+                        Operand::RegisterOffset { number, signed, doubleword, shift } =>
+                            if bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8 || bytes == 16 {
+                                Some((
+                                    registers,
+                                    vector,
+                                    base,
+                                    register_offset(
+                                        register_read(processor.general_purpose_registers@, processor.stack_pointer, number.value(word), RegisterThirtyOne::ZeroRegister),
+                                        match signed {
+                                            Some(field) => field.value(word) != 0,
+                                            None => false,
+                                        },
+                                        // Where option<0> is absent the option is LSL, which takes the register whole.
+                                        match doubleword {
+                                            Some(field) => field.value(word) != 0,
+                                            None => true,
+                                        },
+                                        shift.value(word) != 0,
+                                        bytes as nat,
+                                    ),
+                                ))
+                            } else {
+                                None
+                            },
+                        Operand::ProgramCounterOffset { .. } => match source_value(processor, word, operand) {
+                            Some(value) => Some((registers, vector, base, value)),
+                            None => None,
+                        },
+                        Operand::UnsignedImmediate(_) => Some((registers, vector, base, offset)),
+                        _ => None,
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Where the operands up to `count` are UNDEFINED, so are all of them.
+proof fn lemma_operands_addressed_prefix<L>(processor: Processor<L>, word: u32, operands: Seq<Operand>, bytes: u32, count: int)
+    requires
+        0 <= count <= operands.len(),
+        operands_addressed(processor, word, operands.take(count), bytes) is None,
+    ensures
+        operands_addressed(processor, word, operands, bytes) is None,
+    decreases operands.len() - count,
+{
+    if count < operands.len() {
+        assert(operands.take(count + 1).drop_last() =~= operands.take(count));
+        lemma_operands_addressed_prefix(processor, word, operands, bytes, count + 1);
+    } else {
+        assert(operands.take(count) =~= operands);
+    }
+}
+
+/// Whether the field, where the encoding has it, is set, or else the value fixed for it.
+fn is_set(field: Option<Field>, word: u32, fixed: bool) -> (set: bool)
+    requires
+        field matches Some(field) ==> field.fits(),
+    ensures
+        set == match field {
+            Some(field) => field.value(word) != 0,
+            None => fixed,
+        },
+{
+    match field {
+        Some(field) => field.read(word) != 0,
+        None => fixed,
+    }
+}
+
+/// Reads the registers, base and offset of the encoding, or returns the exception of an unallocated one.
 fn read_addressed<LevelSpecific>(
     processor: &Processor<LevelSpecific>,
     word: u32,
     operands: &[Operand],
     operation: LoadStoreOperation,
-) -> Result<Addressed, Exception> {
+) -> (addressed: Result<Addressed, Exception>)
+    ensures
+        match operands_addressed(*processor, word, operands@, operation.bytes) {
+            Some((registers, vector, base, offset)) => addressed matches Ok(addressed)
+                && addressed.count == registers.len() && addressed.count <= MAXIMUM_REGISTERS
+                && (forall|index: int| 0 <= index < registers.len() ==> addressed.registers[index] == #[trigger] registers[index])
+                && addressed.vector == vector && addressed.base == base && addressed.offset as int == offset,
+            None => addressed == Err::<Addressed, Exception>(Exception::UndefinedInstruction),
+        },
+{
     let mut addressed = Addressed {
-        registers: [(0, RegisterWidth::Bits64); MAXIMUM_REGISTERS],
+        registers: [(0, RegisterWidth::Bits64), (0, RegisterWidth::Bits64), (0, RegisterWidth::Bits64), (0, RegisterWidth::Bits64)],
         count: 0,
         vector: false,
         base: None,
         offset: 0,
     };
-    for operand in operands {
-        match *operand {
-            Operand::GeneralPurposeRegister { number, width, .. } => {
-                addressed.registers[addressed.count] = (number.read(word), width);
-                addressed.count += 1;
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+    }
+    // VERUS: no specification of iterating a slice, so the operands are read by index.
+    let mut index: usize = 0;
+    while index < operands.len()
+        invariant
+            index <= operands.len(),
+            operands_addressed(*processor, word, operands@.take(index as int), operation.bytes) matches Some((registers, vector, base, offset))
+                && addressed.count == registers.len() && addressed.count <= MAXIMUM_REGISTERS
+                && (forall|at: int| 0 <= at < registers.len() ==> addressed.registers[at] == #[trigger] registers[at])
+                && addressed.vector == vector && addressed.base == base && addressed.offset as int == offset,
+        decreases operands.len() - index,
+    {
+        let operand = operands[index];
+        proof {
+            assert(operands@.take(index + 1).drop_last() =~= operands@.take(index as int));
+            assert(operands@.take(index + 1).last() == operand);
+        }
+        // VERUS: the operand lists are a table Verus does not read, so an operand whose fields do not fit, that gives
+        // no register or address, or one register more than a load or store moves, is refused as UNDEFINED, where it
+        // would have read past its field or the registers, or panicked.
+        if !operand.is_well_formed() {
+            proof {
+                lemma_operands_addressed_prefix(*processor, word, operands@, operation.bytes, index + 1);
             }
+            return Err(Exception::UndefinedInstruction);
+        }
+        match operand {
+            Operand::GeneralPurposeRegister { number, width, .. } => {
+                if addressed.count >= MAXIMUM_REGISTERS {
+                    proof {
+                        lemma_operands_addressed_prefix(*processor, word, operands@, operation.bytes, index + 1);
+                    }
+                    return Err(Exception::UndefinedInstruction);
+                }
+                let read = number.read(word);
+                proof {
+                    number.lemma_value_below(word, 32);
+                }
+                addressed.registers[addressed.count] = (read, width);
+                addressed.count += 1;
+            },
             Operand::VectorRegister { number, .. } => {
-                addressed.registers[addressed.count] = (number.read(word), RegisterWidth::Bits64);
+                if addressed.count >= MAXIMUM_REGISTERS {
+                    proof {
+                        lemma_operands_addressed_prefix(*processor, word, operands@, operation.bytes, index + 1);
+                    }
+                    return Err(Exception::UndefinedInstruction);
+                }
+                let read = number.read(word);
+                proof {
+                    number.lemma_value_below(word, 32);
+                }
+                addressed.registers[addressed.count] = (read, RegisterWidth::Bits64);
                 addressed.count += 1;
                 addressed.vector = true;
-            }
+            },
             Operand::GeneralPurposeRegisterPair { number, width } => {
                 let first = number.read(word);
+                if addressed.count + 2 > MAXIMUM_REGISTERS || first == u32::MAX {
+                    proof {
+                        lemma_operands_addressed_prefix(*processor, word, operands@, operation.bytes, index + 1);
+                    }
+                    return Err(Exception::UndefinedInstruction);
+                }
+                proof {
+                    number.lemma_value_below(word, 32);
+                }
                 addressed.registers[addressed.count] = (first, width);
                 addressed.registers[addressed.count + 1] = (first + 1, width);
                 addressed.count += 2;
-            }
+            },
             Operand::AddressBase { number, indexing } => {
-                addressed.base = Some((number.read(word), indexing));
-            }
-            Operand::AddressOffset {
-                field,
-                signedness,
-                scale,
-            } => {
+                let read = number.read(word);
+                proof {
+                    number.lemma_value_below(word, 32);
+                }
+                addressed.base = Some((read, indexing));
+            },
+            Operand::AddressOffset { field, signedness, scale } => {
                 addressed.offset = to_immediate_offset(field, word, signedness, scale);
-            }
+            },
             Operand::SplitAddressOffset { fields, scale } => {
-                let width: u32 = fields.iter().map(|field| field.width).sum();
-                let bits = fields.iter().fold(0_u64, |value, field| {
-                    (value << field.width) | u64::from(field.read(word))
-                });
+                // VERUS: no specification of `Iterator::sum` or `fold`, so the fields are joined by a loop.
+                let (bits, width) = concatenate(word, fields);
                 let shift = u64::BITS - width;
                 let scale = if crate::planted::is(711) {
                     scale - 1
                 } else {
                     scale
                 };
-                addressed.offset = (((bits << shift) as i64 >> shift) as u64) << scale;
-            }
-            Operand::RegisterOffset {
-                number,
-                signed,
-                doubleword,
-                shift,
-            } => {
+                let extended = (bits << shift) as i64 >> shift;
+                proof {
+                    crate::lemmas::lemma_sign_extension(bits, shift);
+                    crate::lemmas::lemma_signed_shift_left(extended, scale);
+                    assert(((extended as u64) << scale) == ((extended << scale) as u64)) by (bit_vector)
+                        requires
+                            scale < 64;
+                }
+                addressed.offset = (extended as u64) << scale;
+            },
+            Operand::RegisterOffset { number, signed, doubleword, shift } => {
+                if !(operation.bytes == 1 || operation.bytes == 2 || operation.bytes == 4 || operation.bytes == 8
+                    || operation.bytes == 16)
+                {
+                    proof {
+                        lemma_operands_addressed_prefix(*processor, word, operands@, operation.bytes, index + 1);
+                    }
+                    return Err(Exception::UndefinedInstruction);
+                }
                 let value = read_register(
                     processor,
                     number.read(word),
@@ -1080,27 +1300,113 @@ fn read_addressed<LevelSpecific>(
                         RegisterThirtyOne::ZeroRegister
                     },
                 );
-                let is_set = |field: Option<Field>, fixed: bool| {
-                    field.map_or(fixed, |field| field.read(word) != 0)
-                };
                 // Where option<0> is absent the option is LSL, which takes the register whole.
                 addressed.offset = to_register_offset(
                     value,
-                    is_set(signed, false),
-                    is_set(doubleword, true),
+                    is_set(signed, word, false),
+                    is_set(doubleword, word, true),
                     shift.read(word) != 0,
                     operation.bytes,
                 );
-            }
+            },
             Operand::ProgramCounterOffset { .. } => {
-                addressed.offset = read_source(processor, word, operand)?;
-            }
-            Operand::UnsignedImmediate(_) => {}
-            _ => panic!("{operand:?} is no operand of a load or store"),
+                addressed.offset = match read_source(processor, word, &operand) {
+                    Ok(offset) => offset,
+                    Err(exception) => {
+                        proof {
+                            lemma_operands_addressed_prefix(*processor, word, operands@, operation.bytes, index + 1);
+                        }
+                        return Err(exception);
+                    },
+                };
+            },
+            Operand::UnsignedImmediate(_) => {},
+            // VERUS: an operand that gives no register or address is refused as UNDEFINED, where it panicked.
+            _ => {
+                proof {
+                    lemma_operands_addressed_prefix(*processor, word, operands@, operation.bytes, index + 1);
+                }
+                return Err(Exception::UndefinedInstruction);
+            },
         }
+        index += 1;
+    }
+    proof {
+        assert(operands@.take(index as int) =~= operands@);
     }
     Ok(addressed)
 }
+
+} // verus!
+
+verus! {
+
+/// [AllInAlignedQuantity](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.AllInAlignedQuantity.3)
+/// of `size` bytes at the address: `Align(address + size - 1, alignment) == Align(address, alignment)`, the first and
+/// last byte in one aligned block.
+pub open spec fn all_in_aligned_quantity(address: u64, size: nat, alignment: nat) -> bool {
+    (address + size - 1) / (alignment as int) == address as int / (alignment as int)
+}
+
+/// Whether an access of `size` bytes at the address raises no alignment fault, as [AArch64.UnalignedAccessFaults](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#AArch64.UnalignedAccessFaults.3)
+/// gives it with FEAT_LSE2 and SCTLR_EL1.A and nAA clear, as Linux leaves them: an exclusive, atomic or ordered access
+/// faults unless it lies in 16 aligned bytes, any other access never; where the chip's behavior for a misaligned
+/// exclusive is the fault of a chip before FEAT_LSE2, an exclusive access faults unless it is aligned to its size.
+pub open spec fn aligned_access(alignment: Alignment, misaligned_exclusive: Option<MisalignedExclusive>, address: u64, size: nat) -> bool {
+    match (alignment, misaligned_exclusive) {
+        (Alignment::Unchecked, _) => true,
+        (Alignment::Exclusive, Some(MisalignedExclusive::AlignmentFault)) => address as int % (size as int) == 0,
+        _ => all_in_aligned_quantity(address, size, 16),
+    }
+}
+
+/// Whether an access of `total` bytes at the address lies where it raises no alignment fault.
+fn is_aligned(
+    alignment: Alignment,
+    misaligned_exclusive: Option<MisalignedExclusive>,
+    address: u64,
+    total: u64,
+) -> (aligned: bool)
+    requires
+        1 <= total <= 32,
+    ensures
+        aligned == aligned_access(alignment, misaligned_exclusive, address, total as nat),
+{
+    let granule = if crate::planted::is(265) {
+        SINGLE_COPY_ATOMIC_BYTES / 2
+    } else {
+        SINGLE_COPY_ATOMIC_BYTES
+    };
+    let within_sixteen_bytes = address % granule + total <= granule;
+    proof {
+        let (a, t) = (address as int, total as int);
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(a, 16);
+        assert(((a + t - 1) / 16 == a / 16) == (a % 16 + t <= 16)) by (nonlinear_arith)
+            requires
+                a == 16 * (a / 16) + a % 16,
+                0 <= a % 16 < 16,
+                1 <= t <= 32;
+    }
+    // VERUS: `planted::any` has no specification, so it is two `is`.
+    crate::planted::is(276) || match (alignment, misaligned_exclusive) {
+        _ if crate::planted::is(436) => true,
+        (Alignment::Unchecked, _) if crate::planted::is(443) || crate::planted::is(456) => within_sixteen_bytes,
+        (Alignment::WithinSixteenBytes, _) if crate::planted::is(437) => address % 8 + total <= 8,
+        (Alignment::Unchecked, _) => true,
+        (Alignment::WithinSixteenBytes, _) if crate::planted::is(41) => address.is_multiple_of(total),
+        (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes)) if crate::planted::is(42) => true,
+        (Alignment::Exclusive, None) if crate::planted::is(42) => true,
+        (Alignment::WithinSixteenBytes, _) if crate::planted::is(158) => address.is_multiple_of(total),
+        (Alignment::Exclusive, _) if crate::planted::is(166) => address.is_multiple_of(total),
+        (Alignment::WithinSixteenBytes, _) => within_sixteen_bytes,
+        (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes)) | (Alignment::Exclusive, None) => {
+            within_sixteen_bytes
+        },
+        (Alignment::Exclusive, Some(MisalignedExclusive::AlignmentFault)) => address.is_multiple_of(total),
+    }
+}
+
+} // verus!
 
 /// What a load or store does in a case the manual leaves open.
 enum Constrained {
@@ -1256,42 +1562,12 @@ where
         | Transfer::Atomic(_)
         | Transfer::CompareAndSwapPair => AccessDirection::Read,
     };
-    let granule = if crate::planted::is(265) {
-        SINGLE_COPY_ATOMIC_BYTES / 2
-    } else {
-        SINGLE_COPY_ATOMIC_BYTES
-    };
-    let within_sixteen_bytes = address % granule + total as u64 <= granule;
-    let aligned = crate::planted::is(276)
-        || match (operation.alignment, choices.misaligned_exclusive) {
-            _ if crate::planted::is(436) => true,
-            (Alignment::Unchecked, _) if crate::planted::any(&[443, 456]) => within_sixteen_bytes,
-            (Alignment::WithinSixteenBytes, _) if crate::planted::is(437) => {
-                address % 8 + total as u64 <= 8
-            }
-            (Alignment::Unchecked, _) => true,
-            (Alignment::WithinSixteenBytes, _) if crate::planted::is(41) => {
-                address.is_multiple_of(total as u64)
-            }
-            (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes) | None)
-                if crate::planted::is(42) =>
-            {
-                true
-            }
-            (Alignment::WithinSixteenBytes, _) if crate::planted::is(158) => {
-                address.is_multiple_of(total as u64)
-            }
-            (Alignment::Exclusive, _) if crate::planted::is(166) => {
-                address.is_multiple_of(total as u64)
-            }
-            (Alignment::WithinSixteenBytes, _)
-            | (Alignment::Exclusive, Some(MisalignedExclusive::WithinSixteenBytes) | None) => {
-                within_sixteen_bytes
-            }
-            (Alignment::Exclusive, Some(MisalignedExclusive::AlignmentFault)) => {
-                address.is_multiple_of(total as u64)
-            }
-        };
+    let aligned = is_aligned(
+        operation.alignment,
+        choices.misaligned_exclusive,
+        address,
+        total as u64,
+    );
     let tag = choices
         .fault_address_tag
         .unwrap_or(FaultAddressTag::KeepsTopByte);

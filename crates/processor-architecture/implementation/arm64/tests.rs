@@ -1638,3 +1638,49 @@ fn every_integer_operand_list_gives_the_values_its_operation_reads() {
     }
     assert_eq!(checked, 133, "integer instructions");
 }
+
+/// The proven read of a load or store's operands refuses, as UNDEFINED, an operand list it cannot read, which Verus
+/// cannot rule out from tables it does not read: every listed load or store names only registers, a base and offsets,
+/// each fitting its encoding, at most four registers, and a register offset only with a size it can scale by.
+#[test]
+fn every_load_store_operand_list_is_one_the_proven_read_takes() {
+    use crate::load_store::{LoadStoreInstruction, MAXIMUM_REGISTERS, to_load_store_operation};
+    use crate::operand::Operand;
+    let mut checked = 0;
+    for instruction in LISTED_INSTRUCTIONS {
+        let (Some(_), Some(operation)) = (
+            LoadStoreInstruction::new(instruction),
+            to_load_store_operation(instruction),
+        ) else {
+            continue;
+        };
+        let operands = instruction
+            .to_record()
+            .expect("a listed instruction")
+            .operands;
+        let mut registers = 0;
+        for operand in operands {
+            assert!(operand.is_well_formed(), "{instruction:?}: {operand:?}");
+            registers += match operand {
+                Operand::GeneralPurposeRegister { .. } | Operand::VectorRegister { .. } => 1,
+                Operand::GeneralPurposeRegisterPair { .. } => 2,
+                Operand::RegisterOffset { .. } => {
+                    assert!(
+                        [1, 2, 4, 8, 16].contains(&operation.bytes),
+                        "{instruction:?}"
+                    );
+                    0
+                }
+                Operand::AddressBase { .. }
+                | Operand::AddressOffset { .. }
+                | Operand::SplitAddressOffset { .. }
+                | Operand::ProgramCounterOffset { .. }
+                | Operand::UnsignedImmediate(_) => 0,
+                _ => panic!("{instruction:?} names {operand:?}"),
+            };
+        }
+        assert!(registers <= MAXIMUM_REGISTERS, "{instruction:?}");
+        checked += 1;
+    }
+    assert!(checked > 100, "{checked} loads and stores");
+}
