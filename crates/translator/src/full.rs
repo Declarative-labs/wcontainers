@@ -2442,12 +2442,14 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 .i64_add()
                 .local_set(at);
             let mut s = self.sink();
-            permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, page);
+            // A frame is read and written.
+            let frame = page_bit(Access::Modify);
+            permission_fast(&mut s, table, at, frame, page);
             permission_exact::<G>(
                 &mut s,
                 (at, Placed::AsComputed),
                 piece,
-                PAGE_READ | PAGE_WRITE,
+                frame,
                 fault_at,
                 exact,
             );
@@ -3022,7 +3024,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let table = self.table();
         let mut s = self.sink();
         // Only guests without address windows (x86-64, the test guest) check a range.
-        assert!(!table.windows, "a range is checked only without address windows");
+        assert!(
+            !table.windows,
+            "a range is checked only without address windows"
+        );
         G::data_address(&mut s, address);
         s.local_set(address);
         permission_range(

@@ -449,12 +449,13 @@ impl Space {
         if !executable(page) {
             return None;
         }
-        let first = (0..page)
+        // The page itself allows running code, so each search finds it at least.
+        let first = (0..=page)
             .rev()
             .take_while(|&p| executable(p))
             .last()
             .unwrap_or(page);
-        let last = (page + 1..)
+        let last = (page..)
             .take_while(|&p| executable(p))
             .last()
             .unwrap_or(page);
@@ -530,34 +531,25 @@ impl Space {
     ///
     /// The pages lie in the space, and the page past the space has no record, so it allows nothing.
     pub(crate) fn write_permission_bytes(&self, pages: Range<u64>) {
-        let first = pages.start.saturating_sub(1);
-        let end = pages.end;
-        if first >= end {
-            return;
-        }
-        let bytes: Vec<(u64, u8)> = {
+        // The pages of one window have places one after another, so each window's bytes are written at once.
+        let runs: Vec<(u64, Vec<u8>)> = {
             let records = lock(&self.pages);
-            (first..end)
-                .filter_map(|page| {
-                    let place = records.place(page)?;
-                    Some((
-                        place,
-                        permission_byte(records.effective(page), records.effective(page + 1)),
-                    ))
+            split_at_windows(pages.start.saturating_sub(1)..pages.end)
+                .filter_map(|part| {
+                    let place = records.place(part.start)?;
+                    let bytes = part
+                        .map(|page| {
+                            permission_byte(records.effective(page), records.effective(page + 1))
+                        })
+                        .collect();
+                    Some((place, bytes))
                 })
                 .collect()
         };
-        let mut index = usize::MIN;
-        while index < bytes.len() {
-            let start = index;
-            index += 1;
-            while index < bytes.len() && bytes[index].0 == bytes[index - 1].0 + 1 {
-                index += 1;
-            }
-            let run: Vec<u8> = bytes[start..index].iter().map(|&(_, byte)| byte).collect();
-            let at = usize::try_from(PERMISSIONS_AT + bytes[start].0)
-                .expect("an offset in the state memory");
-            self.state.write(at, &run);
+        for (place, bytes) in runs {
+            let at =
+                usize::try_from(PERMISSIONS_AT + place).expect("an offset in the state memory");
+            self.state.write(at, &bytes);
         }
     }
 
@@ -770,12 +762,12 @@ impl Space {
         (load, narrowed)
     }
 
-    /// Drops every load read from the addresses and gives writing back to their pages, returning whether there was any.
+    /// Drops every load read from the addresses and gives writing back to their pages.
     ///
     /// The lookup then finds none of its pieces; it is called only inside a change.
-    pub(crate) fn drop_code_locked(&self, addresses: Range<u64>) -> bool {
+    pub(crate) fn drop_code_locked(&self, addresses: Range<u64>) {
         let Ok(pages) = pages_of(&addresses).map(code_pages) else {
-            return false;
+            return;
         };
         let held: Vec<u64> = {
             let records = lock(&self.pages);
@@ -784,7 +776,7 @@ impl Space {
                 .collect()
         };
         if held.is_empty() {
-            return false;
+            return;
         }
         let touched = |load: &Load| {
             load.translated.read.iter().any(|read| {
@@ -821,7 +813,6 @@ impl Space {
             self.write_permission_bytes(page..page + 1);
         }
         self.narrowed.fetch_add(1, Ordering::SeqCst);
-        true
     }
 
     /// Drops every load, so that the lookup finds none of their pieces, while no thread runs.
@@ -999,17 +990,6 @@ impl Space {
         }
         Ok(())
     }
-
-    /// Returns whether any page of the addresses holds code.
-    fn any_code(&self, addresses: &Range<u64>) -> bool {
-        let Ok(pages) = pages_of(addresses).map(code_pages) else {
-            return false;
-        };
-        let records = lock(&self.pages);
-        pages
-            .into_iter()
-            .any(|page| records.record(page) & CODE != 0)
-    }
 }
 
 /// Copies the data of the file at the offsets to the other file from the offset, skipping the file's holes.
@@ -1089,54 +1069,34 @@ impl MemorySpace for WasmtimeMemory {
     fn zero(&self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
         let pages = pages_of(&addresses)?;
         let space = &self.space;
-        for part in space.placed_parts(pages) {
-            let part_addresses = addresses.start.max(part.start * PAGE_SIZE)
-                ..addresses.end.min(part.end * PAGE_SIZE);
-            let whole = part_addresses.start.div_ceil(PAGE_SIZE)..part_addresses.end / PAGE_SIZE;
-            let own_whole: Vec<(u64, u64)> = {
+        for page in space.placed_parts(pages).into_iter().flatten() {
+            let bytes = page * PAGE_SIZE..(page + 1) * PAGE_SIZE;
+            let cleared = addresses.start.max(bytes.start)..addresses.end.min(bytes.end);
+            // A whole page of its own file goes back to the host; any other bytes are written over.
+            let own_place = {
                 let records = lock(&space.pages);
-                whole
-                    .clone()
-                    .filter_map(|page| {
-                        let place = records.place(page)?;
-                        (!records.backing.contains_key(&place)).then_some((page, place))
-                    })
-                    .collect()
+                records
+                    .place(page)
+                    .filter(|place| !records.backing.contains_key(place))
             };
-            for page in part.clone() {
-                let bytes = page * PAGE_SIZE..(page + 1) * PAGE_SIZE;
-                let cleared =
-                    part_addresses.start.max(bytes.start)..part_addresses.end.min(bytes.end);
-                if cleared.is_empty()
-                    || own_whole
-                        .binary_search_by_key(&page, |&(own, _)| own)
-                        .is_ok()
-                {
-                    continue;
+            match own_place {
+                Some(place) if cleared == bytes => {
+                    rustix::fs::fallocate(
+                        &*space.file,
+                        FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
+                        place * PAGE_SIZE,
+                        PAGE_SIZE,
+                    )
+                    .expect("a memory file gives a page back");
                 }
-                let zeros = vec![
-                    u8::MIN;
-                    usize::try_from(cleared.end - cleared.start)
-                        .expect("part of a page")
-                ];
-                if let Some(parts) = space.bytes(cleared) {
-                    for view in parts {
+                _ => {
+                    let zeros = vec![
+                        u8::MIN;
+                        usize::try_from(cleared.end - cleared.start)
+                            .expect("part of a page")
+                    ];
+                    for view in space.bytes(cleared).into_iter().flatten() {
                         view.write(&zeros[..usize::try_from(view.len()).expect("part of a page")]);
-                    }
-                }
-            }
-            for (page, place) in own_whole {
-                let punched = rustix::fs::fallocate(
-                    &*space.file,
-                    FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
-                    place * PAGE_SIZE,
-                    PAGE_SIZE,
-                );
-                if punched.is_err()
-                    && let Some(parts) = space.bytes(page * PAGE_SIZE..(page + 1) * PAGE_SIZE)
-                {
-                    for view in parts {
-                        view.write(&[u8::MIN; PAGE_SIZE as usize]);
                     }
                 }
             }
@@ -1343,11 +1303,9 @@ impl PageTable for WasmtimePageTable {
 }
 
 impl WasmtimeBytes<'_> {
-    /// Drops the code the bytes held after a write to them.
+    /// Drops the code the bytes held after a write to them; [`Space::drop_code`] does nothing where none is held.
     fn written(&self) {
-        if self.space.any_code(&self.addresses) {
-            self.space.drop_code(self.addresses.clone());
-        }
+        self.space.drop_code(self.addresses.clone());
     }
 }
 
