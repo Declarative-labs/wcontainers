@@ -1712,6 +1712,147 @@ not this track's), which is the orchestrator's merge. Written to NEEDED, "D1 aga
   the desktop, and the orchestrator's merge of the fronts' move); the rest of the port (G5, G10, the values, G4).
 - Waiting on the owner, unchanged: GI4 and the window question.
 
+## The sixteenth run (2026-11-27): every argument told apart, dead depth code gone, the depth word decided by comparison, the Direct3D merge, opengl's framebuffer, clears and caps
+
+Logs in the scratch folder graphics-implementations/r16/ (at-<commit>-<machine>.log at pushed commits, plants-*,
+repeat-*, merge-check-x86.log; tools/r16-job.sh with STEPS, its `nirmut` step one plant per argument of nir's steps,
+`mutate` the depth plants, `depthcost` the measurement tool tools/depth_cost.rs.txt copied into the job's copy only).
+Every x86 job passed `--jobs 12`. His main (FETCH_HEAD ac696ea19) was already in the branch: nothing to merge. No owner
+interface file changed by this run's commits (the interface.rs files the merges brought are the API crates').
+
+### Commits (all pushed; tip 025bbc980 before this page)
+
+- 5f84882b8, 46d3a9b58: nir's tests tell apart two values of every argument of the route's steps (tests/arguments.rs,
+  14 tests; the four programs both files draw shared in tests/support/programs.rs).
+- 082bfc000: dead depth code removed and the depth word decided by comparison (below); the shared suite's
+  `every_24_bit_depth_word_copies_out_as_written`. 901d99f67: the browser host runs it. 025bbc980: webgl decides a
+  region off the origin through integer colour blits instead of a depth blit.
+- f7dc236fa, c681baecb: origin/graphics-api-crates-direct3d merged by normal merges (ffa1fb064, then f710cf5b2 with
+  the tested length rules), the fronts' move to implementation/translated followed (below).
+- 911ec2938: crates/gallium and crates/mesa-compiler at origin/graphics-api-crates ff4b6fa2d; opengl on that trait,
+  its framebuffer, clears and caps moved (below).
+
+### (1) Weak tests: every argument of nir's steps (MEASURED, x86-64; nir 56 tests on both machines)
+
+The three plants of the check, before (0f60a2f97, plants-at-0f60a2f97-x86.log): names of the geometry and evaluation
+stages swapped, 42 of 42 pass; `geometry_points_as_squares` ignoring `block`, 42 pass; `named_layer_location`
+returning `at + 1`, 42 pass. The sweep then planted every argument of every function of src/mesa.rs this track
+changed since 6a001c3ed (and the fields the helpers forward: the transform's four, the settings' seven, a swizzle's
+two, a nearest sampler's six, a reflected binding's five, a GLSL name's four), 52 plants: at 0f60a2f97, 33 survived
+(listed in plants-at-0f60a2f97-x86.log). At 911ec2938 (at-911ec2938-x86.log, `nirmut`): **52 of 52 fail a test**
+that passes without them (`NMUT none exit=0 56 passed`). The tests check values where the step's result shows them
+(each stage's own uniform name; the squares' block among the uniform bindings' registers; the layer named at
+`at + 1`; count 3 and stride 4; the fetched texture's register 3 against 5) and otherwise that the result differs
+for two values (the flattened program, or the variant's key for `key_transform`). Two arguments, the target fetch's
+unit and kind, could not be reached at 0f60a2f97 (the Mesa compiler's GLSL context reported no framebuffer fetch);
+ff4b6fa2d reports EXT_shader_framebuffer_fetch_non_coherent and both are now told apart. Not covered by a running
+test: opengl's new code (driver.rs, states.rs, resources.rs, framebuffer.rs, caps.rs), which does not build with
+Mesa while the unmoved modules fail; webgl's and webgpu's changed depth functions are planted in (3).
+
+### (2) Dead code, removed (READ, and MEASURED that nothing changed)
+
+- webgl convert.rs: the copy program's 24-bit depth source arm; `program` now refuses a 24-bit depth source (no copy
+  the interface allows draws from it), and the copy programs lost their `reciprocal24` uniform.
+- webgl depth.rs and webgpu fill.rs: the `e + 1` branch of `unorm24` (the check's scan of all 2^24 words under both
+  conversions never needed it).
+- Same results after on both machines: webgl, webgpu on lavapipe, shaders, recording as in (3).
+
+### (3) The depth word: decided by comparison (MEASURED, both machines unless named)
+
+Built in both back ends: the start probe's conversion (product with the rounded reciprocal on llvmpipe and lavapipe,
+nearest float elsewhere) is scanned over all 2^24 words once a process, each converted as the device does and read
+back as the sampling read does; the words read as another (on Mesa exactly one, 0xfffffe, read as 0xffffff) are
+decided after the sampling read by one draw each with the depth test EQUAL against the source texture as the depth
+attachment, at the float nearest word / (2^24 - 1) (which the device stores as that word), writing the word where the
+texture holds it. Where the probe finds the nearest-float conversion (Chrome) the list is empty and no pass is drawn
+(no code runs past `is_empty()`). webgpu draws the read into a colour texture of the level's size at the region's
+place, then the pass with the level as a read-only depth attachment, then copies the region out; 24-bit depth
+textures with COPY_SRC get RENDER_ATTACHMENT on such devices. webgl draws the pass into the read's own texture, or for
+a region off the origin into a colour texture reaching the region's place, copied there and back by integer colour
+blits.
+
+| at | x86-64 | ARM64 |
+|---|---|---|
+| webgl on Mesa (17 own + shared 76), 082bfc000 / 911ec2938 / 025bbc980 | 93 passed, 0 failed (was 91 + 1 failed: the word) | the same |
+| webgl shared suite six times in a row, 025bbc980 (repeat-*) | 6 x 76 passed | 6 x 76 passed |
+| webgpu on lavapipe | 158 passed, 3 failed (the known three: BC decoder, 16-bit floats, window read), 4 ignored | the same |
+| shared suite in headless Chrome 155 (SwiftShader), 911ec2938, 025bbc980 | 76 passed, 0 failed | the same |
+| `every_24_bit_depth_word_copies_out_as_written` (all 2^24 words, four 2048-square layers) | passes on webgl/llvmpipe, webgpu/lavapipe, recording, Chrome | the same |
+
+Plants, each applied alone (`mutate`, at 082bfc000 and 911ec2938 on x86-64, every one failing the word test and the
+full scan or, for the region plants, the word test): no pass; no collision found; the pass's word one off; its depth
+one word off (both back ends); the off-origin region placed at the origin (webgl). The webgpu "scissor at the origin"
+plant did not apply (its text changed with rustfmt).
+
+A measurement trap found and fixed in the tool: the `mutate` step restored each planted file with its old mtime, so
+a later build in the same folder kept the last plant's binary; one webgl run at 911ec2938 (x86-64) and the first
+repeats at 025bbc980 failed only on the word test for that reason (the same test as the last plant, deterministic).
+The step now touches the restored file; the repeats from fresh builds pass 6 of 6 on both machines.
+
+Extra cost per readback (MEASURED, release build, read of a region off the origin of a Depth24Plus texture against
+the same read of a Depth32Float one, both drawn into a colour texture; 40 reads each, tools/depth_cost.rs.txt,
+repeat-* logs at 025bbc980):
+
+| side of the texture | webgl/llvmpipe x86-64 | ARM64 | webgpu/lavapipe x86-64 | ARM64 |
+|---|---|---|---|---|
+| 64 (62 x 62 read) | 64.5 us (135.5 against 71.0) | 56.1 us | 81.6 us (231.9 against 138.6) | 76.1 us |
+| 512 (510 x 510 read) | 582 us (3,637 against 2,874) | 677 us | 395 us (1,128 against 734) | 479 us |
+
+The difference includes the 24-bit read's own decoding besides the pass. Zero where the probe finds no collision
+(Chrome): INFERRED from the code (the list is empty there, MEASURED indirectly: the shared suite, the word test and
+the full scan pass in Chrome on both machines); no timing was taken in the browser.
+
+### (4) GI8 part B: opengl on the newest Gallium trait (compile-only)
+
+Taken: ff4b6fa2d's trait (typed values, `end_query` handing back the active query, `SamplerState.min_lod`, the
+screen's capabilities). Moved this run: the framebuffer and its surfaces as counted handles with the pass tracker's
+targets, and the three clears (framebuffer.rs, with the twin a target in another format draws into); the screen's
+caps (caps.rs, from the old screen.rs, on the trait's `Caps`, `ShaderCaps`, `ComputeCaps`); every moved call on the
+typed values; samplers take `min_lod` (G10 closed). The old clears and framebuffer setter are gone from context.rs;
+the old screen.rs keeps its caps code and its tests until the trait's caps have a constructor a test can fill
+(NEEDED, sixteenth run), and context.rs keeps the framebuffer helpers the unmoved draw.rs uses.
+
+| at (pushed) | errors, `cargo check --all-targets -p wcontainers-opengl`, Mesa on, x86-64 / ARM64 | of them unsafe | opengl lines naming `unsafe` |
+|---|---|---|---|
+| 0f60a2f97 (start) | 1,423 / 1,422 | 1,414 / 1,413 | 271 |
+| 911ec2938 | 1,411 / 1,410 | 1,404 / 1,403 | 261 |
+
+None of the errors is in driver.rs, states.rs, resources.rs, framebuffer.rs, caps.rs, guest.rs, pipe.rs, format.rs or
+packed.rs. Without Mesa opengl checks (exit 0); wcontainers-gallium checks (exit 0); nir and the Mesa compiler's
+direct crate pass with the new tip (56 and 6, both machines). Next, in order: sampler views (view.rs), shaders on the
+received programs typed by stage, queries, stream output, draw, blit, present.
+
+### (5) D1: the merge done, the 70 lines not moved
+
+The Direct3D branch merged by normal merges (103 conflicts, MEASURED by `git merge-tree`): the answer and register
+files placed at the new paths; the API crates' manifests taken; this branch's front contents (graphics-layout's) kept
+with the move's renames (`wcontainers_direct3d_11` to `_translated`, the same for 12, the infrastructure's tests on
+its translated crate) and paths made three folders deeper; graphics-layout's test-only record.rs at
+implementation/translated/tests/support; the translated manifests given this branch's extra dependencies
+(zerocopy, bcdec_rs, naga, blake3) and webgpu's path; gallium and the Mesa compiler kept at the API tip;
+frames.rs names the translated crates as the front. MEASURED at 911ec2938 on both machines (merge-check in the
+claim runs): `cargo check --all-targets` exit 0 for the Direct3D 11, 12 and DXGI API crates and translated fronts,
+directx, gpu, conformance, recording, webgpu, webgl, shaders, graphics-test, -forward, gallium, mesa-compiler; the
+translated Direct3D 11 front, DXGI front and recording tests 319 passed, 0 failed; Cargo.lock 0f50904f49f90483 on
+both machines, unchanged by `cargo metadata`. Not done: moving gpu-webgpu's 19 lines and shaders' 71 onto the
+committed traits, and the Windows type-check (written in NEEDED with what it needs).
+
+### Linter (da55b9d7, x86-64, no model key, at 911ec2938; r16/lint911 against r15/lint)
+
+Total 85,662 to 112,176, the rise from the merged API crates. Ours: gpu 5,167 to 5,191; webgl 6,703 to 6,759; webgpu
+2,839 to 2,894; nir 925 to 947; opengl 1,464 to 1,610 (the moved code's text rules, and constant_defined_twice for the
+caps constants left in the old screen.rs until its tests move); the rest unchanged. New structural findings:
+constant_defined_twice for `UNORM24_MAX`/`UNORM24_BITS` and `GONE` between webgl and webgpu (two back ends, no shared
+crate but the interface, which this run may not change); nir's four shared programs fixed by the shared file.
+
+### Milestones
+
+- Reached: (1) every argument of nir's steps told apart, 52 of 52 plants failing a test; (2) the dead code removed;
+  (3) the depth word read exactly by comparison on llvmpipe and lavapipe, both machines, the full 2^24 scan a test on
+  every back end, the cost measured; the Direct3D merge with the fronts' move (D1's first half).
+- Next: GI8 part B's sampler views and on (waits on nothing); D1's 70 lines onto the Direct3D 11 and DXGI traits
+  with the Windows type-check (waits on nothing but the work); GI4 and the window question wait on the owner.
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -1795,3 +1936,12 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   `#[expect(unsafe_code, reason)]` marks, in a crate whose own table denies unsafe code). New dependencies: none from outside the workspace (Cargo.lock: the
   wcontainers-gallium package and opengl's edges to it and to wcontainers-mesa-compiler; 85577b9eeb628013 on both
   machines). No hostile-guest suite exists, none was run.
+- Sixteenth run (5f84882b8 to 025bbc980): opengl 271 to 261 lines (911ec2938), MEASURED with count-unsafe.sh at
+  0f60a2f97, 082bfc000, f7dc236fa, c681baecb and 911ec2938; the track's total 434 to 424 (webgpu 19, shaders 71,
+  shader-converters 5, nir 56, opengl 261, test-window 12, the rest 0). No marked exception written here. Brought in,
+  not written here: crates/gallium/implementation/direct 4 lines under 4 marks, crates/mesa-compiler/implementation/
+  direct 34 under 34 (ff4b6fa2d); with the Direct3D merge, each in a crate whose own table denies unsafe code:
+  direct3d-11 direct 4,148 lines (367 marks), direct3d-12 direct 470 (28), DXGI direct 1,526 (134), COM direct 41
+  (22), d3dcommon direct 29 (3); the fronts moved unchanged (direct3d-12 translated 495, directx 1,054, as before the
+  move). New dependencies: none from outside the workspace beyond what the merged API crates already carried
+  (Cargo.lock 0f50904f49f90483 on both machines). No hostile-guest suite exists, none was run.
