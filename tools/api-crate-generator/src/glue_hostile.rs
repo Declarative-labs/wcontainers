@@ -679,18 +679,22 @@ impl Writer<'_, '_> {
         if t.starts_with("Option<") {
             return Some("None".to_string());
         }
-        // A fixed array is its element's default; a slice is empty.
+        // Plain data is a known value (src/glue_hostile.rs `Shapes`): never its type's default where it has another, and
+        // of an enumeration a value the glue passes, so that a glue dropping or mixing up an argument is seen.
+        let salt = super::record::salt_of(name);
+        let bare_type = t.trim_start_matches('&').trim_start_matches("'_ ").trim();
         if (t.starts_with("&[") || t.starts_with('[')) && t.contains(';') {
-            return Some(if t.starts_with('&') { "&Default::default()" } else { "Default::default()" }.to_string());
+            let reference = if t.starts_with('&') { "&" } else { "" };
+            return Some(codecs.shapes.known(bare_type, salt, true).map_or(format!("{reference}Default::default()"), |value| format!("{reference}{value}")));
         }
-        if t.starts_with("&[") || t.starts_with("&'_ [") {
-            return Some("&[]".to_string());
+        if let Some(element) = t.strip_prefix("&[").or_else(|| t.strip_prefix("&'_ [")).and_then(|rest| rest.strip_suffix(']')) {
+            return Some(codecs.shapes.known(element, salt, true).filter(|value| value != "None").map_or("&[]".to_string(), |value| format!("&[{value}]")));
         }
         if t == "&str" {
-            return Some("\"\"".to_string());
+            return Some("\"known\"".to_string());
         }
         if t == "&CStr" || t.ends_with("::CStr") && t.starts_with('&') {
-            return Some("c\"\"".to_string());
+            return Some("c\"known\"".to_string());
         }
         match self.shape(t, scope) {
             Shape::Object { kind, by_ref } => {
@@ -722,6 +726,9 @@ impl Writer<'_, '_> {
         }
         let bare = t.trim_start_matches('&').trim();
         let reference = if t.starts_with('&') { "&" } else { "" };
+        if let Some(value) = codecs.shapes.known(bare, salt, true).filter(|_| !bare.contains("Foreign") && !bare.contains('<')) {
+            return Some(format!("{reference}{value}"));
+        }
         if bare.contains("::structures::") {
             if bare.ends_with("::Guid") || codecs.defaults.contains(bare) {
                 return Some(format!("{reference}Default::default()"));
@@ -1162,6 +1169,106 @@ pub(super) struct Codecs {
     first_values: BTreeMap<String, String>,
     /// The data modules the hostile crate includes: module name and path from the crate.
     modules: Vec<(String, String)>,
+    /// Every structure and enumeration of the set as the interface crates write them, for known values made without
+    /// any code of the glue.
+    pub(super) shapes: Shapes,
+}
+
+/// The structures (their fields, and whether each is a C union) and the enumerations (their values) of the set, read
+/// from the interface crates' text: what known values are made of, so that neither the recorder's known answers nor
+/// the suite's known arguments share any code with the glue they check.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Shapes {
+    /// Each structure's fields (name, type), by path; and whether it is a C union.
+    structs: BTreeMap<String, (Vec<(String, String)>, bool)>,
+    /// Each enumeration's values that pass the glue (declared, none a special value src/api.rs refuses or clears),
+    /// as (constant path, value), by the enumeration's path.
+    values: BTreeMap<String, Vec<(String, i64)>>,
+    /// The structures and enumerations of one public integer field.
+    newtypes: BTreeSet<String>,
+}
+
+/// The Rust integer types a known value is written for as a literal.
+const KNOWN_INTEGERS: [&str; 10] = ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"];
+/// A known integer is one of `KNOWN_SPAN` values from 1: never zero, and within every integer type.
+const KNOWN_SPAN: usize = 126;
+/// What a known value's salt moves by from one field to the next.
+const KNOWN_STEP: usize = 7;
+
+impl Shapes {
+    /// A Rust expression of a known value of type `ty`, made only of literals and the interface crates' constants: never
+    /// the type's default where it has another value (`salt` folded into 1 to 126 for each integer, moving by field), so
+    /// that a glue dropping, zeroing or mixing up a value is seen. `valid`: an enumeration takes a value the glue passes
+    /// (its first declared nonzero value no special line refuses), as the suite's arguments must; otherwise any. A C
+    /// union is all zero bytes (its members read the same bytes, so no other value is the same in every member). None
+    /// for a type of no known value (an object, a structure generic over the API).
+    pub(super) fn known(&self, ty: &str, salt: usize, valid: bool) -> Option<String> {
+        let ty = ty.trim();
+        let number = 1 + salt % KNOWN_SPAN;
+        if KNOWN_INTEGERS.contains(&ty) {
+            return Some(format!("{number}_{ty}"));
+        }
+        if ["f32", "f64"].contains(&ty) {
+            return Some(format!("{number}.5_{ty}"));
+        }
+        if ty == "bool" {
+            return Some("true".to_string());
+        }
+        if ty.ends_with("CString") {
+            return Some("std::ffi::CString::from(c\"known\")".to_string());
+        }
+        if let Some(element) = ty.strip_prefix("Vec<").and_then(|rest| rest.strip_suffix('>')) {
+            return self.known(element, salt, valid).map(|value| format!("vec![{value}]"));
+        }
+        if ty.starts_with("Option<") {
+            return Some("None".to_string());
+        }
+        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
+            return self.known(element, salt, valid).map(|value| format!("core::array::from_fn(|_| {value})"));
+        }
+        if let Some(choices) = self.values.get(ty) {
+            if valid {
+                return Some(choices.iter().find(|(_, value)| *value != 0).or(choices.first()).map_or(format!("{ty}(0)"), |(name, _)| name.clone()));
+            }
+            return Some(format!("{ty}({number})"));
+        }
+        if self.newtypes.contains(ty) {
+            // A module handle names code the system would load: an argument passes none.
+            if valid && ty.ends_with("::Hmodule") {
+                return Some(format!("{ty}(0)"));
+            }
+            return Some(format!("{ty}({number})"));
+        }
+        let (fields, union) = self.structs.get(ty)?;
+        if *union {
+            return self.zero(ty);
+        }
+        let parts: Option<Vec<String>> = fields.iter().enumerate().map(|(at, (name, field))| self.known(field, salt + KNOWN_STEP * (at + 1), valid).map(|value| format!("{name}: {value}"))).collect();
+        parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
+    }
+
+    /// A Rust expression of type `ty` that is all zero bytes, made only of literals.
+    fn zero(&self, ty: &str) -> Option<String> {
+        let ty = ty.trim();
+        if KNOWN_INTEGERS.contains(&ty) {
+            return Some(format!("0_{ty}"));
+        }
+        if ["f32", "f64"].contains(&ty) {
+            return Some(format!("0.0_{ty}"));
+        }
+        if ty == "bool" {
+            return Some("false".to_string());
+        }
+        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
+            return self.zero(element).map(|value| format!("core::array::from_fn(|_| {value})"));
+        }
+        if self.values.contains_key(ty) || self.newtypes.contains(ty) {
+            return Some(format!("{ty}(0)"));
+        }
+        let (fields, _) = self.structs.get(ty)?;
+        let parts: Option<Vec<String>> = fields.iter().map(|(name, field)| self.zero(field).map(|value| format!("{name}: {value}"))).collect();
+        parts.map(|parts| format!("{ty} {{ {} }}", parts.join(", ")))
+    }
 }
 
 /// Sets the writer's structure values from the set's crates (a decoder of zero bytes, or `Default`), and returns the
@@ -1176,12 +1283,7 @@ pub(super) fn struct_values(writer: &Writer<'_, '_>, crates: &Path, api: usize) 
     for (path, (module, ident, size)) in &codecs.decoders {
         values.entry(path.clone()).or_insert_with(|| format!("{module}::decode_{ident}(&[u8::MIN; {size}])"));
     }
-    let mut known = writer.known_structs.borrow_mut();
-    known.clear();
-    for (path, (module, ident, size)) in &codecs.decoders {
-        known.insert(path.clone(), format!("{module}::decode_{ident}(&known_bytes::<{size}>(@SALT@))"));
-    }
-    *writer.newtypes.borrow_mut() = codecs.newtypes.clone();
+    *writer.shapes.borrow_mut() = codecs.shapes.clone();
     codecs.modules
 }
 
@@ -1270,7 +1372,8 @@ fn codecs(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Codecs {
             modules.push((module, from));
         }
     }
-    Codecs { decoders, defaults, newtypes, first_values, modules }
+    let shapes = shapes_of(g, crates, &newtypes);
+    Codecs { decoders, defaults, newtypes, first_values, modules, shapes }
 }
 
 /// Writes API `api`'s hostile crate under its folder, and returns the report's line.
@@ -1449,9 +1552,23 @@ fn answered<T>(answer: T) -> bool {
 /// every field (`Debug`), an object in it named only as one (its identity is no value); and the caller's bytes after a
 /// method that writes them. The same drive made on an implementation directly and through both glues must give the same.
 #[derive(Debug, Default)]
-struct Answers(std::sync::Mutex<Vec<String>>);
+struct Answers(std::sync::Mutex<Vec<String>>, Option<Received>, std::sync::atomic::AtomicUsize);
+
+/// The implementation's own log of the arguments it received: how many so far, and those after the first n.
+type Received = (fn() -> usize, fn(usize) -> Vec<String>);
 
 impl Answers {
+    fn with_received(received: Received) -> Answers {
+        Answers(std::sync::Mutex::default(), Some(received), std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    /// Marks where the implementation's log of arguments stands before a compared call.
+    fn start(&self) {
+        if let Some((logged, _)) = self.1 {
+            self.2.store(logged(), std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     fn push(&self, line: String) {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(line);
     }
@@ -1470,6 +1587,13 @@ impl Answers {
     fn not_called_since(&self, noted: usize, place: &str) {
         if self.len() == noted {
             self.push(format!("{place}: not called, or panicked"));
+        }
+        // What the implementation received during the call, every argument.
+        if let Some((_, since)) = self.1 {
+            // The same call asked again (a list's length, then the list) is one call received.
+            let mut received = since(self.2.load(std::sync::atomic::Ordering::SeqCst));
+            received.dedup();
+            self.push(format!("{place}: the implementation received {received:?}"));
         }
     }
 
@@ -1602,7 +1726,7 @@ impl Writer<'_, '_> {
         for (place, prelude, call) in &calls {
             if call.contains("answers.") {
                 // A compared call that was skipped or panicked is noted too, so that both drives line up.
-                let _ = writeln!(text, "    // {place}\n    let noted = answers.len();\n    driven.attempt(|| {{\n{prelude}        {call}\n    }});\n    answers.not_called_since(noted, \"{place}\");");
+                let _ = writeln!(text, "    // {place}\n    let noted = answers.len();\n    answers.start();\n    driven.attempt(|| {{\n{prelude}        {call}\n    }});\n    answers.not_called_since(noted, \"{place}\");");
             } else {
                 let _ = writeln!(text, "    // {place}\n    driven.attempt(|| {{\n{prelude}        {call}\n    }});");
             }
@@ -1614,7 +1738,8 @@ impl Writer<'_, '_> {
         let _ = writeln!(text, "/// Makes an object of every kind the implementation makes and calls every method of every kind and every export on\n/// them: no method panics, a failure is negative, an object handed out equals its clone.\npub fn every_method_answers<A: {top}>(api: A) {{\n    let mut o = Objects::new(api);\n    let kinds = make_all(&mut o);\n    let driven = drive(&o, &Answers::default());\n    println!(\"SUITE {}: kinds made {{kinds}}, calls {{CALLS}}: called {{}}, skipped {{}}, panicked {{}}\", driven.called, driven.skipped, driven.panicked);\n    assert_eq!(driven.panicked, 0, \"a method panicked\");\n    assert_eq!(driven.called + driven.skipped, CALLS, \"a call was neither made nor skipped\");\n}}\n", spec.folder);
         let _ = writeln!(text, "/// Makes an object of every kind and drives every method as `every_method_answers` does, and returns what each\n/// method both glues carry to the implementation answered, in the order called.\npub fn answers_of<A: {top}>(api: A) -> Vec<String> {{\n    let mut o = Objects::new(api);\n    make_all(&mut o);\n    let answers = Answers::default();\n    drive(&o, &answers);\n    answers.lines()\n}}\n");
         let _ = writeln!(text, "/// Drives `api` and `reference` alike and compares every answer noted, field by field, in the order called: `api` is\n/// `reference` served and called through both glues, so each answer must be what the implementation gave.\npub fn every_answer_equals_the_reference<A: {top}, R: {top}>(api: A, reference: R) {{\n    let got = answers_of(api);\n    let wanted = answers_of(reference);\n    println!(\"ANSWERS {}: the reference answered {{}} of {{COMPARED}}, through both glues {{}}\", wanted.len(), got.len());\n    let differing: Vec<String> = got.iter().zip(&wanted).enumerate().filter(|(_, (got, wanted))| got != wanted).map(|(at, (got, wanted))| format!(\"answer {{at}}: through both glues {{got}}, the implementation {{wanted}}\")).collect();\n    for line in &differing {{\n        println!(\"DIFFERS {{line}}\");\n    }}\n    assert_eq!(differing, Vec::<String>::new(), \"answers differ through both glues\");\n    assert_eq!(got.len(), wanted.len(), \"through both glues, a different number of answers\");\n    assert_eq!(wanted.len(), COMPARED, \"the reference answered a different number of answers than the suite notes\");\n}}\n", spec.folder);
-        let _ = writeln!(text, "/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also\n/// compares every answer of the value with the reference's.\n#[macro_export]\nmacro_rules! tests {{\n    ($value:expr) => {{\n        #[test]\n        fn every_method_answers() {{\n            $crate::every_method_answers($value);\n        }}\n    }};\n    ($value:expr, $reference:expr) => {{\n        $crate::tests!($value);\n\n        #[test]\n        fn every_answer_equals_the_reference() {{\n            $crate::every_answer_equals_the_reference($value, $reference);\n        }}\n    }};\n}}");
+        let _ = writeln!(text, "/// As `answers_of`, with what the implementation received during each compared call after its answer (`logged` and\n/// `since`: the implementation's own log of the arguments it received).\npub fn answers_received_of<A: {top}>(api: A, logged: fn() -> usize, since: fn(usize) -> Vec<String>) -> Vec<String> {{\n    let mut o = Objects::new(api);\n    make_all(&mut o);\n    let answers = Answers::with_received((logged, since));\n    drive(&o, &answers);\n    answers.lines()\n}}\n\n/// As `every_answer_equals_the_reference`, and every argument the implementation received through both glues equals\n/// what it received from the same call made directly: nothing the caller passed is dropped, zeroed or mixed up on the\n/// way. A method whose call through both glues differs by design (a check of the glue's on an argument the suite\n/// passes, an answer the glue gives from its own record, a bit a row clears) must be one of `refused` (src/api.rs\n/// `SUITE_DIFFERENT`, each with the reason).\npub fn every_answer_and_argument_equals_the_reference<A: {top}, R: {top}>(api: A, reference: R, logged: fn() -> usize, since: fn(usize) -> Vec<String>, refused: &[&str]) {{\n    let wanted = answers_received_of(reference, logged, since);\n    let got = answers_received_of(api, logged, since);\n    let mut differing = Vec::new();\n    let mut accepted = Vec::new();\n    for (at, (got_line, wanted_line)) in got.iter().zip(&wanted).enumerate() {{\n        if got_line == wanted_line {{\n            continue;\n        }}\n        // The method's place: the text before \" -> \", \" wrote \" or \" on \" (a line of a call not made, or of what the\n        // implementation received, names the kind too).\n        let place = got_line.split(\" -> \").next().unwrap_or_default().split(\" wrote \").next().unwrap_or_default().split(\" on \").next().unwrap_or_default().split(\": \").next().unwrap_or_default().to_string();\n        if refused.contains(&place.as_str()) || refused.iter().any(|entry| got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])) {{\n            accepted.push(place);\n        }} else {{\n            differing.push(format!(\"{{at}}: through both glues {{got_line}}, directly {{wanted_line}}\"));\n        }}\n    }}\n    accepted.dedup();\n    println!(\"ANSWERS AND ARGUMENTS {}: {{}} lines directly, {{}} through both glues; {{}} methods differing as src/api.rs SUITE_DIFFERENT states: {{accepted:?}}\", wanted.len(), got.len(), accepted.len());\n    for line in &differing {{\n        println!(\"DIFFERS {{line}}\");\n    }}\n    assert_eq!(differing, Vec::<String>::new(), \"answers or arguments differ through both glues\");\n    assert_eq!(got.len(), wanted.len(), \"through both glues, a different number of answers\");\n}}\n", spec.folder);
+        let _ = writeln!(text, "/// Runs each suite function above as its own test on the value an implementation gives; given a reference, also\n/// compares every answer of the value with the reference's.\n#[macro_export]\nmacro_rules! tests {{\n    ($value:expr) => {{\n        #[test]\n        fn every_method_answers() {{\n            $crate::every_method_answers($value);\n        }}\n    }};\n    ($value:expr, $reference:expr) => {{\n        $crate::tests!($value);\n\n        #[test]\n        fn every_answer_equals_the_reference() {{\n            $crate::every_answer_equals_the_reference($value, $reference);\n        }}\n    }};\n    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr) => {{\n        // One test, so that no other drive adds to the implementation's log of arguments while it is read.\n        #[test]\n        fn every_method_answers_and_every_answer_and_argument_equals_the_reference() {{\n            $crate::every_method_answers($value);\n            $crate::every_answer_and_argument_equals_the_reference($value, $reference, $logged, $since, $refused);\n        }}\n    }};\n}}");
         let mut imports: Vec<String> = Vec::new();
         for other in g.apis.iter() {
             let named = text.lines().any(|line| !line.starts_with("//") && line.contains(&format!("{}::", alias(other))));
@@ -1671,7 +1796,8 @@ pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_fo
             // The recorder's every answer through both glues is compared with the recorder's own (its answers are known
             // values, never a type's default); the hostile implementation's answers are its lies, so only checked.
             let run = if implementation == "recorder" {
-                format!("//! The conformance suite of {}, run on this implementation through both glues (`served`), every answer compared\n//! with the same call made on the implementation directly.\n\n{suite_crate}::tests!({direct_crate}::served({value}), {value});\n", spec.folder)
+                let recorder_crate = format!("{}_recorder", package(spec).replace('-', "_"));
+                format!("//! The conformance suite of {}, run on this implementation through both glues (`served`), every answer and every\n//! argument the implementation received compared with the same call made on the implementation directly.\n\n{suite_crate}::tests!(\n    {direct_crate}::served({value}),\n    {value},\n    {recorder_crate}::arguments_logged,\n    {recorder_crate}::arguments_since,\n    &[{refused}]\n);\n", spec.folder, refused = crate::api::SUITE_DIFFERENT.iter().map(|(place, _)| format!("\"{place}\"")).collect::<Vec<_>>().join(", "))
             } else {
                 format!("//! The conformance suite of {}, run on this implementation through both glues (`served`).\n\n{suite_crate}::tests!({direct_crate}::served({value}));\n", spec.folder)
             };
@@ -1736,4 +1862,58 @@ fn answer_summary(ty: &str, expr: &str, depth: usize) -> (String, &'static str) 
         return (format!("{{ let ({}) = {expr}; format!(\"({holes})\", {}) }}", names.join(", "), shown.join(", ")), holding);
     }
     ("\"an object\".to_string()".to_string(), "an object only: its identity is no value to compare")
+}
+
+/// Reads the set's structures and enumerations from the interface crates' text (src/glue_hostile.rs `Shapes`).
+fn shapes_of(g: &crate::emit::Generator<'_>, crates: &Path, newtypes: &BTreeSet<String>) -> Shapes {
+    let specials: BTreeSet<&str> = g.apis.iter().flat_map(|api| api.specials.iter()).map(|special| special.value).collect();
+    let mut shapes = Shapes { newtypes: newtypes.clone(), ..Shapes::default() };
+    for spec in g.apis.iter() {
+        let own = alias(spec);
+        if let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join("structures.rs")) {
+            let mut union = false;
+            let mut current: Option<(String, Vec<(String, String)>, bool)> = None;
+            for line in text.lines() {
+                if line.starts_with("/// A C union of") {
+                    union = true;
+                } else if let Some(rest) = line.strip_prefix("pub struct ") {
+                    let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                    if rest[name.len()..].starts_with(" {") {
+                        current = Some((format!("{own}::structures::{name}"), Vec::new(), union));
+                    }
+                    union = false;
+                } else if let Some((_, fields, _)) = current.as_mut()
+                    && let Some(rest) = line.strip_prefix("    pub ")
+                    && let Some((name, ty)) = rest.split_once(": ")
+                {
+                    fields.push((name.to_string(), ty.trim_end_matches(',').replace("crate::", &format!("{own}::"))));
+                } else if line == "}"
+                    && let Some((path, fields, is_union)) = current.take()
+                {
+                    shapes.structs.insert(path, (fields, is_union));
+                } else if line.starts_with("#[") || line.starts_with("///") {
+                } else {
+                    union = false;
+                }
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(crates.join(spec.folder).join("enumerations.rs")) {
+            for rest in text.lines().filter_map(|line| line.strip_prefix("pub const ")) {
+                let Some((name, rest)) = rest.split_once(": ") else { continue };
+                let Some((ty, value)) = rest.split_once(" = ") else { continue };
+                let inner = value.trim_end_matches(';').trim_start_matches(ty).trim_start_matches('(').trim_end_matches(')').replace('_', "");
+                let parsed = match inner.strip_prefix("0x") {
+                    Some(hex) => i64::from_str_radix(hex, 16),
+                    None => inner.parse::<i64>(),
+                };
+                let Ok(number) = parsed else { continue };
+                let path = format!("{own}::enumerations::{ty}");
+                let entry = shapes.values.entry(path).or_default();
+                if !specials.contains(name) {
+                    entry.push((format!("{own}::enumerations::{name}"), number));
+                }
+            }
+        }
+    }
+    shapes
 }

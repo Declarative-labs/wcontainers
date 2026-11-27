@@ -19,6 +19,7 @@ use wcontainers_component_object_model as component_object_model;
 use wcontainers_direct3d_12 as direct3d_12;
 use wcontainers_direct3d_common as direct3d_common;
 use wcontainers_direct3d_common_recorder as direct3d_common_recorder;
+use wcontainers_directx_graphics_infrastructure as directx_graphics_infrastructure;
 
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -34,11 +35,41 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// Objects alive now.
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
+/// Every call's arguments as the recorder received them, oldest first: the place and each argument of plain data
+/// (`Debug`, every field), an object named only as one.
+static ARGUMENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Logs one call.
 fn record(call: String) {
     LOG.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push(call);
+}
+
+/// Logs one call's arguments.
+fn record_arguments(call: String) {
+    ARGUMENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(call);
+}
+
+/// Returns how many calls' arguments were logged so far.
+pub fn arguments_logged() -> usize {
+    ARGUMENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .len()
+}
+
+/// Returns the arguments of every call logged after the first `from`, oldest first.
+pub fn arguments_since(from: usize) -> Vec<String> {
+    ARGUMENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(from..)
+        .map(<[String]>::to_vec)
+        .unwrap_or_default()
 }
 
 /// Returns every call logged so far whose text starts with `place` (a method's `Interface::Method`, or an export).
@@ -61,36 +92,37 @@ pub fn live() -> i64 {
     LIVE.load(Ordering::SeqCst)
 }
 
-/// A known answer's bytes are each one of `KNOWN_SPAN` values from 1: never zero, and never with the top bit set, so no
-/// float read from them is NaN or infinite and every float compares equal to itself.
-const KNOWN_SPAN: usize = 126;
-/// What a known byte moves by from one byte to the next, so that neighboring fields differ.
-const KNOWN_STRIDE: usize = 29;
-/// The most bytes the recorder writes into the caller's bytes.
-const KNOWN_MOST: usize = 1 << 16;
-
-/// The known byte at `at` of an answer of salt `salt`.
-fn known_byte(salt: usize, at: usize) -> u8 {
-    u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
-}
-
-/// The known bytes a structure of the recorder's answers is decoded from.
-#[allow(dead_code, reason = "a recorder answering no structure decodes none")]
-fn known_bytes<const N: usize>(salt: usize) -> [u8; N] {
-    core::array::from_fn(|at| known_byte(salt, at))
-}
-
-/// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
-/// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
-/// directly.
+/// The known bytes the recorder writes into the caller's bytes (a recorder writing none uses none of it).
 #[allow(dead_code, reason = "a recorder writing no caller's bytes writes none")]
-fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
-    let length = usize::try_from(bytes.len())
-        .unwrap_or(KNOWN_MOST)
-        .min(KNOWN_MOST);
-    let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
-    let _ = bytes.write(&known);
+mod known {
+    /// Each known byte is one of `KNOWN_SPAN` values from 1: never zero.
+    const KNOWN_SPAN: usize = 126;
+    /// What a known byte moves by from one byte to the next, so that neighboring bytes differ.
+    const KNOWN_STRIDE: usize = 29;
+    /// The most bytes the recorder writes into the caller's bytes.
+    const KNOWN_MOST: usize = 1 << 16;
+
+    /// The known byte at `at` of an answer of salt `salt`.
+    fn known_byte(salt: usize, at: usize) -> u8 {
+        u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
+    }
+
+    /// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
+    /// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
+    /// directly.
+    pub(super) fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(
+        bytes: &Bytes,
+        salt: usize,
+    ) {
+        let length = usize::try_from(bytes.len())
+            .unwrap_or(KNOWN_MOST)
+            .min(KNOWN_MOST);
+        let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
+        let _ = bytes.write(&known);
+    }
 }
+
+use known::known_fill;
 
 /// One object alive, counted until its last clone drops.
 #[derive(Debug)]
@@ -659,6 +691,7 @@ pub trait Recorded:
 impl<A: Recorded> direct3d_12::CommandAllocator for RecordedCommandAllocator<A> {
     fn reset(&self) -> Result<(), component_object_model::structures::HResult> {
         record("ID3D12CommandAllocator::Reset()".to_string());
+        record_arguments("ID3D12CommandAllocator::Reset()".to_string());
         Ok(())
     }
 }
@@ -678,6 +711,7 @@ impl<A: Recorded> direct3d_12::CommandQueue for RecordedCommandQueue<A> {
     ) {
         let _ = &command_lists;
         record("ID3D12CommandQueue::ExecuteCommandLists()".to_string());
+        record_arguments("ID3D12CommandQueue::ExecuteCommandLists(command_lists=an object or the caller's bytes)".to_string());
     }
     fn signal(
         &self,
@@ -687,6 +721,10 @@ impl<A: Recorded> direct3d_12::CommandQueue for RecordedCommandQueue<A> {
         let _ = &fence;
         let _ = &value;
         record(format!("ID3D12CommandQueue::Signal(value={:?})", value));
+        record_arguments(format!(
+            "ID3D12CommandQueue::Signal(fence=an object or the caller's bytes, value={:?})",
+            value
+        ));
         Ok(())
     }
 }
@@ -702,14 +740,19 @@ impl<A: Recorded> direct3d_12::Object for RecordedCommandQueue<A> {
 impl<A: Recorded> direct3d_12::DescriptorHeap for RecordedDescriptorHeap<A> {
     fn get_desc(&self) -> direct3d_12::structures::DescriptorHeapDesc {
         record("ID3D12DescriptorHeap::GetDesc()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(
-            &known_bytes::<16>(315878),
-        )
+        record_arguments("ID3D12DescriptorHeap::GetDesc()".to_string());
+        direct3d_12::structures::DescriptorHeapDesc {
+            type_: direct3d_12::enumerations::DescriptorHeapType(4),
+            num_descriptors: 11_u32,
+            flags: direct3d_12::enumerations::DescriptorHeapFlags(18),
+            node_mask: 25_u32,
+        }
     }
     fn get_cpu_descriptor_handle_for_heap_start(
         &self,
     ) -> direct3d_12::structures::CpuDescriptorHandle {
         record("ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart()".to_string());
+        record_arguments("ID3D12DescriptorHeap::GetCPUDescriptorHandleForHeapStart()".to_string());
         data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_cpu_descriptor_handle(
             &[u8::MIN; 8],
         )
@@ -718,6 +761,7 @@ impl<A: Recorded> direct3d_12::DescriptorHeap for RecordedDescriptorHeap<A> {
         &self,
     ) -> direct3d_12::structures::GpuDescriptorHandle {
         record("ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart()".to_string());
+        record_arguments("ID3D12DescriptorHeap::GetGPUDescriptorHandleForHeapStart()".to_string());
         data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_gpu_descriptor_handle(
             &[u8::MIN; 8],
         )
@@ -742,6 +786,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &desc;
         let _ = &riid;
         record("ID3D12Device::CreateCommandQueue()".to_string());
+        record_arguments(format!(
+            "ID3D12Device::CreateCommandQueue(desc={:?}, riid={:?})",
+            desc, riid
+        ));
         Ok(
             if [
                 direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
@@ -847,6 +895,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
             "ID3D12Device::CreateCommandAllocator(type_={:?})",
             type_
         ));
+        record_arguments(format!(
+            "ID3D12Device::CreateCommandAllocator(type_={:?}, riid={:?})",
+            type_, riid
+        ));
         Ok(
             if [
                 direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
@@ -949,6 +1001,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &desc;
         let _ = &riid;
         record("ID3D12Device::CreateGraphicsPipelineState()".to_string());
+        record_arguments(format!(
+            "ID3D12Device::CreateGraphicsPipelineState(desc=an object or the caller's bytes, riid={:?})",
+            riid
+        ));
         Err(E_NOTIMPL)
     }
     fn create_compute_pipeline_state(
@@ -960,6 +1016,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &desc;
         let _ = &riid;
         record("ID3D12Device::CreateComputePipelineState()".to_string());
+        record_arguments(format!(
+            "ID3D12Device::CreateComputePipelineState(desc=an object or the caller's bytes, riid={:?})",
+            riid
+        ));
         Err(E_NOTIMPL)
     }
     fn create_command_list(
@@ -979,6 +1039,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         record(format!(
             "ID3D12Device::CreateCommandList(node_mask={:?}, type_={:?})",
             node_mask, type_
+        ));
+        record_arguments(format!(
+            "ID3D12Device::CreateCommandList(node_mask={:?}, type_={:?}, command_allocator=an object or the caller's bytes, initial_state=an object or the caller's bytes, riid={:?})",
+            node_mask, type_, riid
         ));
         Ok(
             if [
@@ -1082,6 +1146,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &descriptor_heap_desc;
         let _ = &riid;
         record("ID3D12Device::CreateDescriptorHeap()".to_string());
+        record_arguments(format!(
+            "ID3D12Device::CreateDescriptorHeap(descriptor_heap_desc={:?}, riid={:?})",
+            descriptor_heap_desc, riid
+        ));
         Ok(
             if [
                 direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
@@ -1184,6 +1252,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
             "ID3D12Device::GetDescriptorHandleIncrementSize(descriptor_heap_type={:?})",
             descriptor_heap_type
         ));
+        record_arguments(format!(
+            "ID3D12Device::GetDescriptorHandleIncrementSize(descriptor_heap_type={:?})",
+            descriptor_heap_type
+        ));
         34_u32
     }
     fn create_root_signature(
@@ -1199,6 +1271,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         record(format!(
             "ID3D12Device::CreateRootSignature(node_mask={:?})",
             node_mask
+        ));
+        record_arguments(format!(
+            "ID3D12Device::CreateRootSignature(node_mask={:?}, blob_with_root_signature={:?}, riid={:?})",
+            node_mask, blob_with_root_signature, riid
         ));
         Ok(
             if [
@@ -1303,6 +1379,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &desc;
         let _ = &dest_descriptor;
         record("ID3D12Device::CreateShaderResourceView()".to_string());
+        record_arguments(format!(
+            "ID3D12Device::CreateShaderResourceView(resource=an object or the caller's bytes, desc={:?}, dest_descriptor={:?})",
+            desc, dest_descriptor
+        ));
     }
     fn create_render_target_view(
         &self,
@@ -1314,6 +1394,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &desc;
         let _ = &dest_descriptor;
         record("ID3D12Device::CreateRenderTargetView()".to_string());
+        record_arguments(format!(
+            "ID3D12Device::CreateRenderTargetView(resource=an object or the caller's bytes, desc={:?}, dest_descriptor={:?})",
+            desc, dest_descriptor
+        ));
     }
     fn create_committed_resource(
         &self,
@@ -1334,6 +1418,15 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         record(format!(
             "ID3D12Device::CreateCommittedResource(heap_flags={:?}, initial_resource_state={:?})",
             heap_flags, initial_resource_state
+        ));
+        record_arguments(format!(
+            "ID3D12Device::CreateCommittedResource(heap_properties={:?}, heap_flags={:?}, desc={:?}, initial_resource_state={:?}, optimized_clear_value={:?}, riid_resource={:?})",
+            heap_properties,
+            heap_flags,
+            desc,
+            initial_resource_state,
+            optimized_clear_value,
+            riid_resource
         ));
         Ok(
             if [
@@ -1441,6 +1534,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         record(format!(
             "ID3D12Device::CreateFence(initial_value={:?}, flags={:?})",
             initial_value, flags
+        ));
+        record_arguments(format!(
+            "ID3D12Device::CreateFence(initial_value={:?}, flags={:?}, riid={:?})",
+            initial_value, flags, riid
         ));
         Ok(
             if [
@@ -1555,7 +1652,27 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
             "ID3D12Device::GetCopyableFootprints(first_subresource={:?}, num_subresources={:?}, base_offset={:?})",
             first_subresource, num_subresources, base_offset
         ));
-        ((0..num_subresources.min(4)).map(|_| data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_placed_subresource_footprint(&known_bytes::<32>(700276))).collect(), (0..num_subresources.min(4)).map(|_| 102_u32).collect(), (0..num_subresources.min(4)).map(|_| 109_u64).collect(), 116_u64)
+        record_arguments(format!(
+            "ID3D12Device::GetCopyableFootprints(resource_desc={:?}, first_subresource={:?}, num_subresources={:?}, base_offset={:?})",
+            resource_desc, first_subresource, num_subresources, base_offset
+        ));
+        (
+            (0..num_subresources)
+                .map(|_| direct3d_12::structures::PlacedSubresourceFootprint {
+                    offset: 102_u64,
+                    footprint: direct3d_12::structures::SubresourceFootprint {
+                        format: directx_graphics_infrastructure::enumerations::Format(116),
+                        width: 123_u32,
+                        height: 4_u32,
+                        depth: 11_u32,
+                        row_pitch: 18_u32,
+                    },
+                })
+                .collect(),
+            (0..num_subresources).map(|_| 102_u32).collect(),
+            (0..num_subresources).map(|_| 109_u64).collect(),
+            116_u64,
+        )
     }
     fn create_query_heap(
         &self,
@@ -1566,6 +1683,10 @@ impl<A: Recorded> direct3d_12::Device for RecordedDevice<A> {
         let _ = &desc;
         let _ = &riid;
         record("ID3D12Device::CreateQueryHeap()".to_string());
+        record_arguments(format!(
+            "ID3D12Device::CreateQueryHeap(desc={:?}, riid={:?})",
+            desc, riid
+        ));
         Ok(
             if [
                 direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
@@ -1668,6 +1789,7 @@ impl<A: Recorded> direct3d_12::Object for RecordedDevice<A> {
 impl<A: Recorded> direct3d_12::Fence for RecordedFence<A> {
     fn get_completed_value(&self) -> u64 {
         record("ID3D12Fence::GetCompletedValue()".to_string());
+        record_arguments("ID3D12Fence::GetCompletedValue()".to_string());
         41_u64
     }
     fn set_event_on_completion(
@@ -1678,6 +1800,10 @@ impl<A: Recorded> direct3d_12::Fence for RecordedFence<A> {
         let _ = &value;
         let _ = &h_event;
         record(format!(
+            "ID3D12Fence::SetEventOnCompletion(value={:?}, h_event={:?})",
+            value, h_event
+        ));
+        record_arguments(format!(
             "ID3D12Fence::SetEventOnCompletion(value={:?}, h_event={:?})",
             value, h_event
         ));
@@ -1696,6 +1822,7 @@ impl<A: Recorded> direct3d_12::Object for RecordedFence<A> {
 impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandList<A> {
     fn close(&self) -> Result<(), component_object_model::structures::HResult> {
         record("ID3D12GraphicsCommandList::Close()".to_string());
+        record_arguments("ID3D12GraphicsCommandList::Close()".to_string());
         Ok(())
     }
     fn reset(
@@ -1706,6 +1833,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &allocator;
         let _ = &initial_state;
         record("ID3D12GraphicsCommandList::Reset()".to_string());
+        record_arguments("ID3D12GraphicsCommandList::Reset(allocator=an object or the caller's bytes, initial_state=an object or the caller's bytes)".to_string());
         Ok(())
     }
     fn draw_instanced(
@@ -1720,6 +1848,13 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &start_vertex_location;
         let _ = &start_instance_location;
         record(format!(
+            "ID3D12GraphicsCommandList::DrawInstanced(vertex_count_per_instance={:?}, instance_count={:?}, start_vertex_location={:?}, start_instance_location={:?})",
+            vertex_count_per_instance,
+            instance_count,
+            start_vertex_location,
+            start_instance_location
+        ));
+        record_arguments(format!(
             "ID3D12GraphicsCommandList::DrawInstanced(vertex_count_per_instance={:?}, instance_count={:?}, start_vertex_location={:?}, start_instance_location={:?})",
             vertex_count_per_instance,
             instance_count,
@@ -1748,6 +1883,14 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             base_vertex_location,
             start_instance_location
         ));
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::DrawIndexedInstanced(index_count_per_instance={:?}, instance_count={:?}, start_index_location={:?}, base_vertex_location={:?}, start_instance_location={:?})",
+            index_count_per_instance,
+            instance_count,
+            start_index_location,
+            base_vertex_location,
+            start_instance_location
+        ));
     }
     fn dispatch(
         &self,
@@ -1759,6 +1902,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &thread_group_count_y;
         let _ = &thread_group_count_z;
         record(format!(
+            "ID3D12GraphicsCommandList::Dispatch(thread_group_count_x={:?}, thread_group_count_y={:?}, thread_group_count_z={:?})",
+            thread_group_count_x, thread_group_count_y, thread_group_count_z
+        ));
+        record_arguments(format!(
             "ID3D12GraphicsCommandList::Dispatch(thread_group_count_x={:?}, thread_group_count_y={:?}, thread_group_count_z={:?})",
             thread_group_count_x, thread_group_count_y, thread_group_count_z
         ));
@@ -1780,6 +1927,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             "ID3D12GraphicsCommandList::CopyBufferRegion(dst_offset={:?}, src_offset={:?}, num_bytes={:?})",
             dst_offset, src_offset, num_bytes
         ));
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::CopyBufferRegion(dst_buffer=an object or the caller's bytes, dst_offset={:?}, src_buffer=an object or the caller's bytes, src_offset={:?}, num_bytes={:?})",
+            dst_offset, src_offset, num_bytes
+        ));
     }
     fn copy_texture_region(
         &self,
@@ -1797,6 +1948,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &src;
         let _ = &src_box;
         record("ID3D12GraphicsCommandList::CopyTextureRegion()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::CopyTextureRegion(dst=an object or the caller's bytes, dst_x={:?}, dst_y={:?}, dst_z={:?}, src=an object or the caller's bytes, src_box={:?})",
+            dst_x, dst_y, dst_z, src_box
+        ));
     }
     fn ia_set_primitive_topology(
         &self,
@@ -1807,6 +1962,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             "ID3D12GraphicsCommandList::IASetPrimitiveTopology(primitive_topology={:?})",
             primitive_topology
         ));
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::IASetPrimitiveTopology(primitive_topology={:?})",
+            primitive_topology
+        ));
     }
     fn set_pipeline_state(
         &self,
@@ -1814,10 +1973,15 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &pipeline_state;
         record("ID3D12GraphicsCommandList::SetPipelineState()".to_string());
+        record_arguments("ID3D12GraphicsCommandList::SetPipelineState(pipeline_state=an object or the caller's bytes)".to_string());
     }
     fn resource_barrier(&self, barriers: &[direct3d_12::structures::ResourceBarrier<Self::Api>]) {
         let _ = &barriers;
         record("ID3D12GraphicsCommandList::ResourceBarrier()".to_string());
+        record_arguments(
+            "ID3D12GraphicsCommandList::ResourceBarrier(barriers=an object or the caller's bytes)"
+                .to_string(),
+        );
     }
     fn set_descriptor_heaps(
         &self,
@@ -1825,6 +1989,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &descriptor_heaps;
         record("ID3D12GraphicsCommandList::SetDescriptorHeaps()".to_string());
+        record_arguments("ID3D12GraphicsCommandList::SetDescriptorHeaps(descriptor_heaps=an object or the caller's bytes)".to_string());
     }
     fn set_compute_root_signature(
         &self,
@@ -1832,6 +1997,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &root_signature;
         record("ID3D12GraphicsCommandList::SetComputeRootSignature()".to_string());
+        record_arguments("ID3D12GraphicsCommandList::SetComputeRootSignature(root_signature=an object or the caller's bytes)".to_string());
     }
     fn set_graphics_root_signature(
         &self,
@@ -1839,6 +2005,7 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
     ) {
         let _ = &root_signature;
         record("ID3D12GraphicsCommandList::SetGraphicsRootSignature()".to_string());
+        record_arguments("ID3D12GraphicsCommandList::SetGraphicsRootSignature(root_signature=an object or the caller's bytes)".to_string());
     }
     fn set_graphics_root_descriptor_table(
         &self,
@@ -1848,6 +2015,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &root_parameter_index;
         let _ = &base_descriptor;
         record("ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable(root_parameter_index={:?}, base_descriptor={:?})",
+            root_parameter_index, base_descriptor
+        ));
     }
     fn set_compute_root_constant_buffer_view(
         &self,
@@ -1857,6 +2028,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &root_parameter_index;
         let _ = &buffer_location;
         record("ID3D12GraphicsCommandList::SetComputeRootConstantBufferView()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView(root_parameter_index={:?}, buffer_location={:?})",
+            root_parameter_index, buffer_location
+        ));
     }
     fn set_graphics_root_constant_buffer_view(
         &self,
@@ -1866,6 +2041,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &root_parameter_index;
         let _ = &buffer_location;
         record("ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView(root_parameter_index={:?}, buffer_location={:?})",
+            root_parameter_index, buffer_location
+        ));
     }
     fn set_compute_root_unordered_access_view(
         &self,
@@ -1875,10 +2054,18 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &root_parameter_index;
         let _ = &buffer_location;
         record("ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView(root_parameter_index={:?}, buffer_location={:?})",
+            root_parameter_index, buffer_location
+        ));
     }
     fn ia_set_index_buffer(&self, view: Option<&direct3d_12::structures::IndexBufferView>) {
         let _ = &view;
         record("ID3D12GraphicsCommandList::IASetIndexBuffer()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::IASetIndexBuffer(view={:?})",
+            view
+        ));
     }
     fn ia_set_vertex_buffers(
         &self,
@@ -1888,6 +2075,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &start_slot;
         let _ = &views;
         record("ID3D12GraphicsCommandList::IASetVertexBuffers()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::IASetVertexBuffers(start_slot={:?}, views={:?})",
+            start_slot, views
+        ));
     }
     fn so_set_targets(
         &self,
@@ -1897,6 +2088,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &start_slot;
         let _ = &views;
         record("ID3D12GraphicsCommandList::SOSetTargets()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::SOSetTargets(start_slot={:?}, views={:?})",
+            start_slot, views
+        ));
     }
     fn om_set_render_targets(
         &self,
@@ -1910,6 +2105,13 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &r_ts_single_handle_to_descriptor_range;
         let _ = &depth_stencil_descriptor;
         record("ID3D12GraphicsCommandList::OMSetRenderTargets()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::OMSetRenderTargets(num_render_target_descriptors={:?}, render_target_descriptors={:?}, r_ts_single_handle_to_descriptor_range={:?}, depth_stencil_descriptor={:?})",
+            num_render_target_descriptors,
+            render_target_descriptors,
+            r_ts_single_handle_to_descriptor_range,
+            depth_stencil_descriptor
+        ));
     }
     fn clear_render_target_view(
         &self,
@@ -1921,6 +2123,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &color_rgba;
         let _ = &rects;
         record("ID3D12GraphicsCommandList::ClearRenderTargetView()".to_string());
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::ClearRenderTargetView(render_target_view={:?}, color_rgba={:?}, rects={:?})",
+            render_target_view, color_rgba, rects
+        ));
     }
     fn begin_query(
         &self,
@@ -1935,6 +2141,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
             "ID3D12GraphicsCommandList::BeginQuery(type_={:?}, index={:?})",
             type_, index
         ));
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::BeginQuery(query_heap=an object or the caller's bytes, type_={:?}, index={:?})",
+            type_, index
+        ));
     }
     fn end_query(
         &self,
@@ -1947,6 +2157,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &index;
         record(format!(
             "ID3D12GraphicsCommandList::EndQuery(type_={:?}, index={:?})",
+            type_, index
+        ));
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::EndQuery(query_heap=an object or the caller's bytes, type_={:?}, index={:?})",
             type_, index
         ));
     }
@@ -1967,6 +2181,10 @@ impl<A: Recorded> direct3d_12::GraphicsCommandList for RecordedGraphicsCommandLi
         let _ = &aligned_destination_buffer_offset;
         record(format!(
             "ID3D12GraphicsCommandList::ResolveQueryData(type_={:?}, start_index={:?}, num_queries={:?}, aligned_destination_buffer_offset={:?})",
+            type_, start_index, num_queries, aligned_destination_buffer_offset
+        ));
+        record_arguments(format!(
+            "ID3D12GraphicsCommandList::ResolveQueryData(query_heap=an object or the caller's bytes, type_={:?}, start_index={:?}, num_queries={:?}, destination_buffer=an object or the caller's bytes, aligned_destination_buffer_offset={:?})",
             type_, start_index, num_queries, aligned_destination_buffer_offset
         ));
     }
@@ -2011,6 +2229,10 @@ impl<A: Recorded> direct3d_12::Resource for RecordedResource<A> {
         let _ = &read_range;
         let _ = &data;
         record("ID3D12Resource::Map()".to_string());
+        record_arguments(format!(
+            "ID3D12Resource::Map(subresource={:?}, read_range={:?}, data=an object or the caller's bytes)",
+            subresource, read_range
+        ));
         Err(E_NOTIMPL)
     }
     fn unmap(&self, subresource: u32, written_range: Option<&direct3d_12::structures::Range>) {
@@ -2020,15 +2242,33 @@ impl<A: Recorded> direct3d_12::Resource for RecordedResource<A> {
             "ID3D12Resource::Unmap(subresource={:?})",
             subresource
         ));
+        record_arguments(format!(
+            "ID3D12Resource::Unmap(subresource={:?}, written_range={:?})",
+            subresource, written_range
+        ));
     }
     fn get_desc(&self) -> direct3d_12::structures::ResourceDesc {
         record("ID3D12Resource::GetDesc()".to_string());
-        data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(
-            &known_bytes::<56>(716928),
-        )
+        record_arguments("ID3D12Resource::GetDesc()".to_string());
+        direct3d_12::structures::ResourceDesc {
+            dimension: direct3d_12::enumerations::ResourceDimension(122),
+            alignment: 3_u64,
+            width: 10_u64,
+            height: 17_u32,
+            depth_or_array_size: 24_u16,
+            mip_levels: 31_u16,
+            format: directx_graphics_infrastructure::enumerations::Format(38),
+            sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
+                count: 52_u32,
+                quality: 59_u32,
+            },
+            layout: direct3d_12::enumerations::TextureLayout(52),
+            flags: direct3d_12::enumerations::ResourceFlags(59),
+        }
     }
     fn get_gpu_virtual_address(&self) -> u64 {
         record("ID3D12Resource::GetGPUVirtualAddress()".to_string());
+        record_arguments("ID3D12Resource::GetGPUVirtualAddress()".to_string());
         Default::default()
     }
 }
@@ -2077,6 +2317,10 @@ impl direct3d_12::Direct3D12 for Recorder {
         record(format!(
             "D3D12CreateDevice(minimum_feature_level={:?})",
             minimum_feature_level
+        ));
+        record_arguments(format!(
+            "D3D12CreateDevice(adapter=an object or the caller's bytes, minimum_feature_level={:?}, riid={:?})",
+            minimum_feature_level, riid
         ));
         Ok(
             if [

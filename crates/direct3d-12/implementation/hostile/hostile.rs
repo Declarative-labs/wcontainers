@@ -31,6 +31,7 @@ use wcontainers_direct3d_12_direct as direct3d_12_direct;
 use wcontainers_direct3d_common as direct3d_common;
 use wcontainers_direct3d_common_direct as direct3d_common_direct;
 use wcontainers_direct3d_common_hostile as direct3d_common_hostile;
+use wcontainers_directx_graphics_infrastructure as directx_graphics_infrastructure;
 
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
@@ -2878,7 +2879,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
                     answer.ok()
                 })
             };
@@ -2894,7 +2895,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
                     answer.ok()
                 })
             };
@@ -2910,7 +2911,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
                     answer.ok()
                 })
             };
@@ -2926,7 +2927,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_DEVICE);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_DEVICE);
                     answer.ok()
                 })
             };
@@ -2942,7 +2943,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_FENCE);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_FENCE);
                     answer.ok()
                 })
             };
@@ -2958,7 +2959,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
                     answer.ok()
                 })
             };
@@ -2974,7 +2975,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
                     answer.ok()
                 })
             };
@@ -2990,7 +2991,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
                     answer.ok()
                 })
             };
@@ -3006,7 +3007,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_RESOURCE);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_RESOURCE);
                     answer.ok()
                 })
             };
@@ -3022,7 +3023,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
+                    let answer = direct3d_12::Device::create_command_queue(this, &direct3d_12::structures::CommandQueueDesc { type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE, priority: 65_i32, flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT, node_mask: 79_u32 }, &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
                     answer.ok()
                 })
             };
@@ -3040,7 +3041,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
                     );
                     answer.ok()
@@ -3060,7 +3061,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
                     );
                     answer.ok()
@@ -3080,7 +3081,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
                     );
                     answer.ok()
@@ -3100,7 +3101,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_DEVICE,
                     );
                     answer.ok()
@@ -3120,7 +3121,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_FENCE,
                     );
                     answer.ok()
@@ -3140,7 +3141,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
                     );
                     answer.ok()
@@ -3160,7 +3161,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
                     );
                     answer.ok()
@@ -3180,7 +3181,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
                     );
                     answer.ok()
@@ -3200,7 +3201,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_RESOURCE,
                     );
                     answer.ok()
@@ -3220,7 +3221,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_command_allocator(
                         this,
-                        Default::default(),
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
                     );
                     answer.ok()
@@ -3241,8 +3242,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
@@ -3265,8 +3266,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
@@ -3289,8 +3290,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
@@ -3313,8 +3314,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_DEVICE,
@@ -3337,8 +3338,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_FENCE,
@@ -3361,8 +3362,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
@@ -3385,8 +3386,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
@@ -3409,8 +3410,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
@@ -3433,8 +3434,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_RESOURCE,
@@ -3457,8 +3458,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let v1 = o.k51.as_ref()?;
                     let answer = direct3d_12::Device::create_command_list(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        27_u32,
+                        direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                         v1,
                         None,
                         &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
@@ -3478,7 +3479,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                    );
                     answer.ok()
                 })
             };
@@ -3494,7 +3505,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                    );
                     answer.ok()
                 })
             };
@@ -3510,7 +3531,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                    );
                     answer.ok()
                 })
             };
@@ -3526,7 +3557,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_DEVICE);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_DEVICE,
+                    );
                     answer.ok()
                 })
             };
@@ -3542,7 +3583,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_FENCE);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_FENCE,
+                    );
                     answer.ok()
                 })
             };
@@ -3558,7 +3609,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                    );
                     answer.ok()
                 })
             };
@@ -3574,7 +3635,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                    );
                     answer.ok()
                 })
             };
@@ -3590,7 +3661,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                    );
                     answer.ok()
                 })
             };
@@ -3606,7 +3687,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_RESOURCE);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                    );
                     answer.ok()
                 })
             };
@@ -3622,7 +3713,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
+                    let answer = direct3d_12::Device::create_descriptor_heap(
+                        this,
+                        &direct3d_12::structures::DescriptorHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                            num_descriptors: 41_u32,
+                            flags:
+                                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                            node_mask: 55_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                    );
                     answer.ok()
                 })
             };
@@ -3640,8 +3741,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
                     );
                     answer.ok()
@@ -3661,8 +3762,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
                     );
                     answer.ok()
@@ -3682,8 +3783,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
                     );
                     answer.ok()
@@ -3703,8 +3804,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_DEVICE,
                     );
                     answer.ok()
@@ -3724,8 +3825,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_FENCE,
                     );
                     answer.ok()
@@ -3745,8 +3846,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
                     );
                     answer.ok()
@@ -3766,8 +3867,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
                     );
                     answer.ok()
@@ -3787,8 +3888,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
                     );
                     answer.ok()
@@ -3808,8 +3909,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_RESOURCE,
                     );
                     answer.ok()
@@ -3829,8 +3930,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_root_signature(
                         this,
-                        Default::default(),
-                        &[],
+                        27_u32,
+                        &[119_u8],
                         &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
                     );
                     answer.ok()
@@ -3848,7 +3949,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
                     answer.ok()
                 })
             };
@@ -3864,7 +3965,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
                     answer.ok()
                 })
             };
@@ -3880,7 +3981,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
                     answer.ok()
                 })
             };
@@ -3896,7 +3997,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_DEVICE);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_DEVICE);
                     answer.ok()
                 })
             };
@@ -3912,7 +4013,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_FENCE);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_FENCE);
                     answer.ok()
                 })
             };
@@ -3928,7 +4029,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
                     answer.ok()
                 })
             };
@@ -3944,7 +4045,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
                     answer.ok()
                 })
             };
@@ -3960,7 +4061,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
                     answer.ok()
                 })
             };
@@ -3976,7 +4077,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_RESOURCE);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_RESOURCE);
                     answer.ok()
                 })
             };
@@ -3992,7 +4093,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_committed_resource(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(&[u8::MIN; 20]), Default::default(), &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(&[u8::MIN; 56]), Default::default(), None, &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
+                    let answer = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
                     answer.ok()
                 })
             };
@@ -4010,8 +4111,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
                     );
                     answer.ok()
@@ -4031,8 +4132,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
                     );
                     answer.ok()
@@ -4052,8 +4153,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
                     );
                     answer.ok()
@@ -4073,8 +4174,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_DEVICE,
                     );
                     answer.ok()
@@ -4094,8 +4195,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_FENCE,
                     );
                     answer.ok()
@@ -4115,8 +4216,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
                     );
                     answer.ok()
@@ -4136,8 +4237,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
                     );
                     answer.ok()
@@ -4157,8 +4258,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
                     );
                     answer.ok()
@@ -4178,8 +4279,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_RESOURCE,
                     );
                     answer.ok()
@@ -4199,8 +4300,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k54.as_ref()?;
                     let answer = direct3d_12::Device::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
                         &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
                     );
                     answer.ok()
@@ -4218,7 +4319,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_COMMAND_ALLOCATOR,
+                    );
                     answer.ok()
                 })
             };
@@ -4234,7 +4343,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_COMMAND_QUEUE,
+                    );
                     answer.ok()
                 })
             };
@@ -4250,7 +4367,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_DESCRIPTOR_HEAP,
+                    );
                     answer.ok()
                 })
             };
@@ -4266,7 +4391,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_DEVICE);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_DEVICE,
+                    );
                     answer.ok()
                 })
             };
@@ -4282,7 +4415,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_FENCE);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_FENCE,
+                    );
                     answer.ok()
                 })
             };
@@ -4298,7 +4439,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_GRAPHICS_COMMAND_LIST,
+                    );
                     answer.ok()
                 })
             };
@@ -4314,7 +4463,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_PIPELINE_STATE,
+                    );
                     answer.ok()
                 })
             };
@@ -4330,7 +4487,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_QUERY_HEAP);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_QUERY_HEAP,
+                    );
                     answer.ok()
                 })
             };
@@ -4346,7 +4511,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_RESOURCE);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_RESOURCE,
+                    );
                     answer.ok()
                 })
             };
@@ -4362,7 +4535,15 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k54.as_ref()?;
-                    let answer = direct3d_12::Device::create_query_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(&[u8::MIN; 12]), &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE);
+                    let answer = direct3d_12::Device::create_query_heap(
+                        this,
+                        &direct3d_12::structures::QueryHeapDesc {
+                            type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                            count: 65_u32,
+                            node_mask: 72_u32,
+                        },
+                        &direct3d_12::constants::IID_ID3D12_ROOT_SIGNATURE,
+                    );
                     answer.ok()
                 })
             };
@@ -4608,10 +4789,8 @@ pub fn drive_where(
             let Some(this) = o.k1.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -4634,7 +4813,7 @@ pub fn drive_where(
             let Some(v1) = o.k55.as_ref() else {
                 return false;
             };
-            let _ = direct3d_12::CommandQueue::signal(this, v1, Default::default());
+            let _ = direct3d_12::CommandQueue::signal(this, v1, 118_u64);
             true
         });
     }
@@ -4651,9 +4830,25 @@ pub fn drive_where(
     // ID3D12Device::CreateCommandQueue on Device
     if wanted(ID_3D12_DEVICE) {
         driven.attempt(|| {
-        let Some(this) = o.k54.as_ref() else { return false; };
-        let _ = direct3d_12::Device::create_command_queue(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_command_queue_desc(&[u8::MIN; 16]), &Default::default());
-        true
+            let Some(this) = o.k54.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_12::Device::create_command_queue(
+                this,
+                &direct3d_12::structures::CommandQueueDesc {
+                    type_: direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                    priority: 65_i32,
+                    flags: direct3d_12::enumerations::D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT,
+                    node_mask: 79_u32,
+                },
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
+            true
         });
     }
     // ID3D12Device::CreateCommandAllocator on Device
@@ -4664,8 +4859,13 @@ pub fn drive_where(
             };
             let _ = direct3d_12::Device::create_command_allocator(
                 this,
-                Default::default(),
-                &Default::default(),
+                direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -4681,11 +4881,16 @@ pub fn drive_where(
             };
             let _ = direct3d_12::Device::create_command_list(
                 this,
-                Default::default(),
-                Default::default(),
+                27_u32,
+                direct3d_12::enumerations::D3D12_COMMAND_LIST_TYPE_BUNDLE,
                 v1,
                 None,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -4693,9 +4898,25 @@ pub fn drive_where(
     // ID3D12Device::CreateDescriptorHeap on Device
     if wanted(ID_3D12_DEVICE) {
         driven.attempt(|| {
-        let Some(this) = o.k54.as_ref() else { return false; };
-        let _ = direct3d_12::Device::create_descriptor_heap(this, &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_descriptor_heap_desc(&[u8::MIN; 16]), &Default::default());
-        true
+            let Some(this) = o.k54.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_12::Device::create_descriptor_heap(
+                this,
+                &direct3d_12::structures::DescriptorHeapDesc {
+                    type_: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+                    num_descriptors: 41_u32,
+                    flags: direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                    node_mask: 55_u32,
+                },
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
+            true
         });
     }
     // ID3D12Device::GetDescriptorHandleIncrementSize on Device
@@ -4704,8 +4925,10 @@ pub fn drive_where(
             let Some(this) = o.k54.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_12::Device::get_descriptor_handle_increment_size(this, Default::default());
+            let _ = direct3d_12::Device::get_descriptor_handle_increment_size(
+                this,
+                direct3d_12::enumerations::D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+            );
             true
         });
     }
@@ -4717,9 +4940,14 @@ pub fn drive_where(
             };
             let _ = direct3d_12::Device::create_root_signature(
                 this,
-                Default::default(),
-                &[],
-                &Default::default(),
+                27_u32,
+                &[119_u8],
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -4727,23 +4955,9 @@ pub fn drive_where(
     // ID3D12Device::CreateCommittedResource on Device
     if wanted(ID_3D12_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::Device::create_committed_resource(
-                this,
-                &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_heap_properties(
-                    &[u8::MIN; 20],
-                ),
-                Default::default(),
-                &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(
-                    &[u8::MIN; 56],
-                ),
-                Default::default(),
-                None,
-                &Default::default(),
-            );
-            true
+        let Some(this) = o.k54.as_ref() else { return false; };
+        let _ = direct3d_12::Device::create_committed_resource(this, &direct3d_12::structures::HeapProperties { type_: direct3d_12::enumerations::D3D12_HEAP_TYPE_DEFAULT, cpu_page_property: direct3d_12::enumerations::D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, memory_pool_preference: direct3d_12::enumerations::D3D12_MEMORY_POOL_L0, creation_node_mask: 81_u32, visible_node_mask: 88_u32 }, direct3d_12::enumerations::D3D12_HEAP_FLAG_SHARED, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 65_u64, width: 72_u64, height: 79_u32, depth_or_array_size: 86_u16, mip_levels: 93_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 114_u32, quality: 121_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, direct3d_12::enumerations::D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, None, &component_object_model::structures::Guid { data1: 99_u32, data2: 106_u16, data3: 113_u16, data4: core::array::from_fn(|_| 120_u8) });
+        true
         });
     }
     // ID3D12Device::CreateFence on Device
@@ -4754,9 +4968,14 @@ pub fn drive_where(
             };
             let _ = direct3d_12::Device::create_fence(
                 this,
-                Default::default(),
-                Default::default(),
-                &Default::default(),
+                54_u64,
+                direct3d_12::enumerations::D3D12_FENCE_FLAG_SHARED,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -4764,19 +4983,9 @@ pub fn drive_where(
     // ID3D12Device::GetCopyableFootprints on Device
     if wanted(ID_3D12_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k54.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_12::Device::get_copyable_footprints(
-                this,
-                &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_resource_desc(
-                    &[u8::MIN; 56],
-                ),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k54.as_ref() else { return false; };
+        let _ = direct3d_12::Device::get_copyable_footprints(this, &direct3d_12::structures::ResourceDesc { dimension: direct3d_12::enumerations::D3D12_RESOURCE_DIMENSION_BUFFER, alignment: 31_u64, width: 38_u64, height: 45_u32, depth_or_array_size: 52_u16, mip_levels: 59_u16, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 80_u32, quality: 87_u32 }, layout: direct3d_12::enumerations::D3D12_TEXTURE_LAYOUT_ROW_MAJOR, flags: direct3d_12::enumerations::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET }, 125_u32, 58_u32, 72_u64);
+        true
         });
     }
     // ID3D12Device::CreateQueryHeap on Device
@@ -4787,10 +4996,17 @@ pub fn drive_where(
             };
             let _ = direct3d_12::Device::create_query_heap(
                 this,
-                &data_direct3d_12::decode_windows_win32_graphics_direct_3d12_d_3d12_query_heap_desc(
-                    &[u8::MIN; 12],
-                ),
-                &Default::default(),
+                &direct3d_12::structures::QueryHeapDesc {
+                    type_: direct3d_12::enumerations::D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                    count: 65_u32,
+                    node_mask: 72_u32,
+                },
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -4813,8 +5029,8 @@ pub fn drive_where(
             };
             let _ = direct3d_12::Fence::set_event_on_completion(
                 this,
-                Default::default(),
-                Default::default(),
+                118_u64,
+                component_object_model::structures::Handle(82),
             );
             true
         });
@@ -4849,11 +5065,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_12::GraphicsCommandList::draw_instanced(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, 77_u32, 17_u32, 95_u32, 32_u32,
             );
             true
         });
@@ -4865,12 +5077,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_12::GraphicsCommandList::draw_indexed_instanced(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, 75_u32, 17_u32, 81_u32, 38_i32, 32_u32,
             );
             true
         });
@@ -4881,12 +5088,7 @@ pub fn drive_where(
             let Some(this) = o.k56.as_ref() else {
                 return false;
             };
-            let _ = direct3d_12::GraphicsCommandList::dispatch(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_12::GraphicsCommandList::dispatch(this, 105_u32, 63_u32, 122_u32);
             true
         });
     }
@@ -4903,12 +5105,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_12::GraphicsCommandList::copy_buffer_region(
-                this,
-                v1,
-                Default::default(),
-                v2,
-                Default::default(),
-                Default::default(),
+                this, v1, 111_u64, v2, 1_u64, 22_u64,
             );
             true
         });
@@ -4921,7 +5118,7 @@ pub fn drive_where(
             };
             let _ = direct3d_12::GraphicsCommandList::ia_set_primitive_topology(
                 this,
-                Default::default(),
+                direct3d_common::enumerations::D3D_PRIMITIVE_TOPOLOGY_POINTLIST,
             );
             true
         });
@@ -4981,8 +5178,8 @@ pub fn drive_where(
             let _ = direct3d_12::GraphicsCommandList::begin_query(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
+                direct3d_12::enumerations::D3D12_QUERY_TYPE_BINARY_OCCLUSION,
+                35_u32,
             );
             true
         });
@@ -4999,8 +5196,8 @@ pub fn drive_where(
             let _ = direct3d_12::GraphicsCommandList::end_query(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
+                direct3d_12::enumerations::D3D12_QUERY_TYPE_BINARY_OCCLUSION,
+                35_u32,
             );
             true
         });
@@ -5020,11 +5217,11 @@ pub fn drive_where(
             let _ = direct3d_12::GraphicsCommandList::resolve_query_data(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                direct3d_12::enumerations::D3D12_QUERY_TYPE_BINARY_OCCLUSION,
+                53_u32,
+                111_u32,
                 v2,
-                Default::default(),
+                22_u64,
             );
             true
         });
@@ -5046,7 +5243,12 @@ pub fn drive_where(
                 &o.api,
                 None,
                 direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });

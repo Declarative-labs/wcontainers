@@ -148,9 +148,31 @@ fn answered<T>(answer: T) -> bool {
 /// every field (`Debug`), an object in it named only as one (its identity is no value); and the caller's bytes after a
 /// method that writes them. The same drive made on an implementation directly and through both glues must give the same.
 #[derive(Debug, Default)]
-struct Answers(std::sync::Mutex<Vec<String>>);
+struct Answers(
+    std::sync::Mutex<Vec<String>>,
+    Option<Received>,
+    std::sync::atomic::AtomicUsize,
+);
+
+/// The implementation's own log of the arguments it received: how many so far, and those after the first n.
+type Received = (fn() -> usize, fn(usize) -> Vec<String>);
 
 impl Answers {
+    fn with_received(received: Received) -> Answers {
+        Answers(
+            std::sync::Mutex::default(),
+            Some(received),
+            std::sync::atomic::AtomicUsize::new(0),
+        )
+    }
+
+    /// Marks where the implementation's log of arguments stands before a compared call.
+    fn start(&self) {
+        if let Some((logged, _)) = self.1 {
+            self.2.store(logged(), std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     fn push(&self, line: String) {
         self.0
             .lock()
@@ -179,6 +201,13 @@ impl Answers {
     fn not_called_since(&self, noted: usize, place: &str) {
         if self.len() == noted {
             self.push(format!("{place}: not called, or panicked"));
+        }
+        // What the implementation received during the call, every argument.
+        if let Some((_, since)) = self.1 {
+            // The same call asked again (a list's length, then the list) is one call received.
+            let mut received = since(self.2.load(std::sync::atomic::Ordering::SeqCst));
+            received.dedup();
+            self.push(format!("{place}: the implementation received {received:?}"));
         }
     }
 
@@ -237,6 +266,7 @@ fn drive<A: direct3d_common::Direct3DCommon>(o: &Objects<A>, answers: &Answers) 
     });
     // ID3DBlob::GetBufferSize on Blob
     let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k0.as_ref() else {
             return false;
@@ -259,23 +289,20 @@ fn drive<A: direct3d_common::Direct3DCommon>(o: &Objects<A>, answers: &Answers) 
         let lying = bytes();
         failure_is_negative(
             direct3d_common::DestructionNotifier::register_destruction_callback(
-                this,
-                Default::default(),
-                &lying,
+                this, 97_usize, &lying,
             ),
         )
     });
     // ID3DDestructionNotifier::UnregisterDestructionCallback on DestructionNotifier
     let noted = answers.len();
+    answers.start();
     driven.attempt(|| {
         let Some(this) = o.k1.as_ref() else {
             return false;
         };
         failure_is_negative({
-            let answer = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let answer =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             answers.push(format!(
                 "ID3DDestructionNotifier::UnregisterDestructionCallback -> {}",
                 format!("{:?}", &answer)
@@ -370,6 +397,93 @@ pub fn every_answer_equals_the_reference<
     );
 }
 
+/// As `answers_of`, with what the implementation received during each compared call after its answer (`logged` and
+/// `since`: the implementation's own log of the arguments it received).
+pub fn answers_received_of<A: direct3d_common::Direct3DCommon>(
+    api: A,
+    logged: fn() -> usize,
+    since: fn(usize) -> Vec<String>,
+) -> Vec<String> {
+    let mut o = Objects::new(api);
+    make_all(&mut o);
+    let answers = Answers::with_received((logged, since));
+    drive(&o, &answers);
+    answers.lines()
+}
+
+/// As `every_answer_equals_the_reference`, and every argument the implementation received through both glues equals
+/// what it received from the same call made directly: nothing the caller passed is dropped, zeroed or mixed up on the
+/// way. A method whose call through both glues differs by design (a check of the glue's on an argument the suite
+/// passes, an answer the glue gives from its own record, a bit a row clears) must be one of `refused` (src/api.rs
+/// `SUITE_DIFFERENT`, each with the reason).
+pub fn every_answer_and_argument_equals_the_reference<
+    A: direct3d_common::Direct3DCommon,
+    R: direct3d_common::Direct3DCommon,
+>(
+    api: A,
+    reference: R,
+    logged: fn() -> usize,
+    since: fn(usize) -> Vec<String>,
+    refused: &[&str],
+) {
+    let wanted = answers_received_of(reference, logged, since);
+    let got = answers_received_of(api, logged, since);
+    let mut differing = Vec::new();
+    let mut accepted = Vec::new();
+    for (at, (got_line, wanted_line)) in got.iter().zip(&wanted).enumerate() {
+        if got_line == wanted_line {
+            continue;
+        }
+        // The method's place: the text before " -> ", " wrote " or " on " (a line of a call not made, or of what the
+        // implementation received, names the kind too).
+        let place = got_line
+            .split(" -> ")
+            .next()
+            .unwrap_or_default()
+            .split(" wrote ")
+            .next()
+            .unwrap_or_default()
+            .split(" on ")
+            .next()
+            .unwrap_or_default()
+            .split(": ")
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        if refused.contains(&place.as_str())
+            || refused.iter().any(|entry| {
+                got_line.starts_with(entry) && got_line[entry.len()..].starts_with([' ', ':'])
+            })
+        {
+            accepted.push(place);
+        } else {
+            differing.push(format!(
+                "{at}: through both glues {got_line}, directly {wanted_line}"
+            ));
+        }
+    }
+    accepted.dedup();
+    println!(
+        "ANSWERS AND ARGUMENTS direct3d-common: {} lines directly, {} through both glues; {} methods differing as src/api.rs SUITE_DIFFERENT states: {accepted:?}",
+        wanted.len(),
+        got.len(),
+        accepted.len()
+    );
+    for line in &differing {
+        println!("DIFFERS {line}");
+    }
+    assert_eq!(
+        differing,
+        Vec::<String>::new(),
+        "answers or arguments differ through both glues"
+    );
+    assert_eq!(
+        got.len(),
+        wanted.len(),
+        "through both glues, a different number of answers"
+    );
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives; given a reference, also
 /// compares every answer of the value with the reference's.
 #[macro_export]
@@ -386,6 +500,16 @@ macro_rules! tests {
         #[test]
         fn every_answer_equals_the_reference() {
             $crate::every_answer_equals_the_reference($value, $reference);
+        }
+    };
+    ($value:expr, $reference:expr, $logged:expr, $since:expr, $refused:expr) => {
+        // One test, so that no other drive adds to the implementation's log of arguments while it is read.
+        #[test]
+        fn every_method_answers_and_every_answer_and_argument_equals_the_reference() {
+            $crate::every_method_answers($value);
+            $crate::every_answer_and_argument_equals_the_reference(
+                $value, $reference, $logged, $since, $refused,
+            );
         }
     };
 }

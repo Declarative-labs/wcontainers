@@ -19,11 +19,6 @@ pub(super) fn recorder_alias(folder: &str) -> String {
 /// The length of the bytes the recorder lends for each Map, and the pitches it answers: one 64 KiB page, rows of 4 KiB.
 pub(super) const MAPPED: (u32, u32, u32) = (1 << 16, 1 << 12, 1 << 16);
 
-/// The Rust integer types a known answer is written for as a literal.
-const INTEGERS: [&str; 10] = ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"];
-/// A known integer answer is one of `KNOWN_SPAN` values from `KNOWN_LEAST`: never zero, and within every integer type.
-const KNOWN_LEAST: usize = 1;
-const KNOWN_SPAN: usize = 126;
 /// What a known answer's salt moves by from one part of an answer to the next.
 const KNOWN_STEP: usize = 7;
 /// Stands in the recorder's answer list for a known value of the answer's type, until the types are split (followed
@@ -53,9 +48,28 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// Objects alive now.
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
+/// Every call's arguments as the recorder received them, oldest first: the place and each argument of plain data
+/// (`Debug`, every field), an object named only as one.
+static ARGUMENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Logs one call.
 fn record(call: String) {
     LOG.lock().unwrap_or_else(PoisonError::into_inner).push(call);
+}
+
+/// Logs one call's arguments.
+fn record_arguments(call: String) {
+    ARGUMENTS.lock().unwrap_or_else(PoisonError::into_inner).push(call);
+}
+
+/// Returns how many calls' arguments were logged so far.
+pub fn arguments_logged() -> usize {
+    ARGUMENTS.lock().unwrap_or_else(PoisonError::into_inner).len()
+}
+
+/// Returns the arguments of every call logged after the first `from`, oldest first.
+pub fn arguments_since(from: usize) -> Vec<String> {
+    ARGUMENTS.lock().unwrap_or_else(PoisonError::into_inner).get(from..).map(<[String]>::to_vec).unwrap_or_default()
 }
 
 /// Returns every call logged so far whose text starts with `place` (a method's `Interface::Method`, or an export).
@@ -73,34 +87,32 @@ pub fn live() -> i64 {
     LIVE.load(Ordering::SeqCst)
 }
 
-/// A known answer's bytes are each one of `KNOWN_SPAN` values from 1: never zero, and never with the top bit set, so no
-/// float read from them is NaN or infinite and every float compares equal to itself.
-const KNOWN_SPAN: usize = 126;
-/// What a known byte moves by from one byte to the next, so that neighboring fields differ.
-const KNOWN_STRIDE: usize = 29;
-/// The most bytes the recorder writes into the caller's bytes.
-const KNOWN_MOST: usize = 1 << 16;
-
-/// The known byte at `at` of an answer of salt `salt`.
-fn known_byte(salt: usize, at: usize) -> u8 {
-    u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
-}
-
-/// The known bytes a structure of the recorder's answers is decoded from.
-#[allow(dead_code, reason = "a recorder answering no structure decodes none")]
-fn known_bytes<const N: usize>(salt: usize) -> [u8; N] {
-    core::array::from_fn(|at| known_byte(salt, at))
-}
-
-/// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
-/// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
-/// directly.
+/// The known bytes the recorder writes into the caller's bytes (a recorder writing none uses none of it).
 #[allow(dead_code, reason = "a recorder writing no caller's bytes writes none")]
-fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
-    let length = usize::try_from(bytes.len()).unwrap_or(KNOWN_MOST).min(KNOWN_MOST);
-    let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
-    let _ = bytes.write(&known);
+mod known {
+    /// Each known byte is one of `KNOWN_SPAN` values from 1: never zero.
+    const KNOWN_SPAN: usize = 126;
+    /// What a known byte moves by from one byte to the next, so that neighboring bytes differ.
+    const KNOWN_STRIDE: usize = 29;
+    /// The most bytes the recorder writes into the caller's bytes.
+    const KNOWN_MOST: usize = 1 << 16;
+
+    /// The known byte at `at` of an answer of salt `salt`.
+    fn known_byte(salt: usize, at: usize) -> u8 {
+        u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
+    }
+
+    /// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
+    /// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
+    /// directly.
+    pub(super) fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
+        let length = usize::try_from(bytes.len()).unwrap_or(KNOWN_MOST).min(KNOWN_MOST);
+        let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
+        let _ = bytes.write(&known);
+    }
 }
+
+use known::known_fill;
 
 /// One object alive, counted until its last clone drops.
 #[derive(Debug)]
@@ -222,37 +234,16 @@ impl Writer<'_, '_> {
 
     /// The recorder's known answer of type `ty`: never the type's default where the type has another value, so that a
     /// glue dropping, zeroing or mixing up what the implementation gave is seen (the conformance suite compares every
-    /// answer through both glues with the recorder's own). Each integer is `salt` folded into 1 to 126; a structure is
-    /// decoded from known bytes (each 1 to 126, see `known_bytes`); `true`; an object or a list of objects as before.
+    /// answer through both glues with the recorder's own). Made of literals only (src/glue_hostile.rs `Shapes`), never
+    /// of the glue's own decoders, so that the answer the glues are compared with shares no code with them.
     pub(super) fn known_value(&self, ty: &str, salt: usize) -> Option<String> {
         let ty = ty.trim();
-        let number = KNOWN_LEAST + salt % KNOWN_SPAN;
-        if INTEGERS.contains(&ty) {
-            return Some(format!("{number}_{ty}"));
-        }
-        if ["f32", "f64"].contains(&ty) {
-            return Some(format!("{number}.5_{ty}"));
-        }
-        if ty == "bool" {
-            return Some("true".to_string());
-        }
-        if let Some(element) = ty.strip_prefix("Vec<").and_then(|rest| rest.strip_suffix('>')) {
-            let first = self.known_value(element, salt)?;
-            let second = self.known_value(element, salt + 1)?;
-            return Some(format!("vec![{first}, {second}]"));
-        }
         if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
             let parts: Option<Vec<String>> = split_types(inner).iter().enumerate().map(|(at, part)| self.known_value(part, salt + KNOWN_STEP * (at + 1))).collect();
             return parts.map(|parts| format!("({})", parts.join(", ")));
         }
-        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
-            return self.known_value(element, salt).map(|value| format!("core::array::from_fn(|_| {value})"));
-        }
-        if let Some(value) = self.known_structs.borrow().get(ty) {
-            return Some(value.replace("@SALT@", &salt.to_string()));
-        }
-        if self.newtypes.borrow().contains(ty) {
-            return Some(format!("{ty}({number})"));
+        if let Some(value) = self.shapes.borrow().known(ty, salt, false) {
+            return Some(value);
         }
         self.made_value(ty)
     }
@@ -294,6 +285,26 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "        record(\"{place}()\".to_string());");
         } else {
             let _ = writeln!(text, "        record(format!(\"{place}({})\", {}));", values.join(", "), value_names.join(", "));
+        }
+        // The recorder logs every argument it received, so that the suite can compare what reaches it through both glues
+        // with what the same call made directly passes.
+        if !self.hostile.get() {
+            let mut shown: Vec<String> = Vec::new();
+            let mut shown_values: Vec<String> = Vec::new();
+            for (name, ty) in inputs {
+                if ty.contains("Self") || ty.contains("impl ") || ty.contains("dyn ") || ty.contains("VolatileBytes") {
+                    shown.push(format!("{name}=an object or the caller's bytes"));
+                } else {
+                    shown.push(format!("{name}={{:?}}"));
+                    shown_values.push(name.clone());
+                }
+            }
+            let values = shown_values.iter().map(|value| format!(", {value}")).collect::<String>();
+            if values.is_empty() {
+                let _ = writeln!(text, "        record_arguments(\"{place}({})\".to_string());", shown.join(", "));
+            } else {
+                let _ = writeln!(text, "        record_arguments(format!(\"{place}({})\"{values}));", shown.join(", "));
+            }
         }
         // The hostile implementation uses every byte lent to it, as the system writes and reads all it is told of.
         if self.hostile.get() {
@@ -391,12 +402,13 @@ impl Writer<'_, '_> {
                     let value = self.element_value(element);
                     // A few elements: the room C gave (or asked how many of) is the glue's to respect, not the recorder's.
                     // A count the trait drops (it is an array in's length) is not the recorder's to read.
-                    let number = if *by_pointer || !matches!(glued.parts[*count].1, Part::Value { .. }) { "2_u32".to_string() } else { format!("{}.min(4)", glued.parts[*count].0) };
+                    let number = if *by_pointer || !matches!(glued.parts[*count].1, Part::Value { .. }) { "2_u32".to_string() } else { if self.hostile.get() { format!("{}.min(4)", glued.parts[*count].0) } else { glued.parts[*count].0.clone() } };
                     answers.push(if known { format!("{KNOWN_MARK}{number}") } else { format!("(0..{number}).map(|_| {value}).collect()") });
                 }
                 Part::ObjectsOut { kind, count } => {
                     let new = format!("{}::new()", self.recorded_type(*kind, from));
-                    answers.push(format!("(0..{}.min(4)).map(|_| Some({new})).collect()", glued.parts[*count].0));
+                    // As many as asked for (the recorder answers what a system answers; a known count is at most 126).
+                    answers.push(format!("(0..{}).map(|_| Some({new})).collect()", glued.parts[*count].0));
                 }
                 Part::InterfaceOut { riid } => {
                     // An object of the kind the interface id names, of the API whose interface holds the method.

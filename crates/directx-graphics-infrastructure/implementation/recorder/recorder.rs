@@ -12,9 +12,6 @@
     reason = "generated: every method has the same shape"
 )]
 
-#[path = "../direct/data.rs"]
-mod data_directx_graphics_infrastructure;
-
 use wcontainers_component_object_model as component_object_model;
 use wcontainers_directx_graphics_infrastructure as directx_graphics_infrastructure;
 
@@ -32,11 +29,41 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// Objects alive now.
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
+/// Every call's arguments as the recorder received them, oldest first: the place and each argument of plain data
+/// (`Debug`, every field), an object named only as one.
+static ARGUMENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Logs one call.
 fn record(call: String) {
     LOG.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push(call);
+}
+
+/// Logs one call's arguments.
+fn record_arguments(call: String) {
+    ARGUMENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(call);
+}
+
+/// Returns how many calls' arguments were logged so far.
+pub fn arguments_logged() -> usize {
+    ARGUMENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .len()
+}
+
+/// Returns the arguments of every call logged after the first `from`, oldest first.
+pub fn arguments_since(from: usize) -> Vec<String> {
+    ARGUMENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(from..)
+        .map(<[String]>::to_vec)
+        .unwrap_or_default()
 }
 
 /// Returns every call logged so far whose text starts with `place` (a method's `Interface::Method`, or an export).
@@ -59,36 +86,37 @@ pub fn live() -> i64 {
     LIVE.load(Ordering::SeqCst)
 }
 
-/// A known answer's bytes are each one of `KNOWN_SPAN` values from 1: never zero, and never with the top bit set, so no
-/// float read from them is NaN or infinite and every float compares equal to itself.
-const KNOWN_SPAN: usize = 126;
-/// What a known byte moves by from one byte to the next, so that neighboring fields differ.
-const KNOWN_STRIDE: usize = 29;
-/// The most bytes the recorder writes into the caller's bytes.
-const KNOWN_MOST: usize = 1 << 16;
-
-/// The known byte at `at` of an answer of salt `salt`.
-fn known_byte(salt: usize, at: usize) -> u8 {
-    u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
-}
-
-/// The known bytes a structure of the recorder's answers is decoded from.
-#[allow(dead_code, reason = "a recorder answering no structure decodes none")]
-fn known_bytes<const N: usize>(salt: usize) -> [u8; N] {
-    core::array::from_fn(|at| known_byte(salt, at))
-}
-
-/// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
-/// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
-/// directly.
+/// The known bytes the recorder writes into the caller's bytes (a recorder writing none uses none of it).
 #[allow(dead_code, reason = "a recorder writing no caller's bytes writes none")]
-fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(bytes: &Bytes, salt: usize) {
-    let length = usize::try_from(bytes.len())
-        .unwrap_or(KNOWN_MOST)
-        .min(KNOWN_MOST);
-    let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
-    let _ = bytes.write(&known);
+mod known {
+    /// Each known byte is one of `KNOWN_SPAN` values from 1: never zero.
+    const KNOWN_SPAN: usize = 126;
+    /// What a known byte moves by from one byte to the next, so that neighboring bytes differ.
+    const KNOWN_STRIDE: usize = 29;
+    /// The most bytes the recorder writes into the caller's bytes.
+    const KNOWN_MOST: usize = 1 << 16;
+
+    /// The known byte at `at` of an answer of salt `salt`.
+    fn known_byte(salt: usize, at: usize) -> u8 {
+        u8::try_from(1 + (salt + at * KNOWN_STRIDE) % KNOWN_SPAN).unwrap_or(1)
+    }
+
+    /// Writes known bytes over all of the caller's bytes (the first `KNOWN_MOST` of them), as the system writes what it
+    /// is told of; the conformance suite compares what reaches the caller through both glues with the same call made
+    /// directly.
+    pub(super) fn known_fill<Bytes: wcontainers_volatile_bytes::VolatileBytes>(
+        bytes: &Bytes,
+        salt: usize,
+    ) {
+        let length = usize::try_from(bytes.len())
+            .unwrap_or(KNOWN_MOST)
+            .min(KNOWN_MOST);
+        let known: Vec<u8> = (0..length).map(|at| known_byte(salt, at)).collect();
+        let _ = bytes.write(&known);
+    }
 }
+
+use known::known_fill;
 
 /// One object alive, counted until its last clone drops.
 #[derive(Debug)]
@@ -986,7 +1014,26 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter4 for RecordedAdapter<
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter4::GetDesc3()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc3(&known_bytes::<320>(157398)))
+        record_arguments("IDXGIAdapter4::GetDesc3()".to_string());
+        Ok(directx_graphics_infrastructure::structures::AdapterDesc3 {
+            description: core::array::from_fn(|_| 32_u16),
+            vendor_id: 39_u32,
+            device_id: 46_u32,
+            sub_sys_id: 53_u32,
+            revision: 60_u32,
+            dedicated_video_memory: 67_usize,
+            dedicated_system_memory: 74_usize,
+            shared_system_memory: 81_usize,
+            adapter_luid: component_object_model::structures::Luid {
+                low_part: 95_u32,
+                high_part: 102_i32,
+            },
+            flags: directx_graphics_infrastructure::enumerations::AdapterFlag3(95),
+            graphics_preemption_granularity:
+                directx_graphics_infrastructure::enumerations::GraphicsPreemptionGranularity(102),
+            compute_preemption_granularity:
+                directx_graphics_infrastructure::enumerations::ComputePreemptionGranularity(109),
+        })
     }
 }
 
@@ -1000,11 +1047,19 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter3 for RecordedAdapter<
             "IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent(h_event={:?})",
             h_event
         ));
+        record_arguments(format!(
+            "IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent(h_event={:?})",
+            h_event
+        ));
         Ok(80_u32)
     }
     fn unregister_hardware_content_protection_teardown_status(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
         record(format!(
+            "IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus(dw_cookie={:?})",
+            dw_cookie
+        ));
+        record_arguments(format!(
             "IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus(dw_cookie={:?})",
             dw_cookie
         ));
@@ -1023,7 +1078,18 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter3 for RecordedAdapter<
             "IDXGIAdapter3::QueryVideoMemoryInfo(node_index={:?}, memory_segment_group={:?})",
             node_index, memory_segment_group
         ));
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_query_video_memory_info(&known_bytes::<32>(355502)))
+        record_arguments(format!(
+            "IDXGIAdapter3::QueryVideoMemoryInfo(node_index={:?}, memory_segment_group={:?})",
+            node_index, memory_segment_group
+        ));
+        Ok(
+            directx_graphics_infrastructure::structures::QueryVideoMemoryInfo {
+                budget: 64_u64,
+                current_usage: 71_u64,
+                available_for_reservation: 78_u64,
+                current_reservation: 85_u64,
+            },
+        )
     }
     fn set_video_memory_reservation(
         &self,
@@ -1038,6 +1104,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter3 for RecordedAdapter<
             "IDXGIAdapter3::SetVideoMemoryReservation(node_index={:?}, memory_segment_group={:?}, reservation={:?})",
             node_index, memory_segment_group, reservation
         ));
+        record_arguments(format!(
+            "IDXGIAdapter3::SetVideoMemoryReservation(node_index={:?}, memory_segment_group={:?}, reservation={:?})",
+            node_index, memory_segment_group, reservation
+        ));
         Ok(())
     }
     fn register_video_memory_budget_change_notification_event(
@@ -1049,11 +1119,19 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter3 for RecordedAdapter<
             "IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent(h_event={:?})",
             h_event
         ));
+        record_arguments(format!(
+            "IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent(h_event={:?})",
+            h_event
+        ));
         Ok(116_u32)
     }
     fn unregister_video_memory_budget_change_notification(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
         record(format!(
+            "IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification(dw_cookie={:?})",
+            dw_cookie
+        ));
+        record_arguments(format!(
             "IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification(dw_cookie={:?})",
             dw_cookie
         ));
@@ -1068,7 +1146,26 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter2 for RecordedAdapter<
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter2::GetDesc2()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc2(&known_bytes::<320>(683444)))
+        record_arguments("IDXGIAdapter2::GetDesc2()".to_string());
+        Ok(directx_graphics_infrastructure::structures::AdapterDesc2 {
+            description: core::array::from_fn(|_| 28_u16),
+            vendor_id: 35_u32,
+            device_id: 42_u32,
+            sub_sys_id: 49_u32,
+            revision: 56_u32,
+            dedicated_video_memory: 63_usize,
+            dedicated_system_memory: 70_usize,
+            shared_system_memory: 77_usize,
+            adapter_luid: component_object_model::structures::Luid {
+                low_part: 91_u32,
+                high_part: 98_i32,
+            },
+            flags: 91_u32,
+            graphics_preemption_granularity:
+                directx_graphics_infrastructure::enumerations::GraphicsPreemptionGranularity(98),
+            compute_preemption_granularity:
+                directx_graphics_infrastructure::enumerations::ComputePreemptionGranularity(105),
+        })
     }
 }
 
@@ -1080,7 +1177,22 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter1 for RecordedAdapter<
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter1::GetDesc1()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc1(&known_bytes::<312>(759030)))
+        record_arguments("IDXGIAdapter1::GetDesc1()".to_string());
+        Ok(directx_graphics_infrastructure::structures::AdapterDesc1 {
+            description: core::array::from_fn(|_| 14_u16),
+            vendor_id: 21_u32,
+            device_id: 28_u32,
+            sub_sys_id: 35_u32,
+            revision: 42_u32,
+            dedicated_video_memory: 49_usize,
+            dedicated_system_memory: 56_usize,
+            shared_system_memory: 63_usize,
+            adapter_luid: component_object_model::structures::Luid {
+                low_part: 77_u32,
+                high_part: 84_i32,
+            },
+            flags: 77_u32,
+        })
     }
 }
 
@@ -1094,6 +1206,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter for RecordedAdapter<A
     > {
         let _ = &output;
         record(format!("IDXGIAdapter::EnumOutputs(output={:?})", output));
+        record_arguments(format!("IDXGIAdapter::EnumOutputs(output={:?})", output));
         Ok(RecordedOutput::new())
     }
     fn get_desc(
@@ -1103,7 +1216,21 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter for RecordedAdapter<A
         component_object_model::structures::HResult,
     > {
         record("IDXGIAdapter::GetDesc()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_adapter_desc(&known_bytes::<304>(396207)))
+        record_arguments("IDXGIAdapter::GetDesc()".to_string());
+        Ok(directx_graphics_infrastructure::structures::AdapterDesc {
+            description: core::array::from_fn(|_| 71_u16),
+            vendor_id: 78_u32,
+            device_id: 85_u32,
+            sub_sys_id: 92_u32,
+            revision: 99_u32,
+            dedicated_video_memory: 106_usize,
+            dedicated_system_memory: 113_usize,
+            shared_system_memory: 120_usize,
+            adapter_luid: component_object_model::structures::Luid {
+                low_part: 8_u32,
+                high_part: 15_i32,
+            },
+        })
     }
     fn check_interface_support(
         &self,
@@ -1111,6 +1238,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Adapter for RecordedAdapter<A
     ) -> Result<i64, component_object_model::structures::HResult> {
         let _ = &interface_name;
         record("IDXGIAdapter::CheckInterfaceSupport()".to_string());
+        record_arguments(format!(
+            "IDXGIAdapter::CheckInterfaceSupport(interface_name={:?})",
+            interface_name
+        ));
         Ok(13_i64)
     }
 }
@@ -1126,6 +1257,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedAdapter<A>
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -1136,6 +1271,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedAdapter<A>
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -1146,6 +1285,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedAdapter<A>
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -1157,6 +1300,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedAdapter<A>
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -1306,12 +1450,15 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedAdapter<A>
 impl<A: Recorded> directx_graphics_infrastructure::Debug1 for RecordedDebug<A> {
     fn enable_leak_tracking_for_thread(&self) {
         record("IDXGIDebug1::EnableLeakTrackingForThread()".to_string());
+        record_arguments("IDXGIDebug1::EnableLeakTrackingForThread()".to_string());
     }
     fn disable_leak_tracking_for_thread(&self) {
         record("IDXGIDebug1::DisableLeakTrackingForThread()".to_string());
+        record_arguments("IDXGIDebug1::DisableLeakTrackingForThread()".to_string());
     }
     fn is_leak_tracking_enabled_for_thread(&self) -> bool {
         record("IDXGIDebug1::IsLeakTrackingEnabledForThread()".to_string());
+        record_arguments("IDXGIDebug1::IsLeakTrackingEnabledForThread()".to_string());
         true
     }
 }
@@ -1325,6 +1472,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Debug for RecordedDebug<A> {
         let _ = &apiid;
         let _ = &flags;
         record(format!(
+            "IDXGIDebug::ReportLiveObjects(apiid={:?}, flags={:?})",
+            apiid, flags
+        ));
+        record_arguments(format!(
             "IDXGIDebug::ReportLiveObjects(apiid={:?}, flags={:?})",
             apiid, flags
         ));
@@ -1346,6 +1497,10 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
             "IDXGIDecodeSwapChain::PresentBuffer(buffer_to_present={:?}, sync_interval={:?}, flags={:?})",
             buffer_to_present, sync_interval, flags
         ));
+        record_arguments(format!(
+            "IDXGIDecodeSwapChain::PresentBuffer(buffer_to_present={:?}, sync_interval={:?}, flags={:?})",
+            buffer_to_present, sync_interval, flags
+        ));
         Ok(())
     }
     fn set_source_rect(
@@ -1354,6 +1509,10 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &rect;
         record("IDXGIDecodeSwapChain::SetSourceRect()".to_string());
+        record_arguments(format!(
+            "IDXGIDecodeSwapChain::SetSourceRect(rect={:?})",
+            rect
+        ));
         Ok(())
     }
     fn set_target_rect(
@@ -1362,6 +1521,10 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &rect;
         record("IDXGIDecodeSwapChain::SetTargetRect()".to_string());
+        record_arguments(format!(
+            "IDXGIDecodeSwapChain::SetTargetRect(rect={:?})",
+            rect
+        ));
         Ok(())
     }
     fn set_dest_size(
@@ -1375,6 +1538,10 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
             "IDXGIDecodeSwapChain::SetDestSize(width={:?}, height={:?})",
             width, height
         ));
+        record_arguments(format!(
+            "IDXGIDecodeSwapChain::SetDestSize(width={:?}, height={:?})",
+            width, height
+        ));
         Ok(())
     }
     fn get_source_rect(
@@ -1382,25 +1549,30 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
     ) -> Result<component_object_model::structures::Rect, component_object_model::structures::HResult>
     {
         record("IDXGIDecodeSwapChain::GetSourceRect()".to_string());
-        Ok(
-            data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &known_bytes::<16>(191799),
-            ),
-        )
+        record_arguments("IDXGIDecodeSwapChain::GetSourceRect()".to_string());
+        Ok(component_object_model::structures::Rect {
+            left: 35_i32,
+            top: 42_i32,
+            right: 49_i32,
+            bottom: 56_i32,
+        })
     }
     fn get_target_rect(
         &self,
     ) -> Result<component_object_model::structures::Rect, component_object_model::structures::HResult>
     {
         record("IDXGIDecodeSwapChain::GetTargetRect()".to_string());
-        Ok(
-            data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                &known_bytes::<16>(810990),
-            ),
-        )
+        record_arguments("IDXGIDecodeSwapChain::GetTargetRect()".to_string());
+        Ok(component_object_model::structures::Rect {
+            left: 62_i32,
+            top: 69_i32,
+            right: 76_i32,
+            bottom: 83_i32,
+        })
     }
     fn get_dest_size(&self) -> Result<(u32, u32), component_object_model::structures::HResult> {
         record("IDXGIDecodeSwapChain::GetDestSize()".to_string());
+        record_arguments("IDXGIDecodeSwapChain::GetDestSize()".to_string());
         Ok((100_u32, 107_u32))
     }
     fn set_color_space(
@@ -1412,12 +1584,17 @@ impl<A: Recorded> directx_graphics_infrastructure::DecodeSwapChain for RecordedD
             "IDXGIDecodeSwapChain::SetColorSpace(color_space={:?})",
             color_space
         ));
+        record_arguments(format!(
+            "IDXGIDecodeSwapChain::SetColorSpace(color_space={:?})",
+            color_space
+        ));
         Ok(())
     }
     fn get_color_space(
         &self,
     ) -> directx_graphics_infrastructure::enumerations::MultiplaneOverlayYcbcrFlags {
         record("IDXGIDecodeSwapChain::GetColorSpace()".to_string());
+        record_arguments("IDXGIDecodeSwapChain::GetColorSpace()".to_string());
         directx_graphics_infrastructure::enumerations::MultiplaneOverlayYcbcrFlags(108)
     }
 }
@@ -1436,6 +1613,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
             "IDXGIDevice4::OfferResources1(priority={:?}, flags={:?})",
             priority, flags
         ));
+        record_arguments(format!(
+            "IDXGIDevice4::OfferResources1(resources=an object or the caller's bytes, priority={:?}, flags={:?})",
+            priority, flags
+        ));
         Ok(())
     }
     fn reclaim_resources1(
@@ -1447,6 +1628,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
     > {
         let _ = &resources;
         record("IDXGIDevice4::ReclaimResources1()".to_string());
+        record_arguments(
+            "IDXGIDevice4::ReclaimResources1(resources=an object or the caller's bytes)"
+                .to_string(),
+        );
         Ok((0..2_u32)
             .map(|_| directx_graphics_infrastructure::enumerations::ReclaimResourceResults(53))
             .collect())
@@ -1456,6 +1641,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device4 for RecordedDevice<A>
 impl<A: Recorded> directx_graphics_infrastructure::Device3 for RecordedDevice<A> {
     fn trim(&self) {
         record("IDXGIDevice3::Trim()".to_string());
+        record_arguments("IDXGIDevice3::Trim()".to_string());
     }
 }
 
@@ -1471,6 +1657,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
             "IDXGIDevice2::OfferResources(priority={:?})",
             priority
         ));
+        record_arguments(format!(
+            "IDXGIDevice2::OfferResources(resources=an object or the caller's bytes, priority={:?})",
+            priority
+        ));
         Ok(())
     }
     fn reclaim_resources(
@@ -1479,6 +1669,9 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
     ) -> Result<Vec<bool>, component_object_model::structures::HResult> {
         let _ = &resources;
         record("IDXGIDevice2::ReclaimResources()".to_string());
+        record_arguments(
+            "IDXGIDevice2::ReclaimResources(resources=an object or the caller's bytes)".to_string(),
+        );
         Ok((0..2_u32).map(|_| true).collect())
     }
     fn enqueue_set_event(
@@ -1487,6 +1680,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Device2 for RecordedDevice<A>
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &h_event;
         record(format!(
+            "IDXGIDevice2::EnqueueSetEvent(h_event={:?})",
+            h_event
+        ));
+        record_arguments(format!(
             "IDXGIDevice2::EnqueueSetEvent(h_event={:?})",
             h_event
         ));
@@ -1504,12 +1701,17 @@ impl<A: Recorded> directx_graphics_infrastructure::Device1 for RecordedDevice<A>
             "IDXGIDevice1::SetMaximumFrameLatency(max_latency={:?})",
             max_latency
         ));
+        record_arguments(format!(
+            "IDXGIDevice1::SetMaximumFrameLatency(max_latency={:?})",
+            max_latency
+        ));
         Ok(())
     }
     fn get_maximum_frame_latency(
         &self,
     ) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGIDevice1::GetMaximumFrameLatency()".to_string());
+        record_arguments("IDXGIDevice1::GetMaximumFrameLatency()".to_string());
         Ok(38_u32)
     }
 }
@@ -1522,6 +1724,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIDevice::GetAdapter()".to_string());
+        record_arguments("IDXGIDevice::GetAdapter()".to_string());
         Ok(RecordedAdapter::new())
     }
     fn create_surface(&self, desc: &directx_graphics_infrastructure::structures::SurfaceDesc, num_surfaces: u32, usage: directx_graphics_infrastructure::enumerations::Usage, shared_resource: Option<&directx_graphics_infrastructure::structures::SharedResource>) -> Result<Vec<Option<<Self::Api as directx_graphics_infrastructure::DirectXGraphicsInfrastructure>::Surface>>, component_object_model::structures::HResult>{
@@ -1533,7 +1736,11 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
             "IDXGIDevice::CreateSurface(num_surfaces={:?}, usage={:?})",
             num_surfaces, usage
         ));
-        Ok((0..num_surfaces.min(4))
+        record_arguments(format!(
+            "IDXGIDevice::CreateSurface(desc={:?}, num_surfaces={:?}, usage={:?}, shared_resource={:?})",
+            desc, num_surfaces, usage, shared_resource
+        ));
+        Ok((0..num_surfaces)
             .map(|_| Some(RecordedSurface::new()))
             .collect())
     }
@@ -1546,6 +1753,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
     > {
         let _ = &resources;
         record("IDXGIDevice::QueryResourceResidency()".to_string());
+        record_arguments(
+            "IDXGIDevice::QueryResourceResidency(resources=an object or the caller's bytes)"
+                .to_string(),
+        );
         Err(E_NOTIMPL)
     }
     fn set_gpu_thread_priority(
@@ -1557,10 +1768,15 @@ impl<A: Recorded> directx_graphics_infrastructure::Device for RecordedDevice<A> 
             "IDXGIDevice::SetGPUThreadPriority(priority={:?})",
             priority
         ));
+        record_arguments(format!(
+            "IDXGIDevice::SetGPUThreadPriority(priority={:?})",
+            priority
+        ));
         Ok(())
     }
     fn get_gpu_thread_priority(&self) -> Result<i32, component_object_model::structures::HResult> {
         record("IDXGIDevice::GetGPUThreadPriority()".to_string());
+        record_arguments("IDXGIDevice::GetGPUThreadPriority()".to_string());
         Ok(34_i32)
     }
 }
@@ -1576,6 +1792,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -1586,6 +1806,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -1596,6 +1820,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -1607,6 +1835,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -1756,11 +1985,16 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedDevice<A> 
 impl<A: Recorded> directx_graphics_infrastructure::DisplayControl for RecordedDisplayControl<A> {
     fn is_stereo_enabled(&self) -> bool {
         record("IDXGIDisplayControl::IsStereoEnabled()".to_string());
+        record_arguments("IDXGIDisplayControl::IsStereoEnabled()".to_string());
         true
     }
     fn set_stereo_enabled(&self, enabled: bool) {
         let _ = &enabled;
         record(format!(
+            "IDXGIDisplayControl::SetStereoEnabled(enabled={:?})",
+            enabled
+        ));
+        record_arguments(format!(
             "IDXGIDisplayControl::SetStereoEnabled(enabled={:?})",
             enabled
         ));
@@ -1777,6 +2011,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory7 for RecordedFactory<
             "IDXGIFactory7::RegisterAdaptersChangedEvent(h_event={:?})",
             h_event
         ));
+        record_arguments(format!(
+            "IDXGIFactory7::RegisterAdaptersChangedEvent(h_event={:?})",
+            h_event
+        ));
         Ok(87_u32)
     }
     fn unregister_adapters_changed_event(
@@ -1785,6 +2023,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory7 for RecordedFactory<
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &dw_cookie;
         record(format!(
+            "IDXGIFactory7::UnregisterAdaptersChangedEvent(dw_cookie={:?})",
+            dw_cookie
+        ));
+        record_arguments(format!(
             "IDXGIFactory7::UnregisterAdaptersChangedEvent(dw_cookie={:?})",
             dw_cookie
         ));
@@ -1808,6 +2050,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory6 for RecordedFactory<
         record(format!(
             "IDXGIFactory6::EnumAdapterByGpuPreference(adapter={:?}, gpu_preference={:?})",
             adapter, gpu_preference
+        ));
+        record_arguments(format!(
+            "IDXGIFactory6::EnumAdapterByGpuPreference(adapter={:?}, gpu_preference={:?}, riid={:?})",
+            adapter, gpu_preference, riid
         ));
         Ok(
             if [
@@ -1967,6 +2213,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory5 for RecordedFactory<
             "IDXGIFactory5::CheckFeatureSupport(feature={:?})",
             feature
         ));
+        record_arguments(format!(
+            "IDXGIFactory5::CheckFeatureSupport(feature={:?}, feature_support_data=an object or the caller's bytes)",
+            feature
+        ));
         known_fill(feature_support_data, 175431);
         Ok(())
     }
@@ -1984,6 +2234,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory4 for RecordedFactory<
         let _ = &adapter_luid;
         let _ = &riid;
         record("IDXGIFactory4::EnumAdapterByLuid()".to_string());
+        record_arguments(format!(
+            "IDXGIFactory4::EnumAdapterByLuid(adapter_luid={:?}, riid={:?})",
+            adapter_luid, riid
+        ));
         Err(E_NOTIMPL)
     }
     fn enum_warp_adapter(
@@ -1995,6 +2249,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory4 for RecordedFactory<
     > {
         let _ = &riid;
         record("IDXGIFactory4::EnumWarpAdapter()".to_string());
+        record_arguments(format!("IDXGIFactory4::EnumWarpAdapter(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -2146,6 +2401,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory3 for RecordedFactory<
         &self,
     ) -> directx_graphics_infrastructure::enumerations::CreateFactoryFlags {
         record("IDXGIFactory3::GetCreationFlags()".to_string());
+        record_arguments("IDXGIFactory3::GetCreationFlags()".to_string());
         directx_graphics_infrastructure::enumerations::CreateFactoryFlags(37)
     }
 }
@@ -2153,6 +2409,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory3 for RecordedFactory<
 impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<A> {
     fn is_windowed_stereo_enabled(&self) -> bool {
         record("IDXGIFactory2::IsWindowedStereoEnabled()".to_string());
+        record_arguments("IDXGIFactory2::IsWindowedStereoEnabled()".to_string());
         true
     }
     fn create_swap_chain_for_hwnd(
@@ -2179,6 +2436,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::CreateSwapChainForHwnd(h_wnd={:?})",
             h_wnd
         ));
+        record_arguments(format!(
+            "IDXGIFactory2::CreateSwapChainForHwnd(device=an object or the caller's bytes, h_wnd={:?}, desc={:?}, fullscreen_desc={:?}, restrict_to_output=an object or the caller's bytes)",
+            h_wnd, desc, fullscreen_desc
+        ));
         Ok(RecordedSwapChain::new())
     }
     fn create_swap_chain_for_core_window(
@@ -2198,6 +2459,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
         let _ = &desc;
         let _ = &restrict_to_output;
         record("IDXGIFactory2::CreateSwapChainForCoreWindow()".to_string());
+        record_arguments(format!(
+            "IDXGIFactory2::CreateSwapChainForCoreWindow(device=an object or the caller's bytes, window=an object or the caller's bytes, desc={:?}, restrict_to_output=an object or the caller's bytes)",
+            desc
+        ));
         Ok(RecordedSwapChain::new())
     }
     fn get_shared_resource_adapter_luid(
@@ -2210,11 +2475,14 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::GetSharedResourceAdapterLuid(h_resource={:?})",
             h_resource
         ));
-        Ok(
-            data_directx_graphics_infrastructure::decode_windows_win32_foundation_luid(
-                &known_bytes::<8>(257875),
-            ),
-        )
+        record_arguments(format!(
+            "IDXGIFactory2::GetSharedResourceAdapterLuid(h_resource={:?})",
+            h_resource
+        ));
+        Ok(component_object_model::structures::Luid {
+            low_part: 87_u32,
+            high_part: 94_i32,
+        })
     }
     fn register_stereo_status_window(
         &self,
@@ -2224,6 +2492,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
         let _ = &window_handle;
         let _ = &w_msg;
         record(format!(
+            "IDXGIFactory2::RegisterStereoStatusWindow(window_handle={:?}, w_msg={:?})",
+            window_handle, w_msg
+        ));
+        record_arguments(format!(
             "IDXGIFactory2::RegisterStereoStatusWindow(window_handle={:?}, w_msg={:?})",
             window_handle, w_msg
         ));
@@ -2238,11 +2510,19 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::RegisterStereoStatusEvent(h_event={:?})",
             h_event
         ));
+        record_arguments(format!(
+            "IDXGIFactory2::RegisterStereoStatusEvent(h_event={:?})",
+            h_event
+        ));
         Ok(125_u32)
     }
     fn unregister_stereo_status(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
         record(format!(
+            "IDXGIFactory2::UnregisterStereoStatus(dw_cookie={:?})",
+            dw_cookie
+        ));
+        record_arguments(format!(
             "IDXGIFactory2::UnregisterStereoStatus(dw_cookie={:?})",
             dw_cookie
         ));
@@ -2258,6 +2538,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::RegisterOcclusionStatusWindow(window_handle={:?}, w_msg={:?})",
             window_handle, w_msg
         ));
+        record_arguments(format!(
+            "IDXGIFactory2::RegisterOcclusionStatusWindow(window_handle={:?}, w_msg={:?})",
+            window_handle, w_msg
+        ));
         Ok(16_u32)
     }
     fn register_occlusion_status_event(
@@ -2269,11 +2553,19 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
             "IDXGIFactory2::RegisterOcclusionStatusEvent(h_event={:?})",
             h_event
         ));
+        record_arguments(format!(
+            "IDXGIFactory2::RegisterOcclusionStatusEvent(h_event={:?})",
+            h_event
+        ));
         Ok(85_u32)
     }
     fn unregister_occlusion_status(&self, dw_cookie: u32) {
         let _ = &dw_cookie;
         record(format!(
+            "IDXGIFactory2::UnregisterOcclusionStatus(dw_cookie={:?})",
+            dw_cookie
+        ));
+        record_arguments(format!(
             "IDXGIFactory2::UnregisterOcclusionStatus(dw_cookie={:?})",
             dw_cookie
         ));
@@ -2293,6 +2585,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory2 for RecordedFactory<
         let _ = &desc;
         let _ = &restrict_to_output;
         record("IDXGIFactory2::CreateSwapChainForComposition()".to_string());
+        record_arguments(format!(
+            "IDXGIFactory2::CreateSwapChainForComposition(device=an object or the caller's bytes, desc={:?}, restrict_to_output=an object or the caller's bytes)",
+            desc
+        ));
         Ok(RecordedSwapChain::new())
     }
 }
@@ -2310,10 +2606,15 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory1 for RecordedFactory<
             "IDXGIFactory1::EnumAdapters1(adapter={:?})",
             adapter
         ));
+        record_arguments(format!(
+            "IDXGIFactory1::EnumAdapters1(adapter={:?})",
+            adapter
+        ));
         Ok(RecordedAdapter::new())
     }
     fn is_current(&self) -> bool {
         record("IDXGIFactory1::IsCurrent()".to_string());
+        record_arguments("IDXGIFactory1::IsCurrent()".to_string());
         true
     }
 }
@@ -2328,6 +2629,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory for RecordedFactory<A
     > {
         let _ = &adapter;
         record(format!("IDXGIFactory::EnumAdapters(adapter={:?})", adapter));
+        record_arguments(format!("IDXGIFactory::EnumAdapters(adapter={:?})", adapter));
         Ok(RecordedAdapter::new())
     }
     fn make_window_association(
@@ -2341,6 +2643,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory for RecordedFactory<A
             "IDXGIFactory::MakeWindowAssociation(window_handle={:?}, flags={:?})",
             window_handle, flags
         ));
+        record_arguments(format!(
+            "IDXGIFactory::MakeWindowAssociation(window_handle={:?}, flags={:?})",
+            window_handle, flags
+        ));
         Ok(())
     }
     fn get_window_association(
@@ -2348,6 +2654,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory for RecordedFactory<A
     ) -> Result<component_object_model::structures::Hwnd, component_object_model::structures::HResult>
     {
         record("IDXGIFactory::GetWindowAssociation()".to_string());
+        record_arguments("IDXGIFactory::GetWindowAssociation()".to_string());
         Ok(component_object_model::structures::Hwnd(49))
     }
     fn create_swap_chain(
@@ -2361,6 +2668,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory for RecordedFactory<A
         let _ = &device;
         let _ = &desc;
         record("IDXGIFactory::CreateSwapChain()".to_string());
+        record_arguments(format!(
+            "IDXGIFactory::CreateSwapChain(device=an object or the caller's bytes, desc={:?})",
+            desc
+        ));
         Ok(RecordedSwapChain::new())
     }
     fn create_software_adapter(
@@ -2372,6 +2683,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Factory for RecordedFactory<A
     > {
         let _ = &module;
         record(format!(
+            "IDXGIFactory::CreateSoftwareAdapter(module={:?})",
+            module
+        ));
+        record_arguments(format!(
             "IDXGIFactory::CreateSoftwareAdapter(module={:?})",
             module
         ));
@@ -2390,6 +2705,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedFactory<A>
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -2400,6 +2719,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedFactory<A>
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -2410,6 +2733,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedFactory<A>
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -2421,6 +2748,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedFactory<A>
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -2590,6 +2918,10 @@ impl<A: Recorded> directx_graphics_infrastructure::FactoryMedia for RecordedFact
             "IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle(h_surface={:?})",
             h_surface
         ));
+        record_arguments(format!(
+            "IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, restrict_to_output=an object or the caller's bytes)",
+            h_surface, desc
+        ));
         Ok(RecordedSwapChain::new())
     }
     fn create_decode_swap_chain_for_composition_surface_handle(&self, device: directx_graphics_infrastructure::UnknownRef<'_, Self::Api>, h_surface: component_object_model::structures::Handle, desc: &directx_graphics_infrastructure::structures::DecodeSwapChainDesc, yuv_decode_buffers: &<Self::Api as directx_graphics_infrastructure::DirectXGraphicsInfrastructure>::Resource, restrict_to_output: Option<&<Self::Api as directx_graphics_infrastructure::DirectXGraphicsInfrastructure>::Output>) -> Result<<Self::Api as directx_graphics_infrastructure::DirectXGraphicsInfrastructure>::DecodeSwapChain, component_object_model::structures::HResult>{
@@ -2601,6 +2933,10 @@ impl<A: Recorded> directx_graphics_infrastructure::FactoryMedia for RecordedFact
         record(format!(
             "IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle(h_surface={:?})",
             h_surface
+        ));
+        record_arguments(format!(
+            "IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle(device=an object or the caller's bytes, h_surface={:?}, desc={:?}, yuv_decode_buffers=an object or the caller's bytes, restrict_to_output=an object or the caller's bytes)",
+            h_surface, desc
         ));
         Ok(RecordedDecodeSwapChain::new())
     }
@@ -2618,11 +2954,19 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::SetMessageCountLimit(producer={:?}, message_count_limit={:?})",
             producer, message_count_limit
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::SetMessageCountLimit(producer={:?}, message_count_limit={:?})",
+            producer, message_count_limit
+        ));
         Ok(())
     }
     fn clear_stored_messages(&self, producer: component_object_model::structures::Guid) {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::ClearStoredMessages(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::ClearStoredMessages(producer={:?})",
             producer
         ));
@@ -2637,6 +2981,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &message_index;
         let _ = &message;
         record("IDXGIInfoQueue::GetMessage()".to_string());
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetMessage(producer={:?}, message_index={:?}, message=an object or the caller's bytes)",
+            producer, message_index
+        ));
         Err(E_NOTIMPL)
     }
     fn get_num_stored_messages_allowed_by_retrieval_filters(
@@ -2648,11 +2996,19 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters(producer={:?})",
             producer
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters(producer={:?})",
+            producer
+        ));
         8_u64
     }
     fn get_num_stored_messages(&self, producer: component_object_model::structures::Guid) -> u64 {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::GetNumStoredMessages(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::GetNumStoredMessages(producer={:?})",
             producer
         ));
@@ -2667,11 +3023,19 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit(producer={:?})",
             producer
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit(producer={:?})",
+            producer
+        ));
         47_u64
     }
     fn get_message_count_limit(&self, producer: component_object_model::structures::Guid) -> u64 {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::GetMessageCountLimit(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::GetMessageCountLimit(producer={:?})",
             producer
         ));
@@ -2686,6 +3050,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter(producer={:?})",
             producer
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter(producer={:?})",
+            producer
+        ));
         91_u64
     }
     fn get_num_messages_denied_by_storage_filter(
@@ -2694,6 +3062,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
     ) -> u64 {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter(producer={:?})",
             producer
         ));
@@ -2707,6 +3079,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &producer;
         let _ = &filter;
         record("IDXGIInfoQueue::AddStorageFilterEntries()".to_string());
+        record_arguments(format!(
+            "IDXGIInfoQueue::AddStorageFilterEntries(producer={:?}, filter={:?})",
+            producer, filter
+        ));
         Err(E_NOTIMPL)
     }
     fn get_storage_filter(
@@ -2717,11 +3093,19 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &producer;
         let _ = &filter;
         record("IDXGIInfoQueue::GetStorageFilter()".to_string());
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetStorageFilter(producer={:?}, filter=an object or the caller's bytes)",
+            producer
+        ));
         Err(E_NOTIMPL)
     }
     fn clear_storage_filter(&self, producer: component_object_model::structures::Guid) {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::ClearStorageFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::ClearStorageFilter(producer={:?})",
             producer
         ));
@@ -2732,6 +3116,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::PushEmptyStorageFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::PushEmptyStorageFilter(producer={:?})",
             producer
         ));
@@ -2746,6 +3134,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::PushDenyAllStorageFilter(producer={:?})",
             producer
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::PushDenyAllStorageFilter(producer={:?})",
+            producer
+        ));
         Ok(())
     }
     fn push_copy_of_storage_filter(
@@ -2754,6 +3146,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::PushCopyOfStorageFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::PushCopyOfStorageFilter(producer={:?})",
             producer
         ));
@@ -2767,11 +3163,19 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &producer;
         let _ = &filter;
         record("IDXGIInfoQueue::PushStorageFilter()".to_string());
+        record_arguments(format!(
+            "IDXGIInfoQueue::PushStorageFilter(producer={:?}, filter={:?})",
+            producer, filter
+        ));
         Err(E_NOTIMPL)
     }
     fn pop_storage_filter(&self, producer: component_object_model::structures::Guid) {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::PopStorageFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::PopStorageFilter(producer={:?})",
             producer
         ));
@@ -2785,6 +3189,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetStorageFilterStackSize(producer={:?})",
             producer
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetStorageFilterStackSize(producer={:?})",
+            producer
+        ));
         13_u32
     }
     fn add_retrieval_filter_entries(
@@ -2795,6 +3203,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &producer;
         let _ = &filter;
         record("IDXGIInfoQueue::AddRetrievalFilterEntries()".to_string());
+        record_arguments(format!(
+            "IDXGIInfoQueue::AddRetrievalFilterEntries(producer={:?}, filter={:?})",
+            producer, filter
+        ));
         Err(E_NOTIMPL)
     }
     fn get_retrieval_filter(
@@ -2805,11 +3217,19 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &producer;
         let _ = &filter;
         record("IDXGIInfoQueue::GetRetrievalFilter()".to_string());
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetRetrievalFilter(producer={:?}, filter=an object or the caller's bytes)",
+            producer
+        ));
         Err(E_NOTIMPL)
     }
     fn clear_retrieval_filter(&self, producer: component_object_model::structures::Guid) {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::ClearRetrievalFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::ClearRetrievalFilter(producer={:?})",
             producer
         ));
@@ -2820,6 +3240,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::PushEmptyRetrievalFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::PushEmptyRetrievalFilter(producer={:?})",
             producer
         ));
@@ -2834,6 +3258,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::PushDenyAllRetrievalFilter(producer={:?})",
             producer
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::PushDenyAllRetrievalFilter(producer={:?})",
+            producer
+        ));
         Ok(())
     }
     fn push_copy_of_retrieval_filter(
@@ -2842,6 +3270,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::PushCopyOfRetrievalFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::PushCopyOfRetrievalFilter(producer={:?})",
             producer
         ));
@@ -2855,11 +3287,19 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &producer;
         let _ = &filter;
         record("IDXGIInfoQueue::PushRetrievalFilter()".to_string());
+        record_arguments(format!(
+            "IDXGIInfoQueue::PushRetrievalFilter(producer={:?}, filter={:?})",
+            producer, filter
+        ));
         Err(E_NOTIMPL)
     }
     fn pop_retrieval_filter(&self, producer: component_object_model::structures::Guid) {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::PopRetrievalFilter(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::PopRetrievalFilter(producer={:?})",
             producer
         ));
@@ -2870,6 +3310,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
     ) -> u32 {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::GetRetrievalFilterStackSize(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::GetRetrievalFilterStackSize(producer={:?})",
             producer
         ));
@@ -2892,6 +3336,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::AddMessage(producer={:?}, category={:?}, severity={:?}, id={:?})",
             producer, category, severity, id
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::AddMessage(producer={:?}, category={:?}, severity={:?}, id={:?}, description={:?})",
+            producer, category, severity, id, description
+        ));
         Ok(())
     }
     fn add_application_message(
@@ -2905,6 +3353,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::AddApplicationMessage(severity={:?})",
             severity
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::AddApplicationMessage(severity={:?}, description={:?})",
+            severity, description
+        ));
         Ok(())
     }
     fn set_break_on_category(
@@ -2917,6 +3369,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &category;
         let _ = &b_enable;
         record(format!(
+            "IDXGIInfoQueue::SetBreakOnCategory(producer={:?}, category={:?}, b_enable={:?})",
+            producer, category, b_enable
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::SetBreakOnCategory(producer={:?}, category={:?}, b_enable={:?})",
             producer, category, b_enable
         ));
@@ -2935,6 +3391,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::SetBreakOnSeverity(producer={:?}, severity={:?}, b_enable={:?})",
             producer, severity, b_enable
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::SetBreakOnSeverity(producer={:?}, severity={:?}, b_enable={:?})",
+            producer, severity, b_enable
+        ));
         Ok(())
     }
     fn set_break_on_id(
@@ -2947,6 +3407,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
         let _ = &id;
         let _ = &b_enable;
         record(format!(
+            "IDXGIInfoQueue::SetBreakOnID(producer={:?}, id={:?}, b_enable={:?})",
+            producer, id, b_enable
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::SetBreakOnID(producer={:?}, id={:?}, b_enable={:?})",
             producer, id, b_enable
         ));
@@ -2963,6 +3427,10 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetBreakOnCategory(producer={:?}, category={:?})",
             producer, category
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetBreakOnCategory(producer={:?}, category={:?})",
+            producer, category
+        ));
         true
     }
     fn get_break_on_severity(
@@ -2976,12 +3444,20 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::GetBreakOnSeverity(producer={:?}, severity={:?})",
             producer, severity
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::GetBreakOnSeverity(producer={:?}, severity={:?})",
+            producer, severity
+        ));
         true
     }
     fn get_break_on_id(&self, producer: component_object_model::structures::Guid, id: i32) -> bool {
         let _ = &producer;
         let _ = &id;
         record(format!(
+            "IDXGIInfoQueue::GetBreakOnID(producer={:?}, id={:?})",
+            producer, id
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::GetBreakOnID(producer={:?}, id={:?})",
             producer, id
         ));
@@ -2998,10 +3474,18 @@ impl<A: Recorded> directx_graphics_infrastructure::InfoQueue for RecordedInfoQue
             "IDXGIInfoQueue::SetMuteDebugOutput(producer={:?}, b_mute={:?})",
             producer, b_mute
         ));
+        record_arguments(format!(
+            "IDXGIInfoQueue::SetMuteDebugOutput(producer={:?}, b_mute={:?})",
+            producer, b_mute
+        ));
     }
     fn get_mute_debug_output(&self, producer: component_object_model::structures::Guid) -> bool {
         let _ = &producer;
         record(format!(
+            "IDXGIInfoQueue::GetMuteDebugOutput(producer={:?})",
+            producer
+        ));
+        record_arguments(format!(
             "IDXGIInfoQueue::GetMuteDebugOutput(producer={:?})",
             producer
         ));
@@ -3021,11 +3505,16 @@ impl<A: Recorded> directx_graphics_infrastructure::KeyedMutex for RecordedKeyedM
             "IDXGIKeyedMutex::AcquireSync(key={:?}, dw_milliseconds={:?})",
             key, dw_milliseconds
         ));
+        record_arguments(format!(
+            "IDXGIKeyedMutex::AcquireSync(key={:?}, dw_milliseconds={:?})",
+            key, dw_milliseconds
+        ));
         Ok(())
     }
     fn release_sync(&self, key: u64) -> Result<(), component_object_model::structures::HResult> {
         let _ = &key;
         record(format!("IDXGIKeyedMutex::ReleaseSync(key={:?})", key));
+        record_arguments(format!("IDXGIKeyedMutex::ReleaseSync(key={:?})", key));
         Ok(())
     }
 }
@@ -3040,6 +3529,7 @@ impl<A: Recorded> directx_graphics_infrastructure::DeviceSubObject for RecordedK
     > {
         let _ = &riid;
         record("IDXGIDeviceSubObject::GetDevice()".to_string());
+        record_arguments(format!("IDXGIDeviceSubObject::GetDevice(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -3197,6 +3687,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedKeyedMutex
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -3207,6 +3701,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedKeyedMutex
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -3217,6 +3715,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedKeyedMutex
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -3228,6 +3730,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedKeyedMutex
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -3382,12 +3885,34 @@ impl<A: Recorded> directx_graphics_infrastructure::Output6 for RecordedOutput<A>
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput6::GetDesc1()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_output_desc1(&known_bytes::<152>(467758)))
+        record_arguments("IDXGIOutput6::GetDesc1()".to_string());
+        Ok(directx_graphics_infrastructure::structures::OutputDesc1 {
+            device_name: core::array::from_fn(|_| 54_u16),
+            desktop_coordinates: component_object_model::structures::Rect {
+                left: 68_i32,
+                top: 75_i32,
+                right: 82_i32,
+                bottom: 89_i32,
+            },
+            attached_to_desktop: true,
+            rotation: directx_graphics_infrastructure::enumerations::ModeRotation(75),
+            monitor: component_object_model::structures::Hmonitor(82),
+            bits_per_color: 89_u32,
+            color_space: directx_graphics_infrastructure::enumerations::ColorSpaceType(96),
+            red_primary: core::array::from_fn(|_| 103.5_f32),
+            green_primary: core::array::from_fn(|_| 110.5_f32),
+            blue_primary: core::array::from_fn(|_| 117.5_f32),
+            white_point: core::array::from_fn(|_| 124.5_f32),
+            min_luminance: 5.5_f32,
+            max_luminance: 12.5_f32,
+            max_full_frame_luminance: 19.5_f32,
+        })
     }
     fn check_hardware_composition_support(
         &self,
     ) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGIOutput6::CheckHardwareCompositionSupport()".to_string());
+        record_arguments("IDXGIOutput6::CheckHardwareCompositionSupport()".to_string());
         Ok(55_u32)
     }
 }
@@ -3398,6 +3923,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Output5 for RecordedOutput<A>
         let _ = &flags;
         let _ = &supported_formats;
         record(format!("IDXGIOutput5::DuplicateOutput1(flags={:?})", flags));
+        record_arguments(format!(
+            "IDXGIOutput5::DuplicateOutput1(device=an object or the caller's bytes, flags={:?}, supported_formats={:?})",
+            flags, supported_formats
+        ));
         Ok(RecordedOutputDuplication::new())
     }
 }
@@ -3416,6 +3945,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Output4 for RecordedOutput<A>
             "IDXGIOutput4::CheckOverlayColorSpaceSupport(format={:?}, color_space={:?})",
             format, color_space
         ));
+        record_arguments(format!(
+            "IDXGIOutput4::CheckOverlayColorSpaceSupport(format={:?}, color_space={:?}, concerned_device=an object or the caller's bytes)",
+            format, color_space
+        ));
         Ok(26_u32)
     }
 }
@@ -3432,6 +3965,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Output3 for RecordedOutput<A>
             "IDXGIOutput3::CheckOverlaySupport(enum_format={:?})",
             enum_format
         ));
+        record_arguments(format!(
+            "IDXGIOutput3::CheckOverlaySupport(enum_format={:?}, concerned_device=an object or the caller's bytes)",
+            enum_format
+        ));
         Ok(64_u32)
     }
 }
@@ -3439,6 +3976,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output3 for RecordedOutput<A>
 impl<A: Recorded> directx_graphics_infrastructure::Output2 for RecordedOutput<A> {
     fn supports_overlays(&self) -> bool {
         record("IDXGIOutput2::SupportsOverlays()".to_string());
+        record_arguments("IDXGIOutput2::SupportsOverlays()".to_string());
         true
     }
 }
@@ -3458,7 +3996,26 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
             "IDXGIOutput1::GetDisplayModeList1(enum_format={:?}, flags={:?})",
             enum_format, flags
         ));
-        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&known_bytes::<32>(157608))).collect())
+        record_arguments(format!(
+            "IDXGIOutput1::GetDisplayModeList1(enum_format={:?}, flags={:?})",
+            enum_format, flags
+        ));
+        Ok((0..2_u32)
+            .map(|_| directx_graphics_infrastructure::structures::ModeDesc1 {
+                width: 116_u32,
+                height: 123_u32,
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 11_u32,
+                    denominator: 18_u32,
+                },
+                format: directx_graphics_infrastructure::enumerations::Format(11),
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    18,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(25),
+                stereo: true,
+            })
+            .collect())
     }
     fn find_closest_matching_mode1(
         &self,
@@ -3471,7 +4028,22 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
         let _ = &mode_to_match;
         let _ = &concerned_device;
         record("IDXGIOutput1::FindClosestMatchingMode1()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&known_bytes::<32>(791281)))
+        record_arguments(format!(
+            "IDXGIOutput1::FindClosestMatchingMode1(mode_to_match={:?}, concerned_device=an object or the caller's bytes)",
+            mode_to_match
+        ));
+        Ok(directx_graphics_infrastructure::structures::ModeDesc1 {
+            width: 9_u32,
+            height: 16_u32,
+            refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                numerator: 30_u32,
+                denominator: 37_u32,
+            },
+            format: directx_graphics_infrastructure::enumerations::Format(30),
+            scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(37),
+            scaling: directx_graphics_infrastructure::enumerations::ModeScaling(44),
+            stereo: true,
+        })
     }
     fn get_display_surface_data1(
         &self,
@@ -3479,11 +4051,18 @@ impl<A: Recorded> directx_graphics_infrastructure::Output1 for RecordedOutput<A>
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &destination;
         record("IDXGIOutput1::GetDisplaySurfaceData1()".to_string());
+        record_arguments(
+            "IDXGIOutput1::GetDisplaySurfaceData1(destination=an object or the caller's bytes)"
+                .to_string(),
+        );
         Ok(())
     }
     fn duplicate_output(&self, device: directx_graphics_infrastructure::UnknownRef<'_, Self::Api>) -> Result<<Self::Api as directx_graphics_infrastructure::DirectXGraphicsInfrastructure>::OutputDuplication, component_object_model::structures::HResult>{
         let _ = &device;
         record("IDXGIOutput1::DuplicateOutput()".to_string());
+        record_arguments(
+            "IDXGIOutput1::DuplicateOutput(device=an object or the caller's bytes)".to_string(),
+        );
         Ok(RecordedOutputDuplication::new())
     }
 }
@@ -3496,7 +4075,19 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetDesc()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_output_desc(&known_bytes::<96>(591548)))
+        record_arguments("IDXGIOutput::GetDesc()".to_string());
+        Ok(directx_graphics_infrastructure::structures::OutputDesc {
+            device_name: core::array::from_fn(|_| 112_u16),
+            desktop_coordinates: component_object_model::structures::Rect {
+                left: 126_i32,
+                top: 7_i32,
+                right: 14_i32,
+                bottom: 21_i32,
+            },
+            attached_to_desktop: true,
+            rotation: directx_graphics_infrastructure::enumerations::ModeRotation(7),
+            monitor: component_object_model::structures::Hmonitor(14),
+        })
     }
     fn get_display_mode_list(
         &self,
@@ -3512,7 +4103,25 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
             "IDXGIOutput::GetDisplayModeList(enum_format={:?}, flags={:?})",
             enum_format, flags
         ));
-        Ok((0..2_u32).map(|_| data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&known_bytes::<28>(759632))).collect())
+        record_arguments(format!(
+            "IDXGIOutput::GetDisplayModeList(enum_format={:?}, flags={:?})",
+            enum_format, flags
+        ));
+        Ok((0..2_u32)
+            .map(|_| directx_graphics_infrastructure::structures::ModeDesc {
+                width: 112_u32,
+                height: 119_u32,
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 7_u32,
+                    denominator: 14_u32,
+                },
+                format: directx_graphics_infrastructure::enumerations::Format(7),
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    14,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(21),
+            })
+            .collect())
     }
     fn find_closest_matching_mode(
         &self,
@@ -3525,10 +4134,25 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         let _ = &mode_to_match;
         let _ = &concerned_device;
         record("IDXGIOutput::FindClosestMatchingMode()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&known_bytes::<28>(280337)))
+        record_arguments(format!(
+            "IDXGIOutput::FindClosestMatchingMode(mode_to_match={:?}, concerned_device=an object or the caller's bytes)",
+            mode_to_match
+        ));
+        Ok(directx_graphics_infrastructure::structures::ModeDesc {
+            width: 121_u32,
+            height: 2_u32,
+            refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                numerator: 16_u32,
+                denominator: 23_u32,
+            },
+            format: directx_graphics_infrastructure::enumerations::Format(16),
+            scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(23),
+            scaling: directx_graphics_infrastructure::enumerations::ModeScaling(30),
+        })
     }
     fn wait_for_v_blank(&self) -> Result<(), component_object_model::structures::HResult> {
         record("IDXGIOutput::WaitForVBlank()".to_string());
+        record_arguments("IDXGIOutput::WaitForVBlank()".to_string());
         Ok(())
     }
     fn take_ownership(
@@ -3542,10 +4166,15 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
             "IDXGIOutput::TakeOwnership(exclusive={:?})",
             exclusive
         ));
+        record_arguments(format!(
+            "IDXGIOutput::TakeOwnership(device=an object or the caller's bytes, exclusive={:?})",
+            exclusive
+        ));
         Ok(())
     }
     fn release_ownership(&self) {
         record("IDXGIOutput::ReleaseOwnership()".to_string());
+        record_arguments("IDXGIOutput::ReleaseOwnership()".to_string());
     }
     fn get_gamma_control_capabilities(
         &self,
@@ -3554,7 +4183,16 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetGammaControlCapabilities()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_gamma_control_capabilities(&known_bytes::<4116>(548744)))
+        record_arguments("IDXGIOutput::GetGammaControlCapabilities()".to_string());
+        Ok(
+            directx_graphics_infrastructure::structures::GammaControlCapabilities {
+                scale_and_offset_supported: true,
+                max_converted_value: 29.5_f32,
+                min_converted_value: 36.5_f32,
+                num_gamma_control_points: 43_u32,
+                control_point_positions: core::array::from_fn(|_| 50.5_f32),
+            },
+        )
     }
     fn set_gamma_control(
         &self,
@@ -3562,6 +4200,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &array;
         record("IDXGIOutput::SetGammaControl()".to_string());
+        record_arguments(format!("IDXGIOutput::SetGammaControl(array={:?})", array));
         Ok(())
     }
     fn get_gamma_control(
@@ -3571,7 +4210,26 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetGammaControl()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_gamma_control(&known_bytes::<12324>(643)))
+        record_arguments("IDXGIOutput::GetGammaControl()".to_string());
+        Ok(directx_graphics_infrastructure::structures::GammaControl {
+            scale: directx_graphics_infrastructure::structures::Rgb {
+                red: 28.5_f32,
+                green: 35.5_f32,
+                blue: 42.5_f32,
+            },
+            offset: directx_graphics_infrastructure::structures::Rgb {
+                red: 35.5_f32,
+                green: 42.5_f32,
+                blue: 49.5_f32,
+            },
+            gamma_curve: core::array::from_fn(|_| {
+                directx_graphics_infrastructure::structures::Rgb {
+                    red: 42.5_f32,
+                    green: 49.5_f32,
+                    blue: 56.5_f32,
+                }
+            }),
+        })
     }
     fn set_display_surface(
         &self,
@@ -3579,6 +4237,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &scanout_surface;
         record("IDXGIOutput::SetDisplaySurface()".to_string());
+        record_arguments(
+            "IDXGIOutput::SetDisplaySurface(scanout_surface=an object or the caller's bytes)"
+                .to_string(),
+        );
         Ok(())
     }
     fn get_display_surface_data(
@@ -3587,6 +4249,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &destination;
         record("IDXGIOutput::GetDisplaySurfaceData()".to_string());
+        record_arguments(
+            "IDXGIOutput::GetDisplaySurfaceData(destination=an object or the caller's bytes)"
+                .to_string(),
+        );
         Ok(())
     }
     fn get_frame_statistics(
@@ -3596,7 +4262,16 @@ impl<A: Recorded> directx_graphics_infrastructure::Output for RecordedOutput<A> 
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutput::GetFrameStatistics()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_frame_statistics(&known_bytes::<32>(717735)))
+        record_arguments("IDXGIOutput::GetFrameStatistics()".to_string());
+        Ok(
+            directx_graphics_infrastructure::structures::FrameStatistics {
+                present_count: 47_u32,
+                present_refresh_count: 54_u32,
+                sync_refresh_count: 61_u32,
+                sync_qpc_time: 68_i64,
+                sync_gpu_time: 75_i64,
+            },
+        )
     }
 }
 
@@ -3611,6 +4286,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutput<A> 
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -3621,6 +4300,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutput<A> 
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -3631,6 +4314,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutput<A> 
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -3642,6 +4329,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutput<A> 
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -3793,9 +4481,24 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
 {
     fn get_desc(&self) -> directx_graphics_infrastructure::structures::OutduplDesc {
         record("IDXGIOutputDuplication::GetDesc()".to_string());
-        data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_outdupl_desc(
-            &known_bytes::<36>(375322),
-        )
+        record_arguments("IDXGIOutputDuplication::GetDesc()".to_string());
+        directx_graphics_infrastructure::structures::OutduplDesc {
+            mode_desc: directx_graphics_infrastructure::structures::ModeDesc {
+                width: 109_u32,
+                height: 116_u32,
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 4_u32,
+                    denominator: 11_u32,
+                },
+                format: directx_graphics_infrastructure::enumerations::Format(4),
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    11,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(18),
+            },
+            rotation: directx_graphics_infrastructure::enumerations::ModeRotation(109),
+            desktop_image_in_system_memory: true,
+        }
     }
     fn acquire_next_frame(
         &self,
@@ -3812,7 +4515,30 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
             "IDXGIOutputDuplication::AcquireNextFrame(timeout_in_milliseconds={:?})",
             timeout_in_milliseconds
         ));
-        Ok((data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_outdupl_frame_info(&known_bytes::<48>(251367)), RecordedResource::new()))
+        record_arguments(format!(
+            "IDXGIOutputDuplication::AcquireNextFrame(timeout_in_milliseconds={:?})",
+            timeout_in_milliseconds
+        ));
+        Ok((
+            directx_graphics_infrastructure::structures::OutduplFrameInfo {
+                last_present_time: 5_i64,
+                last_mouse_update_time: 12_i64,
+                accumulated_frames: 19_u32,
+                rects_coalesced: true,
+                protected_content_masked_out: true,
+                pointer_position:
+                    directx_graphics_infrastructure::structures::OutduplPointerPosition {
+                        position: component_object_model::structures::Point {
+                            x: 54_i32,
+                            y: 61_i32,
+                        },
+                        visible: true,
+                    },
+                total_metadata_buffer_size: 47_u32,
+                pointer_shape_buffer_size: 54_u32,
+            },
+            RecordedResource::new(),
+        ))
     }
     fn get_frame_dirty_rects(
         &self,
@@ -3820,6 +4546,7 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
     ) -> Result<u32, component_object_model::structures::HResult> {
         let _ = &dirty_rects_buffer;
         record("IDXGIOutputDuplication::GetFrameDirtyRects()".to_string());
+        record_arguments("IDXGIOutputDuplication::GetFrameDirtyRects(dirty_rects_buffer=an object or the caller's bytes)".to_string());
         known_fill(dirty_rects_buffer, 677566);
         Ok(65_u32)
     }
@@ -3829,6 +4556,7 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
     ) -> Result<u32, component_object_model::structures::HResult> {
         let _ = &move_rect_buffer;
         record("IDXGIOutputDuplication::GetFrameMoveRects()".to_string());
+        record_arguments("IDXGIOutputDuplication::GetFrameMoveRects(move_rect_buffer=an object or the caller's bytes)".to_string());
         known_fill(move_rect_buffer, 340890);
         Ok(61_u32)
     }
@@ -3844,8 +4572,21 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
     > {
         let _ = &pointer_shape_buffer;
         record("IDXGIOutputDuplication::GetFramePointerShape()".to_string());
+        record_arguments("IDXGIOutputDuplication::GetFramePointerShape(pointer_shape_buffer=an object or the caller's bytes)".to_string());
         known_fill(pointer_shape_buffer, 322244);
-        Ok((63_u32, data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_outdupl_pointer_shape_info(&known_bytes::<24>(322251))))
+        Ok((
+            63_u32,
+            directx_graphics_infrastructure::structures::OutduplPointerShapeInfo {
+                type_: 77_u32,
+                width: 84_u32,
+                height: 91_u32,
+                pitch: 98_u32,
+                hot_spot: component_object_model::structures::Point {
+                    x: 112_i32,
+                    y: 119_i32,
+                },
+            },
+        ))
     }
     fn map_desktop_surface(
         &self,
@@ -3854,14 +4595,17 @@ impl<A: Recorded> directx_graphics_infrastructure::OutputDuplication
         component_object_model::structures::HResult,
     > {
         record("IDXGIOutputDuplication::MapDesktopSurface()".to_string());
+        record_arguments("IDXGIOutputDuplication::MapDesktopSurface()".to_string());
         Err(E_NOTIMPL)
     }
     fn un_map_desktop_surface(&self) -> Result<(), component_object_model::structures::HResult> {
         record("IDXGIOutputDuplication::UnMapDesktopSurface()".to_string());
+        record_arguments("IDXGIOutputDuplication::UnMapDesktopSurface()".to_string());
         Ok(())
     }
     fn release_frame(&self) -> Result<(), component_object_model::structures::HResult> {
         record("IDXGIOutputDuplication::ReleaseFrame()".to_string());
+        record_arguments("IDXGIOutputDuplication::ReleaseFrame()".to_string());
         Ok(())
     }
 }
@@ -3877,6 +4621,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutputDupl
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -3887,6 +4635,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutputDupl
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -3897,6 +4649,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutputDupl
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -3908,6 +4664,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedOutputDupl
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -4067,6 +4824,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource1 for RecordedResourc
             "IDXGIResource1::CreateSubresourceSurface(index={:?})",
             index
         ));
+        record_arguments(format!(
+            "IDXGIResource1::CreateSubresourceSurface(index={:?})",
+            index
+        ));
         Ok(RecordedSurface::new())
     }
     fn create_shared_handle(
@@ -4082,6 +4843,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource1 for RecordedResourc
         let _ = &dw_access;
         let _ = &lp_name;
         record("IDXGIResource1::CreateSharedHandle()".to_string());
+        record_arguments(format!(
+            "IDXGIResource1::CreateSharedHandle(attributes={:?}, dw_access={:?}, lp_name={:?})",
+            attributes, dw_access, lp_name
+        ));
         Err(E_NOTIMPL)
     }
 }
@@ -4094,6 +4859,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedResource
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetSharedHandle()".to_string());
+        record_arguments("IDXGIResource::GetSharedHandle()".to_string());
         Ok(component_object_model::structures::Handle(54))
     }
     fn get_usage(
@@ -4103,6 +4869,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedResource
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetUsage()".to_string());
+        record_arguments("IDXGIResource::GetUsage()".to_string());
         Ok(directx_graphics_infrastructure::enumerations::Usage(113))
     }
     fn set_eviction_priority(
@@ -4111,6 +4878,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedResource
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &eviction_priority;
         record(format!(
+            "IDXGIResource::SetEvictionPriority(eviction_priority={:?})",
+            eviction_priority
+        ));
+        record_arguments(format!(
             "IDXGIResource::SetEvictionPriority(eviction_priority={:?})",
             eviction_priority
         ));
@@ -4123,6 +4894,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Resource for RecordedResource
         component_object_model::structures::HResult,
     > {
         record("IDXGIResource::GetEvictionPriority()".to_string());
+        record_arguments("IDXGIResource::GetEvictionPriority()".to_string());
         Ok(directx_graphics_infrastructure::enumerations::ResourcePriority(94))
     }
 }
@@ -4137,6 +4909,7 @@ impl<A: Recorded> directx_graphics_infrastructure::DeviceSubObject for RecordedR
     > {
         let _ = &riid;
         record("IDXGIDeviceSubObject::GetDevice()".to_string());
+        record_arguments(format!("IDXGIDeviceSubObject::GetDevice(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -4294,6 +5067,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedResource<A
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -4304,6 +5081,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedResource<A
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -4314,6 +5095,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedResource<A
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -4325,6 +5110,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedResource<A
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -4484,6 +5270,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface2 for RecordedSurface<
     > {
         let _ = &riid;
         record("IDXGISurface2::GetResource()".to_string());
+        record_arguments(format!("IDXGISurface2::GetResource(riid={:?})", riid));
         Ok((
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -4639,6 +5426,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface1 for RecordedSurface<
     {
         let _ = &discard;
         record(format!("IDXGISurface1::GetDC(discard={:?})", discard));
+        record_arguments(format!("IDXGISurface1::GetDC(discard={:?})", discard));
         Ok(component_object_model::structures::Hdc(15))
     }
     fn release_dc(
@@ -4647,6 +5435,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface1 for RecordedSurface<
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &dirty_rect;
         record("IDXGISurface1::ReleaseDC()".to_string());
+        record_arguments(format!(
+            "IDXGISurface1::ReleaseDC(dirty_rect={:?})",
+            dirty_rect
+        ));
         Ok(())
     }
 }
@@ -4659,7 +5451,16 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface for RecordedSurface<A
         component_object_model::structures::HResult,
     > {
         record("IDXGISurface::GetDesc()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_surface_desc(&known_bytes::<20>(481648)))
+        record_arguments("IDXGISurface::GetDesc()".to_string());
+        Ok(directx_graphics_infrastructure::structures::SurfaceDesc {
+            width: 84_u32,
+            height: 91_u32,
+            format: directx_graphics_infrastructure::enumerations::Format(98),
+            sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
+                count: 112_u32,
+                quality: 119_u32,
+            },
+        })
     }
     fn map(
         &self,
@@ -4670,10 +5471,12 @@ impl<A: Recorded> directx_graphics_infrastructure::Surface for RecordedSurface<A
     > {
         let _ = &map_flags;
         record("IDXGISurface::Map()".to_string());
+        record_arguments(format!("IDXGISurface::Map(map_flags={:?})", map_flags));
         Err(E_NOTIMPL)
     }
     fn unmap(&self) -> Result<(), component_object_model::structures::HResult> {
         record("IDXGISurface::Unmap()".to_string());
+        record_arguments("IDXGISurface::Unmap()".to_string());
         Ok(())
     }
 }
@@ -4688,6 +5491,7 @@ impl<A: Recorded> directx_graphics_infrastructure::DeviceSubObject for RecordedS
     > {
         let _ = &riid;
         record("IDXGIDeviceSubObject::GetDevice()".to_string());
+        record_arguments(format!("IDXGIDeviceSubObject::GetDevice(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -4845,6 +5649,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSurface<A>
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -4855,6 +5663,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSurface<A>
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -4865,6 +5677,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSurface<A>
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -4876,6 +5692,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSurface<A>
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -5034,6 +5851,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain4 for RecordedSwapCh
             "IDXGISwapChain4::SetHDRMetaData(type_={:?})",
             type_
         ));
+        record_arguments(format!(
+            "IDXGISwapChain4::SetHDRMetaData(type_={:?}, meta_data={:?})",
+            type_, meta_data
+        ));
         Ok(())
     }
 }
@@ -5041,6 +5862,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain4 for RecordedSwapCh
 impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapChain<A> {
     fn get_current_back_buffer_index(&self) -> u32 {
         record("IDXGISwapChain3::GetCurrentBackBufferIndex()".to_string());
+        record_arguments("IDXGISwapChain3::GetCurrentBackBufferIndex()".to_string());
         70_u32
     }
     fn check_color_space_support(
@@ -5052,6 +5874,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapCh
             "IDXGISwapChain3::CheckColorSpaceSupport(color_space={:?})",
             color_space
         ));
+        record_arguments(format!(
+            "IDXGISwapChain3::CheckColorSpaceSupport(color_space={:?})",
+            color_space
+        ));
         Ok(76_u32)
     }
     fn set_color_space1(
@@ -5060,6 +5886,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapCh
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &color_space;
         record(format!(
+            "IDXGISwapChain3::SetColorSpace1(color_space={:?})",
+            color_space
+        ));
+        record_arguments(format!(
             "IDXGISwapChain3::SetColorSpace1(color_space={:?})",
             color_space
         ));
@@ -5081,6 +5911,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain3 for RecordedSwapCh
         let _ = &creation_node_mask;
         let _ = &present_queue;
         record("IDXGISwapChain3::ResizeBuffers1()".to_string());
+        record_arguments(format!(
+            "IDXGISwapChain3::ResizeBuffers1(width={:?}, height={:?}, format={:?}, swap_chain_flags={:?}, creation_node_mask={:?}, present_queue=an object or the caller's bytes)",
+            width, height, format, swap_chain_flags, creation_node_mask
+        ));
         Err(E_NOTIMPL)
     }
 }
@@ -5097,10 +5931,15 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain2 for RecordedSwapCh
             "IDXGISwapChain2::SetSourceSize(width={:?}, height={:?})",
             width, height
         ));
+        record_arguments(format!(
+            "IDXGISwapChain2::SetSourceSize(width={:?}, height={:?})",
+            width, height
+        ));
         Ok(())
     }
     fn get_source_size(&self) -> Result<(u32, u32), component_object_model::structures::HResult> {
         record("IDXGISwapChain2::GetSourceSize()".to_string());
+        record_arguments("IDXGISwapChain2::GetSourceSize()".to_string());
         Ok((1_u32, 8_u32))
     }
     fn set_maximum_frame_latency(
@@ -5112,16 +5951,22 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain2 for RecordedSwapCh
             "IDXGISwapChain2::SetMaximumFrameLatency(max_latency={:?})",
             max_latency
         ));
+        record_arguments(format!(
+            "IDXGISwapChain2::SetMaximumFrameLatency(max_latency={:?})",
+            max_latency
+        ));
         Ok(())
     }
     fn get_maximum_frame_latency(
         &self,
     ) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGISwapChain2::GetMaximumFrameLatency()".to_string());
+        record_arguments("IDXGISwapChain2::GetMaximumFrameLatency()".to_string());
         Ok(55_u32)
     }
     fn get_frame_latency_waitable_object(&self) -> component_object_model::structures::Handle {
         record("IDXGISwapChain2::GetFrameLatencyWaitableObject()".to_string());
+        record_arguments("IDXGISwapChain2::GetFrameLatencyWaitableObject()".to_string());
         component_object_model::structures::Handle(5)
     }
     fn set_matrix_transform(
@@ -5130,6 +5975,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain2 for RecordedSwapCh
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &matrix;
         record("IDXGISwapChain2::SetMatrixTransform()".to_string());
+        record_arguments(format!(
+            "IDXGISwapChain2::SetMatrixTransform(matrix={:?})",
+            matrix
+        ));
         Ok(())
     }
     fn get_matrix_transform(
@@ -5139,7 +5988,15 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain2 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain2::GetMatrixTransform()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_matrix_3_x2_f(&known_bytes::<24>(315579)))
+        record_arguments("IDXGISwapChain2::GetMatrixTransform()".to_string());
+        Ok(directx_graphics_infrastructure::structures::Matrix3x2F {
+            _11: 83.5_f32,
+            _12: 90.5_f32,
+            _21: 97.5_f32,
+            _22: 104.5_f32,
+            _31: 111.5_f32,
+            _32: 118.5_f32,
+        })
     }
 }
 
@@ -5151,7 +6008,25 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetDesc1()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&known_bytes::<48>(672333)))
+        record_arguments("IDXGISwapChain1::GetDesc1()".to_string());
+        Ok(
+            directx_graphics_infrastructure::structures::SwapChainDesc1 {
+                width: 5_u32,
+                height: 12_u32,
+                format: directx_graphics_infrastructure::enumerations::Format(19),
+                stereo: true,
+                sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
+                    count: 40_u32,
+                    quality: 47_u32,
+                },
+                buffer_usage: directx_graphics_infrastructure::enumerations::Usage(40),
+                buffer_count: 47_u32,
+                scaling: directx_graphics_infrastructure::enumerations::Scaling(54),
+                swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(61),
+                alpha_mode: directx_graphics_infrastructure::enumerations::AlphaMode(68),
+                flags: 75_u32,
+            },
+        )
     }
     fn get_fullscreen_desc(
         &self,
@@ -5160,13 +6035,27 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetFullscreenDesc()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_fullscreen_desc(&known_bytes::<20>(803423)))
+        record_arguments("IDXGISwapChain1::GetFullscreenDesc()".to_string());
+        Ok(
+            directx_graphics_infrastructure::structures::SwapChainFullscreenDesc {
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 62_u32,
+                    denominator: 69_u32,
+                },
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    62,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(69),
+                windowed: true,
+            },
+        )
     }
     fn get_hwnd(
         &self,
     ) -> Result<component_object_model::structures::Hwnd, component_object_model::structures::HResult>
     {
         record("IDXGISwapChain1::GetHwnd()".to_string());
+        record_arguments("IDXGISwapChain1::GetHwnd()".to_string());
         Ok(component_object_model::structures::Hwnd(47))
     }
     fn get_core_window(
@@ -5178,6 +6067,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
     > {
         let _ = &refiid;
         record("IDXGISwapChain1::GetCoreWindow()".to_string());
+        record_arguments(format!(
+            "IDXGISwapChain1::GetCoreWindow(refiid={:?})",
+            refiid
+        ));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -5332,10 +6225,15 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         let _ = &present_flags;
         let _ = &present_parameters;
         record("IDXGISwapChain1::Present1()".to_string());
+        record_arguments(format!(
+            "IDXGISwapChain1::Present1(sync_interval={:?}, present_flags={:?}, present_parameters={:?})",
+            sync_interval, present_flags, present_parameters
+        ));
         Err(E_NOTIMPL)
     }
     fn is_temporary_mono_supported(&self) -> bool {
         record("IDXGISwapChain1::IsTemporaryMonoSupported()".to_string());
+        record_arguments("IDXGISwapChain1::IsTemporaryMonoSupported()".to_string());
         true
     }
     fn get_restrict_to_output(
@@ -5347,6 +6245,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetRestrictToOutput()".to_string());
+        record_arguments("IDXGISwapChain1::GetRestrictToOutput()".to_string());
         Ok(Some(RecordedOutput::new()))
     }
     fn set_background_color(
@@ -5355,6 +6254,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &color;
         record("IDXGISwapChain1::SetBackgroundColor()".to_string());
+        record_arguments(format!(
+            "IDXGISwapChain1::SetBackgroundColor(color={:?})",
+            color
+        ));
         Ok(())
     }
     fn get_background_color(
@@ -5364,11 +6267,13 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetBackgroundColor()".to_string());
-        Ok(
-            data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_rgba(
-                &known_bytes::<16>(366446),
-            ),
-        )
+        record_arguments("IDXGISwapChain1::GetBackgroundColor()".to_string());
+        Ok(directx_graphics_infrastructure::structures::Rgba {
+            r: 46.5_f32,
+            g: 53.5_f32,
+            b: 60.5_f32,
+            a: 67.5_f32,
+        })
     }
     fn set_rotation(
         &self,
@@ -5376,6 +6281,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &rotation;
         record(format!(
+            "IDXGISwapChain1::SetRotation(rotation={:?})",
+            rotation
+        ));
+        record_arguments(format!(
             "IDXGISwapChain1::SetRotation(rotation={:?})",
             rotation
         ));
@@ -5388,6 +6297,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain1 for RecordedSwapCh
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain1::GetRotation()".to_string());
+        record_arguments("IDXGISwapChain1::GetRotation()".to_string());
         Ok(directx_graphics_infrastructure::enumerations::ModeRotation(
             119,
         ))
@@ -5406,6 +6316,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
             "IDXGISwapChain::Present(sync_interval={:?}, flags={:?})",
             sync_interval, flags
         ));
+        record_arguments(format!(
+            "IDXGISwapChain::Present(sync_interval={:?}, flags={:?})",
+            sync_interval, flags
+        ));
         Ok(())
     }
     fn get_buffer(
@@ -5417,6 +6331,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
     > {
         let _ = &buffer;
         record(format!("IDXGISwapChain::GetBuffer(buffer={:?})", buffer));
+        record_arguments(format!("IDXGISwapChain::GetBuffer(buffer={:?})", buffer));
         // A structure or a bound object: the recorder makes none.
         Err(E_NOTIMPL)
     }
@@ -5433,6 +6348,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
             "IDXGISwapChain::SetFullscreenState(fullscreen={:?})",
             fullscreen
         ));
+        record_arguments(format!(
+            "IDXGISwapChain::SetFullscreenState(fullscreen={:?}, target=an object or the caller's bytes)",
+            fullscreen
+        ));
         Ok(())
     }
     fn get_fullscreen_state(
@@ -5445,6 +6364,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain::GetFullscreenState()".to_string());
+        record_arguments("IDXGISwapChain::GetFullscreenState()".to_string());
         Ok((true, RecordedOutput::new()))
     }
     fn get_desc(
@@ -5454,7 +6374,32 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain::GetDesc()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc(&known_bytes::<72>(105791)))
+        record_arguments("IDXGISwapChain::GetDesc()".to_string());
+        Ok(directx_graphics_infrastructure::structures::SwapChainDesc {
+            buffer_desc: directx_graphics_infrastructure::structures::ModeDesc {
+                width: 92_u32,
+                height: 99_u32,
+                refresh_rate: directx_graphics_infrastructure::structures::Rational {
+                    numerator: 113_u32,
+                    denominator: 120_u32,
+                },
+                format: directx_graphics_infrastructure::enumerations::Format(113),
+                scanline_ordering: directx_graphics_infrastructure::enumerations::ModeScanlineOrder(
+                    120,
+                ),
+                scaling: directx_graphics_infrastructure::enumerations::ModeScaling(1),
+            },
+            sample_desc: directx_graphics_infrastructure::structures::SampleDesc {
+                count: 99_u32,
+                quality: 106_u32,
+            },
+            buffer_usage: directx_graphics_infrastructure::enumerations::Usage(99),
+            buffer_count: 106_u32,
+            output_window: component_object_model::structures::Hwnd(113),
+            windowed: true,
+            swap_effect: directx_graphics_infrastructure::enumerations::SwapEffect(1),
+            flags: 8_u32,
+        })
     }
     fn resize_buffers(
         &self,
@@ -5473,6 +6418,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
             "IDXGISwapChain::ResizeBuffers(buffer_count={:?}, width={:?}, height={:?}, new_format={:?}, swap_chain_flags={:?})",
             buffer_count, width, height, new_format, swap_chain_flags
         ));
+        record_arguments(format!(
+            "IDXGISwapChain::ResizeBuffers(buffer_count={:?}, width={:?}, height={:?}, new_format={:?}, swap_chain_flags={:?})",
+            buffer_count, width, height, new_format, swap_chain_flags
+        ));
         Ok(())
     }
     fn resize_target(
@@ -5481,6 +6430,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &new_target_parameters;
         record("IDXGISwapChain::ResizeTarget()".to_string());
+        record_arguments(format!(
+            "IDXGISwapChain::ResizeTarget(new_target_parameters={:?})",
+            new_target_parameters
+        ));
         Ok(())
     }
     fn get_containing_output(
@@ -5490,6 +6443,7 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain::GetContainingOutput()".to_string());
+        record_arguments("IDXGISwapChain::GetContainingOutput()".to_string());
         Ok(RecordedOutput::new())
     }
     fn get_frame_statistics(
@@ -5499,10 +6453,20 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChain for RecordedSwapCha
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChain::GetFrameStatistics()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_frame_statistics(&known_bytes::<32>(983786)))
+        record_arguments("IDXGISwapChain::GetFrameStatistics()".to_string());
+        Ok(
+            directx_graphics_infrastructure::structures::FrameStatistics {
+                present_count: 112_u32,
+                present_refresh_count: 119_u32,
+                sync_refresh_count: 126_u32,
+                sync_qpc_time: 7_i64,
+                sync_gpu_time: 14_i64,
+            },
+        )
     }
     fn get_last_present_count(&self) -> Result<u32, component_object_model::structures::HResult> {
         record("IDXGISwapChain::GetLastPresentCount()".to_string());
+        record_arguments("IDXGISwapChain::GetLastPresentCount()".to_string());
         Ok(8_u32)
     }
 }
@@ -5517,6 +6481,7 @@ impl<A: Recorded> directx_graphics_infrastructure::DeviceSubObject for RecordedS
     > {
         let _ = &riid;
         record("IDXGIDeviceSubObject::GetDevice()".to_string());
+        record_arguments(format!("IDXGIDeviceSubObject::GetDevice(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -5674,6 +6639,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSwapChain<
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::SetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateData(name={:?}, data={:?})",
+            name, data
+        ));
         Ok(())
     }
     fn set_private_data_interface(
@@ -5684,6 +6653,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSwapChain<
         let _ = &name;
         let _ = &unknown;
         record("IDXGIObject::SetPrivateDataInterface()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::SetPrivateDataInterface(name={:?}, unknown=an object or the caller's bytes)",
+            name
+        ));
         Ok(())
     }
     fn get_private_data(
@@ -5694,6 +6667,10 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSwapChain<
         let _ = &name;
         let _ = &data;
         record("IDXGIObject::GetPrivateData()".to_string());
+        record_arguments(format!(
+            "IDXGIObject::GetPrivateData(name={:?}, data=an object or the caller's bytes)",
+            name
+        ));
         Err(E_NOTIMPL)
     }
     fn get_parent(
@@ -5705,6 +6682,7 @@ impl<A: Recorded> directx_graphics_infrastructure::Object for RecordedSwapChain<
     > {
         let _ = &riid;
         record("IDXGIObject::GetParent()".to_string());
+        record_arguments(format!("IDXGIObject::GetParent(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -5859,7 +6837,19 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChainMedia for RecordedSw
         component_object_model::structures::HResult,
     > {
         record("IDXGISwapChainMedia::GetFrameStatisticsMedia()".to_string());
-        Ok(data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_frame_statistics_media(&known_bytes::<40>(565301)))
+        record_arguments("IDXGISwapChainMedia::GetFrameStatisticsMedia()".to_string());
+        Ok(
+            directx_graphics_infrastructure::structures::FrameStatisticsMedia {
+                present_count: 73_u32,
+                present_refresh_count: 80_u32,
+                sync_refresh_count: 87_u32,
+                sync_qpc_time: 94_i64,
+                sync_gpu_time: 101_i64,
+                composition_mode:
+                    directx_graphics_infrastructure::enumerations::FramePresentationMode(108),
+                approved_present_duration: 115_u32,
+            },
+        )
     }
     fn set_present_duration(
         &self,
@@ -5867,6 +6857,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChainMedia for RecordedSw
     ) -> Result<(), component_object_model::structures::HResult> {
         let _ = &duration;
         record(format!(
+            "IDXGISwapChainMedia::SetPresentDuration(duration={:?})",
+            duration
+        ));
+        record_arguments(format!(
             "IDXGISwapChainMedia::SetPresentDuration(duration={:?})",
             duration
         ));
@@ -5881,6 +6875,10 @@ impl<A: Recorded> directx_graphics_infrastructure::SwapChainMedia for RecordedSw
             "IDXGISwapChainMedia::CheckPresentDurationSupport(desired_present_duration={:?})",
             desired_present_duration
         ));
+        record_arguments(format!(
+            "IDXGISwapChainMedia::CheckPresentDurationSupport(desired_present_duration={:?})",
+            desired_present_duration
+        ));
         Ok((59_u32, 66_u32))
     }
 }
@@ -5890,9 +6888,11 @@ impl<A: Recorded> directx_graphics_infrastructure::GraphicsAnalysis
 {
     fn begin_capture(&self) {
         record("IDXGraphicsAnalysis::BeginCapture()".to_string());
+        record_arguments("IDXGraphicsAnalysis::BeginCapture()".to_string());
     }
     fn end_capture(&self) {
         record("IDXGraphicsAnalysis::EndCapture()".to_string());
+        record_arguments("IDXGraphicsAnalysis::EndCapture()".to_string());
     }
 }
 
@@ -5928,6 +6928,7 @@ impl directx_graphics_infrastructure::DirectXGraphicsInfrastructure for Recorder
     > {
         let _ = &riid;
         record("CreateDXGIFactory()".to_string());
+        record_arguments(format!("CreateDXGIFactory(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -6081,6 +7082,7 @@ impl directx_graphics_infrastructure::DirectXGraphicsInfrastructure for Recorder
     > {
         let _ = &riid;
         record("CreateDXGIFactory1()".to_string());
+        record_arguments(format!("CreateDXGIFactory1(riid={:?})", riid));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -6236,6 +7238,10 @@ impl directx_graphics_infrastructure::DirectXGraphicsInfrastructure for Recorder
         let _ = &flags;
         let _ = &riid;
         record(format!("CreateDXGIFactory2(flags={:?})", flags));
+        record_arguments(format!(
+            "CreateDXGIFactory2(flags={:?}, riid={:?})",
+            flags, riid
+        ));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,
@@ -6384,12 +7390,14 @@ impl directx_graphics_infrastructure::DirectXGraphicsInfrastructure for Recorder
         &self,
     ) -> Result<(), component_object_model::structures::HResult> {
         record("DXGIDeclareAdapterRemovalSupport()".to_string());
+        record_arguments("DXGIDeclareAdapterRemovalSupport()".to_string());
         Ok(())
     }
     fn dxgi_disable_v_blank_virtualization(
         &self,
     ) -> Result<(), component_object_model::structures::HResult> {
         record("DXGIDisableVBlankVirtualization()".to_string());
+        record_arguments("DXGIDisableVBlankVirtualization()".to_string());
         Ok(())
     }
     fn dxgi_get_debug_interface1(
@@ -6403,6 +7411,10 @@ impl directx_graphics_infrastructure::DirectXGraphicsInfrastructure for Recorder
         let _ = &flags;
         let _ = &riid;
         record(format!("DXGIGetDebugInterface1(flags={:?})", flags));
+        record_arguments(format!(
+            "DXGIGetDebugInterface1(flags={:?}, riid={:?})",
+            flags, riid
+        ));
         Ok(
             if [
                 directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER,

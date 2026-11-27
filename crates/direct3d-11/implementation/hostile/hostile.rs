@@ -7417,7 +7417,7 @@ impl<A: Hostile> directx_graphics_infrastructure::Device for HostileDevice<A> {
             "IDXGIDevice::CreateSurface(num_surfaces={:?}, usage={:?})",
             num_surfaces, usage
         ));
-        Ok((0..num_surfaces.min(4))
+        Ok((0..num_surfaces)
             .map(|_| Some(directx_graphics_infrastructure_hostile::HostileSurface::new()))
             .collect())
     }
@@ -7937,7 +7937,7 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
             start_slot, num_buffers
         ));
         (
-            (0..num_buffers.min(4))
+            (0..num_buffers)
                 .map(|_| Some(HostileBuffer::new()))
                 .collect(),
             (0..num_buffers.min(4))
@@ -7964,7 +7964,7 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
             start_slot, num_buffers
         ));
         (
-            (0..num_buffers.min(4))
+            (0..num_buffers)
                 .map(|_| Some(HostileBuffer::new()))
                 .collect(),
             (0..num_buffers.min(4))
@@ -7991,7 +7991,7 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
             start_slot, num_buffers
         ));
         (
-            (0..num_buffers.min(4))
+            (0..num_buffers)
                 .map(|_| Some(HostileBuffer::new()))
                 .collect(),
             (0..num_buffers.min(4))
@@ -8018,7 +8018,7 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
             start_slot, num_buffers
         ));
         (
-            (0..num_buffers.min(4))
+            (0..num_buffers)
                 .map(|_| Some(HostileBuffer::new()))
                 .collect(),
             (0..num_buffers.min(4))
@@ -8045,7 +8045,7 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
             start_slot, num_buffers
         ));
         (
-            (0..num_buffers.min(4))
+            (0..num_buffers)
                 .map(|_| Some(HostileBuffer::new()))
                 .collect(),
             (0..num_buffers.min(4))
@@ -8072,7 +8072,7 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
             start_slot, num_buffers
         ));
         (
-            (0..num_buffers.min(4))
+            (0..num_buffers)
                 .map(|_| Some(HostileBuffer::new()))
                 .collect(),
             (0..num_buffers.min(4))
@@ -8898,7 +8898,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::VSGetConstantBuffers(start_slot={:?}, num_buffers={:?})",
             start_slot, num_buffers
         ));
-        (0..num_buffers.min(4))
+        (0..num_buffers)
             .map(|_| Some(HostileBuffer::new()))
             .collect()
     }
@@ -8913,7 +8913,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::PSGetShaderResources(start_slot={:?}, num_views={:?})",
             start_slot, num_views
         ));
-        (0..num_views.min(4))
+        (0..num_views)
             .map(|_| Some(HostileShaderResourceView::new()))
             .collect()
     }
@@ -8937,7 +8937,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::PSGetSamplers(start_slot={:?}, num_samplers={:?})",
             start_slot, num_samplers
         ));
-        (0..num_samplers.min(4))
+        (0..num_samplers)
             .map(|_| Some(HostileSamplerState::new()))
             .collect()
     }
@@ -8961,7 +8961,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::PSGetConstantBuffers(start_slot={:?}, num_buffers={:?})",
             start_slot, num_buffers
         ));
-        (0..num_buffers.min(4))
+        (0..num_buffers)
             .map(|_| Some(HostileBuffer::new()))
             .collect()
     }
@@ -8985,7 +8985,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             start_slot, num_buffers
         ));
         (
-            (0..num_buffers.min(4))
+            (0..num_buffers)
                 .map(|_| Some(HostileBuffer::new()))
                 .collect(),
             (0..num_buffers.min(4))
@@ -9021,7 +9021,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::GSGetConstantBuffers(start_slot={:?}, num_buffers={:?})",
             start_slot, num_buffers
         ));
-        (0..num_buffers.min(4))
+        (0..num_buffers)
             .map(|_| Some(HostileBuffer::new()))
             .collect()
     }
@@ -9049,7 +9049,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::VSGetShaderResources(start_slot={:?}, num_views={:?})",
             start_slot, num_views
         ));
-        (0..num_views.min(4))
+        (0..num_views)
             .map(|_| Some(HostileShaderResourceView::new()))
             .collect()
     }
@@ -9064,7 +9064,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::VSGetSamplers(start_slot={:?}, num_samplers={:?})",
             start_slot, num_samplers
         ));
-        (0..num_samplers.min(4))
+        (0..num_samplers)
             .map(|_| Some(HostileSamplerState::new()))
             .collect()
     }
@@ -9088,7 +9088,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::GSGetShaderResources(start_slot={:?}, num_views={:?})",
             start_slot, num_views
         ));
-        (0..num_views.min(4))
+        (0..num_views)
             .map(|_| Some(HostileShaderResourceView::new()))
             .collect()
     }
@@ -9103,7 +9103,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::GSGetSamplers(start_slot={:?}, num_samplers={:?})",
             start_slot, num_samplers
         ));
-        (0..num_samplers.min(4))
+        (0..num_samplers)
             .map(|_| Some(HostileSamplerState::new()))
             .collect()
     }
@@ -9120,7 +9120,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             num_views
         ));
         (
-            (0..num_views.min(4))
+            (0..num_views)
                 .map(|_| Some(HostileRenderTargetView::new()))
                 .collect(),
             Some(HostileDepthStencilView::new()),
@@ -9144,11 +9144,11 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             num_rt_vs, uav_start_slot, num_ua_vs
         ));
         (
-            (0..num_rt_vs.min(4))
+            (0..num_rt_vs)
                 .map(|_| Some(HostileRenderTargetView::new()))
                 .collect(),
             Some(HostileDepthStencilView::new()),
-            (0..num_ua_vs.min(4))
+            (0..num_ua_vs)
                 .map(|_| Some(HostileUnorderedAccessView::new()))
                 .collect(),
         )
@@ -9185,7 +9185,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::SOGetTargets(num_buffers={:?})",
             num_buffers
         ));
-        (0..num_buffers.min(4))
+        (0..num_buffers)
             .map(|_| Some(HostileBuffer::new()))
             .collect()
     }
@@ -9224,7 +9224,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::HSGetShaderResources(start_slot={:?}, num_views={:?})",
             start_slot, num_views
         ));
-        (0..num_views.min(4))
+        (0..num_views)
             .map(|_| Some(HostileShaderResourceView::new()))
             .collect()
     }
@@ -9248,7 +9248,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::HSGetSamplers(start_slot={:?}, num_samplers={:?})",
             start_slot, num_samplers
         ));
-        (0..num_samplers.min(4))
+        (0..num_samplers)
             .map(|_| Some(HostileSamplerState::new()))
             .collect()
     }
@@ -9263,7 +9263,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::HSGetConstantBuffers(start_slot={:?}, num_buffers={:?})",
             start_slot, num_buffers
         ));
-        (0..num_buffers.min(4))
+        (0..num_buffers)
             .map(|_| Some(HostileBuffer::new()))
             .collect()
     }
@@ -9278,7 +9278,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::DSGetShaderResources(start_slot={:?}, num_views={:?})",
             start_slot, num_views
         ));
-        (0..num_views.min(4))
+        (0..num_views)
             .map(|_| Some(HostileShaderResourceView::new()))
             .collect()
     }
@@ -9302,7 +9302,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::DSGetSamplers(start_slot={:?}, num_samplers={:?})",
             start_slot, num_samplers
         ));
-        (0..num_samplers.min(4))
+        (0..num_samplers)
             .map(|_| Some(HostileSamplerState::new()))
             .collect()
     }
@@ -9317,7 +9317,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::DSGetConstantBuffers(start_slot={:?}, num_buffers={:?})",
             start_slot, num_buffers
         ));
-        (0..num_buffers.min(4))
+        (0..num_buffers)
             .map(|_| Some(HostileBuffer::new()))
             .collect()
     }
@@ -9332,7 +9332,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::CSGetShaderResources(start_slot={:?}, num_views={:?})",
             start_slot, num_views
         ));
-        (0..num_views.min(4))
+        (0..num_views)
             .map(|_| Some(HostileShaderResourceView::new()))
             .collect()
     }
@@ -9347,7 +9347,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::CSGetUnorderedAccessViews(start_slot={:?}, num_ua_vs={:?})",
             start_slot, num_ua_vs
         ));
-        (0..num_ua_vs.min(4))
+        (0..num_ua_vs)
             .map(|_| Some(HostileUnorderedAccessView::new()))
             .collect()
     }
@@ -9371,7 +9371,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::CSGetSamplers(start_slot={:?}, num_samplers={:?})",
             start_slot, num_samplers
         ));
-        (0..num_samplers.min(4))
+        (0..num_samplers)
             .map(|_| Some(HostileSamplerState::new()))
             .collect()
     }
@@ -9386,7 +9386,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
             "ID3D11DeviceContext::CSGetConstantBuffers(start_slot={:?}, num_buffers={:?})",
             start_slot, num_buffers
         ));
-        (0..num_buffers.min(4))
+        (0..num_buffers)
             .map(|_| Some(HostileBuffer::new()))
             .collect()
     }
@@ -17932,8 +17932,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k4.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                            this,
-                            Default::default(),
+                            this, 35_u32,
                         );
                     answer.ok()
                 })
@@ -17950,11 +17949,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k6.as_ref()?;
-                    let answer = direct3d_11::ClassLinkage::get_class_instance(
-                        this,
-                        c"",
-                        Default::default(),
-                    );
+                    let answer =
+                        direct3d_11::ClassLinkage::get_class_instance(this, c"known", 112_u32);
                     answer.ok()
                 })
             };
@@ -17971,12 +17967,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 made(|| {
                     let this = o.k6.as_ref()?;
                     let answer = direct3d_11::ClassLinkage::create_class_instance(
-                        this,
-                        c"",
-                        Default::default(),
-                        Default::default(),
-                        Default::default(),
-                        Default::default(),
+                        this, c"known", 37_u32, 103_u32, 73_u32, 58_u32,
                     );
                     answer.ok()
                 })
@@ -17995,7 +17986,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
                     );
                     answer.ok()
@@ -18015,7 +18006,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_BLEND_STATE1,
                     );
                     answer.ok()
@@ -18035,7 +18026,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_BUFFER,
                     );
                     answer.ok()
@@ -18055,7 +18046,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_CLASS_INSTANCE,
                     );
                     answer.ok()
@@ -18075,7 +18066,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_CLASS_LINKAGE,
                     );
                     answer.ok()
@@ -18095,7 +18086,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_COMMAND_LIST,
                     );
                     answer.ok()
@@ -18115,7 +18106,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_COMPUTE_SHADER,
                     );
                     answer.ok()
@@ -18135,7 +18126,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_COUNTER,
                     );
                     answer.ok()
@@ -18155,7 +18146,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_CRYPTO_SESSION,
                     );
                     answer.ok()
@@ -18175,7 +18166,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_DEBUG,
                     );
                     answer.ok()
@@ -18195,7 +18186,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_STATE,
                     );
                     answer.ok()
@@ -18215,7 +18206,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_VIEW,
                     );
                     answer.ok()
@@ -18235,7 +18226,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_DEVICE5,
                     );
                     answer.ok()
@@ -18255,7 +18246,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_DEVICE_CONTEXT4,
                     );
                     answer.ok()
@@ -18275,7 +18266,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_DOMAIN_SHADER,
                     );
                     answer.ok()
@@ -18295,7 +18286,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_FENCE,
                     );
                     answer.ok()
@@ -18315,7 +18306,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_GEOMETRY_SHADER,
                     );
                     answer.ok()
@@ -18335,7 +18326,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_HULL_SHADER,
                     );
                     answer.ok()
@@ -18355,7 +18346,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_INFO_QUEUE,
                     );
                     answer.ok()
@@ -18375,7 +18366,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_INPUT_LAYOUT,
                     );
                     answer.ok()
@@ -18395,7 +18386,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_MULTITHREAD,
                     );
                     answer.ok()
@@ -18415,7 +18406,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_PIXEL_SHADER,
                     );
                     answer.ok()
@@ -18435,7 +18426,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_PREDICATE,
                     );
                     answer.ok()
@@ -18455,7 +18446,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_QUERY1,
                     );
                     answer.ok()
@@ -18475,7 +18466,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_RASTERIZER_STATE2,
                     );
                     answer.ok()
@@ -18495,7 +18486,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_REF_DEFAULT_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -18515,7 +18506,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_REF_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -18535,7 +18526,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_RENDER_TARGET_VIEW1,
                     );
                     answer.ok()
@@ -18555,7 +18546,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_SAMPLER_STATE,
                     );
                     answer.ok()
@@ -18575,7 +18566,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_SHADER_RESOURCE_VIEW1,
                     );
                     answer.ok()
@@ -18595,7 +18586,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE,
                     );
                     answer.ok()
@@ -18615,7 +18606,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE_FACTORY,
                     );
                     answer.ok()
@@ -18635,7 +18626,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_SWITCH_TO_REF,
                     );
                     answer.ok()
@@ -18655,7 +18646,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_1D,
                     );
                     answer.ok()
@@ -18675,7 +18666,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_2D1,
                     );
                     answer.ok()
@@ -18695,7 +18686,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_3D1,
                     );
                     answer.ok()
@@ -18715,7 +18706,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_TRACING_DEVICE,
                     );
                     answer.ok()
@@ -18735,7 +18726,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_UNORDERED_ACCESS_VIEW1,
                     );
                     answer.ok()
@@ -18755,7 +18746,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VERTEX_SHADER,
                     );
                     answer.ok()
@@ -18775,7 +18766,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_CONTEXT3,
                     );
                     answer.ok()
@@ -18795,7 +18786,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER,
                     );
                     answer.ok()
@@ -18815,7 +18806,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -18835,7 +18826,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DEVICE2,
                     );
                     answer.ok()
@@ -18855,7 +18846,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR,
                     );
                     answer.ok()
@@ -18875,7 +18866,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_ENUMERATOR1,
                     );
                     answer.ok()
@@ -18895,7 +18886,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_INPUT_VIEW,
                     );
                     answer.ok()
@@ -18915,7 +18906,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -18935,7 +18926,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D_DEVICE_CONTEXT_STATE,
                     );
                     answer.ok()
@@ -18955,7 +18946,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::open_shared_fence(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(83),
                         &direct3d_11::constants::IID_ID3D_USER_DEFINED_ANNOTATION,
                     );
                     answer.ok()
@@ -18975,8 +18966,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
                     );
                     answer.ok()
@@ -18996,8 +18987,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_BLEND_STATE1,
                     );
                     answer.ok()
@@ -19017,8 +19008,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_BUFFER,
                     );
                     answer.ok()
@@ -19038,8 +19029,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_CLASS_INSTANCE,
                     );
                     answer.ok()
@@ -19059,8 +19050,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_CLASS_LINKAGE,
                     );
                     answer.ok()
@@ -19080,8 +19071,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_COMMAND_LIST,
                     );
                     answer.ok()
@@ -19101,8 +19092,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_COMPUTE_SHADER,
                     );
                     answer.ok()
@@ -19122,8 +19113,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_COUNTER,
                     );
                     answer.ok()
@@ -19143,8 +19134,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_CRYPTO_SESSION,
                     );
                     answer.ok()
@@ -19164,8 +19155,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_DEBUG,
                     );
                     answer.ok()
@@ -19185,8 +19176,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_STATE,
                     );
                     answer.ok()
@@ -19206,8 +19197,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_VIEW,
                     );
                     answer.ok()
@@ -19227,8 +19218,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_DEVICE5,
                     );
                     answer.ok()
@@ -19248,8 +19239,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_DEVICE_CONTEXT4,
                     );
                     answer.ok()
@@ -19269,8 +19260,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_DOMAIN_SHADER,
                     );
                     answer.ok()
@@ -19290,8 +19281,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_FENCE,
                     );
                     answer.ok()
@@ -19311,8 +19302,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_GEOMETRY_SHADER,
                     );
                     answer.ok()
@@ -19332,8 +19323,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_HULL_SHADER,
                     );
                     answer.ok()
@@ -19353,8 +19344,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_INFO_QUEUE,
                     );
                     answer.ok()
@@ -19374,8 +19365,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_INPUT_LAYOUT,
                     );
                     answer.ok()
@@ -19395,8 +19386,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_MULTITHREAD,
                     );
                     answer.ok()
@@ -19416,8 +19407,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_PIXEL_SHADER,
                     );
                     answer.ok()
@@ -19437,8 +19428,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_PREDICATE,
                     );
                     answer.ok()
@@ -19458,8 +19449,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_QUERY1,
                     );
                     answer.ok()
@@ -19479,8 +19470,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_RASTERIZER_STATE2,
                     );
                     answer.ok()
@@ -19500,8 +19491,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_REF_DEFAULT_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -19521,8 +19512,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_REF_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -19542,8 +19533,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_RENDER_TARGET_VIEW1,
                     );
                     answer.ok()
@@ -19563,8 +19554,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_SAMPLER_STATE,
                     );
                     answer.ok()
@@ -19584,8 +19575,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_SHADER_RESOURCE_VIEW1,
                     );
                     answer.ok()
@@ -19605,8 +19596,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE,
                     );
                     answer.ok()
@@ -19626,8 +19617,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE_FACTORY,
                     );
                     answer.ok()
@@ -19647,8 +19638,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_SWITCH_TO_REF,
                     );
                     answer.ok()
@@ -19668,8 +19659,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_1D,
                     );
                     answer.ok()
@@ -19689,8 +19680,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_2D1,
                     );
                     answer.ok()
@@ -19710,8 +19701,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_3D1,
                     );
                     answer.ok()
@@ -19731,8 +19722,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_TRACING_DEVICE,
                     );
                     answer.ok()
@@ -19752,8 +19743,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_UNORDERED_ACCESS_VIEW1,
                     );
                     answer.ok()
@@ -19773,8 +19764,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VERTEX_SHADER,
                     );
                     answer.ok()
@@ -19794,8 +19785,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_CONTEXT3,
                     );
                     answer.ok()
@@ -19815,8 +19806,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER,
                     );
                     answer.ok()
@@ -19836,8 +19827,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -19857,8 +19848,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DEVICE2,
                     );
                     answer.ok()
@@ -19878,8 +19869,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR,
                     );
                     answer.ok()
@@ -19899,8 +19890,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_ENUMERATOR1,
                     );
                     answer.ok()
@@ -19920,8 +19911,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_INPUT_VIEW,
                     );
                     answer.ok()
@@ -19941,8 +19932,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -19962,8 +19953,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D_DEVICE_CONTEXT_STATE,
                     );
                     answer.ok()
@@ -19983,8 +19974,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device5::create_fence(
                         this,
-                        Default::default(),
-                        Default::default(),
+                        54_u64,
+                        direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
                         &direct3d_11::constants::IID_ID3D_USER_DEFINED_ANNOTATION,
                     );
                     answer.ok()
@@ -20002,7 +19993,24 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device3::create_rasterizer_state2(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc2(&[u8::MIN; 48]));
+                    let answer = direct3d_11::Device3::create_rasterizer_state2(
+                        this,
+                        &direct3d_11::structures::RasterizerDesc2 {
+                            fill_mode: direct3d_11::enumerations::D3D11_FILL_WIREFRAME,
+                            cull_mode: direct3d_11::enumerations::D3D11_CULL_NONE,
+                            front_counter_clockwise: true,
+                            depth_bias: 59_i32,
+                            depth_bias_clamp: 66.5_f32,
+                            slope_scaled_depth_bias: 73.5_f32,
+                            depth_clip_enable: true,
+                            scissor_enable: true,
+                            multisample_enable: true,
+                            antialiased_line_enable: true,
+                            forced_sample_count: 108_u32,
+                            conservative_raster:
+                                direct3d_11::enumerations::D3D11_CONSERVATIVE_RASTERIZATION_MODE_ON,
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -20100,7 +20108,14 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device3::create_query1(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc1(&[u8::MIN; 12]));
+                    let answer = direct3d_11::Device3::create_query1(
+                        this,
+                        &direct3d_11::structures::QueryDesc1 {
+                            query: direct3d_11::enumerations::D3D11_QUERY_OCCLUSION,
+                            misc_flags: 29_u32,
+                            context_type: direct3d_11::enumerations::D3D11_CONTEXT_TYPE_3D,
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -20116,8 +20131,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer =
-                        direct3d_11::Device3::create_deferred_context3(this, Default::default());
+                    let answer = direct3d_11::Device3::create_deferred_context3(this, 107_u32);
                     answer.ok()
                 })
             };
@@ -20133,8 +20147,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer =
-                        direct3d_11::Device2::create_deferred_context2(this, Default::default());
+                    let answer = direct3d_11::Device2::create_deferred_context2(this, 107_u32);
                     answer.ok()
                 })
             };
@@ -20150,8 +20163,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer =
-                        direct3d_11::Device1::create_deferred_context1(this, Default::default());
+                    let answer = direct3d_11::Device1::create_deferred_context1(this, 107_u32);
                     answer.ok()
                 })
             };
@@ -20167,7 +20179,27 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device1::create_blend_state1(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc1(&[u8::MIN; 328]));
+                    let answer = direct3d_11::Device1::create_blend_state1(
+                        this,
+                        &direct3d_11::structures::BlendDesc1 {
+                            alpha_to_coverage_enable: true,
+                            independent_blend_enable: true,
+                            render_target: core::array::from_fn(|_| {
+                                direct3d_11::structures::RenderTargetBlendDesc1 {
+                                    blend_enable: true,
+                                    logic_op_enable: true,
+                                    src_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    dest_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    blend_op: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                                    src_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    dest_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    blend_op_alpha: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                                    logic_op: direct3d_11::enumerations::D3D11_LOGIC_OP_SET,
+                                    render_target_write_mask: 2_u8,
+                                }
+                            }),
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -20183,7 +20215,22 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device1::create_rasterizer_state1(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc1(&[u8::MIN; 44]));
+                    let answer = direct3d_11::Device1::create_rasterizer_state1(
+                        this,
+                        &direct3d_11::structures::RasterizerDesc1 {
+                            fill_mode: direct3d_11::enumerations::D3D11_FILL_WIREFRAME,
+                            cull_mode: direct3d_11::enumerations::D3D11_CULL_NONE,
+                            front_counter_clockwise: true,
+                            depth_bias: 59_i32,
+                            depth_bias_clamp: 66.5_f32,
+                            slope_scaled_depth_bias: 73.5_f32,
+                            depth_clip_enable: true,
+                            scissor_enable: true,
+                            multisample_enable: true,
+                            antialiased_line_enable: true,
+                            forced_sample_count: 108_u32,
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -20201,7 +20248,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
                     );
                     answer.ok()
@@ -20221,7 +20268,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_BLEND_STATE1,
                     );
                     answer.ok()
@@ -20241,7 +20288,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_BUFFER,
                     );
                     answer.ok()
@@ -20261,7 +20308,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_CLASS_INSTANCE,
                     );
                     answer.ok()
@@ -20281,7 +20328,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_CLASS_LINKAGE,
                     );
                     answer.ok()
@@ -20301,7 +20348,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_COMMAND_LIST,
                     );
                     answer.ok()
@@ -20321,7 +20368,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_COMPUTE_SHADER,
                     );
                     answer.ok()
@@ -20341,7 +20388,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_COUNTER,
                     );
                     answer.ok()
@@ -20361,7 +20408,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_CRYPTO_SESSION,
                     );
                     answer.ok()
@@ -20381,7 +20428,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEBUG,
                     );
                     answer.ok()
@@ -20401,7 +20448,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_STATE,
                     );
                     answer.ok()
@@ -20421,7 +20468,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_VIEW,
                     );
                     answer.ok()
@@ -20441,7 +20488,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEVICE5,
                     );
                     answer.ok()
@@ -20461,7 +20508,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEVICE_CONTEXT4,
                     );
                     answer.ok()
@@ -20481,7 +20528,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DOMAIN_SHADER,
                     );
                     answer.ok()
@@ -20501,7 +20548,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_FENCE,
                     );
                     answer.ok()
@@ -20521,7 +20568,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_GEOMETRY_SHADER,
                     );
                     answer.ok()
@@ -20541,7 +20588,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_HULL_SHADER,
                     );
                     answer.ok()
@@ -20561,7 +20608,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_INFO_QUEUE,
                     );
                     answer.ok()
@@ -20581,7 +20628,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_INPUT_LAYOUT,
                     );
                     answer.ok()
@@ -20601,7 +20648,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_MULTITHREAD,
                     );
                     answer.ok()
@@ -20621,7 +20668,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_PIXEL_SHADER,
                     );
                     answer.ok()
@@ -20641,7 +20688,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_PREDICATE,
                     );
                     answer.ok()
@@ -20661,7 +20708,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_QUERY1,
                     );
                     answer.ok()
@@ -20681,7 +20728,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_RASTERIZER_STATE2,
                     );
                     answer.ok()
@@ -20701,7 +20748,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_REF_DEFAULT_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -20721,7 +20768,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_REF_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -20741,7 +20788,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_RENDER_TARGET_VIEW1,
                     );
                     answer.ok()
@@ -20761,7 +20808,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SAMPLER_STATE,
                     );
                     answer.ok()
@@ -20781,7 +20828,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SHADER_RESOURCE_VIEW1,
                     );
                     answer.ok()
@@ -20801,7 +20848,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE,
                     );
                     answer.ok()
@@ -20821,7 +20868,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE_FACTORY,
                     );
                     answer.ok()
@@ -20841,7 +20888,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SWITCH_TO_REF,
                     );
                     answer.ok()
@@ -20861,7 +20908,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_1D,
                     );
                     answer.ok()
@@ -20881,7 +20928,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_2D1,
                     );
                     answer.ok()
@@ -20901,7 +20948,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_3D1,
                     );
                     answer.ok()
@@ -20921,7 +20968,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TRACING_DEVICE,
                     );
                     answer.ok()
@@ -20941,7 +20988,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_UNORDERED_ACCESS_VIEW1,
                     );
                     answer.ok()
@@ -20961,7 +21008,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VERTEX_SHADER,
                     );
                     answer.ok()
@@ -20981,7 +21028,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_CONTEXT3,
                     );
                     answer.ok()
@@ -21001,7 +21048,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER,
                     );
                     answer.ok()
@@ -21021,7 +21068,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -21041,7 +21088,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DEVICE2,
                     );
                     answer.ok()
@@ -21061,7 +21108,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR,
                     );
                     answer.ok()
@@ -21081,7 +21128,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_ENUMERATOR1,
                     );
                     answer.ok()
@@ -21101,7 +21148,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_INPUT_VIEW,
                     );
                     answer.ok()
@@ -21121,7 +21168,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -21141,7 +21188,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D_DEVICE_CONTEXT_STATE,
                     );
                     answer.ok()
@@ -21161,7 +21208,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource1(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D_USER_DEFINED_ANNOTATION,
                     );
                     answer.ok()
@@ -21181,8 +21228,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
                     );
                     answer.ok()
@@ -21202,8 +21249,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_BLEND_STATE1,
                     );
                     answer.ok()
@@ -21223,8 +21270,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_BUFFER,
                     );
                     answer.ok()
@@ -21244,8 +21291,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_CLASS_INSTANCE,
                     );
                     answer.ok()
@@ -21265,8 +21312,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_CLASS_LINKAGE,
                     );
                     answer.ok()
@@ -21286,8 +21333,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_COMMAND_LIST,
                     );
                     answer.ok()
@@ -21307,8 +21354,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_COMPUTE_SHADER,
                     );
                     answer.ok()
@@ -21328,8 +21375,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_COUNTER,
                     );
                     answer.ok()
@@ -21349,8 +21396,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_CRYPTO_SESSION,
                     );
                     answer.ok()
@@ -21370,8 +21417,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_DEBUG,
                     );
                     answer.ok()
@@ -21391,8 +21438,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_STATE,
                     );
                     answer.ok()
@@ -21412,8 +21459,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_VIEW,
                     );
                     answer.ok()
@@ -21433,8 +21480,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_DEVICE5,
                     );
                     answer.ok()
@@ -21454,8 +21501,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_DEVICE_CONTEXT4,
                     );
                     answer.ok()
@@ -21475,8 +21522,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_DOMAIN_SHADER,
                     );
                     answer.ok()
@@ -21496,8 +21543,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_FENCE,
                     );
                     answer.ok()
@@ -21517,8 +21564,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_GEOMETRY_SHADER,
                     );
                     answer.ok()
@@ -21538,8 +21585,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_HULL_SHADER,
                     );
                     answer.ok()
@@ -21559,8 +21606,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_INFO_QUEUE,
                     );
                     answer.ok()
@@ -21580,8 +21627,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_INPUT_LAYOUT,
                     );
                     answer.ok()
@@ -21601,8 +21648,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_MULTITHREAD,
                     );
                     answer.ok()
@@ -21622,8 +21669,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_PIXEL_SHADER,
                     );
                     answer.ok()
@@ -21643,8 +21690,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_PREDICATE,
                     );
                     answer.ok()
@@ -21664,8 +21711,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_QUERY1,
                     );
                     answer.ok()
@@ -21685,8 +21732,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_RASTERIZER_STATE2,
                     );
                     answer.ok()
@@ -21706,8 +21753,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_REF_DEFAULT_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -21727,8 +21774,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_REF_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -21748,8 +21795,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_RENDER_TARGET_VIEW1,
                     );
                     answer.ok()
@@ -21769,8 +21816,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_SAMPLER_STATE,
                     );
                     answer.ok()
@@ -21790,8 +21837,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_SHADER_RESOURCE_VIEW1,
                     );
                     answer.ok()
@@ -21811,8 +21858,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE,
                     );
                     answer.ok()
@@ -21832,8 +21879,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE_FACTORY,
                     );
                     answer.ok()
@@ -21853,8 +21900,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_SWITCH_TO_REF,
                     );
                     answer.ok()
@@ -21874,8 +21921,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_1D,
                     );
                     answer.ok()
@@ -21895,8 +21942,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_2D1,
                     );
                     answer.ok()
@@ -21916,8 +21963,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_3D1,
                     );
                     answer.ok()
@@ -21937,8 +21984,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_TRACING_DEVICE,
                     );
                     answer.ok()
@@ -21958,8 +22005,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_UNORDERED_ACCESS_VIEW1,
                     );
                     answer.ok()
@@ -21979,8 +22026,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VERTEX_SHADER,
                     );
                     answer.ok()
@@ -22000,8 +22047,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_CONTEXT3,
                     );
                     answer.ok()
@@ -22021,8 +22068,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER,
                     );
                     answer.ok()
@@ -22042,8 +22089,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -22063,8 +22110,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DEVICE2,
                     );
                     answer.ok()
@@ -22084,8 +22131,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR,
                     );
                     answer.ok()
@@ -22105,8 +22152,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_ENUMERATOR1,
                     );
                     answer.ok()
@@ -22126,8 +22173,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_INPUT_VIEW,
                     );
                     answer.ok()
@@ -22147,8 +22194,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -22168,8 +22215,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D_DEVICE_CONTEXT_STATE,
                     );
                     answer.ok()
@@ -22189,8 +22236,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device1::open_shared_resource_by_name(
                         this,
-                        &[],
-                        Default::default(),
+                        &[95_u16],
+                        18_u32,
                         &direct3d_11::constants::IID_ID3D_USER_DEFINED_ANNOTATION,
                     );
                     answer.ok()
@@ -22208,7 +22255,18 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_buffer(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_buffer_desc(&[u8::MIN; 24]), None);
+                    let answer = direct3d_11::Device::create_buffer(
+                        this,
+                        &direct3d_11::structures::BufferDesc {
+                            byte_width: 58_u32,
+                            usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE,
+                            bind_flags: 72_u32,
+                            cpu_access_flags: 79_u32,
+                            misc_flags: 86_u32,
+                            structure_byte_stride: 93_u32,
+                        },
+                        None,
+                    );
                     answer.ok()
                 })
             };
@@ -22224,7 +22282,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_texture_1d(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_1d_desc(&[u8::MIN; 32]), &[]);
+                    let answer = direct3d_11::Device::create_texture_1d(this, &direct3d_11::structures::Texture1DDesc { width: 58_u32, mip_levels: 65_u32, array_size: 72_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 93_u32, cpu_access_flags: 100_u32, misc_flags: 107_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 }]);
                     answer.ok()
                 })
             };
@@ -22240,7 +22298,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_texture_2d(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_2d_desc(&[u8::MIN; 44]), &[]);
+                    let answer = direct3d_11::Device::create_texture_2d(this, &direct3d_11::structures::Texture2DDesc { width: 58_u32, height: 65_u32, mip_levels: 72_u32, array_size: 79_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 100_u32, quality: 107_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 107_u32, cpu_access_flags: 114_u32, misc_flags: 121_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 }]);
                     answer.ok()
                 })
             };
@@ -22256,7 +22314,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_texture_3d(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_3d_desc(&[u8::MIN; 36]), &[]);
+                    let answer = direct3d_11::Device::create_texture_3d(this, &direct3d_11::structures::Texture3DDesc { width: 58_u32, height: 65_u32, depth: 72_u32, mip_levels: 79_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 100_u32, cpu_access_flags: 107_u32, misc_flags: 114_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 }]);
                     answer.ok()
                 })
             };
@@ -22380,7 +22438,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_input_layout(this, &[], &[]);
+                    let answer = direct3d_11::Device::create_input_layout(this, &[direct3d_11::structures::InputElementDesc { semantic_name: std::ffi::CString::from(c"known"), semantic_index: 15_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, input_slot: 29_u32, aligned_byte_offset: 36_u32, input_slot_class: direct3d_11::enumerations::D3D11_INPUT_PER_INSTANCE_DATA, instance_data_step_rate: 50_u32 }], &[110_u8]);
                     answer.ok()
                 })
             };
@@ -22396,7 +22454,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_vertex_shader(this, &[], None);
+                    let answer = direct3d_11::Device::create_vertex_shader(this, &[122_u8], None);
                     answer.ok()
                 })
             };
@@ -22412,7 +22470,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_geometry_shader(this, &[], None);
+                    let answer = direct3d_11::Device::create_geometry_shader(this, &[122_u8], None);
                     answer.ok()
                 })
             };
@@ -22430,10 +22488,17 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::create_geometry_shader_with_stream_output(
                         this,
-                        &[],
-                        &[],
-                        &[],
-                        Default::default(),
+                        &[122_u8],
+                        &[direct3d_11::structures::SoDeclarationEntry {
+                            stream: 121_u32,
+                            semantic_name: std::ffi::CString::from(c"known"),
+                            semantic_index: 9_u32,
+                            start_component: 16_u8,
+                            component_count: 23_u8,
+                            output_slot: 30_u8,
+                        }],
+                        &[91_u32],
+                        43_u32,
                         None,
                     );
                     answer.ok()
@@ -22451,7 +22516,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_pixel_shader(this, &[], None);
+                    let answer = direct3d_11::Device::create_pixel_shader(this, &[122_u8], None);
                     answer.ok()
                 })
             };
@@ -22467,7 +22532,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_hull_shader(this, &[], None);
+                    let answer = direct3d_11::Device::create_hull_shader(this, &[122_u8], None);
                     answer.ok()
                 })
             };
@@ -22483,7 +22548,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_domain_shader(this, &[], None);
+                    let answer = direct3d_11::Device::create_domain_shader(this, &[122_u8], None);
                     answer.ok()
                 })
             };
@@ -22499,7 +22564,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_compute_shader(this, &[], None);
+                    let answer = direct3d_11::Device::create_compute_shader(this, &[122_u8], None);
                     answer.ok()
                 })
             };
@@ -22531,7 +22596,25 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_blend_state(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc(&[u8::MIN; 264]));
+                    let answer = direct3d_11::Device::create_blend_state(
+                        this,
+                        &direct3d_11::structures::BlendDesc {
+                            alpha_to_coverage_enable: true,
+                            independent_blend_enable: true,
+                            render_target: core::array::from_fn(|_| {
+                                direct3d_11::structures::RenderTargetBlendDesc {
+                                    blend_enable: true,
+                                    src_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    dest_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    blend_op: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                                    src_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    dest_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                                    blend_op_alpha: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                                    render_target_write_mask: 114_u8,
+                                }
+                            }),
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -22547,7 +22630,31 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_depth_stencil_state(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_depth_stencil_desc(&[u8::MIN; 52]));
+                    let answer = direct3d_11::Device::create_depth_stencil_state(
+                        this,
+                        &direct3d_11::structures::DepthStencilDesc {
+                            depth_enable: true,
+                            depth_write_mask: direct3d_11::enumerations::D3D11_DEPTH_WRITE_MASK_ALL,
+                            depth_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                            stencil_enable: true,
+                            stencil_read_mask: 33_u8,
+                            stencil_write_mask: 40_u8,
+                            front_face: direct3d_11::structures::DepthStencilopDesc {
+                                stencil_fail_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                                stencil_depth_fail_op:
+                                    direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                                stencil_pass_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                                stencil_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                            },
+                            back_face: direct3d_11::structures::DepthStencilopDesc {
+                                stencil_fail_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                                stencil_depth_fail_op:
+                                    direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                                stencil_pass_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                                stencil_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                            },
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -22563,7 +22670,21 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_rasterizer_state(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc(&[u8::MIN; 40]));
+                    let answer = direct3d_11::Device::create_rasterizer_state(
+                        this,
+                        &direct3d_11::structures::RasterizerDesc {
+                            fill_mode: direct3d_11::enumerations::D3D11_FILL_WIREFRAME,
+                            cull_mode: direct3d_11::enumerations::D3D11_CULL_NONE,
+                            front_counter_clockwise: true,
+                            depth_bias: 59_i32,
+                            depth_bias_clamp: 66.5_f32,
+                            slope_scaled_depth_bias: 73.5_f32,
+                            depth_clip_enable: true,
+                            scissor_enable: true,
+                            multisample_enable: true,
+                            antialiased_line_enable: true,
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -22579,7 +22700,22 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_sampler_state(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_sampler_desc(&[u8::MIN; 52]));
+                    let answer = direct3d_11::Device::create_sampler_state(
+                        this,
+                        &direct3d_11::structures::SamplerDesc {
+                            filter:
+                                direct3d_11::enumerations::D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR,
+                            address_u: direct3d_11::enumerations::D3D11_TEXTURE_ADDRESS_WRAP,
+                            address_v: direct3d_11::enumerations::D3D11_TEXTURE_ADDRESS_WRAP,
+                            address_w: direct3d_11::enumerations::D3D11_TEXTURE_ADDRESS_WRAP,
+                            mip_lod_bias: 68.5_f32,
+                            max_anisotropy: 75_u32,
+                            comparison_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                            border_color: core::array::from_fn(|_| 89.5_f32),
+                            min_lod: 96.5_f32,
+                            max_lod: 103.5_f32,
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -22595,7 +22731,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_predicate(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(&[u8::MIN; 8]));
+                    let answer = direct3d_11::Device::create_predicate(
+                        this,
+                        &direct3d_11::structures::QueryDesc {
+                            query: direct3d_11::enumerations::D3D11_QUERY_OCCLUSION,
+                            misc_flags: 51_u32,
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -22611,7 +22753,13 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer = direct3d_11::Device::create_counter(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_counter_desc(&[u8::MIN; 8]));
+                    let answer = direct3d_11::Device::create_counter(
+                        this,
+                        &direct3d_11::structures::CounterDesc {
+                            counter: direct3d_11::enumerations::D3D11_COUNTER_DEVICE_DEPENDENT_0,
+                            misc_flags: 92_u32,
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -22627,8 +22775,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k14.as_ref()?;
-                    let answer =
-                        direct3d_11::Device::create_deferred_context(this, Default::default());
+                    let answer = direct3d_11::Device::create_deferred_context(this, 107_u32);
                     answer.ok()
                 })
             };
@@ -22646,7 +22793,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_AUTHENTICATED_CHANNEL,
                     );
                     answer.ok()
@@ -22666,7 +22813,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_BLEND_STATE1,
                     );
                     answer.ok()
@@ -22686,7 +22833,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_BUFFER,
                     );
                     answer.ok()
@@ -22706,7 +22853,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_CLASS_INSTANCE,
                     );
                     answer.ok()
@@ -22726,7 +22873,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_CLASS_LINKAGE,
                     );
                     answer.ok()
@@ -22746,7 +22893,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_COMMAND_LIST,
                     );
                     answer.ok()
@@ -22766,7 +22913,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_COMPUTE_SHADER,
                     );
                     answer.ok()
@@ -22786,7 +22933,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_COUNTER,
                     );
                     answer.ok()
@@ -22806,7 +22953,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_CRYPTO_SESSION,
                     );
                     answer.ok()
@@ -22826,7 +22973,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEBUG,
                     );
                     answer.ok()
@@ -22846,7 +22993,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_STATE,
                     );
                     answer.ok()
@@ -22866,7 +23013,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEPTH_STENCIL_VIEW,
                     );
                     answer.ok()
@@ -22886,7 +23033,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEVICE5,
                     );
                     answer.ok()
@@ -22906,7 +23053,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DEVICE_CONTEXT4,
                     );
                     answer.ok()
@@ -22926,7 +23073,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_DOMAIN_SHADER,
                     );
                     answer.ok()
@@ -22946,7 +23093,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_FENCE,
                     );
                     answer.ok()
@@ -22966,7 +23113,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_GEOMETRY_SHADER,
                     );
                     answer.ok()
@@ -22986,7 +23133,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_HULL_SHADER,
                     );
                     answer.ok()
@@ -23006,7 +23153,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_INFO_QUEUE,
                     );
                     answer.ok()
@@ -23026,7 +23173,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_INPUT_LAYOUT,
                     );
                     answer.ok()
@@ -23046,7 +23193,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_MULTITHREAD,
                     );
                     answer.ok()
@@ -23066,7 +23213,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_PIXEL_SHADER,
                     );
                     answer.ok()
@@ -23086,7 +23233,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_PREDICATE,
                     );
                     answer.ok()
@@ -23106,7 +23253,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_QUERY1,
                     );
                     answer.ok()
@@ -23126,7 +23273,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_RASTERIZER_STATE2,
                     );
                     answer.ok()
@@ -23146,7 +23293,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_REF_DEFAULT_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -23166,7 +23313,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_REF_TRACKING_OPTIONS,
                     );
                     answer.ok()
@@ -23186,7 +23333,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_RENDER_TARGET_VIEW1,
                     );
                     answer.ok()
@@ -23206,7 +23353,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SAMPLER_STATE,
                     );
                     answer.ok()
@@ -23226,7 +23373,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SHADER_RESOURCE_VIEW1,
                     );
                     answer.ok()
@@ -23246,7 +23393,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE,
                     );
                     answer.ok()
@@ -23266,7 +23413,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SHADER_TRACE_FACTORY,
                     );
                     answer.ok()
@@ -23286,7 +23433,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_SWITCH_TO_REF,
                     );
                     answer.ok()
@@ -23306,7 +23453,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_1D,
                     );
                     answer.ok()
@@ -23326,7 +23473,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_2D1,
                     );
                     answer.ok()
@@ -23346,7 +23493,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TEXTURE_3D1,
                     );
                     answer.ok()
@@ -23366,7 +23513,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_TRACING_DEVICE,
                     );
                     answer.ok()
@@ -23386,7 +23533,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_UNORDERED_ACCESS_VIEW1,
                     );
                     answer.ok()
@@ -23406,7 +23553,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VERTEX_SHADER,
                     );
                     answer.ok()
@@ -23426,7 +23573,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_CONTEXT3,
                     );
                     answer.ok()
@@ -23446,7 +23593,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER,
                     );
                     answer.ok()
@@ -23466,7 +23613,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DECODER_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -23486,7 +23633,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_DEVICE2,
                     );
                     answer.ok()
@@ -23506,7 +23653,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR,
                     );
                     answer.ok()
@@ -23526,7 +23673,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_ENUMERATOR1,
                     );
                     answer.ok()
@@ -23546,7 +23693,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_INPUT_VIEW,
                     );
                     answer.ok()
@@ -23566,7 +23713,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D11_VIDEO_PROCESSOR_OUTPUT_VIEW,
                     );
                     answer.ok()
@@ -23586,7 +23733,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D_DEVICE_CONTEXT_STATE,
                     );
                     answer.ok()
@@ -23606,7 +23753,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::open_shared_resource(
                         this,
-                        Default::default(),
+                        component_object_model::structures::Handle(68),
                         &direct3d_11::constants::IID_ID3D_USER_DEFINED_ANNOTATION,
                     );
                     answer.ok()
@@ -23947,8 +24094,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k15.as_ref()?;
-                    let answer =
-                        direct3d_11::DeviceContext::finish_command_list(this, Default::default());
+                    let answer = direct3d_11::DeviceContext::finish_command_list(this, true);
                     answer.ok()
                 })
             };
@@ -24065,7 +24211,45 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::ShaderTraceFactory::create_shader_trace(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_shader_trace_desc(&[u8::MIN; 40]));
+                    let answer = direct3d_11::ShaderTraceFactory::create_shader_trace(
+                        this,
+                        v1,
+                        &direct3d_11::structures::ShaderTraceDesc {
+                            type_: direct3d_11::enumerations::D3D11_VERTEX_SHADER,
+                            flags: 76_u32,
+                            anonymous: direct3d_11::structures::ShaderTraceDescAnonymous {
+                                vertex_shader_trace_desc:
+                                    direct3d_11::structures::VertexShaderTraceDesc {
+                                        invocation: 0_u64,
+                                    },
+                                hull_shader_trace_desc:
+                                    direct3d_11::structures::HullShaderTraceDesc {
+                                        invocation: 0_u64,
+                                    },
+                                domain_shader_trace_desc:
+                                    direct3d_11::structures::DomainShaderTraceDesc {
+                                        invocation: 0_u64,
+                                    },
+                                geometry_shader_trace_desc:
+                                    direct3d_11::structures::GeometryShaderTraceDesc {
+                                        invocation: 0_u64,
+                                    },
+                                pixel_shader_trace_desc:
+                                    direct3d_11::structures::PixelShaderTraceDesc {
+                                        invocation: 0_u64,
+                                        x: 0_i32,
+                                        y: 0_i32,
+                                        sample_mask: 0_u64,
+                                    },
+                                compute_shader_trace_desc:
+                                    direct3d_11::structures::ComputeShaderTraceDesc {
+                                        invocation: 0_u64,
+                                        thread_id_in_group: core::array::from_fn(|_| 0_u32),
+                                        thread_group_id: core::array::from_fn(|_| 0_u32),
+                                    },
+                            },
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -24697,8 +24881,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k35.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                            this,
-                            Default::default(),
+                            this, 35_u32,
                         );
                     answer.ok()
                 })
@@ -25331,8 +25514,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k36.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                            this,
-                            Default::default(),
+                            this, 35_u32,
                         );
                     answer.ok()
                 })
@@ -25965,8 +26147,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k37.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                            this,
-                            Default::default(),
+                            this, 35_u32,
                         );
                     answer.ok()
                 })
@@ -25983,7 +26164,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k44.as_ref()?;
-                    let answer = direct3d_11::VideoDevice::create_video_decoder(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_desc(&[u8::MIN; 28]), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_config(&[u8::MIN; 100]));
+                    let answer = direct3d_11::VideoDevice::create_video_decoder(this, &direct3d_11::structures::VideoDecoderDesc { guid: component_object_model::structures::Guid { data1: 96_u32, data2: 103_u16, data3: 110_u16, data4: core::array::from_fn(|_| 117_u8) }, sample_width: 96_u32, sample_height: 103_u32, output_format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS }, &direct3d_11::structures::VideoDecoderConfig { guid_config_bitstream_encryption: component_object_model::structures::Guid { data1: 57_u32, data2: 64_u16, data3: 71_u16, data4: core::array::from_fn(|_| 78_u8) }, guid_config_m_bcontrol_encryption: component_object_model::structures::Guid { data1: 64_u32, data2: 71_u16, data3: 78_u16, data4: core::array::from_fn(|_| 85_u8) }, guid_config_resid_diff_encryption: component_object_model::structures::Guid { data1: 71_u32, data2: 78_u16, data3: 85_u16, data4: core::array::from_fn(|_| 92_u8) }, config_bitstream_raw: 71_u32, config_m_bcontrol_raster_order: 78_u32, config_resid_diff_host: 85_u32, config_spatial_resid8: 92_u32, config_resid8_subtraction: 99_u32, config_spatial_host8or9_clipping: 106_u32, config_spatial_resid_interleaved: 113_u32, config_intra_resid_unsigned: 120_u32, config_resid_diff_accelerator: 1_u32, config_host_inverse_scan: 8_u32, config_specific_idct: 15_u32, config4_grouped_coefs: 22_u32, config_min_render_target_buff_count: 29_u16, config_decoder_specific: 36_u16 });
                     answer.ok()
                 })
             };
@@ -26000,11 +26181,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 made(|| {
                     let this = o.k44.as_ref()?;
                     let v1 = o.k46.as_ref()?;
-                    let answer = direct3d_11::VideoDevice::create_video_processor(
-                        this,
-                        v1,
-                        Default::default(),
-                    );
+                    let answer = direct3d_11::VideoDevice::create_video_processor(this, v1, 48_u32);
                     answer.ok()
                 })
             };
@@ -26041,9 +26218,19 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k44.as_ref()?;
                     let answer = direct3d_11::VideoDevice::create_crypto_session(
                         this,
-                        &Default::default(),
+                        &component_object_model::structures::Guid {
+                            data1: 78_u32,
+                            data2: 85_u16,
+                            data3: 92_u16,
+                            data4: core::array::from_fn(|_| 99_u8),
+                        },
                         None,
-                        &Default::default(),
+                        &component_object_model::structures::Guid {
+                            data1: 15_u32,
+                            data2: 22_u16,
+                            data3: 29_u16,
+                            data4: core::array::from_fn(|_| 36_u8),
+                        },
                     );
                     answer.ok()
                 })
@@ -26071,7 +26258,26 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = direct3d_11::VideoDevice::create_video_decoder_output_view(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_output_view_desc(&[u8::MIN; 24]));
+                    let answer = direct3d_11::VideoDevice::create_video_decoder_output_view(
+                        this,
+                        v1,
+                        &direct3d_11::structures::VideoDecoderOutputViewDesc {
+                            decode_profile: component_object_model::structures::Guid {
+                                data1: 65_u32,
+                                data2: 72_u16,
+                                data3: 79_u16,
+                                data4: core::array::from_fn(|_| 86_u8),
+                            },
+                            view_dimension:
+                                direct3d_11::enumerations::D3D11_VDOV_DIMENSION_TEXTURE2D,
+                            anonymous:
+                                direct3d_11::structures::VideoDecoderOutputViewDescAnonymous {
+                                    texture_2d: direct3d_11::structures::Tex2DVdov {
+                                        array_slice: 0_u32,
+                                    },
+                                },
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -26099,7 +26305,23 @@ pub fn make_all(o: &mut Objects) -> usize {
                         None
                     })?;
                     let v2 = o.k46.as_ref()?;
-                    let answer = direct3d_11::VideoDevice::create_video_processor_input_view(this, v1, v2, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_input_view_desc(&[u8::MIN; 16]));
+                    let answer = direct3d_11::VideoDevice::create_video_processor_input_view(
+                        this,
+                        v1,
+                        v2,
+                        &direct3d_11::structures::VideoProcessorInputViewDesc {
+                            four_cc: 58_u32,
+                            view_dimension:
+                                direct3d_11::enumerations::D3D11_VPIV_DIMENSION_TEXTURE2D,
+                            anonymous:
+                                direct3d_11::structures::VideoProcessorInputViewDescAnonymous {
+                                    texture_2d: direct3d_11::structures::Tex2DVpiv {
+                                        mip_slice: 0_u32,
+                                        array_slice: 0_u32,
+                                    },
+                                },
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -26127,7 +26349,26 @@ pub fn make_all(o: &mut Objects) -> usize {
                         None
                     })?;
                     let v2 = o.k46.as_ref()?;
-                    let answer = direct3d_11::VideoDevice::create_video_processor_output_view(this, v1, v2, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_output_view_desc(&[u8::MIN; 16]));
+                    let answer = direct3d_11::VideoDevice::create_video_processor_output_view(
+                        this,
+                        v1,
+                        v2,
+                        &direct3d_11::structures::VideoProcessorOutputViewDesc {
+                            view_dimension:
+                                direct3d_11::enumerations::D3D11_VPOV_DIMENSION_TEXTURE2D,
+                            anonymous:
+                                direct3d_11::structures::VideoProcessorOutputViewDescAnonymous {
+                                    texture_2d: direct3d_11::structures::Tex2DVpov {
+                                        mip_slice: 0_u32,
+                                    },
+                                    texture_2d_array: direct3d_11::structures::Tex2DArrayVpov {
+                                        mip_slice: 0_u32,
+                                        first_array_slice: 0_u32,
+                                        array_size: 0_u32,
+                                    },
+                                },
+                        },
+                    );
                     answer.ok()
                 })
             };
@@ -26143,7 +26384,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k44.as_ref()?;
-                    let answer = direct3d_11::VideoDevice::create_video_processor_enumerator(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_content_desc(&[u8::MIN; 40]));
+                    let answer = direct3d_11::VideoDevice::create_video_processor_enumerator(this, &direct3d_11::structures::VideoProcessorContentDesc { input_frame_format: direct3d_11::enumerations::D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST, input_frame_rate: directx_graphics_infrastructure::structures::Rational { numerator: 72_u32, denominator: 79_u32 }, input_width: 72_u32, input_height: 79_u32, output_frame_rate: directx_graphics_infrastructure::structures::Rational { numerator: 93_u32, denominator: 100_u32 }, output_width: 93_u32, output_height: 100_u32, usage: direct3d_11::enumerations::D3D11_VIDEO_USAGE_OPTIMAL_SPEED });
                     answer.ok()
                 })
             };
@@ -26159,10 +26400,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k61.as_ref()?;
-                    let answer = directx_graphics_infrastructure::Adapter::enum_outputs(
-                        this,
-                        Default::default(),
-                    );
+                    let answer =
+                        directx_graphics_infrastructure::Adapter::enum_outputs(this, 22_u32);
                     answer.ok()
                 })
             };
@@ -26808,13 +27047,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_ADAPTER4);
                     answer.ok()
                 })
             };
@@ -26830,13 +27063,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_DEBUG1);
                     answer.ok()
                 })
             };
@@ -26852,7 +27079,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, Default::default(), Default::default(), &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN);
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_DECODE_SWAP_CHAIN);
                     answer.ok()
                 })
             };
@@ -26869,13 +27096,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_DEVICE4);
                     answer.ok()
                 })
             };
@@ -26891,13 +27112,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_DISPLAY_CONTROL);
                     answer.ok()
                 })
             };
@@ -26913,13 +27128,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY7);
                     answer.ok()
                 })
             };
@@ -26935,13 +27144,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_FACTORY_MEDIA);
                     answer.ok()
                 })
             };
@@ -26957,13 +27160,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_INFO_QUEUE);
                     answer.ok()
                 })
             };
@@ -26979,13 +27176,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_KEYED_MUTEX);
                     answer.ok()
                 })
             };
@@ -27001,13 +27192,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT6);
                     answer.ok()
                 })
             };
@@ -27023,7 +27208,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, Default::default(), Default::default(), &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION);
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_OUTPUT_DUPLICATION);
                     answer.ok()
                 })
             };
@@ -27040,13 +27225,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_RESOURCE1);
                     answer.ok()
                 })
             };
@@ -27062,13 +27241,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_SURFACE2);
                     answer.ok()
                 })
             };
@@ -27084,13 +27257,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN4);
                     answer.ok()
                 })
             };
@@ -27106,13 +27273,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDXGI_SWAP_CHAIN_MEDIA);
                     answer.ok()
                 })
             };
@@ -27128,13 +27289,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer =
-                        directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
-                            this,
-                            Default::default(),
-                            Default::default(),
-                            &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS,
-                        );
+                    let answer = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(this, 9_u32, directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER, &directx_graphics_infrastructure::constants::IID_IDX_GRAPHICS_ANALYSIS);
                     answer.ok()
                 })
             };
@@ -27497,7 +27652,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None, None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None);
                     answer.ok()
                 })
             };
@@ -27591,7 +27746,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
                     answer.ok()
                 })
             };
@@ -27646,7 +27801,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
+                    let answer = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
                     answer.ok()
                 })
             };
@@ -27662,10 +27817,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer = directx_graphics_infrastructure::Factory1::enum_adapters1(
-                        this,
-                        Default::default(),
-                    );
+                    let answer =
+                        directx_graphics_infrastructure::Factory1::enum_adapters1(this, 9_u32);
                     answer.ok()
                 })
             };
@@ -27681,10 +27834,8 @@ pub fn make_all(o: &mut Objects) -> usize {
                 let o = &*o;
                 made(|| {
                     let this = o.k66.as_ref()?;
-                    let answer = directx_graphics_infrastructure::Factory::enum_adapters(
-                        this,
-                        Default::default(),
-                    );
+                    let answer =
+                        directx_graphics_infrastructure::Factory::enum_adapters(this, 9_u32);
                     answer.ok()
                 })
             };
@@ -27739,7 +27890,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Factory::create_swap_chain(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc(&[u8::MIN; 72]));
+                    let answer = directx_graphics_infrastructure::Factory::create_swap_chain(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 65_u32, height: 72_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 86_u32, denominator: 93_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 72_u32, quality: 79_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 79_u32, output_window: component_object_model::structures::Hwnd(86), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 107_u32 });
                     answer.ok()
                 })
             };
@@ -28101,7 +28252,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
                     answer.ok()
                 })
             };
@@ -28157,7 +28308,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                         None
                     })?;
                     let v2 = o.k72.as_ref()?;
-                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_decode_swap_chain_desc(&[u8::MIN; 4]), v2, None);
+                    let answer = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None);
                     answer.ok()
                 })
             };
@@ -28826,12 +28977,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     } else {
                         None
                     })?;
-                    let answer = directx_graphics_infrastructure::Output5::duplicate_output1(
-                        this,
-                        v1,
-                        Default::default(),
-                        &[],
-                    );
+                    let answer = directx_graphics_infrastructure::Output5::duplicate_output1(this, v1, 31_u32, &[directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS]);
                     answer.ok()
                 })
             };
@@ -29212,8 +29358,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k71.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::OutputDuplication::acquire_next_frame(
-                            this,
-                            Default::default(),
+                            this, 24_u32,
                         );
                     answer.ok()
                 })
@@ -29539,8 +29684,7 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let this = o.k72.as_ref()?;
                     let answer =
                         directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                            this,
-                            Default::default(),
+                            this, 35_u32,
                         );
                     answer.ok()
                 })
@@ -31742,11 +31886,11 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_11::Direct3D11::create_device(
                         &o.api,
                         None,
-                        Default::default(),
-                        Default::default(),
-                        Default::default(),
-                        &[],
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
+                        component_object_model::structures::Hmodule(0),
+                        direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
+                        &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
+                        124_u32,
                     );
                     answer.ok()
                 })
@@ -31768,11 +31912,11 @@ pub fn make_all(o: &mut Objects) -> usize {
                     let answer = direct3d_11::Direct3D11::create_device_and_swap_chain(
                         &o.api,
                         None,
-                        Default::default(),
-                        Default::default(),
-                        Default::default(),
-                        &[],
-                        Default::default(),
+                        direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
+                        component_object_model::structures::Hmodule(0),
+                        direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
+                        &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
+                        124_u32,
                         None,
                     );
                     answer.ok()
@@ -31826,10 +31970,8 @@ pub fn drive_where(
             let Some(this) = o.k1.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -31880,7 +32022,16 @@ pub fn drive_where(
             let Some(this) = o.k2.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -31892,7 +32043,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -31904,10 +32060,8 @@ pub fn drive_where(
             let Some(this) = o.k2.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -31947,7 +32101,16 @@ pub fn drive_where(
             let Some(this) = o.k3.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -31959,7 +32122,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -31971,10 +32139,8 @@ pub fn drive_where(
             let Some(this) = o.k3.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32004,7 +32170,7 @@ pub fn drive_where(
             let Some(this) = o.k4.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Resource::set_eviction_priority(this, Default::default());
+            let _ = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
             true
         });
     }
@@ -32034,7 +32200,16 @@ pub fn drive_where(
             let Some(this) = o.k4.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32046,7 +32221,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32060,8 +32240,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -32074,7 +32259,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -32086,7 +32276,15 @@ pub fn drive_where(
             let Some(this) = o.k4.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -32098,7 +32296,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -32153,8 +32356,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                this,
-                Default::default(),
+                this, 35_u32,
             );
             true
         });
@@ -32165,10 +32367,8 @@ pub fn drive_where(
             let Some(this) = o.k4.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32208,7 +32408,16 @@ pub fn drive_where(
             let Some(this) = o.k5.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32220,7 +32429,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32232,10 +32446,8 @@ pub fn drive_where(
             let Some(this) = o.k5.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32245,7 +32457,7 @@ pub fn drive_where(
             let Some(this) = o.k6.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::ClassLinkage::get_class_instance(this, c"", Default::default());
+            let _ = direct3d_11::ClassLinkage::get_class_instance(this, c"known", 112_u32);
             true
         });
     }
@@ -32256,12 +32468,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::ClassLinkage::create_class_instance(
-                this,
-                c"",
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, c"known", 37_u32, 103_u32, 73_u32, 58_u32,
             );
             true
         });
@@ -32282,7 +32489,16 @@ pub fn drive_where(
             let Some(this) = o.k6.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32294,7 +32510,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32306,10 +32527,8 @@ pub fn drive_where(
             let Some(this) = o.k6.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32339,7 +32558,16 @@ pub fn drive_where(
             let Some(this) = o.k7.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32351,7 +32579,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32363,10 +32596,8 @@ pub fn drive_where(
             let Some(this) = o.k7.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32386,7 +32617,16 @@ pub fn drive_where(
             let Some(this) = o.k8.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32398,7 +32638,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32410,10 +32655,8 @@ pub fn drive_where(
             let Some(this) = o.k8.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32453,7 +32696,16 @@ pub fn drive_where(
             let Some(this) = o.k9.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32465,7 +32717,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32477,10 +32734,8 @@ pub fn drive_where(
             let Some(this) = o.k9.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32551,7 +32806,16 @@ pub fn drive_where(
             let Some(this) = o.k10.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32563,7 +32827,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32575,10 +32844,8 @@ pub fn drive_where(
             let Some(this) = o.k10.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32588,7 +32855,7 @@ pub fn drive_where(
             let Some(this) = o.k11.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Debug::set_feature_mask(this, Default::default());
+            let _ = direct3d_11::Debug::set_feature_mask(this, 89_u32);
             true
         });
     }
@@ -32608,7 +32875,7 @@ pub fn drive_where(
             let Some(this) = o.k11.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Debug::set_present_per_render_op_delay(this, Default::default());
+            let _ = direct3d_11::Debug::set_present_per_render_op_delay(this, 77_u32);
             true
         });
     }
@@ -32661,7 +32928,10 @@ pub fn drive_where(
             let Some(this) = o.k11.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Debug::report_live_device_objects(this, Default::default());
+            let _ = direct3d_11::Debug::report_live_device_objects(
+                this,
+                direct3d_11::enumerations::D3D11_RLDO_SUMMARY,
+            );
             true
         });
     }
@@ -32684,10 +32954,8 @@ pub fn drive_where(
             let Some(this) = o.k11.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32717,7 +32985,16 @@ pub fn drive_where(
             let Some(this) = o.k12.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32729,7 +33006,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32741,10 +33023,8 @@ pub fn drive_where(
             let Some(this) = o.k12.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32774,7 +33054,16 @@ pub fn drive_where(
             let Some(this) = o.k13.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -32786,7 +33075,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -32798,10 +33092,8 @@ pub fn drive_where(
             let Some(this) = o.k13.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -32813,8 +33105,13 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device5::open_shared_fence(
                 this,
-                Default::default(),
-                &Default::default(),
+                component_object_model::structures::Handle(83),
+                &component_object_model::structures::Guid {
+                    data1: 103_u32,
+                    data2: 110_u16,
+                    data3: 117_u16,
+                    data4: core::array::from_fn(|_| 124_u8),
+                },
             );
             true
         });
@@ -32827,9 +33124,14 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device5::create_fence(
                 this,
-                Default::default(),
-                Default::default(),
-                &Default::default(),
+                54_u64,
+                direct3d_11::enumerations::D3D11_FENCE_FLAG_SHARED,
+                &component_object_model::structures::Guid {
+                    data1: 103_u32,
+                    data2: 110_u16,
+                    data3: 117_u16,
+                    data4: core::array::from_fn(|_| 124_u8),
+                },
             );
             true
         });
@@ -32840,7 +33142,10 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device4::register_device_removed_event(this, Default::default());
+            let _ = direct3d_11::Device4::register_device_removed_event(
+                this,
+                component_object_model::structures::Handle(82),
+            );
             true
         });
     }
@@ -32850,16 +33155,35 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device4::unregister_device_removed(this, Default::default());
+            let _ = direct3d_11::Device4::unregister_device_removed(this, 87_u32);
             true
         });
     }
     // ID3D11Device3::CreateRasterizerState2 on Device
     if wanted(ID_3D11_DEVICE3) {
         driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else { return false; };
-        let _ = direct3d_11::Device3::create_rasterizer_state2(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc2(&[u8::MIN; 48]));
-        true
+            let Some(this) = o.k14.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::Device3::create_rasterizer_state2(
+                this,
+                &direct3d_11::structures::RasterizerDesc2 {
+                    fill_mode: direct3d_11::enumerations::D3D11_FILL_WIREFRAME,
+                    cull_mode: direct3d_11::enumerations::D3D11_CULL_NONE,
+                    front_counter_clockwise: true,
+                    depth_bias: 59_i32,
+                    depth_bias_clamp: 66.5_f32,
+                    slope_scaled_depth_bias: 73.5_f32,
+                    depth_clip_enable: true,
+                    scissor_enable: true,
+                    multisample_enable: true,
+                    antialiased_line_enable: true,
+                    forced_sample_count: 108_u32,
+                    conservative_raster:
+                        direct3d_11::enumerations::D3D11_CONSERVATIVE_RASTERIZATION_MODE_ON,
+                },
+            );
+            true
         });
     }
     // ID3D11Device3::CreateShaderResourceView1 on Device
@@ -32939,9 +33263,11 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device3::create_query1(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc1(
-                    &[u8::MIN; 12],
-                ),
+                &direct3d_11::structures::QueryDesc1 {
+                    query: direct3d_11::enumerations::D3D11_QUERY_OCCLUSION,
+                    misc_flags: 29_u32,
+                    context_type: direct3d_11::enumerations::D3D11_CONTEXT_TYPE_3D,
+                },
             );
             true
         });
@@ -32962,7 +33288,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device3::create_deferred_context3(this, Default::default());
+            let _ = direct3d_11::Device3::create_deferred_context3(this, 107_u32);
             true
         });
     }
@@ -32982,7 +33308,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device2::create_deferred_context2(this, Default::default());
+            let _ = direct3d_11::Device2::create_deferred_context2(this, 107_u32);
             true
         });
     }
@@ -32994,9 +33320,9 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device2::check_multisample_quality_levels1(
                 this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                60_u32,
+                31_u32,
             );
             true
         });
@@ -33017,7 +33343,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device1::create_deferred_context1(this, Default::default());
+            let _ = direct3d_11::Device1::create_deferred_context1(this, 107_u32);
             true
         });
     }
@@ -33029,9 +33355,24 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device1::create_blend_state1(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc1(
-                    &[u8::MIN; 328],
-                ),
+                &direct3d_11::structures::BlendDesc1 {
+                    alpha_to_coverage_enable: true,
+                    independent_blend_enable: true,
+                    render_target: core::array::from_fn(|_| {
+                        direct3d_11::structures::RenderTargetBlendDesc1 {
+                            blend_enable: true,
+                            logic_op_enable: true,
+                            src_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            dest_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            blend_op: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                            src_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            dest_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            blend_op_alpha: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                            logic_op: direct3d_11::enumerations::D3D11_LOGIC_OP_SET,
+                            render_target_write_mask: 2_u8,
+                        }
+                    }),
+                },
             );
             true
         });
@@ -33039,9 +33380,26 @@ pub fn drive_where(
     // ID3D11Device1::CreateRasterizerState1 on Device
     if wanted(ID_3D11_DEVICE1) {
         driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else { return false; };
-        let _ = direct3d_11::Device1::create_rasterizer_state1(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc1(&[u8::MIN; 44]));
-        true
+            let Some(this) = o.k14.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::Device1::create_rasterizer_state1(
+                this,
+                &direct3d_11::structures::RasterizerDesc1 {
+                    fill_mode: direct3d_11::enumerations::D3D11_FILL_WIREFRAME,
+                    cull_mode: direct3d_11::enumerations::D3D11_CULL_NONE,
+                    front_counter_clockwise: true,
+                    depth_bias: 59_i32,
+                    depth_bias_clamp: 66.5_f32,
+                    slope_scaled_depth_bias: 73.5_f32,
+                    depth_clip_enable: true,
+                    scissor_enable: true,
+                    multisample_enable: true,
+                    antialiased_line_enable: true,
+                    forced_sample_count: 108_u32,
+                },
+            );
+            true
         });
     }
     // ID3D11Device1::CreateDeviceContextState on Device
@@ -33052,10 +33410,15 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device1::create_device_context_state(
                 this,
-                Default::default(),
-                &[],
-                Default::default(),
-                &Default::default(),
+                31_u32,
+                &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
+                124_u32,
+                &component_object_model::structures::Guid {
+                    data1: 95_u32,
+                    data2: 102_u16,
+                    data3: 109_u16,
+                    data4: core::array::from_fn(|_| 116_u8),
+                },
             );
             true
         });
@@ -33068,8 +33431,13 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device1::open_shared_resource1(
                 this,
-                Default::default(),
-                &Default::default(),
+                component_object_model::structures::Handle(68),
+                &component_object_model::structures::Guid {
+                    data1: 103_u32,
+                    data2: 110_u16,
+                    data3: 117_u16,
+                    data4: core::array::from_fn(|_| 124_u8),
+                },
             );
             true
         });
@@ -33082,9 +33450,14 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device1::open_shared_resource_by_name(
                 this,
-                &[],
-                Default::default(),
-                &Default::default(),
+                &[95_u16],
+                18_u32,
+                &component_object_model::structures::Guid {
+                    data1: 103_u32,
+                    data2: 110_u16,
+                    data3: 117_u16,
+                    data4: core::array::from_fn(|_| 124_u8),
+                },
             );
             true
         });
@@ -33097,9 +33470,14 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_buffer(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_buffer_desc(
-                    &[u8::MIN; 24],
-                ),
+                &direct3d_11::structures::BufferDesc {
+                    byte_width: 58_u32,
+                    usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE,
+                    bind_flags: 72_u32,
+                    cpu_access_flags: 79_u32,
+                    misc_flags: 86_u32,
+                    structure_byte_stride: 93_u32,
+                },
                 None,
             );
             true
@@ -33108,49 +33486,25 @@ pub fn drive_where(
     // ID3D11Device::CreateTexture1D on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_texture_1d(
-                this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_1d_desc(
-                    &[u8::MIN; 32],
-                ),
-                &[],
-            );
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let _ = direct3d_11::Device::create_texture_1d(this, &direct3d_11::structures::Texture1DDesc { width: 58_u32, mip_levels: 65_u32, array_size: 72_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 93_u32, cpu_access_flags: 100_u32, misc_flags: 107_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 }]);
+        true
         });
     }
     // ID3D11Device::CreateTexture2D on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_texture_2d(
-                this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_2d_desc(
-                    &[u8::MIN; 44],
-                ),
-                &[],
-            );
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let _ = direct3d_11::Device::create_texture_2d(this, &direct3d_11::structures::Texture2DDesc { width: 58_u32, height: 65_u32, mip_levels: 72_u32, array_size: 79_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 100_u32, quality: 107_u32 }, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 107_u32, cpu_access_flags: 114_u32, misc_flags: 121_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 }]);
+        true
         });
     }
     // ID3D11Device::CreateTexture3D on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_texture_3d(
-                this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_texture_3d_desc(
-                    &[u8::MIN; 36],
-                ),
-                &[],
-            );
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let _ = direct3d_11::Device::create_texture_3d(this, &direct3d_11::structures::Texture3DDesc { width: 58_u32, height: 65_u32, depth: 72_u32, mip_levels: 79_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, usage: direct3d_11::enumerations::D3D11_USAGE_IMMUTABLE, bind_flags: 100_u32, cpu_access_flags: 107_u32, misc_flags: 114_u32 }, &[direct3d_11::structures::SubresourceData { sys_mem: vec![32_u8], sys_mem_pitch: 39_u32, sys_mem_slice_pitch: 46_u32 }]);
+        true
         });
     }
     // ID3D11Device::CreateShaderResourceView on Device
@@ -33248,11 +33602,9 @@ pub fn drive_where(
     // ID3D11Device::CreateInputLayout on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-            let Some(this) = o.k14.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::Device::create_input_layout(this, &[], &[]);
-            true
+        let Some(this) = o.k14.as_ref() else { return false; };
+        let _ = direct3d_11::Device::create_input_layout(this, &[direct3d_11::structures::InputElementDesc { semantic_name: std::ffi::CString::from(c"known"), semantic_index: 15_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, input_slot: 29_u32, aligned_byte_offset: 36_u32, input_slot_class: direct3d_11::enumerations::D3D11_INPUT_PER_INSTANCE_DATA, instance_data_step_rate: 50_u32 }], &[110_u8]);
+        true
         });
     }
     // ID3D11Device::CreateVertexShader on Device
@@ -33261,7 +33613,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_vertex_shader(this, &[], None);
+            let _ = direct3d_11::Device::create_vertex_shader(this, &[122_u8], None);
             true
         });
     }
@@ -33271,7 +33623,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_geometry_shader(this, &[], None);
+            let _ = direct3d_11::Device::create_geometry_shader(this, &[122_u8], None);
             true
         });
     }
@@ -33283,10 +33635,17 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_geometry_shader_with_stream_output(
                 this,
-                &[],
-                &[],
-                &[],
-                Default::default(),
+                &[122_u8],
+                &[direct3d_11::structures::SoDeclarationEntry {
+                    stream: 121_u32,
+                    semantic_name: std::ffi::CString::from(c"known"),
+                    semantic_index: 9_u32,
+                    start_component: 16_u8,
+                    component_count: 23_u8,
+                    output_slot: 30_u8,
+                }],
+                &[91_u32],
+                43_u32,
                 None,
             );
             true
@@ -33298,7 +33657,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_pixel_shader(this, &[], None);
+            let _ = direct3d_11::Device::create_pixel_shader(this, &[122_u8], None);
             true
         });
     }
@@ -33308,7 +33667,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_hull_shader(this, &[], None);
+            let _ = direct3d_11::Device::create_hull_shader(this, &[122_u8], None);
             true
         });
     }
@@ -33318,7 +33677,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_domain_shader(this, &[], None);
+            let _ = direct3d_11::Device::create_domain_shader(this, &[122_u8], None);
             true
         });
     }
@@ -33328,7 +33687,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_compute_shader(this, &[], None);
+            let _ = direct3d_11::Device::create_compute_shader(this, &[122_u8], None);
             true
         });
     }
@@ -33350,9 +33709,22 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_blend_state(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_blend_desc(
-                    &[u8::MIN; 264],
-                ),
+                &direct3d_11::structures::BlendDesc {
+                    alpha_to_coverage_enable: true,
+                    independent_blend_enable: true,
+                    render_target: core::array::from_fn(|_| {
+                        direct3d_11::structures::RenderTargetBlendDesc {
+                            blend_enable: true,
+                            src_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            dest_blend: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            blend_op: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                            src_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            dest_blend_alpha: direct3d_11::enumerations::D3D11_BLEND_ZERO,
+                            blend_op_alpha: direct3d_11::enumerations::D3D11_BLEND_OP_ADD,
+                            render_target_write_mask: 114_u8,
+                        }
+                    }),
+                },
             );
             true
         });
@@ -33360,9 +33732,33 @@ pub fn drive_where(
     // ID3D11Device::CreateDepthStencilState on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
-        let Some(this) = o.k14.as_ref() else { return false; };
-        let _ = direct3d_11::Device::create_depth_stencil_state(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_depth_stencil_desc(&[u8::MIN; 52]));
-        true
+            let Some(this) = o.k14.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::Device::create_depth_stencil_state(
+                this,
+                &direct3d_11::structures::DepthStencilDesc {
+                    depth_enable: true,
+                    depth_write_mask: direct3d_11::enumerations::D3D11_DEPTH_WRITE_MASK_ALL,
+                    depth_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                    stencil_enable: true,
+                    stencil_read_mask: 33_u8,
+                    stencil_write_mask: 40_u8,
+                    front_face: direct3d_11::structures::DepthStencilopDesc {
+                        stencil_fail_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                        stencil_depth_fail_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                        stencil_pass_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                        stencil_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                    },
+                    back_face: direct3d_11::structures::DepthStencilopDesc {
+                        stencil_fail_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                        stencil_depth_fail_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                        stencil_pass_op: direct3d_11::enumerations::D3D11_STENCIL_OP_KEEP,
+                        stencil_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                    },
+                },
+            );
+            true
         });
     }
     // ID3D11Device::CreateRasterizerState on Device
@@ -33373,9 +33769,18 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_rasterizer_state(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_rasterizer_desc(
-                    &[u8::MIN; 40],
-                ),
+                &direct3d_11::structures::RasterizerDesc {
+                    fill_mode: direct3d_11::enumerations::D3D11_FILL_WIREFRAME,
+                    cull_mode: direct3d_11::enumerations::D3D11_CULL_NONE,
+                    front_counter_clockwise: true,
+                    depth_bias: 59_i32,
+                    depth_bias_clamp: 66.5_f32,
+                    slope_scaled_depth_bias: 73.5_f32,
+                    depth_clip_enable: true,
+                    scissor_enable: true,
+                    multisample_enable: true,
+                    antialiased_line_enable: true,
+                },
             );
             true
         });
@@ -33388,9 +33793,18 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_sampler_state(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_sampler_desc(
-                    &[u8::MIN; 52],
-                ),
+                &direct3d_11::structures::SamplerDesc {
+                    filter: direct3d_11::enumerations::D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR,
+                    address_u: direct3d_11::enumerations::D3D11_TEXTURE_ADDRESS_WRAP,
+                    address_v: direct3d_11::enumerations::D3D11_TEXTURE_ADDRESS_WRAP,
+                    address_w: direct3d_11::enumerations::D3D11_TEXTURE_ADDRESS_WRAP,
+                    mip_lod_bias: 68.5_f32,
+                    max_anisotropy: 75_u32,
+                    comparison_func: direct3d_11::enumerations::D3D11_COMPARISON_NEVER,
+                    border_color: core::array::from_fn(|_| 89.5_f32),
+                    min_lod: 96.5_f32,
+                    max_lod: 103.5_f32,
+                },
             );
             true
         });
@@ -33403,9 +33817,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_query(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(
-                    &[u8::MIN; 8],
-                ),
+                &direct3d_11::structures::QueryDesc {
+                    query: direct3d_11::enumerations::D3D11_QUERY_OCCLUSION,
+                    misc_flags: 28_u32,
+                },
             );
             true
         });
@@ -33418,9 +33833,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_predicate(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(
-                    &[u8::MIN; 8],
-                ),
+                &direct3d_11::structures::QueryDesc {
+                    query: direct3d_11::enumerations::D3D11_QUERY_OCCLUSION,
+                    misc_flags: 51_u32,
+                },
             );
             true
         });
@@ -33433,9 +33849,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::create_counter(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_counter_desc(
-                    &[u8::MIN; 8],
-                ),
+                &direct3d_11::structures::CounterDesc {
+                    counter: direct3d_11::enumerations::D3D11_COUNTER_DEVICE_DEPENDENT_0,
+                    misc_flags: 92_u32,
+                },
             );
             true
         });
@@ -33446,7 +33863,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::create_deferred_context(this, Default::default());
+            let _ = direct3d_11::Device::create_deferred_context(this, 107_u32);
             true
         });
     }
@@ -33458,8 +33875,13 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::open_shared_resource(
                 this,
-                Default::default(),
-                &Default::default(),
+                component_object_model::structures::Handle(68),
+                &component_object_model::structures::Guid {
+                    data1: 103_u32,
+                    data2: 110_u16,
+                    data3: 117_u16,
+                    data4: core::array::from_fn(|_| 124_u8),
+                },
             );
             true
         });
@@ -33470,7 +33892,10 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::check_format_support(this, Default::default());
+            let _ = direct3d_11::Device::check_format_support(
+                this,
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+            );
             true
         });
     }
@@ -33482,8 +33907,8 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Device::check_multisample_quality_levels(
                 this,
-                Default::default(),
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                60_u32,
             );
             true
         });
@@ -33505,7 +33930,11 @@ pub fn drive_where(
                 return false;
             };
             let lying = bytes();
-            let _ = direct3d_11::Device::check_feature_support(this, Default::default(), &lying);
+            let _ = direct3d_11::Device::check_feature_support(
+                this,
+                direct3d_11::enumerations::D3D11_FEATURE_DOUBLES,
+                &lying,
+            );
             true
         });
     }
@@ -33515,7 +33944,16 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::Device::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -33525,8 +33963,16 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::Device::set_private_data_interface(this, &Default::default(), None);
+            let _ = direct3d_11::Device::set_private_data_interface(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -33576,7 +34022,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Device::set_exception_mode(this, Default::default());
+            let _ = direct3d_11::Device::set_exception_mode(this, 24_u32);
             true
         });
     }
@@ -33598,8 +34044,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -33612,7 +34063,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -33624,7 +34080,15 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -33642,7 +34106,7 @@ pub fn drive_where(
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k14.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Device::create_surface(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_surface_desc(&[u8::MIN; 20]), Default::default(), Default::default(), None);
+        let _ = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, None);
         true
         });
     }
@@ -33652,10 +34116,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device::set_gpu_thread_priority(
-                this,
-                Default::default(),
-            );
+            let _ = directx_graphics_infrastructure::Device::set_gpu_thread_priority(this, 14_i32);
             true
         });
     }
@@ -33675,10 +34136,8 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device1::set_maximum_frame_latency(
-                this,
-                Default::default(),
-            );
+            let _ =
+                directx_graphics_infrastructure::Device1::set_maximum_frame_latency(this, 63_u32);
             true
         });
     }
@@ -33724,7 +34183,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Device2::enqueue_set_event(
                 this,
-                Default::default(),
+                component_object_model::structures::Handle(82),
             );
             true
         });
@@ -33749,7 +34208,7 @@ pub fn drive_where(
                 this,
                 &[],
                 directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
-                Default::default(),
+                31_u32,
             );
             true
         });
@@ -33790,7 +34249,7 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Multithread::set_multithread_protected(this, Default::default());
+            let _ = direct3d_11::Multithread::set_multithread_protected(this, true);
             true
         });
     }
@@ -33810,10 +34269,8 @@ pub fn drive_where(
             let Some(this) = o.k14.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -33826,7 +34283,7 @@ pub fn drive_where(
             let Some(v1) = o.k17.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext4::signal(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext4::signal(this, v1, 118_u64);
             true
         });
     }
@@ -33839,7 +34296,7 @@ pub fn drive_where(
             let Some(v1) = o.k17.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext4::wait(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext4::wait(this, v1, 118_u64);
             true
         });
     }
@@ -33849,8 +34306,11 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext3::flush1(this, Default::default(), Default::default());
+            let _ = direct3d_11::DeviceContext3::flush1(
+                this,
+                direct3d_11::enumerations::D3D11_CONTEXT_TYPE_3D,
+                component_object_model::structures::Handle(82),
+            );
             true
         });
     }
@@ -33860,10 +34320,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext3::set_hardware_protection_state(
-                this,
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext3::set_hardware_protection_state(this, true);
             true
         });
     }
@@ -33899,13 +34356,24 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext2::update_tile_mappings(
                 this,
                 v1,
-                &[],
-                &[],
+                &[direct3d_11::structures::TiledResourceCoordinate {
+                    x: 8_u32,
+                    y: 15_u32,
+                    z: 22_u32,
+                    subresource: 29_u32,
+                }],
+                &[direct3d_11::structures::TileRegionSize {
+                    num_tiles: 39_u32,
+                    b_use_box: true,
+                    width: 53_u32,
+                    height: 60_u16,
+                    depth: 67_u16,
+                }],
                 None,
-                &[],
-                &[],
-                &[],
-                Default::default(),
+                &[39_u32],
+                &[20_u32],
+                &[118_u32],
+                31_u32,
             );
             true
         });
@@ -33913,21 +34381,106 @@ pub fn drive_where(
     // ID3D11DeviceContext2::CopyTileMappings on DeviceContext
     if wanted(ID_3D11_DEVICE_CONTEXT2) {
         driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
-        let Some(v2) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
-        let _ = direct3d_11::DeviceContext2::copy_tile_mappings(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_tiled_resource_coordinate(&[u8::MIN; 16]), v2, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_tiled_resource_coordinate(&[u8::MIN; 16]), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_tile_region_size(&[u8::MIN; 16]), Default::default());
-        true
+            let Some(this) = o.k15.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let Some(v2) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let _ = direct3d_11::DeviceContext2::copy_tile_mappings(
+                this,
+                v1,
+                &direct3d_11::structures::TiledResourceCoordinate {
+                    x: 101_u32,
+                    y: 108_u32,
+                    z: 115_u32,
+                    subresource: 122_u32,
+                },
+                v2,
+                &direct3d_11::structures::TiledResourceCoordinate {
+                    x: 63_u32,
+                    y: 70_u32,
+                    z: 77_u32,
+                    subresource: 84_u32,
+                },
+                &direct3d_11::structures::TileRegionSize {
+                    num_tiles: 76_u32,
+                    b_use_box: true,
+                    width: 90_u32,
+                    height: 97_u16,
+                    depth: 104_u16,
+                },
+                31_u32,
+            );
+            true
         });
     }
     // ID3D11DeviceContext2::CopyTiles on DeviceContext
     if wanted(ID_3D11_DEVICE_CONTEXT2) {
         driven.attempt(|| {
-        let Some(this) = o.k15.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
-        let Some(v2) = o.k4.as_ref() else { return false; };
-        let _ = direct3d_11::DeviceContext2::copy_tiles(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_tiled_resource_coordinate(&[u8::MIN; 16]), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_tile_region_size(&[u8::MIN; 16]), v2, Default::default(), Default::default());
-        true
+            let Some(this) = o.k15.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let Some(v2) = o.k4.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::DeviceContext2::copy_tiles(
+                this,
+                v1,
+                &direct3d_11::structures::TiledResourceCoordinate {
+                    x: 119_u32,
+                    y: 126_u32,
+                    z: 7_u32,
+                    subresource: 14_u32,
+                },
+                &direct3d_11::structures::TileRegionSize {
+                    num_tiles: 76_u32,
+                    b_use_box: true,
+                    width: 90_u32,
+                    height: 97_u16,
+                    depth: 104_u16,
+                },
+                v2,
+                13_u64,
+                31_u32,
+            );
+            true
         });
     }
     // ID3D11DeviceContext2::ResizeTilePool on DeviceContext
@@ -33939,7 +34492,7 @@ pub fn drive_where(
             let Some(v1) = o.k4.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext2::resize_tile_pool(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext2::resize_tile_pool(this, v1, 101_u64);
             true
         });
     }
@@ -33969,7 +34522,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext2::set_marker_int(this, &[], Default::default());
+            let _ = direct3d_11::DeviceContext2::set_marker_int(this, &[5_u16], 115_i32);
             true
         });
     }
@@ -33979,7 +34532,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext2::begin_event_int(this, &[], Default::default());
+            let _ = direct3d_11::DeviceContext2::begin_event_int(this, &[5_u16], 115_i32);
             true
         });
     }
@@ -34026,16 +34579,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext1::copy_subresource_region1(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                v2,
-                Default::default(),
-                None,
-                Default::default(),
+                this, v1, 93_u32, 2_u32, 103_u32, 44_u32, v2, 16_u32, None, 24_u32,
             );
             true
         });
@@ -34062,12 +34606,12 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext1::update_subresource1(
                 this,
                 v1,
-                Default::default(),
+                93_u32,
                 None,
-                &[],
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                &[76_u8],
+                58_u32,
+                14_u32,
+                24_u32,
             );
             true
         });
@@ -34132,10 +34676,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext1::vs_set_constant_buffers1(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
-                &[],
+                &[3_u32],
+                &[34_u32],
             );
             true
         });
@@ -34148,10 +34692,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext1::hs_set_constant_buffers1(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
-                &[],
+                &[3_u32],
+                &[34_u32],
             );
             true
         });
@@ -34164,10 +34708,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext1::ds_set_constant_buffers1(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
-                &[],
+                &[3_u32],
+                &[34_u32],
             );
             true
         });
@@ -34180,10 +34724,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext1::gs_set_constant_buffers1(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
-                &[],
+                &[3_u32],
+                &[34_u32],
             );
             true
         });
@@ -34196,10 +34740,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext1::ps_set_constant_buffers1(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
-                &[],
+                &[3_u32],
+                &[34_u32],
             );
             true
         });
@@ -34212,10 +34756,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext1::cs_set_constant_buffers1(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
-                &[],
+                &[3_u32],
+                &[34_u32],
             );
             true
         });
@@ -34226,11 +34770,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::vs_get_constant_buffers1(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext1::vs_get_constant_buffers1(this, 41_u32, 126_u32);
             true
         });
     }
@@ -34240,11 +34780,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::hs_get_constant_buffers1(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext1::hs_get_constant_buffers1(this, 41_u32, 126_u32);
             true
         });
     }
@@ -34254,11 +34790,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::ds_get_constant_buffers1(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext1::ds_get_constant_buffers1(this, 41_u32, 126_u32);
             true
         });
     }
@@ -34268,11 +34800,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::gs_get_constant_buffers1(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext1::gs_get_constant_buffers1(this, 41_u32, 126_u32);
             true
         });
     }
@@ -34282,11 +34810,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::ps_get_constant_buffers1(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext1::ps_get_constant_buffers1(this, 41_u32, 126_u32);
             true
         });
     }
@@ -34296,11 +34820,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::cs_get_constant_buffers1(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext1::cs_get_constant_buffers1(this, 41_u32, 126_u32);
             true
         });
     }
@@ -34342,7 +34862,17 @@ pub fn drive_where(
             }) else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::clear_view(this, v1, &Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext1::clear_view(
+                this,
+                v1,
+                &core::array::from_fn(|_| 72.5_f32),
+                &[component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                }],
+            );
             true
         });
     }
@@ -34371,7 +34901,16 @@ pub fn drive_where(
             }) else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext1::discard_view1(this, v1, &[]);
+            let _ = direct3d_11::DeviceContext1::discard_view1(
+                this,
+                v1,
+                &[component_object_model::structures::Rect {
+                    left: 8_i32,
+                    top: 15_i32,
+                    right: 22_i32,
+                    bottom: 29_i32,
+                }],
+            );
             true
         });
     }
@@ -34381,8 +34920,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::vs_set_constant_buffers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::vs_set_constant_buffers(this, 41_u32, &[]);
             true
         });
     }
@@ -34392,8 +34930,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::ps_set_shader_resources(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::ps_set_shader_resources(this, 41_u32, &[]);
             true
         });
     }
@@ -34413,7 +34950,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_set_samplers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::ps_set_samplers(this, 41_u32, &[]);
             true
         });
     }
@@ -34433,12 +34970,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::draw_indexed(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::draw_indexed(this, 22_u32, 81_u32, 38_i32);
             true
         });
     }
@@ -34448,7 +34980,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::draw(this, Default::default(), Default::default());
+            let _ = direct3d_11::DeviceContext::draw(this, 17_u32, 95_u32);
             true
         });
     }
@@ -34474,9 +35006,9 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::map(
                 this,
                 v1,
-                Default::default(),
+                64_u32,
                 direct3d_11::enumerations::D3D11_MAP_READ,
-                Default::default(),
+                108_u32,
             );
             true
         });
@@ -34500,7 +35032,7 @@ pub fn drive_where(
             }) else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::unmap(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext::unmap(this, v1, 64_u32);
             true
         });
     }
@@ -34510,8 +35042,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::ps_set_constant_buffers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::ps_set_constant_buffers(this, 41_u32, &[]);
             true
         });
     }
@@ -34533,10 +35064,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext::ia_set_vertex_buffers(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
-                &[],
+                &[86_u32],
+                &[92_u32],
             );
             true
         });
@@ -34550,8 +35081,8 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::ia_set_index_buffer(
                 this,
                 None,
-                Default::default(),
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                103_u32,
             );
             true
         });
@@ -34563,12 +35094,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::draw_indexed_instanced(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, 75_u32, 17_u32, 81_u32, 38_i32, 32_u32,
             );
             true
         });
@@ -34579,13 +35105,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::draw_instanced(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::DeviceContext::draw_instanced(this, 77_u32, 17_u32, 95_u32, 32_u32);
             true
         });
     }
@@ -34595,8 +35116,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::gs_set_constant_buffers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::gs_set_constant_buffers(this, 41_u32, &[]);
             true
         });
     }
@@ -34616,7 +35136,10 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ia_set_primitive_topology(this, Default::default());
+            let _ = direct3d_11::DeviceContext::ia_set_primitive_topology(
+                this,
+                direct3d_common::enumerations::D3D_PRIMITIVE_TOPOLOGY_POINTLIST,
+            );
             true
         });
     }
@@ -34626,8 +35149,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::vs_set_shader_resources(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::vs_set_shader_resources(this, 41_u32, &[]);
             true
         });
     }
@@ -34637,7 +35159,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_set_samplers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::vs_set_samplers(this, 41_u32, &[]);
             true
         });
     }
@@ -34701,8 +35223,7 @@ pub fn drive_where(
                 return false;
             };
             let lying = bytes();
-            let _ =
-                direct3d_11::DeviceContext::get_data(this, v1, Some(&lying), Default::default());
+            let _ = direct3d_11::DeviceContext::get_data(this, v1, Some(&lying), 121_u32);
             true
         });
     }
@@ -34712,7 +35233,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::set_predication(this, None, Default::default());
+            let _ = direct3d_11::DeviceContext::set_predication(this, None, true);
             true
         });
     }
@@ -34722,8 +35243,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::gs_set_shader_resources(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::gs_set_shader_resources(this, 41_u32, &[]);
             true
         });
     }
@@ -34733,7 +35253,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_set_samplers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::gs_set_samplers(this, 41_u32, &[]);
             true
         });
     }
@@ -34754,12 +35274,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::om_set_render_targets_and_unordered_access_views(
-                this,
-                None,
-                None,
-                Default::default(),
-                None,
-                None,
+                this, None, None, 15_u32, None, None,
             );
             true
         });
@@ -34770,12 +35285,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::om_set_blend_state(
-                this,
-                None,
-                None,
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::om_set_blend_state(this, None, None, 97_u32);
             true
         });
     }
@@ -34785,11 +35295,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::om_set_depth_stencil_state(
-                this,
-                None,
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::om_set_depth_stencil_state(this, None, 106_u32);
             true
         });
     }
@@ -34799,7 +35305,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::so_set_targets(this, &[], &[]);
+            let _ = direct3d_11::DeviceContext::so_set_targets(this, &[], &[92_u32]);
             true
         });
     }
@@ -34822,11 +35328,7 @@ pub fn drive_where(
             let Some(v1) = o.k4.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::draw_indexed_instanced_indirect(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::draw_indexed_instanced_indirect(this, v1, 8_u32);
             true
         });
     }
@@ -34839,8 +35341,7 @@ pub fn drive_where(
             let Some(v1) = o.k4.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::draw_instanced_indirect(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext::draw_instanced_indirect(this, v1, 8_u32);
             true
         });
     }
@@ -34850,12 +35351,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::dispatch(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::dispatch(this, 105_u32, 63_u32, 122_u32);
             true
         });
     }
@@ -34868,7 +35364,7 @@ pub fn drive_where(
             let Some(v1) = o.k4.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::dispatch_indirect(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext::dispatch_indirect(this, v1, 8_u32);
             true
         });
     }
@@ -34888,7 +35384,17 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::rs_set_viewports(this, &[]);
+            let _ = direct3d_11::DeviceContext::rs_set_viewports(
+                this,
+                &[direct3d_11::structures::Viewport {
+                    top_left_x: 59.5_f32,
+                    top_left_y: 66.5_f32,
+                    width: 73.5_f32,
+                    height: 80.5_f32,
+                    min_depth: 87.5_f32,
+                    max_depth: 94.5_f32,
+                }],
+            );
             true
         });
     }
@@ -34898,7 +35404,15 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::rs_set_scissor_rects(this, &[]);
+            let _ = direct3d_11::DeviceContext::rs_set_scissor_rects(
+                this,
+                &[component_object_model::structures::Rect {
+                    left: 8_i32,
+                    top: 15_i32,
+                    right: 22_i32,
+                    bottom: 29_i32,
+                }],
+            );
             true
         });
     }
@@ -34935,15 +35449,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::copy_subresource_region(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                v2,
-                Default::default(),
-                None,
+                this, v1, 93_u32, 2_u32, 103_u32, 44_u32, v2, 16_u32, None,
             );
             true
         });
@@ -35006,11 +35512,11 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::update_subresource(
                 this,
                 v1,
-                Default::default(),
+                93_u32,
                 None,
-                &[],
-                Default::default(),
-                Default::default(),
+                &[76_u8],
+                58_u32,
+                14_u32,
             );
             true
         });
@@ -35027,8 +35533,7 @@ pub fn drive_where(
             let Some(v2) = o.k39.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::copy_structure_count(this, v1, Default::default(), v2);
+            let _ = direct3d_11::DeviceContext::copy_structure_count(this, v1, 29_u32, v2);
             true
         });
     }
@@ -35041,8 +35546,11 @@ pub fn drive_where(
             let Some(v1) = o.k29.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::clear_render_target_view(this, v1, &Default::default());
+            let _ = direct3d_11::DeviceContext::clear_render_target_view(
+                this,
+                v1,
+                &core::array::from_fn(|_| 75.5_f32),
+            );
             true
         });
     }
@@ -35058,7 +35566,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::clear_unordered_access_view_uint(
                 this,
                 v1,
-                &Default::default(),
+                &core::array::from_fn(|_| 123_u32),
             );
             true
         });
@@ -35075,7 +35583,7 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::clear_unordered_access_view_float(
                 this,
                 v1,
-                &Default::default(),
+                &core::array::from_fn(|_| 123.5_f32),
             );
             true
         });
@@ -35090,11 +35598,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::clear_depth_stencil_view(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, v1, 55_u32, 92.5_f32, 31_u8,
             );
             true
         });
@@ -35131,7 +35635,7 @@ pub fn drive_where(
             }) else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::set_resource_min_lod(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext::set_resource_min_lod(this, v1, 81.5_f32);
             true
         });
     }
@@ -35193,10 +35697,10 @@ pub fn drive_where(
             let _ = direct3d_11::DeviceContext::resolve_subresource(
                 this,
                 v1,
-                Default::default(),
+                93_u32,
                 v2,
-                Default::default(),
-                Default::default(),
+                16_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
             );
             true
         });
@@ -35210,7 +35714,7 @@ pub fn drive_where(
             let Some(v1) = o.k7.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::execute_command_list(this, v1, Default::default());
+            let _ = direct3d_11::DeviceContext::execute_command_list(this, v1, true);
             true
         });
     }
@@ -35220,8 +35724,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::hs_set_shader_resources(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::hs_set_shader_resources(this, 41_u32, &[]);
             true
         });
     }
@@ -35241,7 +35744,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_set_samplers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::hs_set_samplers(this, 41_u32, &[]);
             true
         });
     }
@@ -35251,8 +35754,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::hs_set_constant_buffers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::hs_set_constant_buffers(this, 41_u32, &[]);
             true
         });
     }
@@ -35262,8 +35764,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::ds_set_shader_resources(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::ds_set_shader_resources(this, 41_u32, &[]);
             true
         });
     }
@@ -35283,7 +35784,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_set_samplers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::ds_set_samplers(this, 41_u32, &[]);
             true
         });
     }
@@ -35293,8 +35794,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::ds_set_constant_buffers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::ds_set_constant_buffers(this, 41_u32, &[]);
             true
         });
     }
@@ -35304,8 +35804,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::cs_set_shader_resources(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::cs_set_shader_resources(this, 41_u32, &[]);
             true
         });
     }
@@ -35317,9 +35816,9 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceContext::cs_set_unordered_access_views(
                 this,
-                Default::default(),
+                41_u32,
                 &[],
-                &[],
+                &[120_u32],
             );
             true
         });
@@ -35340,7 +35839,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_set_samplers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::cs_set_samplers(this, 41_u32, &[]);
             true
         });
     }
@@ -35350,8 +35849,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ =
-                direct3d_11::DeviceContext::cs_set_constant_buffers(this, Default::default(), &[]);
+            let _ = direct3d_11::DeviceContext::cs_set_constant_buffers(this, 41_u32, &[]);
             true
         });
     }
@@ -35361,11 +35859,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_get_constant_buffers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::vs_get_constant_buffers(this, 41_u32, 126_u32);
             true
         });
     }
@@ -35375,11 +35869,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_get_shader_resources(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::ps_get_shader_resources(this, 41_u32, 120_u32);
             true
         });
     }
@@ -35389,11 +35879,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_get_samplers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::ps_get_samplers(this, 41_u32, 125_u32);
             true
         });
     }
@@ -35403,11 +35889,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ps_get_constant_buffers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::ps_get_constant_buffers(this, 41_u32, 126_u32);
             true
         });
     }
@@ -35427,11 +35909,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ia_get_vertex_buffers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::ia_get_vertex_buffers(this, 41_u32, 126_u32);
             true
         });
     }
@@ -35451,11 +35929,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_get_constant_buffers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::gs_get_constant_buffers(this, 41_u32, 126_u32);
             true
         });
     }
@@ -35475,11 +35949,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_get_shader_resources(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::vs_get_shader_resources(this, 41_u32, 120_u32);
             true
         });
     }
@@ -35489,11 +35959,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::vs_get_samplers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::vs_get_samplers(this, 41_u32, 125_u32);
             true
         });
     }
@@ -35513,11 +35979,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_get_shader_resources(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::gs_get_shader_resources(this, 41_u32, 120_u32);
             true
         });
     }
@@ -35527,11 +35989,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::gs_get_samplers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::gs_get_samplers(this, 41_u32, 125_u32);
             true
         });
     }
@@ -35541,7 +35999,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::om_get_render_targets(this, Default::default());
+            let _ = direct3d_11::DeviceContext::om_get_render_targets(this, 120_u32);
             true
         });
     }
@@ -35552,10 +36010,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::om_get_render_targets_and_unordered_access_views(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, 95_u32, 15_u32, 85_u32,
             );
             true
         });
@@ -35586,7 +36041,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::so_get_targets(this, Default::default());
+            let _ = direct3d_11::DeviceContext::so_get_targets(this, 126_u32);
             true
         });
     }
@@ -35626,11 +36081,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_get_shader_resources(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::hs_get_shader_resources(this, 41_u32, 120_u32);
             true
         });
     }
@@ -35640,11 +36091,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_get_samplers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::hs_get_samplers(this, 41_u32, 125_u32);
             true
         });
     }
@@ -35654,11 +36101,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::hs_get_constant_buffers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::hs_get_constant_buffers(this, 41_u32, 126_u32);
             true
         });
     }
@@ -35668,11 +36111,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_get_shader_resources(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::ds_get_shader_resources(this, 41_u32, 120_u32);
             true
         });
     }
@@ -35682,11 +36121,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_get_samplers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::ds_get_samplers(this, 41_u32, 125_u32);
             true
         });
     }
@@ -35696,11 +36131,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::ds_get_constant_buffers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::ds_get_constant_buffers(this, 41_u32, 126_u32);
             true
         });
     }
@@ -35710,11 +36141,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_get_shader_resources(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::cs_get_shader_resources(this, 41_u32, 120_u32);
             true
         });
     }
@@ -35724,11 +36151,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_get_unordered_access_views(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::cs_get_unordered_access_views(this, 41_u32, 85_u32);
             true
         });
     }
@@ -35738,11 +36161,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_get_samplers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::cs_get_samplers(this, 41_u32, 125_u32);
             true
         });
     }
@@ -35752,11 +36171,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::cs_get_constant_buffers(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::DeviceContext::cs_get_constant_buffers(this, 41_u32, 126_u32);
             true
         });
     }
@@ -35806,7 +36221,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceContext::finish_command_list(this, Default::default());
+            let _ = direct3d_11::DeviceContext::finish_command_list(this, true);
             true
         });
     }
@@ -35826,7 +36241,16 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -35838,7 +36262,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -35870,7 +36299,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Multithread::set_multithread_protected(this, Default::default());
+            let _ = direct3d_11::Multithread::set_multithread_protected(this, true);
             true
         });
     }
@@ -35890,7 +36319,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::UserDefinedAnnotation::begin_event(this, &[]);
+            let _ = direct3d_11::UserDefinedAnnotation::begin_event(this, &[124_u16]);
             true
         });
     }
@@ -35910,7 +36339,7 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::UserDefinedAnnotation::set_marker(this, &[]);
+            let _ = direct3d_11::UserDefinedAnnotation::set_marker(this, &[124_u16]);
             true
         });
     }
@@ -35930,10 +36359,8 @@ pub fn drive_where(
             let Some(this) = o.k15.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -35953,7 +36380,16 @@ pub fn drive_where(
             let Some(this) = o.k16.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -35965,7 +36401,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -35977,10 +36418,8 @@ pub fn drive_where(
             let Some(this) = o.k16.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36002,8 +36441,8 @@ pub fn drive_where(
             };
             let _ = direct3d_11::Fence::set_event_on_completion(
                 this,
-                Default::default(),
-                Default::default(),
+                118_u64,
+                component_object_model::structures::Handle(82),
             );
             true
         });
@@ -36024,7 +36463,16 @@ pub fn drive_where(
             let Some(this) = o.k17.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36036,7 +36484,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36048,10 +36501,8 @@ pub fn drive_where(
             let Some(this) = o.k17.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36071,7 +36522,16 @@ pub fn drive_where(
             let Some(this) = o.k18.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36083,7 +36543,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36095,10 +36560,8 @@ pub fn drive_where(
             let Some(this) = o.k18.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36118,7 +36581,16 @@ pub fn drive_where(
             let Some(this) = o.k19.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36130,7 +36602,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36142,10 +36619,8 @@ pub fn drive_where(
             let Some(this) = o.k19.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36155,7 +36630,7 @@ pub fn drive_where(
             let Some(this) = o.k20.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::InfoQueue::set_message_count_limit(this, Default::default());
+            let _ = direct3d_11::InfoQueue::set_message_count_limit(this, 110_u64);
             true
         });
     }
@@ -36338,10 +36813,10 @@ pub fn drive_where(
             };
             let _ = direct3d_11::InfoQueue::add_message(
                 this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                c"",
+                direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS,
+                direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR,
+                direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD,
+                c"known",
             );
             true
         });
@@ -36352,7 +36827,11 @@ pub fn drive_where(
             let Some(this) = o.k20.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::InfoQueue::add_application_message(this, Default::default(), c"");
+            let _ = direct3d_11::InfoQueue::add_application_message(
+                this,
+                direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR,
+                c"known",
+            );
             true
         });
     }
@@ -36364,8 +36843,8 @@ pub fn drive_where(
             };
             let _ = direct3d_11::InfoQueue::set_break_on_category(
                 this,
-                Default::default(),
-                Default::default(),
+                direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS,
+                true,
             );
             true
         });
@@ -36378,8 +36857,8 @@ pub fn drive_where(
             };
             let _ = direct3d_11::InfoQueue::set_break_on_severity(
                 this,
-                Default::default(),
-                Default::default(),
+                direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR,
+                true,
             );
             true
         });
@@ -36392,8 +36871,8 @@ pub fn drive_where(
             };
             let _ = direct3d_11::InfoQueue::set_break_on_id(
                 this,
-                Default::default(),
-                Default::default(),
+                direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD,
+                true,
             );
             true
         });
@@ -36404,7 +36883,10 @@ pub fn drive_where(
             let Some(this) = o.k20.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::InfoQueue::get_break_on_category(this, Default::default());
+            let _ = direct3d_11::InfoQueue::get_break_on_category(
+                this,
+                direct3d_11::enumerations::D3D11_MESSAGE_CATEGORY_MISCELLANEOUS,
+            );
             true
         });
     }
@@ -36414,7 +36896,10 @@ pub fn drive_where(
             let Some(this) = o.k20.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::InfoQueue::get_break_on_severity(this, Default::default());
+            let _ = direct3d_11::InfoQueue::get_break_on_severity(
+                this,
+                direct3d_11::enumerations::D3D11_MESSAGE_SEVERITY_ERROR,
+            );
             true
         });
     }
@@ -36424,7 +36909,10 @@ pub fn drive_where(
             let Some(this) = o.k20.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::InfoQueue::get_break_on_id(this, Default::default());
+            let _ = direct3d_11::InfoQueue::get_break_on_id(
+                this,
+                direct3d_11::enumerations::D3D11_MESSAGE_ID_DEVICE_IASETVERTEXBUFFERS_HAZARD,
+            );
             true
         });
     }
@@ -36434,7 +36922,7 @@ pub fn drive_where(
             let Some(this) = o.k20.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::InfoQueue::set_mute_debug_output(this, Default::default());
+            let _ = direct3d_11::InfoQueue::set_mute_debug_output(this, true);
             true
         });
     }
@@ -36454,10 +36942,8 @@ pub fn drive_where(
             let Some(this) = o.k20.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36477,7 +36963,16 @@ pub fn drive_where(
             let Some(this) = o.k21.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36489,7 +36984,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36501,10 +37001,8 @@ pub fn drive_where(
             let Some(this) = o.k21.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36534,7 +37032,7 @@ pub fn drive_where(
             let Some(this) = o.k22.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Multithread::set_multithread_protected(this, Default::default());
+            let _ = direct3d_11::Multithread::set_multithread_protected(this, true);
             true
         });
     }
@@ -36554,10 +37052,8 @@ pub fn drive_where(
             let Some(this) = o.k22.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36577,7 +37073,16 @@ pub fn drive_where(
             let Some(this) = o.k23.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36589,7 +37094,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36601,10 +37111,8 @@ pub fn drive_where(
             let Some(this) = o.k23.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36644,7 +37152,16 @@ pub fn drive_where(
             let Some(this) = o.k24.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36656,7 +37173,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36668,10 +37190,8 @@ pub fn drive_where(
             let Some(this) = o.k24.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36721,7 +37241,16 @@ pub fn drive_where(
             let Some(this) = o.k25.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36733,7 +37262,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36745,10 +37279,8 @@ pub fn drive_where(
             let Some(this) = o.k25.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36798,7 +37330,16 @@ pub fn drive_where(
             let Some(this) = o.k26.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36810,7 +37351,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36822,10 +37368,8 @@ pub fn drive_where(
             let Some(this) = o.k26.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36835,11 +37379,8 @@ pub fn drive_where(
             let Some(this) = o.k27.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::RefDefaultTrackingOptions::set_tracking_options(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::RefDefaultTrackingOptions::set_tracking_options(this, 83_u32, 108_u32);
             true
         });
     }
@@ -36849,10 +37390,8 @@ pub fn drive_where(
             let Some(this) = o.k27.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36862,7 +37401,7 @@ pub fn drive_where(
             let Some(this) = o.k28.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::RefTrackingOptions::set_tracking_options(this, Default::default());
+            let _ = direct3d_11::RefTrackingOptions::set_tracking_options(this, 107_u32);
             true
         });
     }
@@ -36872,10 +37411,8 @@ pub fn drive_where(
             let Some(this) = o.k28.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36915,7 +37452,16 @@ pub fn drive_where(
             let Some(this) = o.k29.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36927,7 +37473,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36939,10 +37490,8 @@ pub fn drive_where(
             let Some(this) = o.k29.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -36972,7 +37521,16 @@ pub fn drive_where(
             let Some(this) = o.k30.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -36984,7 +37542,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -36996,10 +37559,8 @@ pub fn drive_where(
             let Some(this) = o.k30.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -37039,7 +37600,16 @@ pub fn drive_where(
             let Some(this) = o.k31.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -37051,7 +37621,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -37063,10 +37638,8 @@ pub fn drive_where(
             let Some(this) = o.k31.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -37106,7 +37679,7 @@ pub fn drive_where(
             let Some(this) = o.k32.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::ShaderTrace::ps_select_stamp(this, Default::default());
+            let _ = direct3d_11::ShaderTrace::ps_select_stamp(this, 108_u32);
             true
         });
     }
@@ -37118,9 +37691,15 @@ pub fn drive_where(
             };
             let _ = direct3d_11::ShaderTrace::get_initial_register_contents(
                 this,
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_trace_register(
-                    &[u8::MIN; 12],
-                ),
+                &direct3d_11::structures::TraceRegister {
+                    reg_type: direct3d_11::enumerations::D3D11_TRACE_INPUT_REGISTER,
+                    anonymous: direct3d_11::structures::TraceRegisterAnonymous {
+                        index_1d: 0_u16,
+                        index_2d: core::array::from_fn(|_| 0_u16),
+                    },
+                    operand_index: 87_u8,
+                    flags: 94_u8,
+                },
             );
             true
         });
@@ -37131,7 +37710,7 @@ pub fn drive_where(
             let Some(this) = o.k32.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::ShaderTrace::get_step(this, Default::default());
+            let _ = direct3d_11::ShaderTrace::get_step(this, 8_u32);
             true
         });
     }
@@ -37141,11 +37720,7 @@ pub fn drive_where(
             let Some(this) = o.k32.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::ShaderTrace::get_written_register(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::ShaderTrace::get_written_register(this, 8_u32, 61_u32);
             true
         });
     }
@@ -37155,11 +37730,7 @@ pub fn drive_where(
             let Some(this) = o.k32.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::ShaderTrace::get_read_register(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = direct3d_11::ShaderTrace::get_read_register(this, 8_u32, 9_u32);
             true
         });
     }
@@ -37169,20 +37740,154 @@ pub fn drive_where(
             let Some(this) = o.k32.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
     // ID3D11ShaderTraceFactory::CreateShaderTrace on ShaderTraceFactory
     if wanted(ID_3D11_SHADER_TRACE_FACTORY) {
         driven.attempt(|| {
-        let Some(this) = o.k33.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k2.as_ref() { Some(direct3d_11::UnknownRef::AuthenticatedChannel(x)) } else if let Some(x) = o.k3.as_ref() { Some(direct3d_11::UnknownRef::BlendState(x)) } else if let Some(x) = o.k4.as_ref() { Some(direct3d_11::UnknownRef::Buffer(x)) } else if let Some(x) = o.k5.as_ref() { Some(direct3d_11::UnknownRef::ClassInstance(x)) } else if let Some(x) = o.k6.as_ref() { Some(direct3d_11::UnknownRef::ClassLinkage(x)) } else if let Some(x) = o.k7.as_ref() { Some(direct3d_11::UnknownRef::CommandList(x)) } else if let Some(x) = o.k8.as_ref() { Some(direct3d_11::UnknownRef::ComputeShader(x)) } else if let Some(x) = o.k9.as_ref() { Some(direct3d_11::UnknownRef::Counter(x)) } else if let Some(x) = o.k10.as_ref() { Some(direct3d_11::UnknownRef::CryptoSession(x)) } else if let Some(x) = o.k11.as_ref() { Some(direct3d_11::UnknownRef::Debug(x)) } else if let Some(x) = o.k12.as_ref() { Some(direct3d_11::UnknownRef::DepthStencilState(x)) } else if let Some(x) = o.k13.as_ref() { Some(direct3d_11::UnknownRef::DepthStencilView(x)) } else if let Some(x) = o.k14.as_ref() { Some(direct3d_11::UnknownRef::Device(x)) } else if let Some(x) = o.k15.as_ref() { Some(direct3d_11::UnknownRef::DeviceContext(x)) } else if let Some(x) = o.k16.as_ref() { Some(direct3d_11::UnknownRef::DomainShader(x)) } else if let Some(x) = o.k17.as_ref() { Some(direct3d_11::UnknownRef::Fence(x)) } else if let Some(x) = o.k18.as_ref() { Some(direct3d_11::UnknownRef::GeometryShader(x)) } else if let Some(x) = o.k19.as_ref() { Some(direct3d_11::UnknownRef::HullShader(x)) } else if let Some(x) = o.k20.as_ref() { Some(direct3d_11::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k21.as_ref() { Some(direct3d_11::UnknownRef::InputLayout(x)) } else if let Some(x) = o.k22.as_ref() { Some(direct3d_11::UnknownRef::Multithread(x)) } else if let Some(x) = o.k23.as_ref() { Some(direct3d_11::UnknownRef::PixelShader(x)) } else if let Some(x) = o.k24.as_ref() { Some(direct3d_11::UnknownRef::Predicate(x)) } else if let Some(x) = o.k25.as_ref() { Some(direct3d_11::UnknownRef::Query(x)) } else if let Some(x) = o.k26.as_ref() { Some(direct3d_11::UnknownRef::RasterizerState(x)) } else if let Some(x) = o.k27.as_ref() { Some(direct3d_11::UnknownRef::RefDefaultTrackingOptions(x)) } else if let Some(x) = o.k28.as_ref() { Some(direct3d_11::UnknownRef::RefTrackingOptions(x)) } else if let Some(x) = o.k29.as_ref() { Some(direct3d_11::UnknownRef::RenderTargetView(x)) } else if let Some(x) = o.k30.as_ref() { Some(direct3d_11::UnknownRef::SamplerState(x)) } else if let Some(x) = o.k31.as_ref() { Some(direct3d_11::UnknownRef::ShaderResourceView(x)) } else if let Some(x) = o.k32.as_ref() { Some(direct3d_11::UnknownRef::ShaderTrace(x)) } else if let Some(x) = o.k33.as_ref() { Some(direct3d_11::UnknownRef::ShaderTraceFactory(x)) } else if let Some(x) = o.k34.as_ref() { Some(direct3d_11::UnknownRef::SwitchToRef(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::UnknownRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::UnknownRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::UnknownRef::Texture3D(x)) } else if let Some(x) = o.k38.as_ref() { Some(direct3d_11::UnknownRef::TracingDevice(x)) } else if let Some(x) = o.k39.as_ref() { Some(direct3d_11::UnknownRef::UnorderedAccessView(x)) } else if let Some(x) = o.k40.as_ref() { Some(direct3d_11::UnknownRef::VertexShader(x)) } else if let Some(x) = o.k41.as_ref() { Some(direct3d_11::UnknownRef::VideoContext(x)) } else if let Some(x) = o.k42.as_ref() { Some(direct3d_11::UnknownRef::VideoDecoder(x)) } else if let Some(x) = o.k43.as_ref() { Some(direct3d_11::UnknownRef::VideoDecoderOutputView(x)) } else if let Some(x) = o.k44.as_ref() { Some(direct3d_11::UnknownRef::VideoDevice(x)) } else if let Some(x) = o.k45.as_ref() { Some(direct3d_11::UnknownRef::VideoProcessor(x)) } else if let Some(x) = o.k46.as_ref() { Some(direct3d_11::UnknownRef::VideoProcessorEnumerator(x)) } else if let Some(x) = o.k47.as_ref() { Some(direct3d_11::UnknownRef::VideoProcessorInputView(x)) } else if let Some(x) = o.k48.as_ref() { Some(direct3d_11::UnknownRef::VideoProcessorOutputView(x)) } else if let Some(x) = o.k49.as_ref() { Some(direct3d_11::UnknownRef::DeviceContextState(x)) } else if let Some(x) = o.k50.as_ref() { Some(direct3d_11::UnknownRef::UserDefinedAnnotation(x)) } else { None }) else { return false; };
-        let _ = direct3d_11::ShaderTraceFactory::create_shader_trace(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_shader_trace_desc(&[u8::MIN; 40]));
-        true
+            let Some(this) = o.k33.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k2.as_ref() {
+                Some(direct3d_11::UnknownRef::AuthenticatedChannel(x))
+            } else if let Some(x) = o.k3.as_ref() {
+                Some(direct3d_11::UnknownRef::BlendState(x))
+            } else if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::UnknownRef::Buffer(x))
+            } else if let Some(x) = o.k5.as_ref() {
+                Some(direct3d_11::UnknownRef::ClassInstance(x))
+            } else if let Some(x) = o.k6.as_ref() {
+                Some(direct3d_11::UnknownRef::ClassLinkage(x))
+            } else if let Some(x) = o.k7.as_ref() {
+                Some(direct3d_11::UnknownRef::CommandList(x))
+            } else if let Some(x) = o.k8.as_ref() {
+                Some(direct3d_11::UnknownRef::ComputeShader(x))
+            } else if let Some(x) = o.k9.as_ref() {
+                Some(direct3d_11::UnknownRef::Counter(x))
+            } else if let Some(x) = o.k10.as_ref() {
+                Some(direct3d_11::UnknownRef::CryptoSession(x))
+            } else if let Some(x) = o.k11.as_ref() {
+                Some(direct3d_11::UnknownRef::Debug(x))
+            } else if let Some(x) = o.k12.as_ref() {
+                Some(direct3d_11::UnknownRef::DepthStencilState(x))
+            } else if let Some(x) = o.k13.as_ref() {
+                Some(direct3d_11::UnknownRef::DepthStencilView(x))
+            } else if let Some(x) = o.k14.as_ref() {
+                Some(direct3d_11::UnknownRef::Device(x))
+            } else if let Some(x) = o.k15.as_ref() {
+                Some(direct3d_11::UnknownRef::DeviceContext(x))
+            } else if let Some(x) = o.k16.as_ref() {
+                Some(direct3d_11::UnknownRef::DomainShader(x))
+            } else if let Some(x) = o.k17.as_ref() {
+                Some(direct3d_11::UnknownRef::Fence(x))
+            } else if let Some(x) = o.k18.as_ref() {
+                Some(direct3d_11::UnknownRef::GeometryShader(x))
+            } else if let Some(x) = o.k19.as_ref() {
+                Some(direct3d_11::UnknownRef::HullShader(x))
+            } else if let Some(x) = o.k20.as_ref() {
+                Some(direct3d_11::UnknownRef::InfoQueue(x))
+            } else if let Some(x) = o.k21.as_ref() {
+                Some(direct3d_11::UnknownRef::InputLayout(x))
+            } else if let Some(x) = o.k22.as_ref() {
+                Some(direct3d_11::UnknownRef::Multithread(x))
+            } else if let Some(x) = o.k23.as_ref() {
+                Some(direct3d_11::UnknownRef::PixelShader(x))
+            } else if let Some(x) = o.k24.as_ref() {
+                Some(direct3d_11::UnknownRef::Predicate(x))
+            } else if let Some(x) = o.k25.as_ref() {
+                Some(direct3d_11::UnknownRef::Query(x))
+            } else if let Some(x) = o.k26.as_ref() {
+                Some(direct3d_11::UnknownRef::RasterizerState(x))
+            } else if let Some(x) = o.k27.as_ref() {
+                Some(direct3d_11::UnknownRef::RefDefaultTrackingOptions(x))
+            } else if let Some(x) = o.k28.as_ref() {
+                Some(direct3d_11::UnknownRef::RefTrackingOptions(x))
+            } else if let Some(x) = o.k29.as_ref() {
+                Some(direct3d_11::UnknownRef::RenderTargetView(x))
+            } else if let Some(x) = o.k30.as_ref() {
+                Some(direct3d_11::UnknownRef::SamplerState(x))
+            } else if let Some(x) = o.k31.as_ref() {
+                Some(direct3d_11::UnknownRef::ShaderResourceView(x))
+            } else if let Some(x) = o.k32.as_ref() {
+                Some(direct3d_11::UnknownRef::ShaderTrace(x))
+            } else if let Some(x) = o.k33.as_ref() {
+                Some(direct3d_11::UnknownRef::ShaderTraceFactory(x))
+            } else if let Some(x) = o.k34.as_ref() {
+                Some(direct3d_11::UnknownRef::SwitchToRef(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::UnknownRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::UnknownRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::UnknownRef::Texture3D(x))
+            } else if let Some(x) = o.k38.as_ref() {
+                Some(direct3d_11::UnknownRef::TracingDevice(x))
+            } else if let Some(x) = o.k39.as_ref() {
+                Some(direct3d_11::UnknownRef::UnorderedAccessView(x))
+            } else if let Some(x) = o.k40.as_ref() {
+                Some(direct3d_11::UnknownRef::VertexShader(x))
+            } else if let Some(x) = o.k41.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoContext(x))
+            } else if let Some(x) = o.k42.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoDecoder(x))
+            } else if let Some(x) = o.k43.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoDecoderOutputView(x))
+            } else if let Some(x) = o.k44.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoDevice(x))
+            } else if let Some(x) = o.k45.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoProcessor(x))
+            } else if let Some(x) = o.k46.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoProcessorEnumerator(x))
+            } else if let Some(x) = o.k47.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoProcessorInputView(x))
+            } else if let Some(x) = o.k48.as_ref() {
+                Some(direct3d_11::UnknownRef::VideoProcessorOutputView(x))
+            } else if let Some(x) = o.k49.as_ref() {
+                Some(direct3d_11::UnknownRef::DeviceContextState(x))
+            } else if let Some(x) = o.k50.as_ref() {
+                Some(direct3d_11::UnknownRef::UserDefinedAnnotation(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let _ = direct3d_11::ShaderTraceFactory::create_shader_trace(
+                this,
+                v1,
+                &direct3d_11::structures::ShaderTraceDesc {
+                    type_: direct3d_11::enumerations::D3D11_VERTEX_SHADER,
+                    flags: 76_u32,
+                    anonymous: direct3d_11::structures::ShaderTraceDescAnonymous {
+                        vertex_shader_trace_desc: direct3d_11::structures::VertexShaderTraceDesc {
+                            invocation: 0_u64,
+                        },
+                        hull_shader_trace_desc: direct3d_11::structures::HullShaderTraceDesc {
+                            invocation: 0_u64,
+                        },
+                        domain_shader_trace_desc: direct3d_11::structures::DomainShaderTraceDesc {
+                            invocation: 0_u64,
+                        },
+                        geometry_shader_trace_desc:
+                            direct3d_11::structures::GeometryShaderTraceDesc { invocation: 0_u64 },
+                        pixel_shader_trace_desc: direct3d_11::structures::PixelShaderTraceDesc {
+                            invocation: 0_u64,
+                            x: 0_i32,
+                            y: 0_i32,
+                            sample_mask: 0_u64,
+                        },
+                        compute_shader_trace_desc:
+                            direct3d_11::structures::ComputeShaderTraceDesc {
+                                invocation: 0_u64,
+                                thread_id_in_group: core::array::from_fn(|_| 0_u32),
+                                thread_group_id: core::array::from_fn(|_| 0_u32),
+                            },
+                    },
+                },
+            );
+            true
         });
     }
     // ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderTraceFactory
@@ -37191,10 +37896,8 @@ pub fn drive_where(
             let Some(this) = o.k33.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -37204,7 +37907,7 @@ pub fn drive_where(
             let Some(this) = o.k34.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::SwitchToRef::set_use_ref(this, Default::default());
+            let _ = direct3d_11::SwitchToRef::set_use_ref(this, true);
             true
         });
     }
@@ -37224,10 +37927,8 @@ pub fn drive_where(
             let Some(this) = o.k34.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -37257,7 +37958,7 @@ pub fn drive_where(
             let Some(this) = o.k35.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Resource::set_eviction_priority(this, Default::default());
+            let _ = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
             true
         });
     }
@@ -37287,7 +37988,16 @@ pub fn drive_where(
             let Some(this) = o.k35.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -37299,7 +38009,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -37313,8 +38028,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -37327,7 +38047,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -37339,7 +38064,15 @@ pub fn drive_where(
             let Some(this) = o.k35.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -37351,7 +38084,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -37406,8 +38144,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                this,
-                Default::default(),
+                this, 35_u32,
             );
             true
         });
@@ -37418,10 +38155,8 @@ pub fn drive_where(
             let Some(this) = o.k35.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -37461,7 +38196,7 @@ pub fn drive_where(
             let Some(this) = o.k36.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Resource::set_eviction_priority(this, Default::default());
+            let _ = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
             true
         });
     }
@@ -37491,7 +38226,16 @@ pub fn drive_where(
             let Some(this) = o.k36.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -37503,7 +38247,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -37517,8 +38266,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -37531,7 +38285,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -37543,7 +38302,15 @@ pub fn drive_where(
             let Some(this) = o.k36.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -37555,7 +38322,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -37610,8 +38382,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                this,
-                Default::default(),
+                this, 35_u32,
             );
             true
         });
@@ -37642,7 +38413,7 @@ pub fn drive_where(
             let Some(this) = o.k36.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Surface1::get_dc(this, Default::default());
+            let _ = directx_graphics_infrastructure::Surface1::get_dc(this, true);
             true
         });
     }
@@ -37662,8 +38433,15 @@ pub fn drive_where(
             let Some(this) = o.k36.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::Surface2::get_resource(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Surface2::get_resource(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -37673,10 +38451,8 @@ pub fn drive_where(
             let Some(this) = o.k36.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -37716,7 +38492,7 @@ pub fn drive_where(
             let Some(this) = o.k37.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::Resource::set_eviction_priority(this, Default::default());
+            let _ = direct3d_11::Resource::set_eviction_priority(this, 97_u32);
             true
         });
     }
@@ -37746,7 +38522,16 @@ pub fn drive_where(
             let Some(this) = o.k37.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -37758,7 +38543,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -37772,8 +38562,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -37786,7 +38581,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -37798,7 +38598,15 @@ pub fn drive_where(
             let Some(this) = o.k37.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -37810,7 +38618,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -37865,8 +38678,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                this,
-                Default::default(),
+                this, 35_u32,
             );
             true
         });
@@ -37877,10 +38689,8 @@ pub fn drive_where(
             let Some(this) = o.k37.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -37891,9 +38701,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::TracingDevice::set_shader_tracking_options_by_type(
-                this,
-                Default::default(),
-                Default::default(),
+                this, 83_u32, 108_u32,
             );
             true
         });
@@ -38007,11 +38815,7 @@ pub fn drive_where(
             }) else {
                 return false;
             };
-            let _ = direct3d_11::TracingDevice::set_shader_tracking_options(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ = direct3d_11::TracingDevice::set_shader_tracking_options(this, v1, 108_u32);
             true
         });
     }
@@ -38021,10 +38825,8 @@ pub fn drive_where(
             let Some(this) = o.k38.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -38064,7 +38866,16 @@ pub fn drive_where(
             let Some(this) = o.k39.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -38076,7 +38887,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -38088,10 +38904,8 @@ pub fn drive_where(
             let Some(this) = o.k39.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -38111,7 +38925,16 @@ pub fn drive_where(
             let Some(this) = o.k40.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -38123,7 +38946,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -38135,10 +38963,8 @@ pub fn drive_where(
             let Some(this) = o.k40.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -38154,7 +38980,14 @@ pub fn drive_where(
             let Some(v2) = o.k43.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext3::decoder_begin_frame1(this, v1, v2, None, &[], &[]);
+            let _ = direct3d_11::VideoContext3::decoder_begin_frame1(
+                this,
+                v1,
+                v2,
+                None,
+                &[28_u32],
+                &[],
+            );
             true
         });
     }
@@ -38170,7 +39003,7 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext2::video_processor_set_output_hdr_meta_data(
                 this,
                 v1,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_HDR_METADATA_TYPE_HDR10,
                 None,
             );
             true
@@ -38206,8 +39039,8 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext2::video_processor_set_stream_hdr_meta_data(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
+                118_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_HDR_METADATA_TYPE_HDR10,
                 None,
             );
             true
@@ -38226,7 +39059,7 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext2::video_processor_get_stream_hdr_meta_data(
                 this,
                 v1,
-                Default::default(),
+                118_u32,
                 Some(&lying),
             );
             true
@@ -38241,7 +39074,7 @@ pub fn drive_where(
             let Some(v1) = o.k10.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext1::get_data_for_new_hardware_key(this, v1, &[]);
+            let _ = direct3d_11::VideoContext1::get_data_for_new_hardware_key(this, v1, &[83_u8]);
             true
         });
     }
@@ -38263,7 +39096,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else { return false; };
         let Some(v1) = o.k42.as_ref() else { return false; };
-        let _ = direct3d_11::VideoContext1::decoder_enable_downsampling(this, v1, Default::default(), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_sample_desc(&[u8::MIN; 16]), Default::default());
+        let _ = direct3d_11::VideoContext1::decoder_enable_downsampling(this, v1, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &direct3d_11::structures::VideoSampleDesc { width: 76_u32, height: 83_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, color_space: directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 }, 45_u32);
         true
         });
     }
@@ -38272,25 +39105,17 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k41.as_ref() else { return false; };
         let Some(v1) = o.k42.as_ref() else { return false; };
-        let _ = direct3d_11::VideoContext1::decoder_update_downsampling(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_sample_desc(&[u8::MIN; 16]));
+        let _ = direct3d_11::VideoContext1::decoder_update_downsampling(this, v1, &direct3d_11::structures::VideoSampleDesc { width: 76_u32, height: 83_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, color_space: directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 });
         true
         });
     }
     // ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1 on VideoContext
     if wanted(ID_3D11_VIDEO_CONTEXT1) {
         driven.attempt(|| {
-            let Some(this) = o.k41.as_ref() else {
-                return false;
-            };
-            let Some(v1) = o.k45.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::VideoContext1::video_processor_set_output_color_space1(
-                this,
-                v1,
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k41.as_ref() else { return false; };
+        let Some(v1) = o.k45.as_ref() else { return false; };
+        let _ = direct3d_11::VideoContext1::video_processor_set_output_color_space1(this, v1, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+        true
         });
     }
     // ID3D11VideoContext1::VideoProcessorSetOutputShaderUsage on VideoContext
@@ -38302,11 +39127,8 @@ pub fn drive_where(
             let Some(v1) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext1::video_processor_set_output_shader_usage(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::VideoContext1::video_processor_set_output_shader_usage(this, v1, true);
             true
         });
     }
@@ -38339,19 +39161,10 @@ pub fn drive_where(
     // ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1 on VideoContext
     if wanted(ID_3D11_VIDEO_CONTEXT1) {
         driven.attempt(|| {
-            let Some(this) = o.k41.as_ref() else {
-                return false;
-            };
-            let Some(v1) = o.k45.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::VideoContext1::video_processor_set_stream_color_space1(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k41.as_ref() else { return false; };
+        let Some(v1) = o.k45.as_ref() else { return false; };
+        let _ = direct3d_11::VideoContext1::video_processor_set_stream_color_space1(this, v1, 118_u32, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+        true
         });
     }
     // ID3D11VideoContext1::VideoProcessorSetStreamMirror on VideoContext
@@ -38364,12 +39177,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext1::video_processor_set_stream_mirror(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, v1, 118_u32, true, true, true,
             );
             true
         });
@@ -38384,9 +39192,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext1::video_processor_get_stream_color_space1(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -38400,32 +39206,18 @@ pub fn drive_where(
             let Some(v1) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext1::video_processor_get_stream_mirror(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::VideoContext1::video_processor_get_stream_mirror(this, v1, 118_u32);
             true
         });
     }
     // ID3D11VideoContext1::VideoProcessorGetBehaviorHints on VideoContext
     if wanted(ID_3D11_VIDEO_CONTEXT1) {
         driven.attempt(|| {
-            let Some(this) = o.k41.as_ref() else {
-                return false;
-            };
-            let Some(v1) = o.k45.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::VideoContext1::video_processor_get_behavior_hints(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                &[],
-            );
-            true
+        let Some(this) = o.k41.as_ref() else { return false; };
+        let Some(v1) = o.k45.as_ref() else { return false; };
+        let _ = direct3d_11::VideoContext1::video_processor_get_behavior_hints(this, v1, 91_u32, 46_u32, directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, &[direct3d_11::structures::VideoProcessorStreamBehaviorHint { enable: true, width: 33_u32, height: 40_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS }]);
+        true
         });
     }
     // ID3D11VideoContext::ReleaseDecoderBuffer on VideoContext
@@ -38437,7 +39229,11 @@ pub fn drive_where(
             let Some(v1) = o.k42.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext::release_decoder_buffer(this, v1, Default::default());
+            let _ = direct3d_11::VideoContext::release_decoder_buffer(
+                this,
+                v1,
+                direct3d_11::enumerations::D3D11_VIDEO_DECODER_BUFFER_MACROBLOCK_CONTROL,
+            );
             true
         });
     }
@@ -38480,10 +39276,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_output_target_rect(
-                this,
-                v1,
-                Default::default(),
-                None,
+                this, v1, true, None,
             );
             true
         });
@@ -38500,10 +39293,23 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_output_background_color(
                 this,
                 v1,
-                Default::default(),
-                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_color(
-                    &[u8::MIN; 16],
-                ),
+                true,
+                &direct3d_11::structures::VideoColor {
+                    anonymous: direct3d_11::structures::VideoColorAnonymous {
+                        y_cb_cr: direct3d_11::structures::VideoColorYcbcra {
+                            y: 0.0_f32,
+                            cb: 0.0_f32,
+                            cr: 0.0_f32,
+                            a: 0.0_f32,
+                        },
+                        rgba: direct3d_11::structures::VideoColorRgba {
+                            r: 0.0_f32,
+                            g: 0.0_f32,
+                            b: 0.0_f32,
+                            a: 0.0_f32,
+                        },
+                    },
+                },
             );
             true
         });
@@ -38511,10 +39317,18 @@ pub fn drive_where(
     // ID3D11VideoContext::VideoProcessorSetOutputColorSpace on VideoContext
     if wanted(ID_3D11_VIDEO_CONTEXT) {
         driven.attempt(|| {
-        let Some(this) = o.k41.as_ref() else { return false; };
-        let Some(v1) = o.k45.as_ref() else { return false; };
-        let _ = direct3d_11::VideoContext::video_processor_set_output_color_space(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&[u8::MIN; 4]));
-        true
+            let Some(this) = o.k41.as_ref() else {
+                return false;
+            };
+            let Some(v1) = o.k45.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::VideoContext::video_processor_set_output_color_space(
+                this,
+                v1,
+                &direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 12_u32 },
+            );
+            true
         });
     }
     // ID3D11VideoContext::VideoProcessorSetOutputAlphaFillMode on VideoContext
@@ -38529,8 +39343,8 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_output_alpha_fill_mode(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_ALPHA_FILL_MODE_BACKGROUND,
+                118_u32,
             );
             true
         });
@@ -38544,11 +39358,8 @@ pub fn drive_where(
             let Some(v1) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext::video_processor_set_output_stereo_mode(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::VideoContext::video_processor_set_output_stereo_mode(this, v1, true);
             true
         });
     }
@@ -38644,7 +39455,12 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_get_output_extension(
                 this,
                 v1,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 118_u32,
+                    data2: 125_u16,
+                    data3: 6_u16,
+                    data4: core::array::from_fn(|_| 13_u8),
+                },
                 &lying,
             );
             true
@@ -38662,8 +39478,8 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_stream_frame_format(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
+                118_u32,
+                direct3d_11::enumerations::D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST,
             );
             true
         });
@@ -38671,10 +39487,19 @@ pub fn drive_where(
     // ID3D11VideoContext::VideoProcessorSetStreamColorSpace on VideoContext
     if wanted(ID_3D11_VIDEO_CONTEXT) {
         driven.attempt(|| {
-        let Some(this) = o.k41.as_ref() else { return false; };
-        let Some(v1) = o.k45.as_ref() else { return false; };
-        let _ = direct3d_11::VideoContext::video_processor_set_stream_color_space(this, v1, Default::default(), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_color_space(&[u8::MIN; 4]));
-        true
+            let Some(this) = o.k41.as_ref() else {
+                return false;
+            };
+            let Some(v1) = o.k45.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::VideoContext::video_processor_set_stream_color_space(
+                this,
+                v1,
+                118_u32,
+                &direct3d_11::structures::VideoProcessorColorSpace { _bitfield: 12_u32 },
+            );
+            true
         });
     }
     // ID3D11VideoContext::VideoProcessorSetStreamOutputRate on VideoContext
@@ -38689,9 +39514,9 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_stream_output_rate(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                118_u32,
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_OUTPUT_RATE_HALF,
+                true,
                 None,
             );
             true
@@ -38707,11 +39532,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_source_rect(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                None,
+                this, v1, 118_u32, true, None,
             );
             true
         });
@@ -38726,11 +39547,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_dest_rect(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                None,
+                this, v1, 118_u32, true, None,
             );
             true
         });
@@ -38745,11 +39562,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_alpha(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, v1, 118_u32, true, 51.5_f32,
             );
             true
         });
@@ -38766,8 +39579,8 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_stream_palette(
                 this,
                 v1,
-                Default::default(),
-                &[],
+                118_u32,
+                &[40_u32],
             );
             true
         });
@@ -38782,12 +39595,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_pixel_aspect_ratio(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                None,
-                None,
+                this, v1, 118_u32, true, None, None,
             );
             true
         });
@@ -38802,12 +39610,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_luma_key(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                this, v1, 118_u32, true, 99.5_f32, 26.5_f32,
             );
             true
         });
@@ -38824,13 +39627,13 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_stream_stereo_format(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                118_u32,
+                true,
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_STEREO_FORMAT_HORIZONTAL,
+                true,
+                true,
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_STEREO_FLIP_FRAME0,
+                33_i32,
             );
             true
         });
@@ -38845,10 +39648,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_set_stream_auto_processing_mode(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
+                this, v1, 118_u32, true,
             );
             true
         });
@@ -38865,10 +39665,10 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_stream_filter(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                118_u32,
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_FILTER_CONTRAST,
+                true,
+                50_i32,
             );
             true
         });
@@ -38883,9 +39683,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_frame_format(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -38900,9 +39698,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_color_space(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -38917,9 +39713,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_output_rate(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -38934,9 +39728,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_source_rect(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -38950,11 +39742,8 @@ pub fn drive_where(
             let Some(v1) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext::video_processor_get_stream_dest_rect(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::VideoContext::video_processor_get_stream_dest_rect(this, v1, 118_u32);
             true
         });
     }
@@ -38967,11 +39756,7 @@ pub fn drive_where(
             let Some(v1) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext::video_processor_get_stream_alpha(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ = direct3d_11::VideoContext::video_processor_get_stream_alpha(this, v1, 118_u32);
             true
         });
     }
@@ -38985,10 +39770,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_palette(
-                this,
-                v1,
-                Default::default(),
-                Default::default(),
+                this, v1, 118_u32, 24_u32,
             );
             true
         });
@@ -39003,9 +39785,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_pixel_aspect_ratio(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -39019,11 +39799,8 @@ pub fn drive_where(
             let Some(v1) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext::video_processor_get_stream_luma_key(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::VideoContext::video_processor_get_stream_luma_key(this, v1, 118_u32);
             true
         });
     }
@@ -39037,9 +39814,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_stereo_format(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -39054,9 +39829,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoContext::video_processor_get_stream_auto_processing_mode(
-                this,
-                v1,
-                Default::default(),
+                this, v1, 118_u32,
             );
             true
         });
@@ -39073,8 +39846,8 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_get_stream_filter(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
+                118_u32,
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_FILTER_CONTRAST,
             );
             true
         });
@@ -39092,8 +39865,13 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_get_stream_extension(
                 this,
                 v1,
-                Default::default(),
-                &Default::default(),
+                118_u32,
+                &component_object_model::structures::Guid {
+                    data1: 118_u32,
+                    data2: 125_u16,
+                    data3: 6_u16,
+                    data4: core::array::from_fn(|_| 13_u8),
+                },
                 &lying,
             );
             true
@@ -39229,7 +40007,8 @@ pub fn drive_where(
                 return false;
             };
             let lying = bytes();
-            let _ = direct3d_11::VideoContext::query_authenticated_channel(this, v1, &[], &lying);
+            let _ =
+                direct3d_11::VideoContext::query_authenticated_channel(this, v1, &[109_u8], &lying);
             true
         });
     }
@@ -39242,7 +40021,7 @@ pub fn drive_where(
             let Some(v1) = o.k2.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext::configure_authenticated_channel(this, v1, &[]);
+            let _ = direct3d_11::VideoContext::configure_authenticated_channel(this, v1, &[109_u8]);
             true
         });
     }
@@ -39258,9 +40037,9 @@ pub fn drive_where(
             let _ = direct3d_11::VideoContext::video_processor_set_stream_rotation(
                 this,
                 v1,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                118_u32,
+                true,
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_ROTATION_90,
             );
             true
         });
@@ -39274,11 +40053,8 @@ pub fn drive_where(
             let Some(v1) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoContext::video_processor_get_stream_rotation(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ =
+                direct3d_11::VideoContext::video_processor_get_stream_rotation(this, v1, 118_u32);
             true
         });
     }
@@ -39298,7 +40074,16 @@ pub fn drive_where(
             let Some(this) = o.k41.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -39310,7 +40095,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -39322,10 +40112,8 @@ pub fn drive_where(
             let Some(this) = o.k41.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -39365,7 +40153,16 @@ pub fn drive_where(
             let Some(this) = o.k42.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -39377,7 +40174,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -39389,10 +40191,8 @@ pub fn drive_where(
             let Some(this) = o.k42.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -39422,7 +40222,16 @@ pub fn drive_where(
             let Some(this) = o.k43.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -39434,7 +40243,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -39446,10 +40260,8 @@ pub fn drive_where(
             let Some(this) = o.k43.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -39460,8 +40272,11 @@ pub fn drive_where(
                 return false;
             };
             let lying = bytes();
-            let _ =
-                direct3d_11::VideoDevice2::check_feature_support(this, Default::default(), &lying);
+            let _ = direct3d_11::VideoDevice2::check_feature_support(
+                this,
+                direct3d_11::enumerations::D3D11_FEATURE_VIDEO_DECODER_HISTOGRAM,
+                &lying,
+            );
             true
         });
     }
@@ -39478,7 +40293,7 @@ pub fn drive_where(
             let _ = direct3d_11::VideoDevice2::negotiate_crypto_session_key_exchange_mt(
                 this,
                 v1,
-                Default::default(),
+                direct3d_11::enumerations::D3D11_CRYPTO_SESSION_KEY_EXCHANGE_FLAG_NONE,
                 &lying,
             );
             true
@@ -39492,9 +40307,19 @@ pub fn drive_where(
             };
             let _ = direct3d_11::VideoDevice1::get_crypto_session_private_data_size(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 78_u32,
+                    data2: 85_u16,
+                    data3: 92_u16,
+                    data4: core::array::from_fn(|_| 99_u8),
+                },
                 None,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 15_u32,
+                    data2: 22_u16,
+                    data3: 29_u16,
+                    data4: core::array::from_fn(|_| 36_u8),
+                },
             );
             true
         });
@@ -39502,16 +40327,34 @@ pub fn drive_where(
     // ID3D11VideoDevice1::GetVideoDecoderCaps on VideoDevice
     if wanted(ID_3D11_VIDEO_DEVICE1) {
         driven.attempt(|| {
-        let Some(this) = o.k44.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice1::get_video_decoder_caps(this, &Default::default(), Default::default(), Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]), Default::default(), None);
-        true
+            let Some(this) = o.k44.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::VideoDevice1::get_video_decoder_caps(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                },
+                49_u32,
+                97_u32,
+                &directx_graphics_infrastructure::structures::Rational {
+                    numerator: 62_u32,
+                    denominator: 69_u32,
+                },
+                91_u32,
+                None,
+            );
+            true
         });
     }
     // ID3D11VideoDevice1::CheckVideoDecoderDownsampling on VideoDevice
     if wanted(ID_3D11_VIDEO_DEVICE1) {
         driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice1::check_video_decoder_downsampling(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_desc(&[u8::MIN; 28]), Default::default(), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_config(&[u8::MIN; 100]), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_sample_desc(&[u8::MIN; 16]));
+        let _ = direct3d_11::VideoDevice1::check_video_decoder_downsampling(this, &direct3d_11::structures::VideoDecoderDesc { guid: component_object_model::structures::Guid { data1: 55_u32, data2: 62_u16, data3: 69_u16, data4: core::array::from_fn(|_| 76_u8) }, sample_width: 55_u32, sample_height: 62_u32, output_format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS }, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &direct3d_11::structures::VideoDecoderConfig { guid_config_bitstream_encryption: component_object_model::structures::Guid { data1: 2_u32, data2: 9_u16, data3: 16_u16, data4: core::array::from_fn(|_| 23_u8) }, guid_config_m_bcontrol_encryption: component_object_model::structures::Guid { data1: 9_u32, data2: 16_u16, data3: 23_u16, data4: core::array::from_fn(|_| 30_u8) }, guid_config_resid_diff_encryption: component_object_model::structures::Guid { data1: 16_u32, data2: 23_u16, data3: 30_u16, data4: core::array::from_fn(|_| 37_u8) }, config_bitstream_raw: 16_u32, config_m_bcontrol_raster_order: 23_u32, config_resid_diff_host: 30_u32, config_spatial_resid8: 37_u32, config_resid8_subtraction: 44_u32, config_spatial_host8or9_clipping: 51_u32, config_spatial_resid_interleaved: 58_u32, config_intra_resid_unsigned: 65_u32, config_resid_diff_accelerator: 72_u32, config_host_inverse_scan: 79_u32, config_specific_idct: 86_u32, config4_grouped_coefs: 93_u32, config_min_render_target_buff_count: 100_u16, config_decoder_specific: 107_u16 }, &directx_graphics_infrastructure::structures::Rational { numerator: 62_u32, denominator: 69_u32 }, &direct3d_11::structures::VideoSampleDesc { width: 76_u32, height: 83_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, color_space: directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 });
         true
         });
     }
@@ -39519,7 +40362,7 @@ pub fn drive_where(
     if wanted(ID_3D11_VIDEO_DEVICE1) {
         driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice1::recommend_video_decoder_downsample_parameters(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_desc(&[u8::MIN; 28]), Default::default(), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_config(&[u8::MIN; 100]), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_rational(&[u8::MIN; 8]));
+        let _ = direct3d_11::VideoDevice1::recommend_video_decoder_downsample_parameters(this, &direct3d_11::structures::VideoDecoderDesc { guid: component_object_model::structures::Guid { data1: 55_u32, data2: 62_u16, data3: 69_u16, data4: core::array::from_fn(|_| 76_u8) }, sample_width: 55_u32, sample_height: 62_u32, output_format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS }, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &direct3d_11::structures::VideoDecoderConfig { guid_config_bitstream_encryption: component_object_model::structures::Guid { data1: 2_u32, data2: 9_u16, data3: 16_u16, data4: core::array::from_fn(|_| 23_u8) }, guid_config_m_bcontrol_encryption: component_object_model::structures::Guid { data1: 9_u32, data2: 16_u16, data3: 23_u16, data4: core::array::from_fn(|_| 30_u8) }, guid_config_resid_diff_encryption: component_object_model::structures::Guid { data1: 16_u32, data2: 23_u16, data3: 30_u16, data4: core::array::from_fn(|_| 37_u8) }, config_bitstream_raw: 16_u32, config_m_bcontrol_raster_order: 23_u32, config_resid_diff_host: 30_u32, config_spatial_resid8: 37_u32, config_resid8_subtraction: 44_u32, config_spatial_host8or9_clipping: 51_u32, config_spatial_resid_interleaved: 58_u32, config_intra_resid_unsigned: 65_u32, config_resid_diff_accelerator: 72_u32, config_host_inverse_scan: 79_u32, config_specific_idct: 86_u32, config4_grouped_coefs: 93_u32, config_min_render_target_buff_count: 100_u16, config_decoder_specific: 107_u16 }, &directx_graphics_infrastructure::structures::Rational { numerator: 62_u32, denominator: 69_u32 });
         true
         });
     }
@@ -39527,7 +40370,7 @@ pub fn drive_where(
     if wanted(ID_3D11_VIDEO_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice::create_video_decoder(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_desc(&[u8::MIN; 28]), &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_config(&[u8::MIN; 100]));
+        let _ = direct3d_11::VideoDevice::create_video_decoder(this, &direct3d_11::structures::VideoDecoderDesc { guid: component_object_model::structures::Guid { data1: 96_u32, data2: 103_u16, data3: 110_u16, data4: core::array::from_fn(|_| 117_u8) }, sample_width: 96_u32, sample_height: 103_u32, output_format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS }, &direct3d_11::structures::VideoDecoderConfig { guid_config_bitstream_encryption: component_object_model::structures::Guid { data1: 57_u32, data2: 64_u16, data3: 71_u16, data4: core::array::from_fn(|_| 78_u8) }, guid_config_m_bcontrol_encryption: component_object_model::structures::Guid { data1: 64_u32, data2: 71_u16, data3: 78_u16, data4: core::array::from_fn(|_| 85_u8) }, guid_config_resid_diff_encryption: component_object_model::structures::Guid { data1: 71_u32, data2: 78_u16, data3: 85_u16, data4: core::array::from_fn(|_| 92_u8) }, config_bitstream_raw: 71_u32, config_m_bcontrol_raster_order: 78_u32, config_resid_diff_host: 85_u32, config_spatial_resid8: 92_u32, config_resid8_subtraction: 99_u32, config_spatial_host8or9_clipping: 106_u32, config_spatial_resid_interleaved: 113_u32, config_intra_resid_unsigned: 120_u32, config_resid_diff_accelerator: 1_u32, config_host_inverse_scan: 8_u32, config_specific_idct: 15_u32, config4_grouped_coefs: 22_u32, config_min_render_target_buff_count: 29_u16, config_decoder_specific: 36_u16 });
         true
         });
     }
@@ -39540,7 +40383,7 @@ pub fn drive_where(
             let Some(v1) = o.k46.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoDevice::create_video_processor(this, v1, Default::default());
+            let _ = direct3d_11::VideoDevice::create_video_processor(this, v1, 48_u32);
             true
         });
     }
@@ -39565,9 +40408,19 @@ pub fn drive_where(
             };
             let _ = direct3d_11::VideoDevice::create_crypto_session(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 78_u32,
+                    data2: 85_u16,
+                    data3: 92_u16,
+                    data4: core::array::from_fn(|_| 99_u8),
+                },
                 None,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 15_u32,
+                    data2: 22_u16,
+                    data3: 29_u16,
+                    data4: core::array::from_fn(|_| 36_u8),
+                },
             );
             true
         });
@@ -39575,37 +40428,127 @@ pub fn drive_where(
     // ID3D11VideoDevice::CreateVideoDecoderOutputView on VideoDevice
     if wanted(ID_3D11_VIDEO_DEVICE) {
         driven.attempt(|| {
-        let Some(this) = o.k44.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
-        let _ = direct3d_11::VideoDevice::create_video_decoder_output_view(this, v1, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_output_view_desc(&[u8::MIN; 24]));
-        true
+            let Some(this) = o.k44.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let _ = direct3d_11::VideoDevice::create_video_decoder_output_view(
+                this,
+                v1,
+                &direct3d_11::structures::VideoDecoderOutputViewDesc {
+                    decode_profile: component_object_model::structures::Guid {
+                        data1: 65_u32,
+                        data2: 72_u16,
+                        data3: 79_u16,
+                        data4: core::array::from_fn(|_| 86_u8),
+                    },
+                    view_dimension: direct3d_11::enumerations::D3D11_VDOV_DIMENSION_TEXTURE2D,
+                    anonymous: direct3d_11::structures::VideoDecoderOutputViewDescAnonymous {
+                        texture_2d: direct3d_11::structures::Tex2DVdov { array_slice: 0_u32 },
+                    },
+                },
+            );
+            true
         });
     }
     // ID3D11VideoDevice::CreateVideoProcessorInputView on VideoDevice
     if wanted(ID_3D11_VIDEO_DEVICE) {
         driven.attempt(|| {
-        let Some(this) = o.k44.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
-        let Some(v2) = o.k46.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice::create_video_processor_input_view(this, v1, v2, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_input_view_desc(&[u8::MIN; 16]));
-        true
+            let Some(this) = o.k44.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let Some(v2) = o.k46.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::VideoDevice::create_video_processor_input_view(
+                this,
+                v1,
+                v2,
+                &direct3d_11::structures::VideoProcessorInputViewDesc {
+                    four_cc: 58_u32,
+                    view_dimension: direct3d_11::enumerations::D3D11_VPIV_DIMENSION_TEXTURE2D,
+                    anonymous: direct3d_11::structures::VideoProcessorInputViewDescAnonymous {
+                        texture_2d: direct3d_11::structures::Tex2DVpiv {
+                            mip_slice: 0_u32,
+                            array_slice: 0_u32,
+                        },
+                    },
+                },
+            );
+            true
         });
     }
     // ID3D11VideoDevice::CreateVideoProcessorOutputView on VideoDevice
     if wanted(ID_3D11_VIDEO_DEVICE) {
         driven.attempt(|| {
-        let Some(this) = o.k44.as_ref() else { return false; };
-        let Some(v1) = (if let Some(x) = o.k4.as_ref() { Some(direct3d_11::ResourceRef::Buffer(x)) } else if let Some(x) = o.k35.as_ref() { Some(direct3d_11::ResourceRef::Texture1D(x)) } else if let Some(x) = o.k36.as_ref() { Some(direct3d_11::ResourceRef::Texture2D(x)) } else if let Some(x) = o.k37.as_ref() { Some(direct3d_11::ResourceRef::Texture3D(x)) } else { None }) else { return false; };
-        let Some(v2) = o.k46.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice::create_video_processor_output_view(this, v1, v2, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_output_view_desc(&[u8::MIN; 16]));
-        true
+            let Some(this) = o.k44.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let Some(v2) = o.k46.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::VideoDevice::create_video_processor_output_view(
+                this,
+                v1,
+                v2,
+                &direct3d_11::structures::VideoProcessorOutputViewDesc {
+                    view_dimension: direct3d_11::enumerations::D3D11_VPOV_DIMENSION_TEXTURE2D,
+                    anonymous: direct3d_11::structures::VideoProcessorOutputViewDescAnonymous {
+                        texture_2d: direct3d_11::structures::Tex2DVpov { mip_slice: 0_u32 },
+                        texture_2d_array: direct3d_11::structures::Tex2DArrayVpov {
+                            mip_slice: 0_u32,
+                            first_array_slice: 0_u32,
+                            array_size: 0_u32,
+                        },
+                    },
+                },
+            );
+            true
         });
     }
     // ID3D11VideoDevice::CreateVideoProcessorEnumerator on VideoDevice
     if wanted(ID_3D11_VIDEO_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice::create_video_processor_enumerator(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_processor_content_desc(&[u8::MIN; 40]));
+        let _ = direct3d_11::VideoDevice::create_video_processor_enumerator(this, &direct3d_11::structures::VideoProcessorContentDesc { input_frame_format: direct3d_11::enumerations::D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST, input_frame_rate: directx_graphics_infrastructure::structures::Rational { numerator: 72_u32, denominator: 79_u32 }, input_width: 72_u32, input_height: 79_u32, output_frame_rate: directx_graphics_infrastructure::structures::Rational { numerator: 93_u32, denominator: 100_u32 }, output_width: 93_u32, output_height: 100_u32, usage: direct3d_11::enumerations::D3D11_VIDEO_USAGE_OPTIMAL_SPEED });
         true
         });
     }
@@ -39625,7 +40568,7 @@ pub fn drive_where(
             let Some(this) = o.k44.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoDevice::get_video_decoder_profile(this, Default::default());
+            let _ = direct3d_11::VideoDevice::get_video_decoder_profile(this, 35_u32);
             true
         });
     }
@@ -39637,8 +40580,13 @@ pub fn drive_where(
             };
             let _ = direct3d_11::VideoDevice::check_video_decoder_format(
                 this,
-                &Default::default(),
-                Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 73_u32,
+                    data2: 80_u16,
+                    data3: 87_u16,
+                    data4: core::array::from_fn(|_| 94_u8),
+                },
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
             );
             true
         });
@@ -39647,7 +40595,7 @@ pub fn drive_where(
     if wanted(ID_3D11_VIDEO_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice::get_video_decoder_config_count(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_desc(&[u8::MIN; 28]));
+        let _ = direct3d_11::VideoDevice::get_video_decoder_config_count(this, &direct3d_11::structures::VideoDecoderDesc { guid: component_object_model::structures::Guid { data1: 65_u32, data2: 72_u16, data3: 79_u16, data4: core::array::from_fn(|_| 86_u8) }, sample_width: 65_u32, sample_height: 72_u32, output_format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS });
         true
         });
     }
@@ -39655,7 +40603,7 @@ pub fn drive_where(
     if wanted(ID_3D11_VIDEO_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k44.as_ref() else { return false; };
-        let _ = direct3d_11::VideoDevice::get_video_decoder_config(this, &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_video_decoder_desc(&[u8::MIN; 28]), Default::default());
+        let _ = direct3d_11::VideoDevice::get_video_decoder_config(this, &direct3d_11::structures::VideoDecoderDesc { guid: component_object_model::structures::Guid { data1: 65_u32, data2: 72_u16, data3: 79_u16, data4: core::array::from_fn(|_| 86_u8) }, sample_width: 65_u32, sample_height: 72_u32, output_format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS }, 35_u32);
         true
         });
     }
@@ -39677,9 +40625,14 @@ pub fn drive_where(
             };
             let _ = direct3d_11::VideoDevice::check_crypto_key_exchange(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 78_u32,
+                    data2: 85_u16,
+                    data3: 92_u16,
+                    data4: core::array::from_fn(|_| 99_u8),
+                },
                 None,
-                Default::default(),
+                35_u32,
             );
             true
         });
@@ -39690,7 +40643,16 @@ pub fn drive_where(
             let Some(this) = o.k44.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::VideoDevice::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::VideoDevice::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -39702,7 +40664,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::VideoDevice::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -39714,10 +40681,8 @@ pub fn drive_where(
             let Some(this) = o.k44.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -39757,7 +40722,16 @@ pub fn drive_where(
             let Some(this) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -39769,7 +40743,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -39781,27 +40760,17 @@ pub fn drive_where(
             let Some(this) = o.k45.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
     // ID3D11VideoProcessorEnumerator1::CheckVideoProcessorFormatConversion on VideoProcessorEnumerator
     if wanted(ID_3D11_VIDEO_PROCESSOR_ENUMERATOR1) {
         driven.attempt(|| {
-            let Some(this) = o.k46.as_ref() else {
-                return false;
-            };
-            let _ = direct3d_11::VideoProcessorEnumerator1::check_video_processor_format_conversion(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k46.as_ref() else { return false; };
+        let _ = direct3d_11::VideoProcessorEnumerator1::check_video_processor_format_conversion(this, directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+        true
         });
     }
     // ID3D11VideoProcessorEnumerator::GetVideoProcessorContentDesc on VideoProcessorEnumerator
@@ -39822,7 +40791,7 @@ pub fn drive_where(
             };
             let _ = direct3d_11::VideoProcessorEnumerator::check_video_processor_format(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
             );
             true
         });
@@ -39844,8 +40813,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoProcessorEnumerator::get_video_processor_rate_conversion_caps(
-                this,
-                Default::default(),
+                this, 76_u32,
             );
             true
         });
@@ -39857,9 +40825,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::VideoProcessorEnumerator::get_video_processor_custom_rate(
-                this,
-                Default::default(),
-                Default::default(),
+                this, 76_u32, 6_u32,
             );
             true
         });
@@ -39872,7 +40838,7 @@ pub fn drive_where(
             };
             let _ = direct3d_11::VideoProcessorEnumerator::get_video_processor_filter_range(
                 this,
-                Default::default(),
+                direct3d_11::enumerations::D3D11_VIDEO_PROCESSOR_FILTER_CONTRAST,
             );
             true
         });
@@ -39893,7 +40859,16 @@ pub fn drive_where(
             let Some(this) = o.k46.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -39905,7 +40880,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -39917,10 +40897,8 @@ pub fn drive_where(
             let Some(this) = o.k46.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -39950,7 +40928,16 @@ pub fn drive_where(
             let Some(this) = o.k47.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -39962,7 +40949,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -39974,10 +40966,8 @@ pub fn drive_where(
             let Some(this) = o.k47.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -40007,7 +40997,16 @@ pub fn drive_where(
             let Some(this) = o.k48.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -40019,7 +41018,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -40031,10 +41035,8 @@ pub fn drive_where(
             let Some(this) = o.k48.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -40054,7 +41056,16 @@ pub fn drive_where(
             let Some(this) = o.k49.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::DeviceChild::set_private_data(this, &Default::default(), None);
+            let _ = direct3d_11::DeviceChild::set_private_data(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
+                None,
+            );
             true
         });
     }
@@ -40066,7 +41077,12 @@ pub fn drive_where(
             };
             let _ = direct3d_11::DeviceChild::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 60_u32,
+                    data2: 67_u16,
+                    data3: 74_u16,
+                    data4: core::array::from_fn(|_| 81_u8),
+                },
                 None,
             );
             true
@@ -40078,10 +41094,8 @@ pub fn drive_where(
             let Some(this) = o.k49.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -40091,7 +41105,7 @@ pub fn drive_where(
             let Some(this) = o.k50.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::UserDefinedAnnotation::begin_event(this, &[]);
+            let _ = direct3d_11::UserDefinedAnnotation::begin_event(this, &[124_u16]);
             true
         });
     }
@@ -40111,7 +41125,7 @@ pub fn drive_where(
             let Some(this) = o.k50.as_ref() else {
                 return false;
             };
-            let _ = direct3d_11::UserDefinedAnnotation::set_marker(this, &[]);
+            let _ = direct3d_11::UserDefinedAnnotation::set_marker(this, &[124_u16]);
             true
         });
     }
@@ -40131,10 +41145,8 @@ pub fn drive_where(
             let Some(this) = o.k50.as_ref() else {
                 return false;
             };
-            let _ = direct3d_common::DestructionNotifier::unregister_destruction_callback(
-                this,
-                Default::default(),
-            );
+            let _ =
+                direct3d_common::DestructionNotifier::unregister_destruction_callback(this, 35_u32);
             true
         });
     }
@@ -40152,7 +41164,7 @@ pub fn drive_where(
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Adapter3::register_hardware_content_protection_teardown_status_event(this, Default::default());
+        let _ = directx_graphics_infrastructure::Adapter3::register_hardware_content_protection_teardown_status_event(this, component_object_model::structures::Handle(82));
         true
         });
     }
@@ -40160,7 +41172,7 @@ pub fn drive_where(
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, Default::default());
+        let _ = directx_graphics_infrastructure::Adapter3::unregister_hardware_content_protection_teardown_status(this, 87_u32);
         true
         });
     }
@@ -40172,8 +41184,8 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Adapter3::query_video_memory_info(
                 this,
-                Default::default(),
-                Default::default(),
+                72_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
             );
             true
         });
@@ -40186,9 +41198,9 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Adapter3::set_video_memory_reservation(
                 this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                72_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+                73_u64,
             );
             true
         });
@@ -40197,7 +41209,7 @@ pub fn drive_where(
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Adapter3::register_video_memory_budget_change_notification_event(this, Default::default());
+        let _ = directx_graphics_infrastructure::Adapter3::register_video_memory_budget_change_notification_event(this, component_object_model::structures::Handle(82));
         true
         });
     }
@@ -40205,7 +41217,7 @@ pub fn drive_where(
     if wanted(IDXGI_ADAPTER3) {
         driven.attempt(|| {
         let Some(this) = o.k61.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, Default::default());
+        let _ = directx_graphics_infrastructure::Adapter3::unregister_video_memory_budget_change_notification(this, 87_u32);
         true
         });
     }
@@ -40235,8 +41247,7 @@ pub fn drive_where(
             let Some(this) = o.k61.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::Adapter::enum_outputs(this, Default::default());
+            let _ = directx_graphics_infrastructure::Adapter::enum_outputs(this, 22_u32);
             true
         });
     }
@@ -40258,7 +41269,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Adapter::check_interface_support(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 117_u32,
+                    data2: 124_u16,
+                    data3: 5_u16,
+                    data4: core::array::from_fn(|_| 12_u8),
+                },
             );
             true
         });
@@ -40271,8 +41287,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -40285,7 +41306,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -40297,7 +41323,15 @@ pub fn drive_where(
             let Some(this) = o.k61.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -40340,8 +41374,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Debug::report_live_objects(
                 this,
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 61_u32,
+                    data2: 68_u16,
+                    data3: 75_u16,
+                    data4: core::array::from_fn(|_| 82_u8),
+                },
+                directx_graphics_infrastructure::enumerations::DXGI_DEBUG_RLO_SUMMARY,
             );
             true
         });
@@ -40354,9 +41393,9 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::present_buffer(
                 this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                61_u32,
+                46_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_PRESENT_TEST,
             );
             true
         });
@@ -40369,9 +41408,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::set_source_rect(
                 this,
-                &data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                    &[u8::MIN; 16],
-                ),
+                &component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                },
             );
             true
         });
@@ -40384,9 +41426,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::set_target_rect(
                 this,
-                &data_directx_graphics_infrastructure::decode_windows_win32_foundation_rect(
-                    &[u8::MIN; 16],
-                ),
+                &component_object_model::structures::Rect {
+                    left: 37_i32,
+                    top: 44_i32,
+                    right: 51_i32,
+                    bottom: 58_i32,
+                },
             );
             true
         });
@@ -40398,9 +41443,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::DecodeSwapChain::set_dest_size(
-                this,
-                Default::default(),
-                Default::default(),
+                this, 120_u32, 44_u32,
             );
             true
         });
@@ -40438,14 +41481,9 @@ pub fn drive_where(
     // IDXGIDecodeSwapChain::SetColorSpace on DecodeSwapChain
     if wanted(IDXGI_DECODE_SWAP_CHAIN) {
         driven.attempt(|| {
-            let Some(this) = o.k63.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::DecodeSwapChain::set_color_space(
-                this,
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k63.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::DecodeSwapChain::set_color_space(this, directx_graphics_infrastructure::enumerations::DXGI_MULTIPLANE_OVERLAY_YCBCR_FLAG_NOMINAL_RANGE);
+        true
         });
     }
     // IDXGIDecodeSwapChain::GetColorSpace on DecodeSwapChain
@@ -40468,7 +41506,7 @@ pub fn drive_where(
                 this,
                 &[],
                 directx_graphics_infrastructure::enumerations::DXGI_OFFER_RESOURCE_PRIORITY_LOW,
-                Default::default(),
+                31_u32,
             );
             true
         });
@@ -40525,7 +41563,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Device2::enqueue_set_event(
                 this,
-                Default::default(),
+                component_object_model::structures::Handle(82),
             );
             true
         });
@@ -40536,10 +41574,8 @@ pub fn drive_where(
             let Some(this) = o.k64.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device1::set_maximum_frame_latency(
-                this,
-                Default::default(),
-            );
+            let _ =
+                directx_graphics_infrastructure::Device1::set_maximum_frame_latency(this, 63_u32);
             true
         });
     }
@@ -40567,7 +41603,7 @@ pub fn drive_where(
     if wanted(IDXGI_DEVICE) {
         driven.attempt(|| {
         let Some(this) = o.k64.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Device::create_surface(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_surface_desc(&[u8::MIN; 20]), Default::default(), Default::default(), None);
+        let _ = directx_graphics_infrastructure::Device::create_surface(this, &directx_graphics_infrastructure::structures::SurfaceDesc { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 86_u32, quality: 93_u32 } }, 116_u32, directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, None);
         true
         });
     }
@@ -40577,10 +41613,7 @@ pub fn drive_where(
             let Some(this) = o.k64.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Device::set_gpu_thread_priority(
-                this,
-                Default::default(),
-            );
+            let _ = directx_graphics_infrastructure::Device::set_gpu_thread_priority(this, 14_i32);
             true
         });
     }
@@ -40602,8 +41635,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -40616,7 +41654,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -40628,7 +41671,15 @@ pub fn drive_where(
             let Some(this) = o.k64.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -40648,10 +41699,7 @@ pub fn drive_where(
             let Some(this) = o.k65.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::DisplayControl::set_stereo_enabled(
-                this,
-                Default::default(),
-            );
+            let _ = directx_graphics_infrastructure::DisplayControl::set_stereo_enabled(this, true);
             true
         });
     }
@@ -40663,7 +41711,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory7::register_adapters_changed_event(
                 this,
-                Default::default(),
+                component_object_model::structures::Handle(82),
             );
             true
         });
@@ -40675,8 +41723,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory7::unregister_adapters_changed_event(
-                this,
-                Default::default(),
+                this, 87_u32,
             );
             true
         });
@@ -40689,9 +41736,14 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory6::enum_adapter_by_gpu_preference(
                 this,
-                Default::default(),
-                Default::default(),
-                &Default::default(),
+                9_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -40705,7 +41757,7 @@ pub fn drive_where(
             let lying = bytes();
             let _ = directx_graphics_infrastructure::Factory5::check_feature_support(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                 &lying,
             );
             true
@@ -40719,7 +41771,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory4::enum_warp_adapter(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -40749,7 +41806,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None, None);
+        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_hwnd(this, v1, component_object_model::structures::Hwnd(98), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None, None);
         true
         });
     }
@@ -40759,7 +41816,7 @@ pub fn drive_where(
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
+        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_core_window(this, v1, v2, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
         true
         });
     }
@@ -40771,7 +41828,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory2::get_shared_resource_adapter_luid(
                 this,
-                Default::default(),
+                component_object_model::structures::Handle(68),
             );
             true
         });
@@ -40784,8 +41841,8 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory2::register_stereo_status_window(
                 this,
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Hwnd(95),
+                29_u32,
             );
             true
         });
@@ -40798,7 +41855,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory2::register_stereo_status_event(
                 this,
-                Default::default(),
+                component_object_model::structures::Handle(82),
             );
             true
         });
@@ -40809,10 +41866,8 @@ pub fn drive_where(
             let Some(this) = o.k66.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Factory2::unregister_stereo_status(
-                this,
-                Default::default(),
-            );
+            let _ =
+                directx_graphics_infrastructure::Factory2::unregister_stereo_status(this, 87_u32);
             true
         });
     }
@@ -40824,8 +41879,8 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory2::register_occlusion_status_window(
                 this,
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Hwnd(95),
+                29_u32,
             );
             true
         });
@@ -40838,7 +41893,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory2::register_occlusion_status_event(
                 this,
-                Default::default(),
+                component_object_model::structures::Handle(82),
             );
             true
         });
@@ -40850,8 +41905,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::Factory2::unregister_occlusion_status(
-                this,
-                Default::default(),
+                this, 87_u32,
             );
             true
         });
@@ -40861,7 +41915,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
+        let _ = directx_graphics_infrastructure::Factory2::create_swap_chain_for_composition(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
         true
         });
     }
@@ -40871,8 +41925,7 @@ pub fn drive_where(
             let Some(this) = o.k66.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::Factory1::enum_adapters1(this, Default::default());
+            let _ = directx_graphics_infrastructure::Factory1::enum_adapters1(this, 9_u32);
             true
         });
     }
@@ -40892,8 +41945,7 @@ pub fn drive_where(
             let Some(this) = o.k66.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::Factory::enum_adapters(this, Default::default());
+            let _ = directx_graphics_infrastructure::Factory::enum_adapters(this, 9_u32);
             true
         });
     }
@@ -40905,8 +41957,8 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Factory::make_window_association(
                 this,
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Hwnd(95),
+                directx_graphics_infrastructure::enumerations::DXGI_MWA_NO_WINDOW_CHANGES,
             );
             true
         });
@@ -40926,7 +41978,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k66.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::Factory::create_swap_chain(this, v1, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc(&[u8::MIN; 72]));
+        let _ = directx_graphics_infrastructure::Factory::create_swap_chain(this, v1, &directx_graphics_infrastructure::structures::SwapChainDesc { buffer_desc: directx_graphics_infrastructure::structures::ModeDesc { width: 65_u32, height: 72_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 86_u32, denominator: 93_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 72_u32, quality: 79_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 79_u32, output_window: component_object_model::structures::Hwnd(86), windowed: true, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, flags: 107_u32 });
         true
         });
     }
@@ -40938,8 +41990,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -40952,7 +42009,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -40964,7 +42026,15 @@ pub fn drive_where(
             let Some(this) = o.k66.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -40973,7 +42043,7 @@ pub fn drive_where(
         driven.attempt(|| {
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
-        let _ = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_swap_chain_desc1(&[u8::MIN; 48]), None);
+        let _ = directx_graphics_infrastructure::FactoryMedia::create_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::SwapChainDesc1 { width: 58_u32, height: 65_u32, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, stereo: true, sample_desc: directx_graphics_infrastructure::structures::SampleDesc { count: 93_u32, quality: 100_u32 }, buffer_usage: directx_graphics_infrastructure::enumerations::DXGI_USAGE_SHADER_INPUT, buffer_count: 100_u32, scaling: directx_graphics_infrastructure::enumerations::DXGI_SCALING_NONE, swap_effect: directx_graphics_infrastructure::enumerations::DXGI_SWAP_EFFECT_SEQUENTIAL, alpha_mode: directx_graphics_infrastructure::enumerations::DXGI_ALPHA_MODE_PREMULTIPLIED, flags: 2_u32 }, None);
         true
         });
     }
@@ -40983,7 +42053,7 @@ pub fn drive_where(
         let Some(this) = o.k67.as_ref() else { return false; };
         let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
         let Some(v2) = o.k72.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, Default::default(), &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_decode_swap_chain_desc(&[u8::MIN; 4]), v2, None);
+        let _ = directx_graphics_infrastructure::FactoryMedia::create_decode_swap_chain_for_composition_surface_handle(this, v1, component_object_model::structures::Handle(67), &directx_graphics_infrastructure::structures::DecodeSwapChainDesc { flags: 58_u32 }, v2, None);
         true
         });
     }
@@ -40995,8 +42065,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_message_count_limit(
                 this,
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
+                110_u64,
             );
             true
         });
@@ -41009,7 +42084,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::clear_stored_messages(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41018,7 +42098,7 @@ pub fn drive_where(
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::InfoQueue::get_num_stored_messages_allowed_by_retrieval_filters(this, Default::default());
+        let _ = directx_graphics_infrastructure::InfoQueue::get_num_stored_messages_allowed_by_retrieval_filters(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) });
         true
         });
     }
@@ -41030,7 +42110,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_num_stored_messages(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41039,7 +42124,7 @@ pub fn drive_where(
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_discarded_by_message_count_limit(this, Default::default());
+        let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_discarded_by_message_count_limit(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) });
         true
         });
     }
@@ -41051,7 +42136,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_message_count_limit(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41060,7 +42150,7 @@ pub fn drive_where(
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_allowed_by_storage_filter(this, Default::default());
+        let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_allowed_by_storage_filter(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) });
         true
         });
     }
@@ -41068,7 +42158,7 @@ pub fn drive_where(
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
         let Some(this) = o.k68.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_denied_by_storage_filter(this, Default::default());
+        let _ = directx_graphics_infrastructure::InfoQueue::get_num_messages_denied_by_storage_filter(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) });
         true
         });
     }
@@ -41080,7 +42170,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::clear_storage_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41093,7 +42188,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_empty_storage_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41106,7 +42206,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_deny_all_storage_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41119,7 +42224,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_copy_of_storage_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41132,7 +42242,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::pop_storage_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41145,7 +42260,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_storage_filter_stack_size(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41158,7 +42278,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::clear_retrieval_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41171,7 +42296,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_empty_retrieval_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41184,7 +42314,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_deny_all_retrieval_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41197,7 +42332,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::push_copy_of_retrieval_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41210,7 +42350,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::pop_retrieval_filter(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41223,7 +42368,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_retrieval_filter_stack_size(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41231,62 +42381,33 @@ pub fn drive_where(
     // IDXGIInfoQueue::AddMessage on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k68.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::InfoQueue::add_message(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                c"",
-            );
-            true
+        let Some(this) = o.k68.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::InfoQueue::add_message(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, 101_i32, c"known");
+        true
         });
     }
     // IDXGIInfoQueue::AddApplicationMessage on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k68.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::InfoQueue::add_application_message(
-                this,
-                Default::default(),
-                c"",
-            );
-            true
+        let Some(this) = o.k68.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::InfoQueue::add_application_message(this, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, c"known");
+        true
         });
     }
     // IDXGIInfoQueue::SetBreakOnCategory on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k68.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_category(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k68.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS, true);
+        true
         });
     }
     // IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k68.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(
-                this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k68.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, true);
+        true
         });
     }
     // IDXGIInfoQueue::SetBreakOnID on InfoQueue
@@ -41297,9 +42418,14 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_break_on_id(
                 this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
+                101_i32,
+                true,
             );
             true
         });
@@ -41307,29 +42433,17 @@ pub fn drive_where(
     // IDXGIInfoQueue::GetBreakOnCategory on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k68.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_category(
-                this,
-                Default::default(),
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k68.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_category(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_CATEGORY_MISCELLANEOUS);
+        true
         });
     }
     // IDXGIInfoQueue::GetBreakOnSeverity on InfoQueue
     if wanted(IDXGI_INFO_QUEUE) {
         driven.attempt(|| {
-            let Some(this) = o.k68.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_severity(
-                this,
-                Default::default(),
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k68.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_severity(this, component_object_model::structures::Guid { data1: 84_u32, data2: 91_u16, data3: 98_u16, data4: core::array::from_fn(|_| 105_u8) }, directx_graphics_infrastructure::enumerations::DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR);
+        true
         });
     }
     // IDXGIInfoQueue::GetBreakOnID on InfoQueue
@@ -41340,8 +42454,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_break_on_id(
                 this,
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
+                101_i32,
             );
             true
         });
@@ -41354,8 +42473,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::set_mute_debug_output(
                 this,
-                Default::default(),
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
+                true,
             );
             true
         });
@@ -41368,7 +42492,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::InfoQueue::get_mute_debug_output(
                 this,
-                Default::default(),
+                component_object_model::structures::Guid {
+                    data1: 84_u32,
+                    data2: 91_u16,
+                    data3: 98_u16,
+                    data4: core::array::from_fn(|_| 105_u8),
+                },
             );
             true
         });
@@ -41379,11 +42508,7 @@ pub fn drive_where(
             let Some(this) = o.k69.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::KeyedMutex::acquire_sync(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ = directx_graphics_infrastructure::KeyedMutex::acquire_sync(this, 35_u64, 45_u32);
             true
         });
     }
@@ -41393,8 +42518,7 @@ pub fn drive_where(
             let Some(this) = o.k69.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::KeyedMutex::release_sync(this, Default::default());
+            let _ = directx_graphics_infrastructure::KeyedMutex::release_sync(this, 35_u64);
             true
         });
     }
@@ -41406,7 +42530,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -41419,8 +42548,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -41433,7 +42567,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -41445,7 +42584,15 @@ pub fn drive_where(
             let Some(this) = o.k69.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -41473,113 +42620,19 @@ pub fn drive_where(
     // IDXGIOutput5::DuplicateOutput1 on Output
     if wanted(IDXGI_OUTPUT5) {
         driven.attempt(|| {
-            let Some(this) = o.k70.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k61.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-            } else if let Some(x) = o.k62.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-            } else if let Some(x) = o.k63.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-            } else if let Some(x) = o.k64.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-            } else if let Some(x) = o.k65.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
-                    x,
-                ))
-            } else if let Some(x) = o.k66.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-            } else if let Some(x) = o.k67.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-            } else if let Some(x) = o.k68.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-            } else if let Some(x) = o.k69.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-            } else if let Some(x) = o.k70.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-            } else if let Some(x) = o.k71.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-            } else if let Some(x) = o.k72.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-            } else if let Some(x) = o.k73.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-            } else if let Some(x) = o.k74.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-            } else if let Some(x) = o.k75.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
-                    x,
-                ))
-            } else if let Some(x) = o.k76.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::Output5::duplicate_output1(
-                this,
-                v1,
-                Default::default(),
-                &[],
-            );
-            true
+        let Some(this) = o.k70.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let _ = directx_graphics_infrastructure::Output5::duplicate_output1(this, v1, 31_u32, &[directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS]);
+        true
         });
     }
     // IDXGIOutput4::CheckOverlayColorSpaceSupport on Output
     if wanted(IDXGI_OUTPUT4) {
         driven.attempt(|| {
-            let Some(this) = o.k70.as_ref() else {
-                return false;
-            };
-            let Some(v1) = (if let Some(x) = o.k61.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Adapter(x))
-            } else if let Some(x) = o.k62.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Debug(x))
-            } else if let Some(x) = o.k63.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x))
-            } else if let Some(x) = o.k64.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Device(x))
-            } else if let Some(x) = o.k65.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(
-                    x,
-                ))
-            } else if let Some(x) = o.k66.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Factory(x))
-            } else if let Some(x) = o.k67.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x))
-            } else if let Some(x) = o.k68.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x))
-            } else if let Some(x) = o.k69.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x))
-            } else if let Some(x) = o.k70.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Output(x))
-            } else if let Some(x) = o.k71.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x))
-            } else if let Some(x) = o.k72.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Resource(x))
-            } else if let Some(x) = o.k73.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::Surface(x))
-            } else if let Some(x) = o.k74.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x))
-            } else if let Some(x) = o.k75.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(
-                    x,
-                ))
-            } else if let Some(x) = o.k76.as_ref() {
-                Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x))
-            } else {
-                None
-            }) else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::Output4::check_overlay_color_space_support(
-                this,
-                Default::default(),
-                Default::default(),
-                v1,
-            );
-            true
+        let Some(this) = o.k70.as_ref() else { return false; };
+        let Some(v1) = (if let Some(x) = o.k61.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Adapter(x)) } else if let Some(x) = o.k62.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Debug(x)) } else if let Some(x) = o.k63.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DecodeSwapChain(x)) } else if let Some(x) = o.k64.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Device(x)) } else if let Some(x) = o.k65.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::DisplayControl(x)) } else if let Some(x) = o.k66.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Factory(x)) } else if let Some(x) = o.k67.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::FactoryMedia(x)) } else if let Some(x) = o.k68.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::InfoQueue(x)) } else if let Some(x) = o.k69.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::KeyedMutex(x)) } else if let Some(x) = o.k70.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Output(x)) } else if let Some(x) = o.k71.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::OutputDuplication(x)) } else if let Some(x) = o.k72.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Resource(x)) } else if let Some(x) = o.k73.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::Surface(x)) } else if let Some(x) = o.k74.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChain(x)) } else if let Some(x) = o.k75.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::SwapChainMedia(x)) } else if let Some(x) = o.k76.as_ref() { Some(directx_graphics_infrastructure::UnknownRef::GraphicsAnalysis(x)) } else { None }) else { return false; };
+        let _ = directx_graphics_infrastructure::Output4::check_overlay_color_space_support(this, directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, v1);
+        true
         });
     }
     // IDXGIOutput3::CheckOverlaySupport on Output
@@ -41631,7 +42684,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Output3::check_overlay_support(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
                 v1,
             );
             true
@@ -41655,8 +42708,8 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Output1::get_display_mode_list1(
                 this,
-                Default::default(),
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                directx_graphics_infrastructure::enumerations::DXGI_ENUM_MODES_INTERLACED,
             );
             true
         });
@@ -41665,7 +42718,7 @@ pub fn drive_where(
     if wanted(IDXGI_OUTPUT1) {
         driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Output1::find_closest_matching_mode1(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_mode_desc1(&[u8::MIN; 32]), None);
+        let _ = directx_graphics_infrastructure::Output1::find_closest_matching_mode1(this, &directx_graphics_infrastructure::structures::ModeDesc1 { width: 4_u32, height: 11_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 25_u32, denominator: 32_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED, stereo: true }, None);
         true
         });
     }
@@ -41751,8 +42804,8 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Output::get_display_mode_list(
                 this,
-                Default::default(),
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                directx_graphics_infrastructure::enumerations::DXGI_ENUM_MODES_INTERLACED,
             );
             true
         });
@@ -41761,7 +42814,7 @@ pub fn drive_where(
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
         let Some(this) = o.k70.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Output::find_closest_matching_mode(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&[u8::MIN; 28]), None);
+        let _ = directx_graphics_infrastructure::Output::find_closest_matching_mode(this, &directx_graphics_infrastructure::structures::ModeDesc { width: 4_u32, height: 11_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 25_u32, denominator: 32_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED }, None);
         true
         });
     }
@@ -41822,11 +42875,7 @@ pub fn drive_where(
             }) else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Output::take_ownership(
-                this,
-                v1,
-                Default::default(),
-            );
+            let _ = directx_graphics_infrastructure::Output::take_ownership(this, v1, true);
             true
         });
     }
@@ -41853,9 +42902,32 @@ pub fn drive_where(
     // IDXGIOutput::SetGammaControl on Output
     if wanted(IDXGI_OUTPUT) {
         driven.attempt(|| {
-        let Some(this) = o.k70.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::Output::set_gamma_control(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_gamma_control(&[u8::MIN; 12324]));
-        true
+            let Some(this) = o.k70.as_ref() else {
+                return false;
+            };
+            let _ = directx_graphics_infrastructure::Output::set_gamma_control(
+                this,
+                &directx_graphics_infrastructure::structures::GammaControl {
+                    scale: directx_graphics_infrastructure::structures::Rgb {
+                        red: 126.5_f32,
+                        green: 7.5_f32,
+                        blue: 14.5_f32,
+                    },
+                    offset: directx_graphics_infrastructure::structures::Rgb {
+                        red: 7.5_f32,
+                        green: 14.5_f32,
+                        blue: 21.5_f32,
+                    },
+                    gamma_curve: core::array::from_fn(|_| {
+                        directx_graphics_infrastructure::structures::Rgb {
+                            red: 14.5_f32,
+                            green: 21.5_f32,
+                            blue: 28.5_f32,
+                        }
+                    }),
+                },
+            );
+            true
         });
     }
     // IDXGIOutput::GetGammaControl on Output
@@ -41912,8 +42984,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -41926,7 +43003,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -41938,7 +43020,15 @@ pub fn drive_where(
             let Some(this) = o.k70.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -41959,8 +43049,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::OutputDuplication::acquire_next_frame(
-                this,
-                Default::default(),
+                this, 24_u32,
             );
             true
         });
@@ -42033,8 +43122,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -42047,7 +43141,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -42059,7 +43158,15 @@ pub fn drive_where(
             let Some(this) = o.k71.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -42070,8 +43177,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::Resource1::create_subresource_surface(
-                this,
-                Default::default(),
+                this, 35_u32,
             );
             true
         });
@@ -42127,7 +43233,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -42140,8 +43251,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -42154,7 +43270,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -42166,7 +43287,15 @@ pub fn drive_where(
             let Some(this) = o.k72.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -42176,8 +43305,15 @@ pub fn drive_where(
             let Some(this) = o.k73.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::Surface2::get_resource(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Surface2::get_resource(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -42187,7 +43323,7 @@ pub fn drive_where(
             let Some(this) = o.k73.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Surface1::get_dc(this, Default::default());
+            let _ = directx_graphics_infrastructure::Surface1::get_dc(this, true);
             true
         });
     }
@@ -42229,7 +43365,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -42242,8 +43383,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -42256,7 +43402,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -42268,7 +43419,15 @@ pub fn drive_where(
             let Some(this) = o.k73.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -42280,7 +43439,7 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::SwapChain4::set_hdr_meta_data(
                 this,
-                Default::default(),
+                directx_graphics_infrastructure::enumerations::DXGI_HDR_METADATA_TYPE_HDR10,
                 None,
             );
             true
@@ -42300,27 +43459,17 @@ pub fn drive_where(
     // IDXGISwapChain3::CheckColorSpaceSupport on SwapChain
     if wanted(IDXGI_SWAP_CHAIN3) {
         driven.attempt(|| {
-            let Some(this) = o.k74.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::SwapChain3::check_color_space_support(
-                this,
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k74.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::SwapChain3::check_color_space_support(this, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+        true
         });
     }
     // IDXGISwapChain3::SetColorSpace1 on SwapChain
     if wanted(IDXGI_SWAP_CHAIN3) {
         driven.attempt(|| {
-            let Some(this) = o.k74.as_ref() else {
-                return false;
-            };
-            let _ = directx_graphics_infrastructure::SwapChain3::set_color_space1(
-                this,
-                Default::default(),
-            );
-            true
+        let Some(this) = o.k74.as_ref() else { return false; };
+        let _ = directx_graphics_infrastructure::SwapChain3::set_color_space1(this, directx_graphics_infrastructure::enumerations::DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+        true
         });
     }
     // IDXGISwapChain2::SetSourceSize on SwapChain
@@ -42329,11 +43478,8 @@ pub fn drive_where(
             let Some(this) = o.k74.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::SwapChain2::set_source_size(
-                this,
-                Default::default(),
-                Default::default(),
-            );
+            let _ =
+                directx_graphics_infrastructure::SwapChain2::set_source_size(this, 120_u32, 44_u32);
             true
         });
     }
@@ -42354,8 +43500,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChain2::set_maximum_frame_latency(
-                this,
-                Default::default(),
+                this, 63_u32,
             );
             true
         });
@@ -42385,9 +43530,21 @@ pub fn drive_where(
     // IDXGISwapChain2::SetMatrixTransform on SwapChain
     if wanted(IDXGI_SWAP_CHAIN2) {
         driven.attempt(|| {
-        let Some(this) = o.k74.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::SwapChain2::set_matrix_transform(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_matrix_3_x2_f(&[u8::MIN; 24]));
-        true
+            let Some(this) = o.k74.as_ref() else {
+                return false;
+            };
+            let _ = directx_graphics_infrastructure::SwapChain2::set_matrix_transform(
+                this,
+                &directx_graphics_infrastructure::structures::Matrix3x2F {
+                    _11: 3.5_f32,
+                    _12: 10.5_f32,
+                    _21: 17.5_f32,
+                    _22: 24.5_f32,
+                    _31: 31.5_f32,
+                    _32: 38.5_f32,
+                },
+            );
+            true
         });
     }
     // IDXGISwapChain2::GetMatrixTransform on SwapChain
@@ -42438,7 +43595,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::SwapChain1::get_core_window(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 11_u32,
+                    data2: 18_u16,
+                    data3: 25_u16,
+                    data4: core::array::from_fn(|_| 32_u8),
+                },
             );
             true
         });
@@ -42471,9 +43633,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::SwapChain1::set_background_color(
                 this,
-                &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_dxgi_rgba(
-                    &[u8::MIN; 16],
-                ),
+                &directx_graphics_infrastructure::structures::Rgba {
+                    r: 79.5_f32,
+                    g: 86.5_f32,
+                    b: 93.5_f32,
+                    a: 100.5_f32,
+                },
             );
             true
         });
@@ -42494,8 +43659,10 @@ pub fn drive_where(
             let Some(this) = o.k74.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::SwapChain1::set_rotation(this, Default::default());
+            let _ = directx_graphics_infrastructure::SwapChain1::set_rotation(
+                this,
+                directx_graphics_infrastructure::enumerations::DXGI_MODE_ROTATION_IDENTITY,
+            );
             true
         });
     }
@@ -42517,8 +43684,8 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::SwapChain::present(
                 this,
-                Default::default(),
-                Default::default(),
+                46_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_PRESENT_TEST,
             );
             true
         });
@@ -42529,8 +43696,7 @@ pub fn drive_where(
             let Some(this) = o.k74.as_ref() else {
                 return false;
             };
-            let _ =
-                directx_graphics_infrastructure::SwapChain::get_buffer(this, Default::default());
+            let _ = directx_graphics_infrastructure::SwapChain::get_buffer(this, 72_u32);
             true
         });
     }
@@ -42540,11 +43706,8 @@ pub fn drive_where(
             let Some(this) = o.k74.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::SwapChain::set_fullscreen_state(
-                this,
-                Default::default(),
-                None,
-            );
+            let _ =
+                directx_graphics_infrastructure::SwapChain::set_fullscreen_state(this, true, None);
             true
         });
     }
@@ -42576,11 +43739,11 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::SwapChain::resize_buffers(
                 this,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
+                107_u32,
+                120_u32,
+                44_u32,
+                directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                5_u32,
             );
             true
         });
@@ -42589,7 +43752,7 @@ pub fn drive_where(
     if wanted(IDXGI_SWAP_CHAIN) {
         driven.attempt(|| {
         let Some(this) = o.k74.as_ref() else { return false; };
-        let _ = directx_graphics_infrastructure::SwapChain::resize_target(this, &data_directx_graphics_infrastructure::decode_windows_win32_graphics_dxgi_common_dxgi_mode_desc(&[u8::MIN; 28]));
+        let _ = directx_graphics_infrastructure::SwapChain::resize_target(this, &directx_graphics_infrastructure::structures::ModeDesc { width: 118_u32, height: 125_u32, refresh_rate: directx_graphics_infrastructure::structures::Rational { numerator: 13_u32, denominator: 20_u32 }, format: directx_graphics_infrastructure::enumerations::DXGI_FORMAT_R32G32B32A32_TYPELESS, scanline_ordering: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE, scaling: directx_graphics_infrastructure::enumerations::DXGI_MODE_SCALING_CENTERED });
         true
         });
     }
@@ -42631,7 +43794,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::DeviceSubObject::get_device(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
             );
             true
         });
@@ -42644,8 +43812,13 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data(
                 this,
-                &Default::default(),
-                &[],
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
+                &[115_u8],
             );
             true
         });
@@ -42658,7 +43831,12 @@ pub fn drive_where(
             };
             let _ = directx_graphics_infrastructure::Object::set_private_data_interface(
                 this,
-                &Default::default(),
+                &component_object_model::structures::Guid {
+                    data1: 5_u32,
+                    data2: 12_u16,
+                    data3: 19_u16,
+                    data4: core::array::from_fn(|_| 26_u8),
+                },
                 None,
             );
             true
@@ -42670,7 +43848,15 @@ pub fn drive_where(
             let Some(this) = o.k74.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::Object::get_parent(this, &Default::default());
+            let _ = directx_graphics_infrastructure::Object::get_parent(
+                this,
+                &component_object_model::structures::Guid {
+                    data1: 3_u32,
+                    data2: 10_u16,
+                    data3: 17_u16,
+                    data4: core::array::from_fn(|_| 24_u8),
+                },
+            );
             true
         });
     }
@@ -42691,10 +43877,8 @@ pub fn drive_where(
             let Some(this) = o.k75.as_ref() else {
                 return false;
             };
-            let _ = directx_graphics_infrastructure::SwapChainMedia::set_present_duration(
-                this,
-                Default::default(),
-            );
+            let _ =
+                directx_graphics_infrastructure::SwapChainMedia::set_present_duration(this, 59_u32);
             true
         });
     }
@@ -42705,8 +43889,7 @@ pub fn drive_where(
                 return false;
             };
             let _ = directx_graphics_infrastructure::SwapChainMedia::check_present_duration_support(
-                this,
-                Default::default(),
+                this, 101_u32,
             );
             true
         });
@@ -42737,11 +43920,11 @@ pub fn drive_where(
             let _ = direct3d_11::Direct3D11::create_device(
                 &o.api,
                 None,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                &[],
-                Default::default(),
+                direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
+                component_object_model::structures::Hmodule(0),
+                direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
+                &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
+                124_u32,
             );
             true
         });
@@ -42752,11 +43935,11 @@ pub fn drive_where(
             let _ = direct3d_11::Direct3D11::create_device_and_swap_chain(
                 &o.api,
                 None,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                &[],
-                Default::default(),
+                direct3d_common::enumerations::D3D_DRIVER_TYPE_HARDWARE,
+                component_object_model::structures::Hmodule(0),
+                direct3d_11::enumerations::D3D11_CREATE_DEVICE_SWITCH_TO_REF,
+                &[direct3d_common::enumerations::D3D_FEATURE_LEVEL_1_0_GENERIC],
+                124_u32,
                 None,
             );
             true

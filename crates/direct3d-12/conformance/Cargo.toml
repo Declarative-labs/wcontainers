@@ -11,6 +11,7 @@ path = "suite.rs"
 [dependencies]
 wcontainers-component-object-model = { path = "../../component-object-model" }
 wcontainers-direct3d-common = { path = "../../direct3d-common" }
+wcontainers-directx-graphics-infrastructure = { path = "../../directx-graphics-infrastructure" }
 wcontainers-direct3d-12 = { path = ".." }
 wcontainers-byte-sink = { path = "../../byte-sink" }
 wcontainers-byte-source = { path = "../../byte-source" }

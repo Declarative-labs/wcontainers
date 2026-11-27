@@ -984,3 +984,29 @@ pub const UINT64_JUDGED: &[(&str, &str, Uint64)] = &[
     ("ID3D12Device::GetCopyableFootprints", "pRowSizeInBytes", Uint64::Number),
     ("ID3D12Device::GetCopyableFootprints", "pTotalBytes", Uint64::Number),
 ];
+
+/// The methods whose call in the conformance suite differs through both glues from the same call made on the recorder
+/// directly, by design, each with the reason (src/glue_hostile.rs `every_answer_and_argument_equals_the_reference`): any
+/// other difference fails the comparison.
+pub const SUITE_DIFFERENT: &[(&str, &str)] = &[
+    ("IDXGIInfoQueue::SetBreakOnCategory", "bEnable true is refused: a break into the debugger would stop the process"),
+    ("IDXGIInfoQueue::SetBreakOnSeverity", "bEnable true is refused: a break into the debugger would stop the process"),
+    ("IDXGIInfoQueue::SetBreakOnID", "bEnable true is refused: a break into the debugger would stop the process"),
+    ("ID3D11InfoQueue::SetBreakOnCategory", "bEnable true is refused: a break into the debugger would stop the process"),
+    ("ID3D11InfoQueue::SetBreakOnSeverity", "bEnable true is refused: a break into the debugger would stop the process"),
+    ("ID3D11InfoQueue::SetBreakOnID", "bEnable true is refused: a break into the debugger would stop the process"),
+    ("ID3D11Device::SetExceptionMode", "RaiseFlags other than 0 are refused: a raised exception would stop the process"),
+    ("ID3D11Device::CreateTexture1D", "the known description fails lengths.rs `checked_texture_1d` (more mip levels than its size has)"),
+    ("ID3D11Device::CreateTexture2D", "the known description fails lengths.rs `checked_texture_2d` (more mip levels than its size has)"),
+    ("ID3D11Device::CreateTexture3D", "the known description fails lengths.rs `checked_texture_3d` (more mip levels than its size has)"),
+    ("ID3D11VideoContext3::DecoderBeginFrame1", "the suite passes one histogram offset and no histogram buffer: two arrays of one count must have one length"),
+    ("ID3D11Device::GetImmediateContext", "the serving glue answers the immediate context it holds, never asking the implementation again"),
+    ("ID3D11Device1::GetImmediateContext1", "the serving glue answers the immediate context it holds, never asking the implementation again"),
+    ("ID3D11Device2::GetImmediateContext2", "the serving glue answers the immediate context it holds, never asking the implementation again"),
+    ("ID3D11Device3::GetImmediateContext3", "the serving glue answers the immediate context it holds, never asking the implementation again"),
+    ("ID3D11Device1::CreateDeviceContextState", "a row clears D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED (bit 0) from the known flags"),
+    ("ID3D11DeviceChild::GetDevice on DeviceContext", "the serving glue answers the device it made the context with, never asking the implementation"),
+    ("D3D11CreateDevice", "the calling glue turns on the device's multithread protection (SetMultithreadProtected(TRUE)) before handing the device out"),
+    ("D3D11CreateDeviceAndSwapChain", "the calling glue turns on the device's multithread protection (SetMultithreadProtected(TRUE)) before handing the device out"),
+    ("ID3D11DeviceContext::Map", "the recorder's pitches (rows of 4 KiB, slices of 64 KiB) are past the bound the serving glue lends for the suite's known buffer of under 127 bytes, so the glue answers E_FAIL"),
+];

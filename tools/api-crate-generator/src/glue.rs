@@ -235,11 +235,8 @@ pub(super) struct Writer<'g, 'a> {
     /// For the recorder and the hostile implementation: a value of each structure they can make, by its path (a
     /// decoder of zero bytes, or `Default`).
     struct_values: RefCell<BTreeMap<String, String>>,
-    /// For the recorder: a known answer of each structure it can decode, by its path (a decoder of known bytes, whose
-    /// first byte is the text `@SALT@` replaced).
-    known_structs: RefCell<BTreeMap<String, String>>,
-    /// The structures and enumerations of one public integer field, by path.
-    newtypes: RefCell<BTreeSet<String>>,
+    /// For the recorder's known answers: the set's structures and enumerations, read from the interface crates.
+    shapes: RefCell<hostile::Shapes>,
     /// Whether the codecs also write, per crate, a test of each mirror's offsets and size against the generator's own
     /// (the mirror-check build, never the crates the repository keeps).
     pub(super) mirror_check: std::cell::Cell<bool>,
@@ -261,8 +258,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             current: std::cell::Cell::new(NOWHERE),
             hostile: std::cell::Cell::new(false),
             struct_values: RefCell::new(BTreeMap::new()),
-            known_structs: RefCell::new(BTreeMap::new()),
-            newtypes: RefCell::new(BTreeSet::new()),
+            shapes: RefCell::new(hostile::Shapes::default()),
             mirror_check: std::cell::Cell::new(std::env::var_os("MIRROR_CHECK").is_some()),
             mirror_checks: RefCell::new(String::new()),
         }
