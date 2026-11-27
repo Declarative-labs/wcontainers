@@ -6,22 +6,48 @@
 use std::cell::RefCell;
 use wcontainers_mesa_compiler::{
     Binding, Flat, FlatGeometry, FlatTessellation, FlatType, GlslName, GlslProgram, MesaCompiler,
-    NearestSampler, PositionTransform, SlotRange, StreamOutput, TextureSwizzle,
+    NearestSampler, PreparedForm, SlotRange, SpirvCommonForm, Squares, TextureSwizzle, VariantForm,
+    VariantSettings, constants,
 };
 use wcontainers_nir::ConvertError;
-use wcontainers_nir::mesa::{BIND_RESULT, GLSL_NAME_KIND, Nir, SLOT_KIND, Stage};
+use wcontainers_nir::mesa::{
+    BIND_RESULT, DrawSettings, GLSL_NAME_KIND, GlslStage, SLOT_KIND, SQUARES_KIND, SpirvProgram,
+    Stage, VARIANT_RESULT,
+};
 use wcontainers_shaders::ENTRY_POINT;
 
 /// What the stand-in gives back.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Given {
     flat: Option<Flat>,
-    common_form: Option<Result<Vec<Binding>, u32>>,
+    common_form_result: u32,
+    bindings: Vec<Binding>,
     glsl_names: Vec<GlslName>,
+    variant_result: u32,
+    squares_kind: u32,
+}
+
+impl Default for Given {
+    /// Every step made, nothing in it.
+    fn default() -> Given {
+        Given {
+            flat: None,
+            common_form_result: constants::BIND_OK,
+            bindings: Vec::new(),
+            glsl_names: Vec::new(),
+            variant_result: constants::VARIANT_MADE,
+            squares_kind: constants::SQUARES_ONE_PIXEL,
+        }
+    }
 }
 
 thread_local! {
     static GIVEN: RefCell<Given> = RefCell::new(Given::default());
+}
+
+/// What the test set.
+fn given() -> Given {
+    GIVEN.with(|g| g.borrow().clone())
 }
 
 /// A compiler whose answers the test sets.
@@ -29,108 +55,133 @@ thread_local! {
 struct Hostile;
 
 impl MesaCompiler for Hostile {
-    type Shader = ();
+    type SpirvShader = ();
+    type SpirvCommon = ();
+    type Received = ();
+    type Prepared = ();
+    type Made = ();
+    type Variant = ();
 
     fn new() -> Hostile {
         Hostile
     }
-    fn flatten(&self, _: &mut (), _: u32) -> Option<Flat> {
-        GIVEN.with(|g| g.borrow().flat.clone())
-    }
-    fn spirv_to_nir(&self, _: &[u32], _: u32, _: &core::ffi::CStr) -> Option<()> {
+    fn spirv_read(&self, _: &[u32], _: u32, _: &core::ffi::CStr, _: bool) -> Option<()> {
         Some(())
     }
+    fn spirv_shader_key(&self, _: &()) -> Option<Vec<u8>> {
+        Some(Vec::new())
+    }
+    fn spirv_to_common_form(&self, _: (), _: u32, _: &[SlotRange; 4]) -> SpirvCommonForm<()> {
+        let given = given();
+        SpirvCommonForm {
+            shader: Some(()),
+            bindings: given.bindings,
+            result: given.common_form_result,
+        }
+    }
+    fn spirv_common_to_spirv(&self, _: ()) -> Option<Vec<u32>> {
+        None
+    }
+    fn spirv_common_flatten(&self, _: ()) -> Option<Flat> {
+        given().flat
+    }
     fn glsl_to_nir(&self, _: [Option<&core::ffi::CStr>; 3]) -> Result<GlslProgram<()>, Vec<u8>> {
-        let names = GIVEN.with(|g| g.borrow().glsl_names.clone());
         Ok(GlslProgram {
             stages: [Some(()), None, None],
-            names: [names, Vec::new(), Vec::new()],
+            names: [given().glsl_names, Vec::new(), Vec::new()],
             log: None,
         })
     }
-    fn to_common_form(&self, _: &mut (), _: u32, _: &[SlotRange; 4]) -> Result<Vec<Binding>, u32> {
-        GIVEN
-            .with(|g| g.borrow().common_form.clone())
-            .unwrap_or(Ok(Vec::new()))
+    fn received_prepare(&self, _: ()) -> PreparedForm<(), ()> {
+        PreparedForm {
+            shader: Some(()),
+            key: Vec::new(),
+            streamed: Vec::new(),
+            strides: [0; 4],
+            streams_elsewhere: false,
+            reads_sample_positions: false,
+            writes_sample_mask: false,
+            fetches_target: false,
+            formatless_images: 0,
+            integer_sampled_units: 0,
+            named_layer: u32::MAX,
+            passes_through: false,
+            pass_through: [None, None, None, None, None],
+            generic_end: 0,
+            geometry_vertices_out: 0,
+            control_points_out: 0,
+            makes_points: false,
+        }
     }
-    fn lower_io(&self, _: &mut ()) {}
-    fn alpha_to_one(&self, _: &mut ()) {}
-    fn serialize(&self, _: &()) -> Option<Vec<u8>> {
+    fn prepared_variant(
+        &self,
+        _: &(),
+        _: VariantSettings,
+        _: &[TextureSwizzle],
+        _: &[NearestSampler],
+    ) -> VariantForm<()> {
+        VariantForm {
+            shader: Some(()),
+            result: given().variant_result,
+            key: Vec::new(),
+            bindings: Vec::new(),
+        }
+    }
+    fn prepared_points_as_squares(&self, _: &(), _: u32, _: f32) -> Squares<()> {
+        Squares {
+            kind: given().squares_kind,
+            sized: false,
+            before: None,
+            geometry: None,
+        }
+    }
+    fn prepared_geometry_points_as_squares(
+        &self,
+        vs: &(),
+        at: u32,
+        largest: f32,
+        _: u32,
+    ) -> Squares<()> {
+        self.prepared_points_as_squares(vs, at, largest)
+    }
+    fn made_key(&self, _: &()) -> Option<Vec<u8>> {
         Some(Vec::new())
     }
-    fn to_spirv(&self, _: &mut ()) -> Option<Vec<u32>> {
-        None
-    }
-    fn cloned(&self, _: &()) -> Option<()> {
-        Some(())
-    }
-    fn number_vertex_elements(&self, _: &mut ()) -> u64 {
-        0
-    }
-    fn geometry_vertices_out(&self, _: &()) -> u32 {
-        0
-    }
-    fn named_layer_location(&self, _: &()) -> u32 {
+    fn made_named_layer_location(&self, _: &()) -> u32 {
         u32::MAX
     }
-    fn control_points_out(&self, _: &()) -> u32 {
-        0
+    fn made_variant(
+        &self,
+        shader: &(),
+        settings: VariantSettings,
+        swizzles: &[TextureSwizzle],
+        samplers: &[NearestSampler],
+    ) -> VariantForm<()> {
+        self.prepared_variant(shader, settings, swizzles, samplers)
     }
-    fn makes_points(&self, _: &()) -> bool {
-        false
+    fn variant_flatten(&self, _: (), _: u32) -> Option<Flat> {
+        given().flat
     }
-    fn fragcolor_to_buffers(&self, _: &mut (), _: u32) {}
-    fn split_resource_arrays(&self, _: &mut ()) {}
-    fn textures_1d_as_2d(&self, _: &mut ()) {}
-    fn drop_name(&self, _: &mut ()) {}
-    fn uniform_blocks_as_words(&self, _: &mut ()) {}
-    fn transform_position(&self, _: &mut (), _: PositionTransform) {}
-    fn reads_sample_positions(&self, _: &mut ()) -> bool {
-        false
-    }
-    fn interpolate_elsewhere(&self, _: &mut (), _: u32) -> bool {
-        true
-    }
-    fn fit_sample_masks(&self, _: &mut (), _: bool) {}
-    fn writes_sample_mask(&self, _: &mut ()) -> bool {
-        false
-    }
-    fn fetches_target(&self, _: &mut ()) -> bool {
-        false
-    }
-    fn formatless_images(&self, _: &mut ()) -> u64 {
-        0
-    }
-    fn fetch_from_texture(&self, _: &mut (), _: u32, _: bool) {}
-    fn swizzle_textures(&self, _: &mut (), _: &[TextureSwizzle]) {}
-    fn nearest_integer_textures(&self, _: &mut (), _: &[NearestSampler]) -> bool {
-        true
-    }
-    fn integer_sampled_units(&self, _: &mut ()) -> u64 {
-        0
-    }
-    fn stream_point_size_at_a_location(&self, _: &mut ()) {}
-    fn generic_end(&self, _: &()) -> u32 {
-        0
-    }
-    fn point_size_also_at(&self, _: &mut (), _: u32) -> bool {
-        false
-    }
-    fn point_size_at_most(&self, _: &(), _: f32) -> bool {
-        false
-    }
-    fn point_square(&self, _: &(), _: u32, _: f32) -> Option<()> {
-        None
-    }
-    fn geometry_squares(&self, _: &(), _: u32, _: f32, _: u32) -> Option<()> {
-        None
-    }
-    fn storage_pass_through(&self, _: &mut ()) -> Option<[Option<()>; 5]> {
-        None
-    }
-    fn stream_outputs(&self, _: &(), _: &mut [StreamOutput], _: &mut [u32]) -> u32 {
-        0
-    }
+}
+
+/// A program the stand-in read, in the common form with its bindings checked.
+fn common_form() -> Result<(), ConvertError> {
+    let alpha_to_one = false;
+    SpirvProgram::<Hostile>::read(&[], Stage::Compute, ENTRY_POINT, alpha_to_one)
+        .expect("the stand-in makes one")
+        .to_common_form(Stage::Compute)
+        .map(|_| ())
+}
+
+/// The stand-in's GLSL program, prepared.
+fn prepared() -> wcontainers_nir::mesa::Prepared<Hostile> {
+    GlslStage::<Hostile>::compile(&[(Stage::Compute, "void main() {}")])
+        .expect("the stand-in compiles it")
+        .pop()
+        .expect("one stage")
+        .received
+        .prepare()
+        .expect("the stand-in prepares it")
 }
 
 /// A compute program with nothing in it, which route B takes.
@@ -166,10 +217,7 @@ fn empty() -> Flat {
 
 /// Route B's answer for the flat form `flat`.
 fn routed(flat: Flat) -> Result<(), ConvertError> {
-    GIVEN.with(|g| g.borrow_mut().flat = Some(flat));
-    let mut nir = Nir::<Hostile>::from_spirv(&[], Stage::Compute, ENTRY_POINT)
-        .expect("the stand-in makes one");
-    wcontainers_nir::direct::route(&mut nir).map(|_| ())
+    wcontainers_nir::direct::route(flat).map(|_| ())
 }
 
 /// Far past any enumeration's last value.
@@ -227,11 +275,9 @@ fn a_geometry_input_outside_its_enumeration_is_refused_by_name() {
 
 #[test]
 fn a_binding_result_outside_its_enumeration_is_refused_by_name() {
-    GIVEN.with(|g| g.borrow_mut().common_form = Some(Err(BEYOND)));
-    let mut nir = Nir::<Hostile>::from_spirv(&[], Stage::Compute, ENTRY_POINT)
-        .expect("the stand-in makes one");
+    GIVEN.with(|g| g.borrow_mut().common_form_result = BEYOND);
     assert_eq!(
-        nir.to_common_form(Stage::Compute),
+        common_form(),
         Err(ConvertError::Unknown(BIND_RESULT, BEYOND))
     );
 }
@@ -246,13 +292,8 @@ fn a_binding_kind_outside_its_enumeration_is_refused_by_name() {
         new_binding: 0,
         stride: 0,
     };
-    GIVEN.with(|g| g.borrow_mut().common_form = Some(Ok(vec![binding])));
-    let mut nir = Nir::<Hostile>::from_spirv(&[], Stage::Compute, ENTRY_POINT)
-        .expect("the stand-in makes one");
-    assert_eq!(
-        nir.to_common_form(Stage::Compute),
-        Err(ConvertError::Unknown(SLOT_KIND, BEYOND))
-    );
+    GIVEN.with(|g| g.borrow_mut().bindings = vec![binding]);
+    assert_eq!(common_form(), Err(ConvertError::Unknown(SLOT_KIND, BEYOND)));
 }
 
 #[test]
@@ -267,6 +308,32 @@ fn a_glsl_name_kind_outside_its_enumeration_is_refused_by_name() {
         element: 0,
     };
     GIVEN.with(|g| g.borrow_mut().glsl_names = vec![name]);
-    let refused = Nir::<Hostile>::from_glsl(&[(Stage::Compute, "void main() {}")]).map(|_| ());
+    let refused = GlslStage::<Hostile>::compile(&[(Stage::Compute, "void main() {}")]).map(|_| ());
     assert_eq!(refused, Err(ConvertError::Unknown(GLSL_NAME_KIND, BEYOND)));
+}
+
+#[test]
+fn a_variant_result_outside_its_enumeration_is_refused_by_name() {
+    GIVEN.with(|g| g.borrow_mut().variant_result = BEYOND);
+    let refused = prepared()
+        .variant(Stage::Compute, &DrawSettings::default(), &[], &[])
+        .map(|_| ());
+    assert_eq!(refused, Err(ConvertError::Unknown(VARIANT_RESULT, BEYOND)));
+}
+
+#[test]
+fn a_squares_kind_outside_its_enumeration_is_refused_by_name() {
+    GIVEN.with(|g| g.borrow_mut().squares_kind = BEYOND);
+    let refused = prepared().points_as_squares(0, 1.0).map(|_| ());
+    assert_eq!(refused, Err(ConvertError::Unknown(SQUARES_KIND, BEYOND)));
+}
+
+#[test]
+fn squares_made_without_their_program_are_refused_by_name() {
+    GIVEN.with(|g| g.borrow_mut().squares_kind = constants::SQUARES_MADE);
+    let refused = prepared().points_as_squares(0, 1.0).map(|_| ());
+    assert_eq!(
+        refused,
+        Err(ConvertError::Unknown(SQUARES_KIND, constants::SQUARES_MADE))
+    );
 }

@@ -38,8 +38,8 @@ use wcontainers_nir::mesa::Stage;
 use wcontainers_nir::spirv::{WORD_COUNT_SHIFT, validate};
 use wcontainers_shaders::ENTRY_POINT;
 
-/// One shader's NIR, owned by Mesa's compiler through our bridge.
-type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
+/// A program read from SPIR-V, owned by Mesa's compiler through our bridge.
+type SpirvProgram = wcontainers_nir::mesa::SpirvProgram<wcontainers_mesa_compiler_direct::Bridge>;
 
 /// Every count a shift is run with: all below the width of its 32-bit count.
 const SHIFT_COUNTS: u32 = u32::BITS;
@@ -351,9 +351,14 @@ fn run_both(
 ) -> (Vec<u32>, Vec<u32>) {
     let inputs: Vec<u8> = inputs.iter().flat_map(|w| w.to_le_bytes()).collect();
     let result_bytes = (invocations * result_words) as usize * size_of::<u32>();
-    let mut nir = Nir::from_spirv(program, Stage::Compute, ENTRY_POINT).expect("NIR");
-    let reflection = nir.to_common_form(Stage::Compute).expect("the common form");
-    let module = wcontainers_nir::direct::module(&mut nir).expect("route B's module");
+    let alpha_to_one = false;
+    let (common, reflection) =
+        SpirvProgram::read(program, Stage::Compute, ENTRY_POINT, alpha_to_one)
+            .expect("NIR")
+            .to_common_form(Stage::Compute)
+            .expect("the common form");
+    let module = wcontainers_nir::direct::module(common.flatten().expect("flattened"))
+        .expect("route B's module");
     validate(&module).expect("a module of the common form");
     let entry = &module.entry_points[0].name;
     let route = compare::write_spirv(

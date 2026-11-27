@@ -26,10 +26,10 @@ mod lavapipe;
 use ash::vk;
 use lavapipe::{Descriptor, Element, Job, Lavapipe};
 use wcontainers_gpu::reflect::SlotKind;
-use wcontainers_nir::mesa::Stage;
+use wcontainers_nir::mesa::{DrawSettings, Stage};
 
-/// One shader's NIR, owned by Mesa's compiler through our bridge.
-type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
+/// One stage of a GLSL program as the driver receives it, owned by Mesa's compiler through our bridge.
+type GlslStage = wcontainers_nir::mesa::GlslStage<wcontainers_mesa_compiler_direct::Bridge>;
 
 const PROGRAM: &str = "#version 450
 layout(local_size_x = 4) in;
@@ -131,10 +131,20 @@ fn expected() -> (u32, Vec<f32>) {
 
 #[test]
 fn opengl_buffers_as_words_compute_what_glsl_says() {
-    let mut stages = Nir::from_glsl(&[(Stage::Compute, PROGRAM)]).expect("Mesa compiles it");
-    let mut nir = stages.pop().expect("one stage").nir;
-    let reflection = nir.to_common_form(Stage::Compute).expect("it binds");
-    let module = wcontainers_nir::direct::module(&mut nir).expect("route B takes it");
+    let mut stages = GlslStage::compile(&[(Stage::Compute, PROGRAM)]).expect("Mesa compiles it");
+    let prepared = stages
+        .pop()
+        .expect("one stage")
+        .received
+        .prepare()
+        .expect("the driver prepares it");
+    let drawn = prepared
+        .variant(Stage::Compute, &DrawSettings::default(), &[], &[])
+        .expect("it binds")
+        .flatten(0)
+        .expect("it flattens");
+    let reflection = drawn.bindings;
+    let module = wcontainers_nir::direct::module(drawn.flat).expect("route B takes it");
     wcontainers_nir::spirv::validate(&module).expect("it validates");
     let entry = module.entry_points[0].name.clone();
     let words = compare::write_spirv(

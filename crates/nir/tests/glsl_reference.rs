@@ -61,10 +61,27 @@ mod table;
 use compare::{CompareOptions, DEFAULT_SEED, INPUT_SETS, SEED, Verdict};
 use wcontainers_gpu::{format::Format, reflect::VariantKey};
 use wcontainers_nir::direct::Rewrites;
-use wcontainers_nir::mesa::Stage;
+use wcontainers_nir::mesa::{DrawSettings, Flattened, Stage};
 
-/// One shader's NIR, owned by Mesa's compiler through our bridge.
-type Nir = wcontainers_nir::mesa::Nir<wcontainers_mesa_compiler_direct::Bridge>;
+/// One stage of a GLSL program as the driver receives it, owned by Mesa's compiler through our bridge.
+type GlslStage = wcontainers_nir::mesa::GlslStage<wcontainers_mesa_compiler_direct::Bridge>;
+
+/// The program of the only compute source with its names, prepared and drawn as the driver takes it.
+fn drawn(source: &str) -> (Vec<wcontainers_nir::mesa::GlslName>, Flattened) {
+    let stage = GlslStage::compile(&[(Stage::Compute, source)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    let drawn = stage
+        .received
+        .prepare()
+        .unwrap()
+        .variant(Stage::Compute, &DrawSettings::default(), &[], &[])
+        .unwrap()
+        .flatten(0)
+        .unwrap();
+    (stage.names, drawn)
+}
 
 const PROGRAM: &str = "#version 430
 layout(local_size_x = 8) in;
@@ -341,16 +358,11 @@ compute 1 1 1
 ";
 
 fn compute_verdict(source: &str) -> Verdict {
-    let mut stage = Nir::from_glsl(&[(Stage::Compute, source)])
-        .unwrap()
-        .pop()
-        .unwrap();
-    let reflection = stage.nir.to_common_form(Stage::Compute).unwrap();
-    let module = wcontainers_nir::direct::module(&mut stage.nir).unwrap();
+    let (names, drawn) = drawn(source);
+    let reflection = drawn.bindings;
+    let module = wcontainers_nir::direct::module(drawn.flat).unwrap();
     wcontainers_nir::spirv::validate(&module).unwrap();
-    on_each_seed(|options| {
-        glsl::compare_compute(source, &stage.names, &module, &reflection, options)
-    })
+    on_each_seed(|options| glsl::compare_compute(source, &names, &module, &reflection, options))
 }
 
 /// The comparison on each seed the knobs name: `WC_NIR_SEED` (the first) and `WC_NIR_INPUT_SETS`
@@ -388,13 +400,15 @@ fn a_glsl_program_of_atomic_counters_and_workgroup_memory_matches_llvmpipe_on_ro
 /// The program's verdict through route B and the shaders crate's rewrites, each storage image
 /// without a format bound as four 32-bit floats; and the rewrites route B asked for.
 fn rewritten_verdict(source: &str) -> (Verdict, Rewrites) {
-    let mut stage = Nir::from_glsl(&[(Stage::Compute, source)])
-        .unwrap()
-        .pop()
-        .unwrap();
-    let key = stage.nir.key().unwrap();
-    let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
-    let routed = wcontainers_nir::direct::route(&mut stage.nir).unwrap();
+    let (
+        names,
+        Flattened {
+            flat,
+            key,
+            bindings,
+        },
+    ) = drawn(source);
+    let routed = wcontainers_nir::direct::route(flat).unwrap();
     let rewrites = routed.rewrites.clone();
     let variant = VariantKey {
         storage_formats: routed
@@ -409,7 +423,7 @@ fn rewritten_verdict(source: &str) -> (Verdict, Rewrites) {
         wcontainers_nir::direct::rewrite(routed, bindings, &variant, &key).unwrap();
     let bindings = reflection.bindings;
     let verdict = on_each_seed(|options| {
-        glsl::compare_compute(source, &stage.names, &module.module, &bindings, options)
+        glsl::compare_compute(source, &names, &module.module, &bindings, options)
     });
     (verdict, rewrites)
 }
@@ -488,7 +502,7 @@ fn a_deqp_library_file_gives_each_case_its_program() {
     assert!(pair[1].1.contains("gl_FragColor = vec4(v);"));
     for program in [&vertex, &fragment, &pair] {
         let given: Vec<_> = program.iter().map(|(s, t)| (*s, t.as_str())).collect();
-        Nir::from_glsl(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
+        GlslStage::compile(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
     }
 }
 
@@ -534,7 +548,7 @@ fn a_godot_shader_file_gives_each_variant_its_program() {
     assert!(!plain[1].1.contains("#define USE_LIGHT"));
     for program in [&program, &plain] {
         let given: Vec<_> = program.iter().map(|(s, t)| (*s, t.as_str())).collect();
-        Nir::from_glsl(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
+        GlslStage::compile(&given).unwrap_or_else(|e| panic!("{program:?}: {e}"));
     }
     let defines = "# a comment\nscene.glsl #define A 1\\n\neffects/copy.glsl #define B\n";
     assert_eq!(

@@ -4,7 +4,6 @@
 //! keeps the scalar kind its instruction gives it and every use converts its bits to the kind it
 //! needs.
 
-use crate::mesa::Nir;
 use crate::{ConvertError, checked};
 use naga::{
     AddressSpace, BinaryOperator, Binding, Block, BuiltIn, Expression, Function, FunctionArgument,
@@ -21,7 +20,6 @@ use wcontainers_gpu::{
     reflect::VariantFlags, reflect::VariantKey, resource::CUBE_FACES, shader::ShaderModule,
     shader::ShaderStage as GpuStage, slow::SlowPath,
 };
-use wcontainers_mesa_compiler::MesaCompiler;
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
     BuiltIn as StagedBuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram,
@@ -923,10 +921,10 @@ pub struct TypedBuffers {
     pub formats: Vec<(u32, GpuFormat)>,
 }
 
-/// Candidate B: the program of `nir` as a naga module, for a program that needs none of the
-/// shaders crate's rewrites (refused by name otherwise). The shader is changed by the preparation.
-pub fn module<M: MesaCompiler + Clone>(nir: &mut Nir<M>) -> Result<Module, ConvertError> {
-    plain(route(nir)?)
+/// Candidate B: the program of the flat form `flat` as a naga module, for a program that needs none
+/// of the shaders crate's rewrites (refused by name otherwise).
+pub fn module(flat: wcontainers_mesa_compiler::Flat) -> Result<Module, ConvertError> {
+    plain(route(flat)?)
 }
 
 /// Route B's module of `routed`, where it needs none of the shaders crate's rewrites and reads no
@@ -969,19 +967,10 @@ pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
     Ok(module)
 }
 
-/// Candidate B: the program of `nir` as a naga module, with what it leaves for the shaders crate's
-/// rewrites ([`rewrite`]). The shader is changed by the preparation.
-pub fn route<M: MesaCompiler + Clone>(nir: &mut Nir<M>) -> Result<Routed, ConvertError> {
-    route_patches(nir, 0)
-}
-
-/// [`route`], for a tessellation program whose input patches have `points_in` control points (a
-/// control program's draw's patch size, an evaluation program's control program's output).
-pub fn route_patches<M: MesaCompiler + Clone>(
-    nir: &mut Nir<M>,
-    points_in: u32,
-) -> Result<Routed, ConvertError> {
-    let flat = nir.flatten(points_in).ok_or(ConvertError::Mesa(FLATTEN))?;
+/// Candidate B: the program of the flat form `flat` (a variant's or a SPIR-V program's in the common
+/// form, flattened) as a naga module, with what it leaves for the shaders crate's rewrites
+/// ([`rewrite`]).
+pub fn route(flat: wcontainers_mesa_compiler::Flat) -> Result<Routed, ConvertError> {
     let f = &Flat::read(flat)?;
     let stage = match f.stage {
         FlatStage::Vertex => ShaderStage::Vertex,
@@ -1081,7 +1070,7 @@ pub fn route_patches<M: MesaCompiler + Clone>(
 }
 
 /// The step named when the bridge cannot flatten a shader.
-pub const FLATTEN: &str = "wc_nir_flatten";
+pub const FLATTEN: &str = "flatten";
 
 fn vector_size(n: u32) -> Result<VectorSize, ConvertError> {
     [VectorSize::Bi, VectorSize::Tri, VectorSize::Quad]
@@ -5307,8 +5296,8 @@ fn pixel_extras(module: &Module) -> StageExtras {
 /// counting form (`VariantFlags::COUNTING`). A slot declared without a format that `variant` does
 /// not name is
 /// refused by name, as is a variant asking for more than these (its rewrites read the program's
-/// stage values, which the driver's reflection holds). `bindings` is what `Nir::to_common_form`
-/// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it;
+/// stage values, which the driver's reflection holds). `bindings` are the variant's (`Variant::bindings`),
+/// `route_key` its key (`Variant::key`). The module carries `cache::rewritten_key` of it;
 /// the reflection holds the bindings and helper constants the rewrites added.
 pub fn rewrite(
     routed: Routed,
