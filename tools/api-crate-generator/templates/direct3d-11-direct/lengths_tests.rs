@@ -202,3 +202,57 @@ fn lengths_worked_out_by_hand() {
     assert_eq!(crate::lengths::initial_length_texture_2d(&texture_2d_desc(16384, 8192, 1, 1, 2), 0, 262_144, 0), Some(2048 * 1024 * 1024));
     assert_eq!(crate::lengths::initial_length_texture_2d(&texture_2d_desc(16384, 8193, 1, 1, 2), 0, 262_144, 0), None);
 }
+
+/// D3D11_QUERY_DESC of a kind, flags 0.
+fn query(kind: i32) -> direct3d_11::structures::QueryDesc {
+    direct3d_11::structures::QueryDesc { query: direct3d_11::enumerations::QueryKind(kind), misc_flags: 0 }
+}
+
+/// Each query kind's data size, as Microsoft's D3D11_QUERY page names its data and d3d11.h lays the structures out
+/// (https://learn.microsoft.com/windows/win32/api/d3d11/ne-d3d11-d3d11_query): written out kind by kind, not taken
+/// from lengths.rs.
+#[test]
+fn data_size_of_every_query_kind_is_its_documented_structure() {
+    // D3D11_QUERY_EVENT: BOOL.
+    assert_eq!(crate::lengths::data_size_of_query(&query(0)), 4);
+    // D3D11_QUERY_OCCLUSION: UINT64.
+    assert_eq!(crate::lengths::data_size_of_query(&query(1)), 8);
+    // D3D11_QUERY_TIMESTAMP: UINT64.
+    assert_eq!(crate::lengths::data_size_of_query(&query(2)), 8);
+    // D3D11_QUERY_TIMESTAMP_DISJOINT: D3D11_QUERY_DATA_TIMESTAMP_DISJOINT, a UINT64 Frequency and a BOOL Disjoint,
+    // padded to the UINT64's alignment.
+    assert_eq!(crate::lengths::data_size_of_query(&query(3)), 16);
+    // D3D11_QUERY_PIPELINE_STATISTICS: D3D11_QUERY_DATA_PIPELINE_STATISTICS, eleven UINT64.
+    assert_eq!(crate::lengths::data_size_of_query(&query(4)), 88);
+    // D3D11_QUERY_OCCLUSION_PREDICATE: BOOL.
+    assert_eq!(crate::lengths::data_size_of_query(&query(5)), 4);
+    // D3D11_QUERY_SO_STATISTICS: D3D11_QUERY_DATA_SO_STATISTICS, two UINT64.
+    assert_eq!(crate::lengths::data_size_of_query(&query(6)), 16);
+    // D3D11_QUERY_SO_OVERFLOW_PREDICATE: BOOL.
+    assert_eq!(crate::lengths::data_size_of_query(&query(7)), 4);
+    // D3D11_QUERY_SO_STATISTICS_STREAM0 to STREAM3: D3D11_QUERY_DATA_SO_STATISTICS.
+    for kind in 8..=11 {
+        assert_eq!(crate::lengths::data_size_of_query(&query(kind)), 16, "kind {kind}");
+    }
+    // D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0 to STREAM3: BOOL.
+    for kind in 12..=15 {
+        assert_eq!(crate::lengths::data_size_of_query(&query(kind)), 4, "kind {kind}");
+    }
+    // A kind the header does not declare has no data.
+    for kind in [-1, 16, 255, i32::MAX] {
+        assert_eq!(crate::lengths::data_size_of_query(&query(kind)), 0, "kind {kind}");
+    }
+}
+
+/// A buffer is D3D11_RESOURCE_DIMENSION_BUFFER (1), and its description is within d3d11.h's ranges only with a byte
+/// width from 1 to the largest resource (2048 MiB) and one of the four declared usages (D3D11_USAGE_DEFAULT,
+/// _IMMUTABLE, _DYNAMIC, _STAGING: 0 to 3).
+#[test]
+fn a_buffer_is_of_the_buffer_dimension_and_checked_by_its_documented_ranges() {
+    const MIB: u32 = 1 << 20;
+    let desc = |width: u32, usage: i32| direct3d_11::structures::BufferDesc { byte_width: width, usage: direct3d_11::enumerations::Usage(usage), bind_flags: 0, cpu_access_flags: 0, misc_flags: 0, structure_byte_stride: 0 };
+    assert_eq!(crate::lengths::type_of_buffer(&desc(256, 0)), direct3d_11::enumerations::ResourceDimension(1));
+    for (width, usage, checked) in [(0, 0, false), (1, 0, true), (256, 1, true), (256, 2, true), (256, 3, true), (256, 4, false), (256, -1, false), (2048 * MIB, 0, true), (2048 * MIB + 1, 0, false), (u32::MAX, 3, false)] {
+        assert_eq!(crate::lengths::checked_buffer(&desc(width, usage)), checked, "width {width} usage {usage}");
+    }
+}

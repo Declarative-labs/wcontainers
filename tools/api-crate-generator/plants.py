@@ -31,7 +31,7 @@ def functions(text):
     """Every function of a file, at any indentation (an `impl`'s methods too): name, start offset, end offset (just past
     its closing brace)."""
     found = []
-    for match in re.finditer(r"^[ \t]*(?:pub(?:\([a-z]+\))? )?(?:unsafe )?(?:extern \"system\" )?fn ([A-Za-z0-9_]+)", text, re.M):
+    for match in re.finditer(r"^[ \t]*(?:pub(?:\([a-z]+\))? )?(?:const )?(?:unsafe )?(?:extern \"system\" )?fn ([A-Za-z0-9_]+)", text, re.M):
         depth, at = 0, match.end()
         while at < len(text):
             ch = text[at]
