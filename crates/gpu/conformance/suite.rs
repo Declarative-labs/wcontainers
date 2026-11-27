@@ -7394,6 +7394,135 @@ pub fn depth32float_texels_at_the_floats_of_24_bit_words_copy_out_as_written<B: 
     ok(&mut b);
 }
 
+/// A triangle list of 16-bit indices drawn without restart, one of its indices 0xffff (the value a
+/// restart would take): with restart off every index is a vertex (`DrawCall::restart`), so vertex
+/// 65535 is drawn and the two triangles cover the whole target in 0.2's red (51).
+pub fn the_largest_16_bit_index_without_restart_is_a_vertex<B: Gpu>(mut b: B) {
+    const N: u32 = 4;
+    const LAST: usize = 0xffff;
+    // Vertex 0 at (-1, -1), 1 at (-1, 1), 2 at (1, 1), the last at (1, -1); the rest unused.
+    let mut verts = vec![9.0f32; (LAST + 1) * 3];
+    for (vertex, (x, y)) in [(0, (-1.0, -1.0)), (1, (-1.0, 1.0)), (2, (1.0, 1.0)), (LAST, (1.0, -1.0))] {
+        verts[vertex * 3..vertex * 3 + 3].copy_from_slice(&[x, y, 0.2]);
+    }
+    let vb = vertex_buffer(&mut b, &verts);
+    let p = program(&mut b, VALUES, "flat", "red");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions_and_values(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let indices: Vec<u8> = [0u16, 1, 0xffff, 0xffff, 1, 2]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let ib = buffer(
+        &mut b,
+        indices.len() as u64,
+        BufferUsage::INDEX | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&ib, 0, &indices, WriteMode::Discard);
+    let (t, v) = rgba8_target(&mut b, N);
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        index: Some(IndexBinding {
+            buffer: &ib,
+            offset: 0,
+            format: IndexFormat::U16,
+        }),
+        restart: false,
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleList,
+            DrawRange::Indexed {
+                first: 0,
+                count: 6,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: 1,
+            },
+        )
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let expected: Vec<u8> = (0..N * N).flat_map(|_| [51, 0, 0, 255]).collect();
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
+/// After a draw whose viewport's depth range is 0.25 to 0.75, the 24-bit words a device may sample
+/// alike still copy out as written: a back end's own draws for the copy take the full depth range,
+/// whatever the guest's last draw left (`DEPTH24_UNORM` promises the stored word).
+pub fn a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written<B: Gpu>(mut b: B) {
+    const N: u32 = 4;
+    let format = Format::Depth24Plus;
+    if !b.caps().features.contains(Features::DEPTH24_UNORM)
+        || !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT)
+    {
+        return;
+    }
+    let vb = vertex_buffer(
+        &mut b,
+        &[-1.0, -1.0, 0.2, -1.0, 3.0, 0.2, 3.0, -1.0, 0.2],
+    );
+    let p = program(&mut b, VALUES, "flat", "red");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions_and_values(&mut b);
+    let mut vp = viewport(N, N);
+    vp[0].min_depth = 0.25f32.to_bits();
+    vp[0].max_depth = 0.75f32.to_bits();
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let (_t, v) = rgba8_target(&mut b, N);
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&call(
+        &p,
+        &bl,
+        &ds,
+        &rs,
+        &vl,
+        &streams,
+        &vp,
+        Topology::TriangleList,
+        DrawRange::Vertices {
+            first: 0,
+            count: 3,
+            first_instance: 0,
+            instances: 1,
+        },
+    ));
+    b.end_pass();
+    let t = texture(
+        &mut b,
+        format,
+        (2, 2),
+        1,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let words = [0xff_fffe, 0xff_ffff, 0x80_0000, 0xff_fffe];
+    let got: Vec<u32> = depth_words_out(&mut b, &t, 0, 2, &words, (0, 0), (2, 2))
+        .into_iter()
+        .map(|w| w & 0xff_ffff)
+        .collect();
+    assert_eq!(got, words);
+    ok(&mut b);
+}
+
 /// Runs each suite function as its own test on a back end made anew for every test.
 ///
 /// A back end is built alone through [`StandaloneGpu`], so every implementation says `StandaloneGpu: yes`.
@@ -7818,6 +7947,16 @@ macro_rules! tests {
         #[test]
         fn depth32float_texels_at_the_floats_of_24_bit_words_copy_out_as_written() {
             $crate::depth32float_texels_at_the_floats_of_24_bit_words_copy_out_as_written($value);
+        }
+
+        #[test]
+        fn the_largest_16_bit_index_without_restart_is_a_vertex() {
+            $crate::the_largest_16_bit_index_without_restart_is_a_vertex($value);
+        }
+
+        #[test]
+        fn a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written() {
+            $crate::a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written($value);
         }
 
         $crate::tests!(@StandaloneGpu $standalone_gpu ($value) $(($standalone_gpu_value))?);
