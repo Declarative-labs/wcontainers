@@ -310,8 +310,8 @@ pub struct SingleStepMachine {
     /// AMX TILES: whether Linux gave this process guest tile permission, and the XCR0 the CPU holds.
     tiles_permitted: bool,
     extended_control: u64,
-    /// XBEGIN: whether the CPU's debug registers hold breakpoints.
-    breakpoints_armed: bool,
+    /// The breakpoints the CPU's debug registers hold, for an instruction run between them.
+    breakpoints: Option<[u64; 2]>,
 }
 
 /// INCREMENTAL MEMORY: what the guest holds between states when loading incrementally.
@@ -410,7 +410,7 @@ impl SingleStepMachine {
             renew_machine: false,
             tiles_permitted,
             extended_control: EXTENDED_CONTROL_0,
-            breakpoints_armed: false,
+            breakpoints: None,
         };
         executor.set_up()?;
         Ok(executor)
@@ -639,9 +639,9 @@ impl SingleStepMachine {
         Ok(())
     }
 
-    /// XBEGIN: puts an execute breakpoint at each address, or none.
+    /// Puts an execute breakpoint at each address, or none, where the CPU holds others.
     fn set_breakpoints(&mut self, addresses: Option<[u64; 2]>) -> Result<(), Refusal> {
-        if addresses.is_none() && !self.breakpoints_armed {
+        if addresses == self.breakpoints {
             return Ok(());
         }
         let mut registers = kvm_debugregs { dr6: DEBUG_STATUS_RESET, dr7: DEBUG_CONTROL_RESET, ..kvm_debugregs::default() };
@@ -655,7 +655,7 @@ impl SingleStepMachine {
         self.cpu
             .set_debug_regs(&registers)
             .map_err(|error| Refusal::KvmFailed(format!("setting the breakpoints: {error}")))?;
-        self.breakpoints_armed = addresses.is_some();
+        self.breakpoints = addresses;
         Ok(())
     }
 
@@ -937,7 +937,7 @@ impl SingleStepMachine {
         let started = Instant::now();
         let slot = self.read_slot_outputs();
         let (xcr0, xfd) = (processor.xcr0, processor.xfd);
-        let stop = if self.breakpoints_armed { BREAKPOINTS } else { SINGLE_STEP };
+        let stop = if self.breakpoints.is_some() { BREAKPOINTS } else { SINGLE_STEP };
         *processor = to_processor(&slot, stop).inspect_err(|_| self.renew_machine = true)?;
         (processor.xcr0, processor.xfd) = (xcr0, xfd);
         if xcr0 & TILE_COMPONENTS != 0 {
