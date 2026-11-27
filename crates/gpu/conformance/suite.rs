@@ -4402,11 +4402,19 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<B: Gpu>(m
     }
 }
 
+/// The 24-bit depth words [`copy_within_one_depth_subresource`] writes, the copied ones first in each row: words
+/// whose value a read or copy taking the nearest word to a sampled float gets one off on a device that samples
+/// stored c as c (2^-24 + 2^-47) rounded (llvmpipe, lavapipe), beside others spread between.
+const DEPTH24_COPIED: [u32; 8] = [
+    0x7f_ffff, 0xc0_0000, 0x12_3456, 0x55_5555, 0x80_0001, 0x7f_fffe, 0xab_cdef, 0x00_8001,
+];
+
 /// As [`copy_within_one_subresource`] for a format whose depth reads back as a value, not its
 /// bytes, and whose one copy moves its stencil too where it has one: depth written and read in
-/// eighths, stencil any. 24-bit depth reads back as the word written where the back end stores it as
-/// 24-bit unorm ([`Features::DEPTH24_UNORM`]), otherwise within one step of 2^-24 (it is stored as a
-/// float).
+/// eighths ([`DEPTH24_COPIED`]'s words for 24-bit depth), stencil any. 24-bit depth reads back as
+/// the word written where the back end stores it as 24-bit unorm ([`Features::DEPTH24_UNORM`]),
+/// otherwise within one step of 2^-24 (it is stored as a float). A failure names every texel that
+/// came back otherwise.
 fn copy_within_one_depth_subresource<B: Gpu>(b: &mut B, format: Format) {
     let has_stencil = format != Format::Depth24Plus;
     let t = texture(
@@ -4422,10 +4430,15 @@ fn copy_within_one_depth_subresource<B: Gpu>(b: &mut B, format: Format) {
         ..region(&t, 0, 0, 0, 0)
     };
     let eighth = |i: usize| i as f64 / 8.0;
+    let unorm24 = matches!(format, Format::Depth24Plus | Format::Depth24PlusStencil8);
     let depth: Vec<u8> = (0..8)
         .flat_map(|i| {
             let mut texel = [0; 4];
-            encode_depth(format, eighth(i), &mut texel);
+            if unorm24 {
+                texel[..3].copy_from_slice(&DEPTH24_COPIED[i].to_le_bytes()[..3]);
+            } else {
+                encode_depth(format, eighth(i), &mut texel);
+            }
             texel
         })
         .collect();
@@ -4456,20 +4469,22 @@ fn copy_within_one_depth_subresource<B: Gpu>(b: &mut B, format: Format) {
     // Texel i holds what texel `from(i)` held: the right half of each row takes its left half.
     let from = |i: usize| if i % 4 >= 2 { i - 2 } else { i };
     let got = read_texture(b, aspect(false), extent(4, 2, 1), 4);
-    let unorm24 = b.caps().features.contains(Features::DEPTH24_UNORM);
-    let step = match format {
-        Format::Depth24Plus | Format::Depth24PlusStencil8 if !unorm24 => 1.0 / 16_777_215.0,
-        _ => 0.0,
+    let stored_unorm24 = b.caps().features.contains(Features::DEPTH24_UNORM);
+    let step = if unorm24 && !stored_unorm24 {
+        1.0 / 16_777_215.0
+    } else {
+        0.0
     };
+    let mut wrong = Vec::new();
     for i in 0..8 {
         let g = decode_depth(format, &got[i * 4..i * 4 + 4]);
         // The value written, as its format holds it.
         let e = decode_depth(format, &depth[from(i) * 4..from(i) * 4 + 4]);
-        assert!(
-            (g - e).abs() <= step,
-            "{format:?} depth of texel {i}: {g}, not {e}"
-        );
+        if (g - e).abs() > step {
+            wrong.push(format!("texel {i}: {g}, not {e}"));
+        }
     }
+    assert!(wrong.is_empty(), "{format:?} depth: {wrong:?}");
     if has_stencil {
         let got = read_texture(b, aspect(true), extent(4, 2, 1), 1);
         let expected: Vec<u8> = (0..8).map(|i| stencil[from(i)]).collect();
