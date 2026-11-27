@@ -45,6 +45,10 @@ const QUOTE_TEXT: &str = "\"";
 const ESCAPED_QUOTE: &str = "\\\"";
 
 /// The source folder Meson made the build from.
+#[allow(
+    dead_code,
+    reason = "only the build scripts that compile C against Mesa call it"
+)]
 pub fn source_folder(build: &Path) -> PathBuf {
     #[derive(serde::Deserialize)]
     struct Info {
@@ -61,6 +65,10 @@ pub fn source_folder(build: &Path) -> PathBuf {
 }
 
 /// The defines and language standard Mesa compiled `file` with, from its compile commands.
+#[allow(
+    dead_code,
+    reason = "only the build scripts that compile C against Mesa call it"
+)]
 pub fn mesa_flags(build: &Path, file: &str) -> Vec<String> {
     #[derive(serde::Deserialize)]
     struct Command {

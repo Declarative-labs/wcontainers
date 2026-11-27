@@ -9,9 +9,9 @@ repository.workspace = true
 
 [features]
 default = ["standalone"]
-# Links Mesa's compiler libraries itself, with the SPIR-V steps and the GLSL front, for the corpus
-# and the tests. Without it only the bridge is built, for a program that links Mesa (the OpenGL
-# driver inside Mesa's own library).
+# The corpus and the tests that reach Mesa's compiler through wcontainers-mesa-compiler-direct, which links
+# Mesa's compiler libraries itself (its own `standalone` feature), and the reference renderers' files. Without
+# it nir is built for a program that links Mesa (the OpenGL driver inside Mesa's own library).
 standalone = []
 
 [dependencies]
@@ -45,7 +45,6 @@ required-features = ["standalone"]
 
 [build-dependencies]
 blake3 = { version = "1", default-features = false }
-cc = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

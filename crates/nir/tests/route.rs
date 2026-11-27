@@ -136,16 +136,19 @@ fn main(@location(0) colour: vec4<f32>) -> @location(0) vec4<f32> {
 }
 ";
 
-const MASKED: &str = "
-struct Out {
-    @location(0) colour: vec4<f32>,
-    @builtin(sample_mask) mask: u32,
+/// A fragment program passing its colour on and writing a sample mask (spirv/masked.frag): from glslang, since
+/// naga writes the mask as a scalar, which Vulkan's SPIR-V (and so the bridge's validator) refuses.
+const MASKED: &[u8] = include_bytes!("spirv/masked.spv");
+
+/// SPIR-V's words from its bytes, little-endian as glslang writes them.
+fn words(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect()
 }
-@fragment
-fn main(@location(0) colour: vec4<f32>, @location(1) @interpolate(flat) mask: u32) -> Out {
-    return Out(colour, mask);
-}
-";
 
 /// The sample mask among a fragment entry point's results, and whether colour 0's alpha is the
 /// constant one.
@@ -168,8 +171,8 @@ fn sample_mask_and_alpha_one(module: &naga::Module) -> (bool, bool) {
 
 #[test]
 fn alpha_to_one_gives_route_b_a_sample_mask_and_alpha_one() {
-    for program in [TRANSLUCENT, MASKED] {
-        let mut nir = Nir::from_spirv(&spirv(program), Stage::Fragment, ENTRY_POINT).unwrap();
+    for program in [spirv(TRANSLUCENT), words(MASKED)] {
+        let mut nir = Nir::from_spirv(&program, Stage::Fragment, ENTRY_POINT).unwrap();
         nir.alpha_to_one();
         nir.to_common_form(Stage::Fragment).unwrap();
         let module = wcontainers_nir::direct::module(&mut nir).unwrap();
