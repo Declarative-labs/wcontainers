@@ -112,9 +112,8 @@ pub const AGREEMENT_EXECUTORS: usize = 12;
 
 /// A generator that gives a sample of the states another gives for each instruction that still tells its behaviors apart.
 ///
-/// The sample is at most `at_most` states spread evenly over them, and for each two known behaviors the other generator
-/// tells apart that the spread does not, the first state that does. The behavior source's tests run every state on one
-/// executor, one after another; one that takes a large part of a millisecond for each runs a sample in time.
+/// The sample is at most `at_most` states spread evenly, and for each two known behaviors the spread does not tell
+/// apart, the first state that does: an executor slow at each state runs it in time.
 pub struct Sampled<Generator> {
     pub generator: Generator,
     pub at_most: usize,

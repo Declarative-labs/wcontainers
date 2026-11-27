@@ -38,7 +38,7 @@ use wcontainers_processor_architecture_arm64::{
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::engine::EngineHandle;
-use crate::memory::{Memory, Predicates, SharedPages};
+use crate::memory::{Memory, Predicates, SharedPages, UNTAGGED};
 use crate::space::{UnicornPageTable, UnicornSpace};
 
 /// A process's address space on a host with 32 bit memories.
@@ -94,9 +94,6 @@ pub enum Unsupported {
     /// The state names memory past the end of the stand-in's spaces.
     BeyondSpace { end: u64 },
 }
-
-/// The bits of an address below its tag, the top byte a program's data addresses carry on Linux.
-const UNTAGGED: u64 = (1 << 56) - 1;
 
 /// A request of the kernel's that breaks the [`Cpu`] contract, which the stand-in refused.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -91,12 +91,10 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
     check_measurements(source, &generator, None);
 }
 
-/// The behavior measured for each instruction but those set aside agrees with the source on every state it executes.
+/// Checks the test above on a source that shows no one known behavior for the instructions set aside.
 ///
-/// The source shows no one known behavior for an instruction set aside, which measures as its first known behavior, so
-/// measuring every instruction at once still gives each the behavior measuring it alone gives, in the order they are
-/// listed. A state the source refuses is left out of the measurement and the check, and counted on the standard error.
-/// Where only refused states tell behaviors apart, the first that agrees is measured.
+/// Each of them measures as its first known behavior and is not checked. A state the source refuses is left out and
+/// counted; where only refused states tell behaviors apart, the first that agrees is measured.
 pub fn measured_behavior_agrees_with_the_source_but_set_aside<Source, Generator>(
     source: Source,
     generator: Generator,
@@ -170,31 +168,34 @@ fn check_measurements<Source, Generator>(
     );
 }
 
+const NO_KNOWN_BEHAVIOR: &str = "it has no known behavior";
+const EXECUTION_FAILED: &str = "the source did not execute one of its states";
+const NO_BEHAVIOR_AGREES: &str = "no known behavior agrees with the source on one of its states";
+const INDISTINGUISHABLE_BEHAVIORS: &str = "no generated state tells two behaviors apart";
+
 /// Returns which instruction, by its place in the list, shows no one known behavior, and why.
 fn describe<Architecture: ProcessorArchitecture, Error>(
     error: &MeasureInstructionError<Architecture, Error>,
 ) -> String {
     let (instruction, why) = match error {
         MeasureInstructionError::NoKnownBehavior { instruction } => {
-            (instruction, "it has no known behavior")
+            (instruction, NO_KNOWN_BEHAVIOR)
         }
         MeasureInstructionError::ExecutionFailed { instruction, .. } => {
-            (instruction, "the source did not execute one of its states")
+            (instruction, EXECUTION_FAILED)
         }
-        MeasureInstructionError::NoBehaviorAgrees { instruction, .. } => (
-            instruction,
-            "no known behavior agrees with the source on one of its states",
-        ),
+        MeasureInstructionError::NoBehaviorAgrees { instruction, .. } => {
+            (instruction, NO_BEHAVIOR_AGREES)
+        }
         MeasureInstructionError::IndistinguishableBehaviors { instruction, .. } => {
-            (instruction, "no generated state tells two behaviors apart")
+            (instruction, INDISTINGUISHABLE_BEHAVIORS)
         }
     };
     let index = Architecture::list_instructions().position(|listed| listed == *instruction);
     format!("instruction {index:?} shows no one known behavior: {why}")
 }
 
-/// A source that measures each instruction set aside as its first known behavior without running it, and any other on
-/// the states it executes.
+/// A source that measures an instruction set aside as its first known behavior, and any other on the states it executes.
 struct SettingAside<'list, Source: BehaviorSource> {
     source: Source,
     set_aside: &'list [<Source::Architecture as ProcessorArchitecture>::Instruction],

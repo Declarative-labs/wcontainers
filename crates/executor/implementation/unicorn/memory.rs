@@ -1,10 +1,7 @@
 //! One address space of the stand-in: a unicorn instance holding the pages it maps, and host memory for the rest.
 //!
-//! Unicorn owns the bytes of the pages it maps; a page that allows nothing is not mapped, so it faults by being absent,
-//! and its bytes wait in host memory. A range that shows shared pages reads and writes them in host memory between
-//! turns; unicorn holds a copy for a turn: before it, unicorn takes each page that changed since it last took them, and
-//! after it gives back what the guest wrote.
-//! Where two ranges of one space show the same shared bytes, a store hook copies each guest store to the other.
+//! A page that allows nothing is not mapped. Shared pages live in host memory: unicorn takes those that changed before a
+//! turn and gives back what the guest wrote after it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -83,7 +80,7 @@ const LOWER_LEVELS_AARCH64: u64 = 1 << 10;
 /// Bit 55 of an address, which picks the upper half of the address space, where TBI1 is clear on Linux.
 const UPPER_HALF: u64 = 1 << 55;
 /// The bits of a lower-half address below its tag, the top byte TBI0 leaves out of translation.
-const UNTAGGED: u64 = (1 << 56) - 1;
+pub(crate) const UNTAGGED: u64 = (1 << 56) - 1;
 
 /// The most bytes a space maps in unicorn as one region, a level 2 block of pages.
 ///
@@ -94,7 +91,7 @@ const LARGEST_REGION: u64 = PAGE_SIZE * (PAGE_SIZE / size_of::<u64>() as u64);
 const UNICORN_NO_LIMIT: usize = 0;
 const UNICORN_NO_TIMEOUT: u64 = 0;
 /// The slice that runs one instruction, at one instruction a nanosecond.
-pub(crate) const ONE_INSTRUCTION: u64 = 1;
+const ONE_INSTRUCTION_NANOSECONDS: u64 = ONE_INSTRUCTION_COUNT as u64;
 /// The count of instructions unicorn runs that is one instruction.
 const ONE_INSTRUCTION_COUNT: usize = 1;
 
@@ -1334,7 +1331,7 @@ impl Memory {
             ..Stopped::default()
         };
         let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
-            usize::try_from(nanoseconds.max(ONE_INSTRUCTION)).unwrap_or(usize::MAX)
+            usize::try_from(nanoseconds.max(ONE_INSTRUCTION_NANOSECONDS)).unwrap_or(usize::MAX)
         });
         let mut result = self.start(registers.pc, count);
         let mut stopped = std::mem::take(self.unicorn.get_data_mut());
@@ -1458,7 +1455,13 @@ impl Memory {
             .expect("restoring unicorn's fresh CPU state");
         self.run_helper(scratch, data, PREDICATE_LOADER.len());
         self.set_permissions(page.clone(), Permissions::empty());
-        let ran = self.run_loaded(registers, Some(ONE_INSTRUCTION), None, None, fault_run);
+        let ran = self.run_loaded(
+            registers,
+            Some(ONE_INSTRUCTION_NANOSECONDS),
+            None,
+            None,
+            fault_run,
+        );
         self.set_permissions(page.clone(), Permissions::all());
         self.run_helper(scratch + PREDICATE_SAVER, data, PREDICATE_SAVER_CODE.len());
         let mut bytes = [u8::MIN; PREDICATE_BYTES];
