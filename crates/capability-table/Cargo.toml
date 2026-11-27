@@ -7,7 +7,7 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
-vstd = "=0.0.0-2026-11-22-0344"
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 wcontainers-kernel = { path = "../kernel" }
 
 [package.metadata.verus]
