@@ -2,7 +2,8 @@
 //!
 //! Unicorn owns the bytes of the pages it maps; a page that allows nothing is not mapped, so it faults by being absent,
 //! and its bytes wait in host memory. A range that shows shared pages reads and writes them in host memory between
-//! turns; unicorn holds a copy for a turn, taken before it when the shared pages changed and given back after it.
+//! turns; unicorn holds a copy for a turn: before it, unicorn takes each page that changed since it last took them, and
+//! after it gives back what the guest wrote.
 //! Where two ranges of one space show the same shared bytes, a store hook copies each guest store to the other.
 
 use std::cell::{Cell, RefCell};
@@ -294,6 +295,8 @@ pub(crate) struct SharedPages {
     touched: RefCell<TouchedPages>,
     /// Counts the changes to the bytes, so a space's copy for a turn is taken again only after one.
     version: Cell<u64>,
+    /// The version each page last changed in, so a space's copy takes again only the pages that changed.
+    changed: RefCell<Vec<u64>>,
 }
 
 impl SharedPages {
@@ -307,6 +310,7 @@ impl SharedPages {
             bytes: RefCell::new(bytes),
             touched: RefCell::new(TouchedPages::new(length.div_ceil(PAGE_SIZE))),
             version: Cell::new(u64::MIN),
+            changed: RefCell::new(vec![u64::MIN; to_index(length.div_ceil(PAGE_SIZE))]),
         })
     }
 
@@ -349,14 +353,23 @@ impl SharedPages {
         let start = to_index(offset);
         self.bytes.borrow_mut()[start..start + from.len()].copy_from_slice(from);
         let end = offset + from.len() as u64;
-        self.touched
-            .borrow_mut()
-            .touch(offset / PAGE_SIZE..end.div_ceil(PAGE_SIZE));
-        self.version.set(self.version.get().wrapping_add(1));
+        let pages = offset / PAGE_SIZE..end.div_ceil(PAGE_SIZE);
+        self.touched.borrow_mut().touch(pages.clone());
+        let version = self.version.get().wrapping_add(1);
+        self.version.set(version);
+        self.changed.borrow_mut()[to_index(pages.start)..to_index(pages.end)].fill(version);
     }
 
     fn is_touched(&self, page: u64) -> bool {
         self.touched.borrow().contains(page)
+    }
+
+    /// Returns whether a page holding some of the bytes at the offsets changed after the version.
+    fn has_changed_since(&self, offsets: Range<u64>, version: u64) -> bool {
+        let pages = to_index(offsets.start / PAGE_SIZE)..to_index(offsets.end.div_ceil(PAGE_SIZE));
+        self.changed.borrow()[pages]
+            .iter()
+            .any(|changed| *changed > version)
     }
 }
 
@@ -592,6 +605,7 @@ impl Memory {
     /// Copies the buffer to the address, whatever the pages allow.
     pub(crate) fn write(&mut self, address: u64, from: &[u8]) -> Result<(), CpuError> {
         self.range(address, from.len() as u64)?;
+        let mut pieces = Vec::new();
         let mut done = usize::MIN;
         while done < from.len() {
             let at = address + done as u64;
@@ -601,7 +615,7 @@ impl Memory {
                 Some((start, shown)) => shown.pages.write(shown.offset + (at - start), piece),
                 None => {
                     if self.is_mapped(at / PAGE_SIZE) {
-                        self.write_unicorn(at, piece);
+                        pieces.push((at, piece.to_vec()));
                     } else {
                         self.hidden[to_index(at)..to_index(at) + count].copy_from_slice(piece);
                     }
@@ -610,6 +624,7 @@ impl Memory {
             }
             done += count;
         }
+        self.write_unicorn(&pieces);
         Ok(())
     }
 
@@ -941,6 +956,7 @@ impl Memory {
         }
         let last = high / PAGE_SIZE;
         let mut page = low / PAGE_SIZE;
+        let mut pieces = Vec::new();
         while page < last {
             let permissions = self.pages[to_index(page)];
             let run_start = page;
@@ -960,17 +976,9 @@ impl Memory {
             if permissions.contains(Permissions::WRITE) {
                 self.touched.touch(run_start..page);
             }
-            self.restore_own_pages(region);
+            self.list_held_bytes(region, &mut pieces);
         }
-        // Unicorn's copy of a shared range over the regions mapped anew went with them.
-        let starts: Vec<u64> = self.shared.range(..high).map(|(start, _)| *start).collect();
-        for start in starts {
-            if let Some(shown) = self.shared.get_mut(&start)
-                && shown.end > low
-            {
-                shown.synced = None;
-            }
-        }
+        self.write_unicorn(&pieces);
     }
 
     /// Copies the own pages unicorn maps over the region into host memory, before the region goes.
@@ -992,41 +1000,78 @@ impl Memory {
         }
     }
 
-    /// Copies the own pages over a region just mapped from host memory into unicorn.
-    fn restore_own_pages(&mut self, region: Range<u64>) {
-        for page in self
-            .touched
-            .list(region.start / PAGE_SIZE..region.end / PAGE_SIZE)
-        {
-            if self.is_shared(page) {
-                continue;
+    /// Adds to the pieces what host memory holds for the pages of a region just mapped: the shared bytes a range shows
+    /// there, or the space's own bytes.
+    fn list_held_bytes(&self, region: Range<u64>, pieces: &mut Vec<(u64, Vec<u8>)>) {
+        for page in region.start / PAGE_SIZE..region.end / PAGE_SIZE {
+            let at = page * PAGE_SIZE;
+            match self.find_shown(at) {
+                Some((start, shown)) => {
+                    let offset = shown.offset + (at - start);
+                    let count = shown.pages.count_from(offset);
+                    if count == usize::MIN || !shown.pages.is_touched(offset / PAGE_SIZE) {
+                        continue;
+                    }
+                    let mut bytes = vec![u8::MIN; count];
+                    shown.pages.read(offset, &mut bytes);
+                    pieces.push((at, bytes));
+                }
+                None if self.touched.contains(page) => {
+                    let bytes = page_bytes(page, self.end);
+                    pieces.push((
+                        at,
+                        self.hidden[to_index(bytes.start)..to_index(bytes.end)].to_vec(),
+                    ));
+                }
+                None => {}
             }
-            let bytes = page_bytes(page, self.end);
-            let own = self.hidden[to_index(bytes.start)..to_index(bytes.end)].to_vec();
-            self.write_unicorn(bytes.start, &own);
         }
     }
 
-    /// Writes the bytes into unicorn's mapped pages and drops what unicorn translated from them: unicorn's own writes
-    /// leave its translations as they were, so code written over would not be what runs next.
-    fn write_unicorn(&mut self, address: u64, bytes: &[u8]) {
-        self.unicorn
-            .mem_write(address, bytes)
-            .expect("unicorn maps the pages that allow something");
-        self.forget_code(address..address + bytes.len() as u64);
+    /// Writes each piece, which lies in one page, into unicorn's mapped pages and drops what unicorn translated from
+    /// them: unicorn's own writes leave its translations as they were, so code written over would not be what runs
+    /// next.
+    ///
+    /// Unicorn's write to a region that refuses stores makes the region writable and back, and each change rebuilds its
+    /// memory map (MEASURED by the kernel track: 93% of a node start-up), so such a region is made writable once for all
+    /// its pieces.
+    fn write_unicorn(&mut self, pieces: &[(u64, Vec<u8>)]) {
+        let mut refusing = BTreeMap::new();
+        for (address, _) in pieces {
+            if let Some((start, (end, permissions))) = self.mapped.range(..=*address).next_back()
+                && *address < *end
+                && !permissions.contains(Permissions::WRITE)
+            {
+                refusing.insert(*start, (*end, *permissions));
+            }
+        }
+        for (start, (end, permissions)) in &refusing {
+            self.unicorn
+                .mem_protect(*start, end - start, prot(*permissions | Permissions::WRITE))
+                .expect("opening a region unicorn has to writes");
+        }
+        for (address, bytes) in pieces {
+            self.unicorn
+                .mem_write(*address, bytes)
+                .expect("unicorn maps the pages that allow something");
+            self.forget_code(*address..*address + bytes.len() as u64);
+        }
+        for (start, (end, permissions)) in refusing {
+            self.unicorn
+                .mem_protect(start, end - start, prot(permissions))
+                .expect("closing a region unicorn has to writes");
+        }
     }
 
-    /// Gives unicorn a copy of every shared range's pages it maps whose copy is not current.
+    /// Gives unicorn the pages of every shared range it maps that changed since its copy of them was taken.
     fn copy_shared_in(&mut self) {
-        let starts: Vec<u64> = self.shared.keys().copied().collect();
-        for start in starts {
-            let shown = &self.shared[&start];
+        let mut pieces = Vec::new();
+        let mut taken = Vec::new();
+        for (start, shown) in &self.shared {
             let version = shown.pages.version.get();
             if shown.synced == Some(version) {
                 continue;
             }
-            let shown = shown.clone();
-            let mut bytes = [u8::MIN; PAGE_BYTES];
             for page in start / PAGE_SIZE..shown.end / PAGE_SIZE {
                 let at = page * PAGE_SIZE;
                 let offset = shown.offset + (at - start);
@@ -1034,12 +1079,22 @@ impl Memory {
                 if count == usize::MIN
                     || !self.is_mapped(page)
                     || !shown.pages.is_touched(offset / PAGE_SIZE)
+                    || shown.synced.is_some_and(|synced| {
+                        !shown
+                            .pages
+                            .has_changed_since(offset..offset + count as u64, synced)
+                    })
                 {
                     continue;
                 }
-                shown.pages.read(offset, &mut bytes[..count]);
-                self.write_unicorn(at, &bytes[..count]);
+                let mut bytes = vec![u8::MIN; count];
+                shown.pages.read(offset, &mut bytes);
+                pieces.push((at, bytes));
             }
+            taken.push((*start, version));
+        }
+        self.write_unicorn(&pieces);
+        for (start, version) in taken {
             if let Some(kept) = self.shared.get_mut(&start) {
                 kept.synced = Some(version);
             }
