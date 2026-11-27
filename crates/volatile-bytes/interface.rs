@@ -87,14 +87,14 @@ pub open spec fn copied(length: nat, offset: u64, buffer: nat) -> nat {
     }
 }
 
-}
-
-#[allow(
-    reviewable::trait_not_verified,
-    reason = "the contract is not written yet"
-)]
 pub trait StandaloneVolatileBytes: VolatileBytes {
     type Config;
 
-    fn new(config: Self::Config) -> Self;
+    fn new(config: Self::Config) -> Self
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
+
+} // verus!

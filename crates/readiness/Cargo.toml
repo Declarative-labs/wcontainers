@@ -7,8 +7,12 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
-wcontainers-abi.workspace = true
 bitflags.workspace = true
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+wcontainers-abi.workspace = true
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

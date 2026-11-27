@@ -5,9 +5,11 @@ extern crate alloc;
 use alloc::vec::{self, Vec};
 
 use itertools::{Itertools, MultiProduct};
+use vstd::prelude::*;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait InstructionInputDomain<Architecture: ProcessorArchitecture>: Sized {
     /// The type of one input of an instruction, which does not depend on the types of its other inputs.
     type OperandType: Copy + Eq;
@@ -21,11 +23,19 @@ pub trait InstructionInputDomain<Architecture: ProcessorArchitecture>: Sized {
         Self: 'domain;
 
     /// Returns the type of each of the instruction's operands, in the order of its signature.
-    fn list_operand_types(&self, instruction: Architecture::Instruction) -> Self::OperandTypes<'_>;
+    fn list_operand_types(&self, instruction: Architecture::Instruction) -> Self::OperandTypes<'_>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns the values of the type at which the behavior of an instruction can change.
     fn generate_critical_values(&self, operand_type: Self::OperandType)
-    -> Self::CriticalValues<'_>;
+    -> Self::CriticalValues<'_>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns an execution state in which the next instruction executed is the given instruction with the given operands.
     ///
@@ -34,13 +44,21 @@ pub trait InstructionInputDomain<Architecture: ProcessorArchitecture>: Sized {
         &self,
         instruction: Architecture::Instruction,
         operands: &[Self::OperandValue],
-    ) -> ExecutionState<'static, Architecture>;
+    ) -> ExecutionState<'static, Architecture>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns the state of every combination of the critical values of the instruction's operands.
     fn generate_critical_states(
         &self,
         instruction: Architecture::Instruction,
-    ) -> CriticalStates<'_, Self, Architecture> {
+    ) -> CriticalStates<'_, Self, Architecture>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    {
         CriticalStates {
             domain: self,
             instruction,
@@ -66,6 +84,8 @@ where
     pub instruction: Architecture::Instruction,
     pub combinations: MultiProduct<vec::IntoIter<Domain::OperandValue>>,
 }
+
+} // verus!
 
 impl<Domain, Architecture> Iterator for CriticalStates<'_, Domain, Architecture>
 where

@@ -1,6 +1,7 @@
 #![no_std]
 
 use etherparse::IpNumber;
+use vstd::prelude::*;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
@@ -11,12 +12,13 @@ use wcontainers_kernel::UserId;
 use wcontainers_readiness::Readiness;
 use wcontainers_volatile_bytes::VolatileBytes;
 
+verus! {
+
 #[allow(
     reviewable::explicit_shared_error::HostError,
     reason = "each method is one call on the host's socket and fails only the ways that call does"
 )]
 /// Sockets for [raw](https://man7.org/linux/man-pages/man7/raw.7.html) IP packets.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait RawSockets:
     for<'a> Configurable<Self::Socket, RawSocketSetting<'a>> + Readiness<Self::Socket>
 {
@@ -27,22 +29,46 @@ pub trait RawSockets:
         version: IpVersion,
         protocol: IpNumber,
         owner: UserId,
-    ) -> Result<Self::Socket, HostError>;
+    ) -> Result<Self::Socket, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn send_to(
         &self,
         socket: &Self::Socket,
         packet: RawPacket<'_>,
         fields: IpSendFields,
-    ) -> Result<(), SendError>;
+    ) -> Result<(), SendError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn receive(
         &self,
         socket: &Self::Socket,
         into: &impl VolatileBytes,
-    ) -> Result<Received, HostError>;
+    ) -> Result<Received, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> ByteCount;
-    fn read_buffer_sizes(&self, socket: &Self::Socket) -> BufferSizes;
-    fn close(&self, socket: Self::Socket);
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> ByteCount
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> BufferSizes
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn close(&self, socket: Self::Socket)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,3 +128,5 @@ pub enum OutgoingReassembly {
     Allowed,
     Disabled,
 }
+
+} // verus!

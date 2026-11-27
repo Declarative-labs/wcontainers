@@ -1,9 +1,11 @@
 #![no_std]
 
+use vstd::prelude::*;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
 
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait DistinguishingStateGenerator<Architecture: ProcessorArchitecture> {
     // VERUS: no `impl Trait` in a trait, so the returned iterator is a named type.
     type States<'generator>: Iterator<Item = ExecutionState<'static, Architecture>>
@@ -14,5 +16,11 @@ pub trait DistinguishingStateGenerator<Architecture: ProcessorArchitecture> {
     fn generate_states(
         &self,
         instruction: Architecture::Instruction,
-    ) -> Self::States<'_>;
+    ) -> Self::States<'_>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
+
+} // verus!

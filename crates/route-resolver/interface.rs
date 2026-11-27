@@ -1,10 +1,12 @@
 #![no_std]
 
+use vstd::prelude::*;
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{NeighbourConfirmation, Route, RouteSelectors};
 use wcontainers_kernel::UserId;
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait RouteResolver {
     /// Returns the route a packet with these selectors would take, sending nothing.
     fn resolve_route(
@@ -12,5 +14,11 @@ pub trait RouteResolver {
         route: RouteSelectors<'_>,
         owner: UserId,
         neighbour: NeighbourConfirmation,
-    ) -> Result<Route, HostError>;
+    ) -> Result<Route, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
+
+} // verus!

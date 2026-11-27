@@ -1,9 +1,11 @@
 use thiserror::Error;
+use vstd::prelude::*;
 
 use crate::function::FunctionStore;
 
 /// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [global instances](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait GlobalStore: FunctionStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [global instance](https://webassembly.github.io/spec/core/exec/runtime.html#global-instances).
     type GlobalAddress: Clone;
@@ -14,18 +16,30 @@ pub trait GlobalStore: FunctionStore {
         &mut self,
         mutability: Mutability,
         value: Value<Self::FunctionAddress>,
-    ) -> Result<Self::GlobalAddress, Self::AllocateGlobalError>;
+    ) -> Result<Self::GlobalAddress, Self::AllocateGlobalError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     fn read_global(
         &self,
         global: &Self::GlobalAddress,
-    ) -> Result<Value<Self::FunctionAddress>, ReadGlobalError>;
+    ) -> Result<Value<Self::FunctionAddress>, ReadGlobalError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     fn write_global(
         &mut self,
         global: &Self::GlobalAddress,
         value: Value<Self::FunctionAddress>,
-    ) -> Result<(), WriteGlobalError>;
+    ) -> Result<(), WriteGlobalError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// The [mutability](https://webassembly.github.io/spec/core/syntax/types.html#global-types) of a global.
@@ -60,3 +74,5 @@ pub enum WriteGlobalError {
     #[error("the value is not of the global's value type")]
     ValueTypeMismatch,
 }
+
+} // verus!

@@ -8,18 +8,22 @@ path = "interface.rs"
 
 [dependencies]
 domain = { version = "0.12.3", default-features = false }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 wcontainers-abi.workspace = true
-wcontainers-readiness = { path = "../readiness" }
-wcontainers-kernel = { path = "../kernel" }
 wcontainers-clock = { path = "../clock" }
 wcontainers-executor = { path = "../executor" }
+wcontainers-icmp-sockets = { path = "../icmp-sockets" }
+wcontainers-kernel = { path = "../kernel" }
 wcontainers-random-source = { path = "../random-source" }
+wcontainers-raw-sockets = { path = "../raw-sockets" }
+wcontainers-readiness = { path = "../readiness" }
+wcontainers-route-resolver = { path = "../route-resolver" }
 wcontainers-tcp-sockets = { path = "../tcp-sockets" }
 wcontainers-udp-sockets = { path = "../udp-sockets" }
-wcontainers-icmp-sockets = { path = "../icmp-sockets" }
-wcontainers-raw-sockets = { path = "../raw-sockets" }
-wcontainers-route-resolver = { path = "../route-resolver" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

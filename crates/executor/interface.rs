@@ -7,6 +7,7 @@ pub mod memory_space;
 use core::future::Future;
 use core::ops::Range;
 
+use vstd::prelude::*;
 use wcontainers_abi::{Access, CpuError, Permissions, SystemCallRequest, ThreadId};
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_processor_architecture::ProcessorArchitecture;
@@ -14,7 +15,8 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 use crate::memory_space::MemorySpace;
 
 /// The runner of guest threads.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait Executor: BehaviorSource {
     type TranslatorConfig: Default;
     type GuestMemory: MemorySpace;
@@ -27,18 +29,25 @@ pub trait Executor: BehaviorSource {
     type CreateGuestMemoryError;
     fn create_guest_memory(
         &self,
-    ) -> Result<(Self::GuestMemory, PageTableOf<Self>), Self::CreateGuestMemoryError>;
+    ) -> Result<(Self::GuestMemory, PageTableOf<Self>), Self::CreateGuestMemoryError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns the execution from the given processor state on the given memory, and its interrupter.
     fn prepare_execution<'execution>(
         &'execution mut self,
         processor: ProcessorStateOf<Self>,
         memory: &'execution Self::GuestMemory,
-    ) -> (Self::Execution<'execution>, Self::Interrupter);
+    ) -> (Self::Execution<'execution>, Self::Interrupter)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// One execution of a guest thread, not yet run.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Execution {
     type ProcessorState;
     /// What the executor waits for when it cannot go on.
@@ -47,7 +56,11 @@ pub trait Execution {
     /// Runs until a trap terminates the execution or the executor must wait.
     // VERUS: no proof of an `async` body in an implementation of a trait, so this is a plain call that returns when it must wait and not a future.
     fn run(self, handler: &mut impl TrapHandler)
-    -> ExecutionStop<Self::ProcessorState, Self::Wait>;
+    -> ExecutionStop<Self::ProcessorState, Self::Wait>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// Why an execution stopped, with the processor state it stopped at.
@@ -68,13 +81,24 @@ pub type PageTableOf<E> = <<E as Executor>::GuestMemory as MemorySpace>::PageTab
 /// The handler of a guest's traps: the points where the guest stops and control passes to the system.
 ///
 /// The guest stays stopped at the trap while a method runs.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait TrapHandler {
-    fn handle_system_call(&mut self, request: SystemCallRequest) -> SystemCallResponse;
+    fn handle_system_call(&mut self, request: SystemCallRequest) -> SystemCallResponse
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
-    fn handle_memory_fault(&mut self, address: u64, access: Access) -> MemoryFaultResponse;
+    fn handle_memory_fault(&mut self, address: u64, access: Access) -> MemoryFaultResponse
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
-    fn handle_interrupt(&mut self) -> InterruptResponse;
+    fn handle_interrupt(&mut self) -> InterruptResponse
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 pub enum SystemCallResponse {
@@ -94,18 +118,26 @@ pub enum InterruptResponse {
     Terminate,
 }
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ExecutionInterrupter: Send + Sync {
-    fn interrupt(&self);
+    fn interrupt(&self)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// An executor that can watch one thread and not its siblings.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait PerThreadWatch: Executor {
     fn set_thread_permissions(
         &mut self,
         thread: ThreadId,
         range: Range<u64>,
         allowed: Permissions,
-    ) -> Result<(), CpuError>;
+    ) -> Result<(), CpuError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
+
+} // verus!

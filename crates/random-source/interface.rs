@@ -1,16 +1,27 @@
 #![no_std]
 
+use vstd::prelude::*;
 use wcontainers_abi::HostError;
 use wcontainers_volatile_bytes::VolatileBytes;
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait RandomSource {
-    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError>;
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait StandaloneRandomSource: RandomSource {
     type Config;
 
-    fn new(config: Self::Config) -> Self;
+    fn new(config: Self::Config) -> Self
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
+
+} // verus!

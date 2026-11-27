@@ -7,11 +7,15 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
+thiserror = { version = "2.0.21", default-features = false }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
 wcontainers-abi.workspace = true
 wcontainers-behavior-source = { path = "../behavior-source" }
 wcontainers-processor-architecture = { path = "../processor-architecture" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
-thiserror = { version = "2.0.21", default-features = false }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

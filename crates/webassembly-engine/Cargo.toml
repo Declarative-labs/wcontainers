@@ -9,6 +9,10 @@ path = "interface.rs"
 [dependencies]
 futures-core = { version = "0.3.34", default-features = false }
 thiserror = { version = "2.0.21", default-features = false }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

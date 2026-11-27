@@ -1,9 +1,11 @@
 use thiserror::Error;
+use vstd::prelude::*;
 
 use crate::{AddressType, Limits};
 
 /// The part of an engine's [store](https://webassembly.github.io/spec/core/exec/runtime.html#store) that holds its [memory instances](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait MemoryStore {
     /// The [address](https://webassembly.github.io/spec/core/exec/runtime.html#addresses) of a [memory instance](https://webassembly.github.io/spec/core/exec/runtime.html#memory-instances).
     type MemoryAddress: Clone;
@@ -13,17 +15,29 @@ pub trait MemoryStore {
     fn allocate_memory(
         &mut self,
         memory_type: MemoryType,
-    ) -> Result<Self::MemoryAddress, Self::AllocateMemoryError>;
+    ) -> Result<Self::MemoryAddress, Self::AllocateMemoryError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns the size of the memory in [pages](https://webassembly.github.io/spec/core/exec/runtime.html#page-size).
-    fn count_memory_pages(&self, memory: &Self::MemoryAddress) -> u64;
+    fn count_memory_pages(&self, memory: &Self::MemoryAddress) -> u64
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Grows the memory by the given number of pages, as [`mem_grow`](https://webassembly.github.io/spec/core/appendix/embedding.html#embed-mem-grow) does.
     fn grow_memory(
         &mut self,
         memory: &Self::MemoryAddress,
         pages: u64,
-    ) -> Result<(), GrowMemoryError>;
+    ) -> Result<(), GrowMemoryError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Copies the bytes of the memory that start at the offset into the given bytes.
     fn read_memory(
@@ -31,7 +45,11 @@ pub trait MemoryStore {
         memory: &Self::MemoryAddress,
         offset: u64,
         into: &mut [u8],
-    ) -> Result<(), ReadMemoryError>;
+    ) -> Result<(), ReadMemoryError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Copies the given bytes into the memory, starting at the offset.
     fn write_memory(
@@ -39,15 +57,27 @@ pub trait MemoryStore {
         memory: &Self::MemoryAddress,
         offset: u64,
         bytes: &[u8],
-    ) -> Result<(), WriteMemoryError>;
+    ) -> Result<(), WriteMemoryError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// A shared memory that belongs to no engine, so that it can be sent to another thread.
     type SharedMemory: Clone + Send + Sync;
 
     /// Returns the memory in the form another engine can add, or nothing when the memory is unshared.
-    fn to_shared_memory(&self, memory: &Self::MemoryAddress) -> Option<Self::SharedMemory>;
+    fn to_shared_memory(&self, memory: &Self::MemoryAddress) -> Option<Self::SharedMemory>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
-    fn add_shared_memory(&mut self, memory: &Self::SharedMemory) -> Self::MemoryAddress;
+    fn add_shared_memory(&mut self, memory: &Self::SharedMemory) -> Self::MemoryAddress
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// The [page size](https://webassembly.github.io/spec/core/exec/runtime.html#page-size) of a memory, in bytes.
@@ -79,3 +109,5 @@ pub struct ReadMemoryError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[error("the bytes to write do not all fit inside the memory")]
 pub struct WriteMemoryError;
+
+} // verus!

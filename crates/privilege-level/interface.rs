@@ -3,7 +3,10 @@
 /// The stateful parts and instructions of a processor that one privilege level has beyond the unprivileged ones.
 ///
 /// An unprivileged instruction is expected to behave the same at every privilege level.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+use vstd::prelude::*;
+
+verus! {
+
 pub trait PrivilegeLevel {
     /// The stateful parts of the processor that only this level has.
     type PrivilegedProcessorSubset: Clone + Eq;
@@ -15,5 +18,11 @@ pub trait PrivilegeLevel {
     type SpecificInstructions: Iterator<Item = Self::PrivilegedInstruction>;
 
     /// Returns the set of instructions whose behavior is specific to this level.
-    fn list_specific_instructions() -> Self::SpecificInstructions;
+    fn list_specific_instructions() -> Self::SpecificInstructions
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
+
+} // verus!

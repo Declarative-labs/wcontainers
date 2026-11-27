@@ -22,10 +22,8 @@ use wcontainers_abi::{CpuError, MemoryId};
 use wcontainers_executor::{Executor, PerThreadWatch};
 use x86_64_features::X86_64Features;
 
-#[allow(
-    reviewable::trait_not_verified,
-    reason = "the contract is not written yet"
-)]
+verus! {
+
 pub trait Kernel: Sync + Sized {
     type Executor: Executor;
     /// A slow or incomplete path that the kernel can take.
@@ -44,33 +42,57 @@ pub trait Kernel: Sync + Sized {
         Self: 'kernel;
 
     /// Makes a kernel that executes at most the given number of threads at the same time, and one runner for each.
-    fn new(config: Self::Config, parallelism: NonZeroUsize) -> (Self, Self::Runners);
+    fn new(config: Self::Config, parallelism: NonZeroUsize) -> (Self, Self::Runners)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Takes the given tasks out of this kernel instance atomically, whichever processes they belong to, returning each one that is still executing on it.
-    fn suspend_tasks(&self, tasks: &[TaskId]) -> Self::SuspendedTasks<'_>;
+    fn suspend_tasks(&self, tasks: &[TaskId]) -> Self::SuspendedTasks<'_>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Takes the process off this kernel instance, returning its context and each of its tasks that is still executing on it.
     fn suspend_process(
         &self,
         process: TaskId,
-    ) -> Option<(Self::ProcessContext, Self::SuspendedTasks<'_>)>;
-    fn copy_process_context(&self, process: TaskId) -> Option<Self::ProcessContext>;
+    ) -> Option<(Self::ProcessContext, Self::SuspendedTasks<'_>)>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn copy_process_context(&self, process: TaskId) -> Option<Self::ProcessContext>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn resume_process(
         &self,
         context: Self::ProcessContext,
         config: ExecutionConfig<Self::Executor>,
-    ) -> Option<Self::ProcessContext>;
+    ) -> Option<Self::ProcessContext>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn resume_tasks(
         &self,
         tasks: impl IntoIterator<Item = Self::SuspendedTask>,
-    ) -> Self::UnresumedTasks<'_>;
+    ) -> Self::UnresumedTasks<'_>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
-#[allow(
-    reviewable::trait_not_verified,
-    reason = "the contract is not written yet"
-)]
 pub trait Runner<E: Executor>: Send {
     /// Runs what the kernel decides is next, using the given executor.
-    fn run(&mut self, executor: &mut E) -> StopReason;
+    fn run(&mut self, executor: &mut E) -> StopReason
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,79 +116,139 @@ pub enum ProcessEnd {
 }
 
 /// A handle to one process of a kernel.
-#[allow(
-    reviewable::trait_not_verified,
-    reason = "the contract is not written yet"
-)]
 pub trait Process: ProcessInfo {
     type State;
     type Kernel: Kernel;
     // VERUS: no `impl Trait` in a trait, so the returned iterator is a named type.
     type SuspendedTasks: Iterator<Item = (TaskId, SuspendedTaskOf<Self::Kernel>)>;
 
-    fn id(&self) -> TaskId;
-    fn execution_config(&self) -> &ExecutionConfig<ExecutorOf<Self::Kernel>>;
-    fn state(&mut self) -> &mut Self::State;
+    fn id(&self) -> TaskId
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn execution_config(&self) -> &ExecutionConfig<ExecutorOf<Self::Kernel>>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn state(&mut self) -> &mut Self::State
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
-    fn memory_id(&self) -> MemoryId;
+    fn memory_id(&self) -> MemoryId
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     // VERUS: no `impl Trait` in a trait and no lifetime on a type of this handle, so the parts go to a reader.
     fn read_memory(
         &mut self,
         range: Range<u64>,
         reader: &mut impl MemoryReader,
-    ) -> Result<(), MemoryError>;
-    fn write_memory(&mut self, range: Range<u64>, bytes: &[u8]) -> Result<(), WriteMemoryError>;
+    ) -> Result<(), MemoryError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn write_memory(&mut self, range: Range<u64>, bytes: &[u8]) -> Result<(), WriteMemoryError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Sets which accesses to a range fire `ProcessTracer::on_watched_memory_accessing`.
-    fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
+    fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Sets the same watch as `watch_memory`, for one thread's accesses only.
     fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor)
     where
-        ExecutorOf<Self::Kernel>: PerThreadWatch;
+        ExecutorOf<Self::Kernel>: PerThreadWatch,
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Returns the pages written since the last call, hardware accelerated when possible.
-    fn take_dirty_memory(&mut self) -> Vec<Range<u64>>;
+    fn take_dirty_memory(&mut self) -> Vec<Range<u64>>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
-    fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
+    fn send_signal(&mut self, thread: TaskId, signal: SignalInformation)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Takes the given threads of this process out of this kernel instance atomically, returning each one that is still executing on it.
-    fn suspend_threads(&mut self, threads: &[TaskId]) -> Self::SuspendedTasks;
+    fn suspend_threads(&mut self, threads: &[TaskId]) -> Self::SuspendedTasks
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Takes the process off this kernel instance, returning its context and each of its tasks that is still executing on it.
-    fn suspend_process(self) -> (ProcessContextOf<Self::Kernel>, Self::SuspendedTasks);
-    fn copy_process_context(&self) -> ProcessContextOf<Self::Kernel>;
+    fn suspend_process(self) -> (ProcessContextOf<Self::Kernel>, Self::SuspendedTasks)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn copy_process_context(&self) -> ProcessContextOf<Self::Kernel>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// Where the parts of a read of a process's memory go, in order.
-#[allow(
-    reviewable::trait_not_verified,
-    reason = "the contract is not written yet"
-)]
 pub trait MemoryReader {
-    fn read_part(&mut self, part: &[u8]);
+    fn read_part(&mut self, part: &[u8])
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
-#[allow(
-    reviewable::trait_not_verified,
-    reason = "the contract is not written yet"
-)]
 pub trait ProcessOf<State, K: Kernel>: Process<State = State, Kernel = K> {}
 
 pub type ExecutorOf<K> = <K as Kernel>::Executor;
 pub type SuspendedTaskOf<K> = <K as Kernel>::SuspendedTask;
 pub type ProcessContextOf<K> = <K as Kernel>::ProcessContext;
 
-#[allow(
-    reviewable::trait_not_verified,
-    reason = "the contract is not written yet"
-)]
 pub trait ProcessInfo {
     /// Returns the number of bytes of address space the process has mapped.
-    fn mapped_memory(&self) -> u64;
+    fn mapped_memory(&self) -> u64
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Returns the number of bytes the process can still map before it reaches the executor's highest possible address.
-    fn address_ceiling_distance(&self) -> u64;
+    fn address_ceiling_distance(&self) -> u64
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Returns the CPU time the process's threads have used, ended ones included.
-    fn cpu_time(&self) -> Duration;
+    fn cpu_time(&self) -> Duration
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Returns the process's current [parent](https://man7.org/linux/man-pages/man2/getppid.2.html), or none for the container's first process.
-    fn parent(&self) -> Option<TaskId>;
+    fn parent(&self) -> Option<TaskId>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Tells whether another process is reading this one's internal state.
-    fn is_inspected(&self) -> bool;
+    fn is_inspected(&self) -> bool
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 pub struct ExecutionConfig<E: Executor> {
@@ -228,13 +310,9 @@ pub enum SystemCallError {
     Unknown(UnknownErrno),
 }
 
-verus! {
-
 /// A [process or thread ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html#:~:text=pid_t%20is%20a%20type).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId(pub u32);
-
-} // verus!
 
 /// A Linux [user ID](https://man7.org/linux/man-pages/man3/pid_t.3type.html#:~:text=uid_t%20is%20a%20type).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -274,3 +352,5 @@ pub enum ProcessorFeatures {
     Arm64(Arm64Features),
     X86_64(X86_64Features),
 }
+
+} // verus!

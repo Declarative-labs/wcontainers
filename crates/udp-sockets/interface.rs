@@ -3,6 +3,7 @@
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
 
+use vstd::prelude::*;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
@@ -15,12 +16,13 @@ use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::Readiness;
 use wcontainers_volatile_bytes::VolatileBytes;
 
+verus! {
+
 #[allow(
     reviewable::explicit_shared_error::HostError,
     reason = "each method is one call on the host's socket and fails only the ways that call does"
 )]
 /// Sockets for [UDP](https://man7.org/linux/man-pages/man7/udp.7.html) and [UDP-Lite](https://man7.org/linux/man-pages/man7/udplite.7.html) datagrams.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait UdpSockets:
     for<'a> Configurable<Self::Socket, UdpSocketSetting<'a>>
     + NegativeRouteAdvisable<Self::Socket>
@@ -33,39 +35,79 @@ pub trait UdpSockets:
         version: IpVersion,
         protocol: UdpProtocol,
         owner: UserId,
-    ) -> Result<Self::Socket, HostError>;
+    ) -> Result<Self::Socket, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Binds the socket to a local address and returns the address bound.
     fn bind(&self, socket: &Self::Socket, local: LocalBinding<'_>)
-    -> Result<SocketAddr, HostError>;
+    -> Result<SocketAddr, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Sets the socket's peer to the route's destination and ports and returns the socket's local address.
     fn connect(
         &self,
         socket: &Self::Socket,
         route: RouteSelectors<'_>,
-    ) -> Result<SocketAddr, HostError>;
+    ) -> Result<SocketAddr, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Ends the socket's association with its peer, as a [`connect`](https://man7.org/linux/man-pages/man2/connect.2.html) to `AF_UNSPEC` does, and returns what stays bound.
-    fn disconnect(&self, socket: &Self::Socket) -> Result<UdpLocalEnd, HostError>;
+    fn disconnect(&self, socket: &Self::Socket) -> Result<UdpLocalEnd, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn send_to(
         &self,
         socket: &Self::Socket,
         header: IpHeaderFields<'_>,
         fields: IpSendFields,
         datagram: UdpDatagram<'_>,
-    ) -> Result<(), SendError>;
+    ) -> Result<(), SendError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn receive(
         &self,
         socket: &Self::Socket,
         into: &impl VolatileBytes,
-    ) -> Result<UdpReceived, HostError>;
+    ) -> Result<UdpReceived, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Returns the bytes sent on the socket that have not yet left its send buffer.
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>;
-    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError>;
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Returns the socket's incoming processor, the one set or, once the socket is connected, the one that last took in a packet for it.
     fn read_incoming_processor(
         &self,
         socket: &Self::Socket,
-    ) -> Result<Option<ProcessorIndex>, HostError>;
-    fn close(&self, socket: Self::Socket);
+    ) -> Result<Option<ProcessorIndex>, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn close(&self, socket: Self::Socket)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,3 +180,5 @@ pub struct UdpReceivedPacket {
     pub fields: ReceivedPacketFields,
     pub segment_size: Option<SegmentSize>,
 }
+
+} // verus!

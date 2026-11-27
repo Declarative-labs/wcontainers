@@ -1,8 +1,11 @@
 use std::panic;
 use std::thread;
 
+use vstd::prelude::*;
+
 /// The cores of the machine's processors.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait ProcessorCores: Sync {
     type Core: Sync;
     /// What a core says it is, read from the core itself.
@@ -10,20 +13,32 @@ pub trait ProcessorCores: Sync {
     type ListCoresError;
     type RunOnCoreError: Send;
 
-    fn list_cores(&self) -> Result<Vec<(Self::Core, Self::CoreIdentity)>, Self::ListCoresError>;
+    fn list_cores(&self) -> Result<Vec<(Self::Core, Self::CoreIdentity)>, Self::ListCoresError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Moves the calling thread onto the core for as long as the work runs, and returns what the work returned.
     fn run_on_core<Output>(
         &self,
         core: &Self::Core,
         work: impl FnOnce() -> Output,
-    ) -> Result<Output, Self::RunOnCoreError>;
+    ) -> Result<Output, Self::RunOnCoreError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Performs run_on_core on all cores in parallel.
     fn run_on_all_cores<Output: Send>(
         &self,
         work: impl Fn(Self::CoreIdentity) -> Output + Sync,
-    ) -> Result<Vec<Output>, RunOnAllCoresError<Self::ListCoresError, Self::RunOnCoreError>> {
+    ) -> Result<Vec<Output>, RunOnAllCoresError<Self::ListCoresError, Self::RunOnCoreError>>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    {
         let cores = self
             .list_cores()
             .map_err(RunOnAllCoresError::CoresNotListed)?;
@@ -49,3 +64,5 @@ pub enum RunOnAllCoresError<ListCoresError, RunOnCoreError> {
     CoresNotListed(ListCoresError),
     CoreNotHeld(RunOnCoreError),
 }
+
+} // verus!

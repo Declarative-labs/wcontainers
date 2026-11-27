@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
+use vstd::prelude::*;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{
     ExecutionState, ExecutionStateExpectation, MemorySink, MemorySnapshot, ProcessorArchitecture,
@@ -12,7 +13,8 @@ use wcontainers_processor_architecture::{
 };
 
 /// Something whose behavior can be measured one instruction at a time, such as a live chip or a recording of one.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait BehaviorSource {
     type Architecture: ProcessorArchitecture;
     #[allow(
@@ -29,13 +31,21 @@ pub trait BehaviorSource {
         processor: &mut <Self::Architecture as ProcessorArchitecture>::ProcessorState,
         memory: MemorySnapshot<'_, '_, Self::Architecture>,
         mutation_hook: &mut impl MemorySink<Self::Architecture>,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<(), Self::Error>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Executes exactly one instruction from the before state.
     fn execute_single_instruction<'memory>(
         &mut self,
         mut before: ExecutionState<'memory, Self::Architecture>,
-    ) -> Result<ExecutionState<'memory, Self::Architecture>, Self::Error> {
+    ) -> Result<ExecutionState<'memory, Self::Architecture>, Self::Error>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    {
         let mut mutations = Vec::new();
         self.execute_single_instruction_in_place(
             &mut before.processor,
@@ -63,6 +73,9 @@ pub trait BehaviorSource {
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
     {
         let mut candidates: Vec<_> =
             <Self::Architecture as ProcessorArchitecture>::list_known_behaviors(instruction)
@@ -127,6 +140,9 @@ pub trait BehaviorSource {
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
     {
         let mut measurements = Vec::new();
         for instruction in <Self::Architecture as ProcessorArchitecture>::list_instructions() {
@@ -165,3 +181,5 @@ pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionE
         behaviors: Vec<Architecture::PreciseInstruction>,
     },
 }
+
+} // verus!

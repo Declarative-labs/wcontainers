@@ -7,8 +7,12 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
-wcontainers-processor-architecture = { path = "../processor-architecture" }
 itertools.workspace = true
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+wcontainers-processor-architecture = { path = "../processor-architecture" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

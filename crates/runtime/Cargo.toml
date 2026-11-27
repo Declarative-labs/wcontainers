@@ -8,9 +8,13 @@ path = "interface.rs"
 
 [dependencies]
 oci-spec = { version = "0.10.0", default-features = false, features = ["runtime"] }
+vstd = "=0.0.0-2026-11-22-0344"
 wcontainers-executor = { path = "../executor" }
 wcontainers-kernel = { path = "../kernel" }
 wcontainers-system = { path = "../system" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

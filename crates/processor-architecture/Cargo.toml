@@ -9,6 +9,10 @@ path = "interface.rs"
 [dependencies]
 # A map from ranges to values that merges neighbors holding the same value, which the memory diff renders permissions into.
 rangemap = { version = "1.8.0", default-features = false }
+vstd = { version = "=0.0.0-2026-11-22-0344", default-features = false, features = ["alloc"] }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

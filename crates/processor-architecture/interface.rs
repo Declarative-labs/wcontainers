@@ -13,9 +13,11 @@ use core::ops::Range;
 use core::ptr;
 
 use rangemap::RangeMap;
+use vstd::prelude::*;
+
+verus! {
 
 /// One processor architecture, as a program running on it sees it.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait ProcessorArchitecture: Sized + Clone {
     /// All stateful components of the processor.
     type ProcessorState: Clone + Eq;
@@ -39,19 +41,30 @@ pub trait ProcessorArchitecture: Sized + Clone {
     const DEFAULT_PERMISSION: Self::PagePermission;
 
     /// Returns the set of instructions of the architecture.
-    fn list_instructions() -> Self::Instructions;
+    fn list_instructions() -> Self::Instructions
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns the set of behaviors a chip is known to show for the instruction.
-    fn list_known_behaviors(instruction: Self::Instruction) -> Self::KnownBehaviors;
+    fn list_known_behaviors(instruction: Self::Instruction) -> Self::KnownBehaviors
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns whether the observed processor has every value the expectation holds.
     fn meets_expectations(
         observed: &Self::ProcessorState,
         expectation: &Self::ProcessorStateExpectation,
-    ) -> bool;
+    ) -> bool
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait Simulator<Architecture: ProcessorArchitecture> {
     #[allow(
         reviewable::explicit_shared_error,
@@ -67,13 +80,21 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
         processor: &Architecture::ProcessorState,
         memory: MemorySnapshot<'_, '_, Architecture>,
         mutation_hook: &mut impl MemorySink<Architecture>,
-    ) -> Result<Architecture::ProcessorStateExpectation, Self::Error>;
+    ) -> Result<Architecture::ProcessorStateExpectation, Self::Error>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Simulates applying this instruction to the before state.
     fn simulate_state<'memory>(
         &self,
         mut before: ExecutionState<'memory, Architecture>,
-    ) -> Result<ExecutionStateExpectation<'memory, Architecture>, Self::Error> {
+    ) -> Result<ExecutionStateExpectation<'memory, Architecture>, Self::Error>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    {
         let mut mutations = Vec::new();
         let processor = self.simulate(&before.processor, before.memory(), &mut mutations)?;
         before.memory_mutations.append(&mut mutations);
@@ -85,9 +106,12 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
 }
 
 // VERUS: no contract on what a closure has received, so the memory hook is a trait.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait MemorySink<Architecture: ProcessorArchitecture> {
-    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>);
+    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// All state that some instruction might mutate during execution.
@@ -118,6 +142,8 @@ pub enum MemoryDelta<'memory, Architecture: ProcessorArchitecture> {
     },
 }
 
+} // verus!
+
 impl<Architecture: ProcessorArchitecture> MemoryDelta<'_, Architecture> {
     pub fn into_owned(self) -> MemoryDelta<'static, Architecture> {
         match self {
@@ -136,10 +162,14 @@ impl<Architecture: ProcessorArchitecture> MemoryDelta<'_, Architecture> {
     }
 }
 
+verus! {
+
 /// Memory as the mutations applied to it from a fully zeroed out state, in chronological order.
 pub struct MemorySnapshot<'snapshot, 'memory, Architecture: ProcessorArchitecture> {
     pub mutations: &'snapshot [MemoryDelta<'memory, Architecture>],
 }
+
+} // verus!
 
 impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
     /// Calls the hook with each mutation that turns this snapshot into the new one, bytes before permissions.

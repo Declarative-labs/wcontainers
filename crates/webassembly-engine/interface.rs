@@ -14,13 +14,15 @@ use core::pin::pin;
 
 use futures_core::Stream;
 use thiserror::Error;
+use vstd::prelude::*;
 
 use crate::function::FunctionStore;
 use crate::global::GlobalStore;
 use crate::memory::MemoryStore;
 use crate::table::TableStore;
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait WebAssemblyEngine:
     Sized + FunctionStore + MemoryStore + TableStore + GlobalStore
 {
@@ -35,17 +37,29 @@ pub trait WebAssemblyEngine:
     type HostContext;
 
     type NewError;
-    fn new(config: Self::Config, host_context: Self::HostContext) -> Result<Self, Self::NewError>;
+    fn new(config: Self::Config, host_context: Self::HostContext) -> Result<Self, Self::NewError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     type CompileError;
     /// Compiles a module from its [binary format](https://webassembly.github.io/spec/core/binary/modules.html#binary-module).
-    fn compile(&self, bytes: &[u8]) -> Result<Self::Module, Self::CompileError>;
+    fn compile(&self, bytes: &[u8]) -> Result<Self::Module, Self::CompileError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Compiles a module [while its bytes arrive](https://webassembly.github.io/spec/web-api/#dom-webassembly-compilestreaming).
     async fn compile_streaming<StreamError>(
         &self,
         chunks: impl Stream<Item = Result<impl AsRef<[u8]>, StreamError>>,
-    ) -> Result<Self::Module, CompileStreamingError<StreamError, Self::CompileError>> {
+    ) -> Result<Self::Module, CompileStreamingError<StreamError, Self::CompileError>>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    {
         let mut chunks = pin!(chunks);
         let mut bytes = Vec::new();
         while let Some(chunk) = poll_fn(|context| chunks.as_mut().poll_next(context)).await {
@@ -60,16 +74,28 @@ pub trait WebAssemblyEngine:
         &mut self,
         module: &Self::Module,
         imports: &[Import<'_, Self>],
-    ) -> Result<Self::Instance, Self::InstantiateError>;
+    ) -> Result<Self::Instance, Self::InstantiateError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
     /// Returns the address of the instance's [export](https://webassembly.github.io/spec/core/syntax/modules.html#exports) with the given name.
     fn find_export(
         &mut self,
         instance: &Self::Instance,
         name: &str,
-    ) -> Option<ExternalAddress<Self>>;
+    ) -> Option<ExternalAddress<Self>>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 
-    fn host_context(&mut self) -> &mut Self::HostContext;
+    fn host_context(&mut self) -> &mut Self::HostContext
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// A WASM [import](https://webassembly.github.io/spec/core/syntax/modules.html#imports).
@@ -109,3 +135,5 @@ pub struct Limits {
     pub minimum: u64,
     pub maximum: Option<u64>,
 }
+
+} // verus!

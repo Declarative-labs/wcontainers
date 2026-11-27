@@ -2,16 +2,22 @@
 #![allow(async_fn_in_trait)]
 
 use bitflags::bitflags;
+use vstd::prelude::*;
 use wcontainers_abi::HostError;
 
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait Readiness<Handle> {
     /// Waits until the handle is ready for one of the things asked for or has an unconditional event, and returns both.
     async fn wait_until_ready(
         &self,
         handle: &Handle,
         interest: ReadyFor,
-    ) -> Result<ReadinessReport, HostError>;
+    ) -> Result<ReadinessReport, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -19,6 +25,8 @@ pub struct ReadinessReport {
     pub ready_for: ReadyFor,
     pub unconditional: UnconditionalEvents,
 }
+
+} // verus!
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

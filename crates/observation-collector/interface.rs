@@ -1,7 +1,9 @@
+use vstd::prelude::*;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 /// The collector of what each kind of core of a machine shows for every instruction.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait ObservationCollector {
     type Architecture: ProcessorArchitecture;
     /// What a core says it is, read from the core itself.
@@ -11,7 +13,11 @@ pub trait ObservationCollector {
     /// Returns one sample for each kind of core of the machine.
     fn collect_samples(
         &self,
-    ) -> Result<Vec<CoreSample<Self::Architecture, Self::CoreIdentity>>, Self::Error>;
+    ) -> Result<Vec<CoreSample<Self::Architecture, Self::CoreIdentity>>, Self::Error>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// What one kind of core shows for every instruction of its architecture.
@@ -20,3 +26,5 @@ pub struct CoreSample<Architecture: ProcessorArchitecture, CoreIdentity> {
     /// Each instruction of the architecture with the one behavior the core shows for it.
     pub measurements: Vec<(Architecture::Instruction, Architecture::PreciseInstruction)>,
 }
+
+} // verus!

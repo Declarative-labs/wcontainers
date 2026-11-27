@@ -8,6 +8,7 @@ pub mod state;
 
 use core::net::SocketAddr;
 
+use vstd::prelude::*;
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
@@ -28,14 +29,14 @@ use crate::state::{
 };
 
 /// Sockets for [TCP](https://man7.org/linux/man-pages/man7/tcp.7.html) connections.
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
+verus! {
+
 pub trait TcpSockets: TcpConnections + TcpListeners {}
 
 #[allow(
     reviewable::explicit_shared_error::HostError,
     reason = "each method is one call on the host's socket and fails only the ways that call does"
 )]
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait TcpConnections:
     for<'a> Configurable<Self::Connection, TcpSetting<'a>>
     + NegativeRouteAdvisable<Self::Connection>
@@ -51,47 +52,87 @@ pub trait TcpConnections:
         owner: UserId,
         local: LocalBinding<'_>,
         settings: &[BindingSetting<'_>],
-    ) -> Result<TcpBound<Self::BoundSocket>, HostError>;
+    ) -> Result<TcpBound<Self::BoundSocket>, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn connect(
         &self,
         local: TcpLocalEnd<'_, Self::BoundSocket>,
         peer: SocketAddr,
         settings: &[TcpSetting<'_>],
         fast_open: TcpFastOpen<'_>,
-    ) -> Result<TcpConnected<Self::Connection>, TcpLocalEndError<Self::BoundSocket>>;
+    ) -> Result<TcpConnected<Self::Connection>, TcpLocalEndError<Self::BoundSocket>>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn send(
         &self,
         connection: &Self::Connection,
         request: TcpSendRequest,
         payload: &impl VolatileBytes,
-    ) -> Result<ByteCount, HostError>;
+    ) -> Result<ByteCount, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn receive(
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
         into: &impl VolatileBytes,
-    ) -> Result<TcpReceived, HostError>;
+    ) -> Result<TcpReceived, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Takes the oldest entry of the connection's error queue, writing any ICMP packet it holds into the buffer.
     fn take_error_queue_entry(
         &self,
         connection: &Self::Connection,
         into: &mut [u8],
-    ) -> Result<TcpErrorQueueEntry, HostError>;
+    ) -> Result<TcpErrorQueueEntry, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn read_state<'a>(
         &self,
         connection: &Self::Connection,
         query: TcpQuery<'a>,
-    ) -> Result<TcpReading<'a>, HostError>;
+    ) -> Result<TcpReading<'a>, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn shut_down(
         &self,
         connection: &Self::Connection,
         directions: TcpShutdown,
-    ) -> Result<(), HostError>;
-    fn close(&self, connection: Self::Connection, manner: TcpClose);
+    ) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn close(&self, connection: Self::Connection, manner: TcpClose)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Ends the connection as a [connect to `AF_UNSPEC`](https://man7.org/linux/man-pages/man2/connect.2.html#:~:text=AF_UNSPEC%3B%20thereafter) does, giving back its socket only if that keeps its port, as a port bound by number does.
-    fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket>;
+    fn disconnect(&self, connection: Self::Connection) -> TcpDisconnected<Self::BoundSocket>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Closes the socket, freeing its address and port at once.
-    fn release(&self, bound_socket: Self::BoundSocket);
+    fn release(&self, bound_socket: Self::BoundSocket)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Sends now what of the connection's queued data its windows, its [cork](https://man7.org/linux/man-pages/man7/tcp.7.html#:~:text=TCP_CORK%20%28since) and [Nagle's algorithm](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.7.4) allow.
     ///
     /// The cork and Nagle's algorithm do not count when the push ignores them and stay ignored for that data until more is queued.
@@ -99,7 +140,11 @@ pub trait TcpConnections:
         &self,
         connection: &Self::Connection,
         ignoring: TcpPushOverride,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Sends an acknowledgement that the connection, established or in CLOSE-WAIT, has scheduled and is delaying.
     ///
     /// It goes at once if the connection's receive buffer is empty and otherwise when a read empties it while the mode is on, and, only if one was scheduled, the call then puts the connection in the given mode.
@@ -107,32 +152,55 @@ pub trait TcpConnections:
         &self,
         connection: &Self::Connection,
         afterwards: TcpQuickAcknowledgement,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Times the connection's next keep-alive probe at its keep-alive idle time after the later of the last data and the last acknowledgement it received.
     ///
     /// It times the probe at once if that time is past, and does all of this only when keep-alive is on.
-    fn rearm_keep_alive_timer(&self, connection: &Self::Connection) -> Result<(), HostError>;
-    fn discard_error_queue_entries(&self, connection: &Self::Connection) -> Result<(), HostError>;
+    fn rearm_keep_alive_timer(&self, connection: &Self::Connection) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn discard_error_queue_entries(&self, connection: &Self::Connection) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Sends the established connection's peer a segment and takes the peer's window from the answer.
-    fn send_window_probe(&self, connection: &Self::Connection) -> Result<(), HostError>;
+    fn send_window_probe(&self, connection: &Self::Connection) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Makes the TCP timestamp clock of the connection, which must be in repair mode, read the given value now and count in the given unit.
     fn set_timestamp_clock(
         &self,
         connection: &Self::Connection,
         reading: TcpTimestampClock,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn set_authentication_counters(
         &self,
         connection: &Self::Connection,
         values: TcpAuthenticationCounters,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 #[allow(
     reviewable::explicit_shared_error::HostError,
     reason = "each method is one call on the host's socket and fails only the ways that call does"
 )]
-#[allow(reviewable::trait_not_verified, reason = "the contract is not written yet")]
 pub trait TcpListeners:
     TcpConnections
     + for<'a> Configurable<Self::Listener, TcpListenerSetting<'a>>
@@ -145,29 +213,53 @@ pub trait TcpListeners:
         local: TcpLocalEnd<'_, Self::BoundSocket>,
         backlog: ListenBacklog,
         settings: &[TcpListenerSetting<'_>],
-    ) -> Result<TcpListening<Self::Listener>, TcpLocalEndError<Self::BoundSocket>>;
+    ) -> Result<TcpListening<Self::Listener>, TcpLocalEndError<Self::BoundSocket>>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn accept<'a>(
         &self,
         listener: &Self::Listener,
         synchronize_header: &'a mut [u8],
-    ) -> Result<TcpAccepted<'a, Self::Connection>, HostError>;
+    ) -> Result<TcpAccepted<'a, Self::Connection>, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn read_listener_state<'a>(
         &self,
         listener: &Self::Listener,
         query: TcpListenerQuery<'a>,
-    ) -> Result<TcpListenerReading<'a>, HostError>;
+    ) -> Result<TcpListenerReading<'a>, HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     fn set_listener_authentication_counters(
         &self,
         listener: &Self::Listener,
         values: TcpAuthenticationCounters,
-    ) -> Result<(), HostError>;
+    ) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
     /// Makes the TCP timestamp clock of the listener, which must be in repair mode, read the given value now and count in the given unit.
     fn set_listener_timestamp_clock(
         &self,
         listener: &Self::Listener,
         reading: TcpTimestampClock,
-    ) -> Result<(), HostError>;
-    fn stop_listening(&self, listener: Self::Listener);
+    ) -> Result<(), HostError>
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
+    fn stop_listening(&self, listener: Self::Listener)
+        // TODO: replace this clause with what the method promises.
+        ensures
+            true,
+    ;
 }
 
 /// The protocol of a stream socket, [TCP](https://man7.org/linux/man-pages/man7/tcp.7.html) or [MPTCP](https://docs.kernel.org/networking/mptcp.html).
@@ -313,3 +405,5 @@ pub enum TcpClose {
     Orderly,
     Abort,
 }
+
+} // verus!
