@@ -207,6 +207,19 @@ pub fn a_host_thread_dying_inside_a_run_ends_the_container<R: Runtime>(subject: 
     assert_eq!(container.run(), StopReason::Panicked);
 }
 
+/// Checks that a host thread dying inside a run also ends the runners still running a process that never stops.
+///
+/// The first process sleeps as long as a container that only exits took, so the busy one holds a runner when it dies.
+pub fn a_host_thread_dying_while_another_computes_ends_the_container<R: Runtime>(
+    subject: Subject<R>,
+) {
+    let seconds = time_to_exit(&subject).as_secs_f64();
+    let script = format!("({ENDLESS_SCRIPT}) & {SLEEP} {seconds}; echo; exit {EXIT_CODE}");
+    let (mut container, _interrupter) = make(&subject, shell(&script), (subject.failing_parts)())
+        .unwrap_or_else(|error| panic!("the container is made: {error:?}"));
+    assert_eq!(container.run(), StopReason::Panicked);
+}
+
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -246,6 +259,10 @@ macro_rules! tests {
         #[test]
         fn a_host_thread_dying_inside_a_run_ends_the_container() {
             $crate::a_host_thread_dying_inside_a_run_ends_the_container($value);
+        }
+        #[test]
+        fn a_host_thread_dying_while_another_computes_ends_the_container() {
+            $crate::a_host_thread_dying_while_another_computes_ends_the_container($value);
         }
     };
 }
