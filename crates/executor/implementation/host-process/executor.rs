@@ -30,8 +30,8 @@ use crate::view::View;
 mod execution;
 #[cfg(target_arch = "aarch64")]
 pub use execution::{
-    HostProcess, HostProcessBytes, HostProcessExecution, HostProcessInterrupter, HostProcessMemory,
-    HostProcessPageTable, SingleInstructionRefusal,
+    HostProcess, HostProcessBytes, HostProcessConfig, HostProcessExecution, HostProcessInterrupter,
+    HostProcessMemory, HostProcessPageTable, SingleInstructionRefusal,
 };
 #[cfg(target_arch = "aarch64")]
 #[path = "native.rs"]

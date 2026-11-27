@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use aarch64_cpu::registers::ESR_EL1;
 use rangemap::RangeSet;
-use rustix::time::{ClockId, clock_gettime};
 use wcontainers_abi::{
     Access, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume, SharedId,
     SystemCallRequest, ThreadId,
@@ -28,14 +27,18 @@ use wcontainers_executor::{
 use wcontainers_processor_architecture::{
     MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
-use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_processor_architecture_arm64::encoding::{FixedBits, IMM16};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
+use wcontainers_processor_architecture_arm64::system_register::{
+    NEOVERSE_V2_SYSTEM_REGISTERS, simulate_system_register_move,
+};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
     INSTRUCTION_SIZE, InstructionFetch, PagePermission, Processor, User, ZERO_PROCESSOR,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
+use super::native::Ran;
 use super::{GUEST, HostProcessExecutor, data_extents, page_cover, pieces};
 use crate::host::HostProcessHost;
 use crate::stub::{StopTarget, StopWhen};
@@ -279,10 +282,32 @@ impl HostProcessExecutor {
     }
 }
 
+/// How form P runs its executions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostProcessConfig {
+    /// How long an execution runs with no trap before the handler is asked about an interrupt, as at one from
+    /// outside: the end of the guest's slice.
+    pub slice: Duration,
+}
+
+/// One tick of a kernel built with HZ at 1000, the slice of a Linux task that runs alone on its CPU.
+///
+/// <https://github.com/torvalds/linux/blob/master/kernel/Kconfig.hz>
+const DEFAULT_SLICE: Duration = Duration::from_millis(1);
+
+impl Default for HostProcessConfig {
+    fn default() -> Self {
+        Self {
+            slice: DEFAULT_SLICE,
+        }
+    }
+}
+
 /// Form P under the executor interface: the executor's state, shared with every memory it made.
 pub struct HostProcess {
     host: Arc<HostProcessHost>,
     executor: Rc<RefCell<HostProcessExecutor>>,
+    config: HostProcessConfig,
     /// Runs single instructions, each in a memory of its own; made at the first.
     single: Option<HostProcessExecutor>,
 }
@@ -290,9 +315,15 @@ pub struct HostProcess {
 impl HostProcess {
     /// Stands in for the way the executor interface does not yet give to make an executor.
     pub fn new(host: Arc<HostProcessHost>) -> Self {
+        Self::with_config(host, HostProcessConfig::default())
+    }
+
+    /// [`Self::new`] with its runs set by `config`.
+    pub fn with_config(host: Arc<HostProcessHost>, config: HostProcessConfig) -> Self {
         Self {
             executor: Rc::new(RefCell::new(HostProcessExecutor::new(Arc::clone(&host)))),
             host,
+            config,
             single: None,
         }
     }
@@ -517,19 +548,28 @@ impl BehaviorSource for HostProcess {
         let space = executor
             .memory_new()
             .map_err(SingleInstructionRefusal::Host)?;
-        let ran = run_alone(executor, space, processor, memory.mutations, mutation_hook);
+        let ran = run_alone(
+            executor,
+            space,
+            processor,
+            memory.mutations,
+            mutation_hook,
+            self.config.slice,
+        );
         executor.memory_drop(space);
         ran
     }
 }
 
-/// [`HostProcess::execute_single_instruction_in_place`] in the memory `space`, which the caller drops.
+/// [`HostProcess::execute_single_instruction_in_place`] in the memory `space`, which the caller drops, each turn ended
+/// after `slice`.
 fn run_alone(
     executor: &mut HostProcessExecutor,
     space: MemoryId,
     processor: &mut Processor<()>,
     memory: &[MemoryDelta<'_, Arm64<User>>],
     mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    slice: Duration,
 ) -> Result<(), SingleInstructionRefusal> {
     let host = SingleInstructionRefusal::Host;
     let mut permissions = std::collections::BTreeMap::new();
@@ -582,31 +622,45 @@ fn run_alone(
     executor.set_registers(thread, &to_register_block(processor));
     // Reached at the first instruction's end.
     let until = executor.guest_count(thread);
-    let exit = executor.run_translated(
-        thread,
-        Resume::FromRegisters,
-        Some(until),
-        StopWhen::default(),
-        &mut monotonic,
-    );
-    executor.print_warnings();
+    let mut resume = Resume::FromRegisters;
     let mut registers = RegisterBlock::ZERO;
-    executor.registers(thread, &mut registers);
-    let exception = match exit {
-        Exit::Stop => None,
-        Exit::Syscall(_) => {
-            let mut word = [0; INSTRUCTION_SIZE as usize];
-            let _ = executor.read_guest(space, processor.program_counter, &mut word);
-            Some(system_call(u32::from_le_bytes(word)))
+    let ran = loop {
+        let when = StopWhen {
+            slice: Some(slice),
+            wanted: None,
+        };
+        let ran = executor.run_translated_trapping_counter(thread, resume, Some(until), when);
+        executor.registers(thread, &mut registers);
+        // A slice that ended before the instruction ran: neither its pc nor its count moved.
+        if ran == Ran::Exit(Exit::Stop)
+            && registers.pc == processor.program_counter
+            && executor.guest_count(thread) == until
+        {
+            resume = Resume::Continue;
+            continue;
         }
-        Exit::MemoryFault { address, access } => {
+        // Otherwise a slice that ended with the pc where it started ended in a branch to itself, which every turn
+        // round leaves as the first did: a direct branch writes at most the link, with the same address each time.
+        break ran;
+    };
+    executor.print_warnings();
+    let word = |executor: &HostProcessExecutor| {
+        let mut word = [0; INSTRUCTION_SIZE as usize];
+        let _ = executor.read_guest(space, processor.program_counter, &mut word);
+        u32::from_le_bytes(word)
+    };
+    let exception = match ran {
+        Ran::Exit(Exit::Stop) => None,
+        Ran::Exit(Exit::Syscall(_)) => Some(system_call(word(executor))),
+        Ran::Exit(Exit::MemoryFault { address, access }) => {
             let page = address & !(PAGE_SIZE - 1);
             let mapped = permissions
                 .get(&page)
                 .is_some_and(|permission| *permission != PagePermission::Unmapped);
-            Some(abort(address, access, mapped))
+            Some(abort(address | executor.fault_tag(thread), access, mapped))
         }
-        other => Some(to_exception(other, registers.pc)),
+        Ran::Exit(other) => Some(to_exception(other, registers.pc, word(executor))),
+        Ran::CounterRead => Some(counter_read(word(executor))),
     };
     *processor = to_processor(&registers, exception);
     for (page, before) in writable.iter().zip(before) {
@@ -657,6 +711,7 @@ impl Executor for HostProcess {
                 memory,
                 processor,
                 interruption,
+                slice: self.config.slice,
             },
             interrupter,
         )
@@ -669,6 +724,7 @@ pub struct HostProcessExecution<'execution> {
     memory: &'execution HostProcessMemory,
     processor: Processor<()>,
     interruption: Arc<Interruption>,
+    slice: Duration,
 }
 
 impl Execution for HostProcessExecution<'_> {
@@ -685,6 +741,7 @@ impl Execution for HostProcessExecution<'_> {
             memory,
             processor,
             interruption,
+            slice,
         } = self;
         let id = memory.held.id;
         let mut executor = lock(shared);
@@ -699,7 +756,7 @@ impl Execution for HostProcessExecution<'_> {
         *interruption.target() = Some(executor.memory(id).stub.stop_target(index));
         let mut resume = Resume::FromRegisters;
         let ended = loop {
-            let trap = run_until_trap(&mut executor, thread, resume, &interruption);
+            let trap = run_until_trap(&mut executor, thread, resume, &interruption, slice);
             drop(executor);
             let next = ask_handler(handler, trap);
             executor = lock(shared);
@@ -721,12 +778,17 @@ impl Execution for HostProcessExecution<'_> {
                 Some(system_call(u32::from_le_bytes(word)))
             }
             Ended::MemoryFault { address, access } => {
-                let page = address & !(PAGE_SIZE - 1);
+                let page = untagged(address) & !(PAGE_SIZE - 1);
                 let mapped = executor.memory(id).permissions.get(&page).is_some();
                 Some(abort(address, access, mapped))
             }
             Ended::Interrupt => None,
-            Ended::Exit(exit) => Some(to_exception(exit, registers.pc)),
+            Ended::CounterRead => Some(counter_read(word_at(&executor, id, registers.pc))),
+            Ended::Exit(exit) => Some(to_exception(
+                exit,
+                registers.pc,
+                word_at(&executor, id, registers.pc),
+            )),
         };
         executor.thread_drop(thread);
         ExecutionStop::Terminated(to_processor(&registers, exception))
@@ -737,6 +799,7 @@ impl Execution for HostProcessExecution<'_> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Trap {
     SystemCall(SystemCallRequest),
+    /// A fault at the address as the chip reports it, its top byte kept.
     MemoryFault {
         address: u64,
         access: Access,
@@ -745,6 +808,8 @@ enum Trap {
     Interrupt,
     /// An interrupt asked for before the thread entered, which did not run.
     InterruptBeforeEntry,
+    /// A read of the counter, which the system answers: no handler is given it.
+    CounterRead,
     /// An exit no handler is given.
     Exit(Exit),
 }
@@ -759,40 +824,51 @@ enum Ended {
     },
     /// An interrupt answered terminate.
     Interrupt,
+    /// A read of the counter: the state is at it.
+    CounterRead,
     /// An exit no handler is given.
     Exit(Exit),
 }
 
-/// Runs `thread` from `resume` until its next trap; an interrupt asked for is taken before the entry, or stops it.
+/// Runs `thread` from `resume` until its next trap; an interrupt asked for is taken before the entry, or stops it, and
+/// so does the end of `slice`, as an interrupt.
 fn run_until_trap(
     executor: &mut HostProcessExecutor,
     thread: ThreadId,
     resume: Resume,
     interruption: &Interruption,
+    slice: Duration,
 ) -> Trap {
     if interruption.requested.swap(false, Ordering::AcqRel) {
         return Trap::InterruptBeforeEntry;
     }
     let when = StopWhen {
-        slice: None,
+        slice: Some(slice),
         wanted: Some(&interruption.requested),
     };
-    let exit = executor.run_translated(thread, resume, None, when, &mut monotonic);
+    let ran = executor.run_translated_trapping_counter(thread, resume, None, when);
     executor.print_warnings();
-    match exit {
-        Exit::Stop => {
+    match ran {
+        Ran::Exit(Exit::Stop) => {
             interruption.requested.store(false, Ordering::Release);
             Trap::Interrupt
         }
-        Exit::Syscall(request) => {
+        Ran::Exit(Exit::Syscall(request)) => {
             executor.counters.kernel_entries += 1;
             Trap::SystemCall(request)
         }
-        Exit::MemoryFault { address, access } => {
+        Ran::Exit(Exit::MemoryFault { address, access }) => {
             executor.counters.kernel_entries += 1;
-            Trap::MemoryFault { address, access }
+            Trap::MemoryFault {
+                address: address | executor.fault_tag(thread),
+                access,
+            }
         }
-        other => Trap::Exit(other),
+        Ran::CounterRead => {
+            executor.counters.kernel_entries += 1;
+            Trap::CounterRead
+        }
+        Ran::Exit(other) => Trap::Exit(other),
     }
 }
 
@@ -803,15 +879,18 @@ fn ask_handler(handler: &mut impl TrapHandler, trap: Trap) -> Result<Resume, End
             SystemCallResponse::Return(value) => Ok(Resume::Return(value)),
             SystemCallResponse::Terminate => Err(Ended::SystemCall),
         },
-        Trap::MemoryFault { address, access } => match handler.handle_memory_fault(address, access)
-        {
-            MemoryFaultResponse::Retry => Ok(Resume::FromRegisters),
-            MemoryFaultResponse::Terminate => Err(Ended::MemoryFault { address, access }),
-        },
+        // The handler is given the address its pages are found at; the state the execution ends with keeps the tag.
+        Trap::MemoryFault { address, access } => {
+            match handler.handle_memory_fault(untagged(address), access) {
+                MemoryFaultResponse::Retry => Ok(Resume::FromRegisters),
+                MemoryFaultResponse::Terminate => Err(Ended::MemoryFault { address, access }),
+            }
+        }
         Trap::Interrupt | Trap::InterruptBeforeEntry => match handler.handle_interrupt() {
             InterruptResponse::Continue => Ok(Resume::Continue),
             InterruptResponse::Terminate => Err(Ended::Interrupt),
         },
+        Trap::CounterRead => Err(Ended::CounterRead),
         Trap::Exit(exit) => Err(Ended::Exit(exit)),
     }
 }
@@ -850,16 +929,6 @@ impl ExecutionInterrupter for HostProcessInterrupter {
         }
     }
 }
-
-/// The guest's counter, which the translator presents at a nanosecond a tick: the host's monotonic clock, since the
-/// executor interface gives no clock of the system's.
-fn monotonic() -> u64 {
-    let now = clock_gettime(ClockId::Monotonic);
-    now.tv_sec as u64 * NANOSECONDS_PER_SECOND + now.tv_nsec as u64
-}
-
-/// The nanoseconds in a second.
-const NANOSECONDS_PER_SECOND: u64 = Duration::from_secs(1).as_nanos() as u64;
 
 fn inside(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
     if addresses.start <= addresses.end
@@ -960,7 +1029,7 @@ fn system_call(word: u32) -> Exception {
 
 /// The abort of an access to `address`, whose page held no permission unless `mapped`.
 fn abort(address: u64, access: Access, mapped: bool) -> Exception {
-    let status = if address >= Arm64::<User>::ADDRESSABLE.end {
+    let status = if untagged(address) >= Arm64::<User>::ADDRESSABLE.end {
         FaultStatus::TranslationFaultLevel0
     } else if mapped {
         FaultStatus::PermissionFaultLevel3
@@ -991,11 +1060,14 @@ fn stub_gone() -> Exception {
     }
 }
 
-/// The exception of an exit no handler is given, at `pc`.
-fn to_exception(exit: Exit, pc: u64) -> Exception {
+/// The exception of an exit no handler is given, at `pc`, whose instruction is `word`.
+fn to_exception(exit: Exit, pc: u64, word: u32) -> Exception {
     match exit {
         Exit::Breakpoint { comment } => Exception::Breakpoint { comment },
-        Exit::IllegalInstruction => Exception::UndefinedInstruction,
+        // An access to a system register that the translation refused, which the chip refuses with a trap at EL0.
+        Exit::IllegalInstruction => {
+            system_access_trapped(word).unwrap_or(Exception::UndefinedInstruction)
+        }
         Exit::AlignmentFault { address } if address == pc => {
             Exception::ProgramCounterAlignmentFault { address }
         }
@@ -1005,4 +1077,50 @@ fn to_exception(exit: Exit, pc: u64) -> Exception {
         | Exit::MemoryFault { .. }
         | Exit::Stop => stub_gone(),
     }
+}
+
+/// The exception of the read of the counter `word`, which the chip refuses at EL0 and the system answers.
+fn counter_read(word: u32) -> Exception {
+    system_access_trapped(word).expect("the counter read the translation stopped at traps")
+}
+
+/// The trap of the system register move `word` where the chip traps it at EL0, as its instruction list says.
+fn system_access_trapped(word: u32) -> Option<Exception> {
+    let direction = match word & SYSTEM_MOVE.mask {
+        read if read == SYSTEM_MOVE.value | SYSTEM_MOVE_READ => AccessDirection::Read,
+        write if write == SYSTEM_MOVE.value => AccessDirection::Write,
+        _ => return None,
+    };
+    let mut processor = ZERO_PROCESSOR;
+    match simulate_system_register_move(
+        &mut processor,
+        word,
+        direction,
+        NEOVERSE_V2_SYSTEM_REGISTERS,
+    ) {
+        Err(trapped @ Exception::SystemAccessTrapped(_)) => Some(trapped),
+        Ok(()) | Err(_) => None,
+    }
+}
+
+/// [MSR (register)](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MSR--register---Move-general-purpose-register-to-system-register-),
+/// and with [`SYSTEM_MOVE_READ`] set [MRS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-).
+const SYSTEM_MOVE: FixedBits = FixedBits {
+    mask: 0xFFF0_0000,
+    value: 0xD510_0000,
+};
+/// The L bit of a system register move: set in a read.
+const SYSTEM_MOVE_READ: u32 = 1 << 21;
+
+/// The instruction word at `pc` of memory `id`, zero where it cannot be read.
+fn word_at(executor: &HostProcessExecutor, id: MemoryId, pc: u64) -> u32 {
+    let mut word = [0; INSTRUCTION_SIZE as usize];
+    let _ = executor.read_guest(id, pc, &mut word);
+    u32::from_le_bytes(word)
+}
+
+/// The address without its top byte, which the chip ignores in an address of the lower half at EL0 (TCR_EL1.TBI0, as
+/// Linux sets it).
+fn untagged(address: u64) -> u64 {
+    address & !super::native::TAG
 }

@@ -6,6 +6,7 @@ use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use wcontainers_abi::{
     Access, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume,
@@ -45,6 +46,9 @@ const INSTRUCTION: u64 = size_of::<u32>() as u64;
 
 /// The link register, which a call into the floor keeps in the register page.
 const LINK: u8 = 30;
+
+/// The top byte of an address of the lower half, which EL0's accesses ignore and a fault's address keeps.
+pub const TAG: u64 = 0xFF << 56;
 
 /// The slow paths of running translated code, as counted and warned.
 pub mod reason {
@@ -300,6 +304,9 @@ pub(super) struct Guest {
     tpidr: u64,
     /// Where a stop left it in translated code, kept until its registers are replaced.
     interrupted: Option<Where>,
+    /// The top byte the chip reported in the address of the guest's last memory fault, which [`Exit::MemoryFault`]
+    /// leaves out.
+    fault_tag: u64,
 }
 
 impl Guest {
@@ -319,6 +326,7 @@ impl Guest {
             vectors_held: false,
             tpidr: 0,
             interrupted: None,
+            fault_tag: 0,
         }
     }
 
@@ -476,12 +484,30 @@ fn moves(named: Option<(u64, u64)>, from: u64, to: u64) -> bool {
     })
 }
 
+/// How a guest's reads of its counter are answered.
+pub enum CounterReads<'clock> {
+    /// From this clock, the guest going on after the read.
+    Answered(&'clock mut dyn FnMut() -> u64),
+    /// By the system: the run stops at the read, which has not run.
+    Trapped,
+}
+
+/// How a run of translated code ended for its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ran {
+    Exit(Exit),
+    /// A read of the counter, stopped at its instruction for the system to answer.
+    CounterRead,
+}
+
 /// How a run of translated code came back.
 enum Ended {
     /// The turn is over: a stop, or its limit reached.
     TurnOver,
     /// The guest announced that the code at this address changed.
     CodeChanged(u64),
+    /// A counter read, stopped at it.
+    CounterRead,
     /// A jump's first miss: its last target is to be made, the code going on where it was carried.
     LastTarget {
         call: u64,
@@ -1197,8 +1223,8 @@ impl HostProcessExecutor {
     }
 
     /// Runs `thread` from `resume` to its next exit, or to [`Exit::Stop`] from the first exit at or after the count
-    /// `until` (with lone pieces, the first instruction's end at or after it); `when` says when each entry into
-    /// translated code is stopped. `clock` reads the monotonic clock for the guest's counter reads.
+    /// `until` (with lone pieces, the first instruction's end at or after it); `when` says when translated code is
+    /// stopped, its slice counted from the first entry. `clock` answers the guest's counter reads.
     pub fn run_translated(
         &mut self,
         thread: ThreadId,
@@ -1207,6 +1233,46 @@ impl HostProcessExecutor {
         when: StopWhen<'_>,
         clock: &mut dyn FnMut() -> u64,
     ) -> Exit {
+        match self.run_translated_with(
+            thread,
+            resume,
+            until,
+            when,
+            &mut CounterReads::Answered(clock),
+        ) {
+            Ran::Exit(exit) => exit,
+            Ran::CounterRead => unreachable!("a counter read answered never stops the run"),
+        }
+    }
+
+    /// The top byte the chip reported in the address of the thread's last memory fault, which [`Exit::MemoryFault`]
+    /// leaves out, as the guest's pages are found without it.
+    pub fn fault_tag(&self, thread: ThreadId) -> u64 {
+        self.guests[thread.0 as usize]
+            .as_ref()
+            .expect("a thread the kernel holds")
+            .fault_tag
+    }
+
+    /// [`Self::run_translated`] with every counter read stopped at, for the system to answer.
+    pub fn run_translated_trapping_counter(
+        &mut self,
+        thread: ThreadId,
+        resume: Resume,
+        until: Option<u64>,
+        when: StopWhen<'_>,
+    ) -> Ran {
+        self.run_translated_with(thread, resume, until, when, &mut CounterReads::Trapped)
+    }
+
+    fn run_translated_with(
+        &mut self,
+        thread: ThreadId,
+        resume: Resume,
+        until: Option<u64>,
+        when: StopWhen<'_>,
+        counter: &mut CounterReads<'_>,
+    ) -> Ran {
         let super::Thread { memory, index, .. } = self.thread(thread);
         let mut t = self.guests[thread.0 as usize]
             .take()
@@ -1226,7 +1292,7 @@ impl HostProcessExecutor {
                         loaded.base == at.base && Arc::ptr_eq(loaded.code(), &at.code)
                     })
         });
-        let exit = self.run_pieces(
+        let ran = self.run_pieces(
             thread,
             memory,
             index,
@@ -1234,16 +1300,16 @@ impl HostProcessExecutor {
             interrupted.map(|at| (at.hardware, at.page)),
             until,
             when,
-            clock,
+            counter,
         );
         self.positions.0 += 1;
-        if exit != Exit::MemoryFaultWithoutRegisters {
+        if ran != Ran::Exit(Exit::MemoryFaultWithoutRegisters) {
             use core::hash::Hasher;
             self.positions.1.write_u64(t.state.count);
             self.positions.1.write_u64(t.state.pc);
         }
         self.guests[thread.0 as usize] = Some(t);
-        exit
+        ran
     }
 
     #[expect(
@@ -1259,16 +1325,22 @@ impl HostProcessExecutor {
         mut carried: Option<(Interrupted, RegisterPage)>,
         until: Option<u64>,
         when: StopWhen<'_>,
-        clock: &mut dyn FnMut() -> u64,
-    ) -> Exit {
+        counter: &mut CounterReads<'_>,
+    ) -> Ran {
         let reached = |state: &GuestState| until.is_some_and(|until| state.count >= until);
         let register_page = (REGISTER_PAGES + index * THREAD_PAGE_SIZE) as u64;
+        // The slice counts from the first entry into translated code: translating is not the guest's time.
+        let mut slice_end: Option<Instant> = None;
         loop {
             let resumed = carried.take();
+            // The slice ended in an earlier turn: the thread stops where it landed.
+            if resumed.is_none() && slice_end.is_some_and(|end| Instant::now() >= end) {
+                return Ran::Exit(Exit::Stop);
+            }
             if resumed.is_none()
                 && let Err(exit) = self.load(memory, t.state.pc)
             {
-                return exit;
+                return Ran::Exit(exit);
             }
             let (mut hardware, mut page) = resumed.unwrap_or_else(|| {
                 let (mut hardware, page) =
@@ -1277,7 +1349,10 @@ impl HostProcessExecutor {
                     self.codes.get(memory).expect("loaded above").pieces[&t.state.pc].base;
                 (hardware, page)
             });
+            // The top byte of the address of the turn's fault, which the chip reports and ignores (TCR_EL1.TBI0).
+            let mut fault_tag: u64;
             let ended = loop {
+                fault_tag = 0;
                 let stub = &self.memory(memory).stub;
                 if t.vectors_held {
                     stub.set_scalars(index, &hardware, t.tpidr);
@@ -1298,7 +1373,16 @@ impl HostProcessExecutor {
                     t.vectors_held = true;
                 }
                 stub.set_translated_page(index, &page);
-                let end = match self.turn_with(thread, Then::Enter(hardware.pc as usize), when) {
+                let turn_when = StopWhen {
+                    slice: when.slice.map(|slice| {
+                        slice_end
+                            .get_or_insert_with(|| Instant::now() + slice)
+                            .saturating_duration_since(Instant::now())
+                    }),
+                    wanted: when.wanted,
+                };
+                let end = match self.turn_with(thread, Then::Enter(hardware.pc as usize), turn_when)
+                {
                     // A stop before the code ran: the thread is where it was to enter.
                     Ok(TurnEnd::Stopped { .. }) => TurnEnd::Interrupted { at: hardware.pc },
                     Ok(end) => end,
@@ -1317,8 +1401,9 @@ impl HostProcessExecutor {
                         signal,
                         code,
                     } => {
+                        fault_tag = address & TAG;
                         let syndrome = self.memory(memory).stub.fault_syndrome(index);
-                        self.taken(memory, h.pc, address, signal, code, syndrome)
+                        self.taken(memory, h.pc, address & !TAG, signal, code, syndrome)
                     }
                     TurnEnd::Interrupted { at } => {
                         h.pc = at;
@@ -1372,15 +1457,23 @@ impl HostProcessExecutor {
                     }
                     Some(Resolved::Clock {
                         into,
+                        at,
                         then,
                         page: then_page,
-                    }) => {
-                        hardware = then;
-                        page = then_page;
-                        if let Some(register) = into {
-                            stop::set_register(register, clock(), &mut hardware, &mut page);
+                    }) => match counter {
+                        CounterReads::Answered(clock) => {
+                            hardware = then;
+                            page = then_page;
+                            if let Some(register) = into {
+                                stop::set_register(register, clock(), &mut hardware, &mut page);
+                            }
                         }
-                    }
+                        CounterReads::Trapped => {
+                            t.state = *at;
+                            t.page = held;
+                            break Ended::CounterRead;
+                        }
+                    },
                     Some(Resolved::CodeChanged {
                         address,
                         at,
@@ -1436,12 +1529,13 @@ impl HostProcessExecutor {
                 }
             };
             let stop = match ended {
-                Ended::TurnOver => return Exit::Stop,
-                Ended::Killed => return Exit::MemoryFaultWithoutRegisters,
+                Ended::TurnOver => return Ran::Exit(Exit::Stop),
+                Ended::Killed => return Ran::Exit(Exit::MemoryFaultWithoutRegisters),
+                Ended::CounterRead => return Ran::CounterRead,
                 Ended::CodeChanged(address) => {
                     self.code_line_changed(memory, address);
                     if reached(&t.state) {
-                        return Exit::Stop;
+                        return Ran::Exit(Exit::Stop);
                     }
                     continue;
                 }
@@ -1469,7 +1563,7 @@ impl HostProcessExecutor {
                             t.state.count - until.unwrap_or(0),
                         );
                     }
-                    return Exit::Stop;
+                    return Ran::Exit(Exit::Stop);
                 }
                 Stop::Landed(_) => {}
                 Stop::Syscall => {
@@ -1479,11 +1573,11 @@ impl HostProcessExecutor {
                     };
                     let arguments = call.arguments.len();
                     call.arguments.copy_from_slice(&t.state.x[..arguments]);
-                    return Exit::Syscall(call);
+                    return Ran::Exit(Exit::Syscall(call));
                 }
-                Stop::Breakpoint(comment) => return Exit::Breakpoint { comment },
-                Stop::Illegal => return Exit::IllegalInstruction,
-                Stop::Alignment(address) => return Exit::AlignmentFault { address },
+                Stop::Breakpoint(comment) => return Ran::Exit(Exit::Breakpoint { comment }),
+                Stop::Illegal => return Ran::Exit(Exit::IllegalInstruction),
+                Stop::Alignment(address) => return Ran::Exit(Exit::AlignmentFault { address }),
                 Stop::MemoryFault { address, write } => {
                     let access = if write { Access::Write } else { Access::Read };
                     match self.resolve_fault(memory, address, access) {
@@ -1491,9 +1585,10 @@ impl HostProcessExecutor {
                         Ok(FaultOwner::Executor) => {}
                         Ok(FaultOwner::Guest) => {
                             self.slow(wcontainers_guest_cpu::reason::MEMORY_FAULT, 1, address);
-                            return Exit::MemoryFault { address, access };
+                            t.fault_tag = fault_tag;
+                            return Ran::Exit(Exit::MemoryFault { address, access });
                         }
-                        Err(_) => return Exit::MemoryFaultWithoutRegisters,
+                        Err(_) => return Ran::Exit(Exit::MemoryFaultWithoutRegisters),
                     }
                 }
             }

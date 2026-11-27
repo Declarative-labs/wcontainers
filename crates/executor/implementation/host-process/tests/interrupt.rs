@@ -13,18 +13,24 @@ use wcontainers_executor::{
     Execution, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
     MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
-use wcontainers_executor_host_process::executor::HostProcess;
+use wcontainers_executor_host_process::executor::{HostProcess, HostProcessConfig};
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_processor_architecture_arm64::{Processor, ZERO_PROCESSOR};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 static HOST: OnceLock<Arc<HostProcessHost>> = OnceLock::new();
 
+/// An executor whose slice is longer than any test here runs, so that every interrupt its handlers are given is the
+/// interrupter's.
 fn executor() -> HostProcess {
-    HostProcess::new(Arc::clone(HOST.get_or_init(|| {
-        Arc::new(HostProcessHost::new().expect("the host is refused"))
-    })))
+    let host = Arc::clone(
+        HOST.get_or_init(|| Arc::new(HostProcessHost::new().expect("the host is refused"))),
+    );
+    HostProcess::with_config(host, HostProcessConfig { slice: NO_SLICE })
 }
+
+/// Longer than any test here runs.
+const NO_SLICE: Duration = Duration::from_secs(3600);
 
 const CODE: u64 = 0x40_0000;
 const PAGE: u64 = 4096;
