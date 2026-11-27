@@ -35,6 +35,11 @@ const BITMASK_PART_BITS: u32 = 6;
 const ESTIMATE_BITS: u32 = 9;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum BinaryOperation {
     Add,
     Subtract,
@@ -74,6 +79,11 @@ pub enum BinaryOperation {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum Pairwise {
     Add,
     Maximum(Signedness),
@@ -81,6 +91,11 @@ pub enum Pairwise {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum ShiftDirection {
     ArithmeticRight,
     LogicalRight,
@@ -89,6 +104,11 @@ pub enum ShiftDirection {
 
 /// Where the second operand of a binary operation comes from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum BinaryForm {
     /// A second vector under a governing predicate, inactive elements keeping the first's value.
     Predicated,
@@ -103,6 +123,11 @@ pub enum BinaryForm {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum UnaryOperation {
     Absolute,
     Negate,
@@ -128,6 +153,11 @@ pub enum UnaryOperation {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum ImmediateShift {
     ArithmeticRight,
     LogicalRight,
@@ -142,6 +172,11 @@ pub enum ImmediateShift {
 
 /// The bitwise operations of three registers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum TernaryLogic {
     ExclusiveOrOfThree,
     /// BCAX: the first exclusive-or the second and the third's complement.
@@ -154,6 +189,11 @@ pub enum TernaryLogic {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum ElementOperation {
     Binary {
         operation: BinaryOperation,

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*"]
+members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*", "tools/collect-observations", "tools/machine-labels"]
 exclude = ["third_party"]
 
 [workspace.metadata.reviewable]
@@ -21,6 +21,8 @@ naga = { version = "30.0.2", default-features = false }
 etherparse = { version = "0.21.0", default-features = false }
 mitsein = { version = "0.10.0", default-features = false }
 itertools = { version = "0.14", default-features = false, features = ["use_alloc"] }
+# Values that write themselves as Rust expressions, for baked data (Unicode-3.0).
+databake = { version = "0.2.1", default-features = false, features = ["derive"] }
 
 # naga 30.0.2 as published, plus our changes (listed in docs/status-graphics-shaders.md), until upstream has them.
 [patch.crates-io]

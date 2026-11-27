@@ -159,6 +159,11 @@ fn list_feature_sets(mask: SystemFeatures) -> Vec<SystemFeatures> {
 /// What one of these instructions does with the choices a chip makes, each with the features of its instruction the
 /// chip has.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::system_instruction)
+)]
 pub enum SystemInstructionBehavior {
     /// HINT, with what WFI does, its hint number 3.
     Hint(WaitForInterruptBehavior, SystemFeatures),
@@ -235,6 +240,11 @@ pub(crate) fn list_system_instruction_behaviors(
 
 /// What CPP RCTX does at EL0 with SCTLR_EL1.EnRCTX clear.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::system_instruction)
+)]
 pub enum PredictionRestriction {
     /// Completes, as a Neoverse V2 does (MEASURED: no exception and no exit to KVM).
     Completes,

@@ -28,7 +28,6 @@ wcontainers-processor-architecture-arm64 = { path = "../../../processor-architec
 [dev-dependencies]
 wcontainers-behavior-source-conformance = { path = "../../conformance" }
 wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
-wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 
 # The chip the record tool runs.
 [target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]

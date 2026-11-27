@@ -102,6 +102,11 @@ pub enum Operand {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::operand)
+)]
 pub enum Signedness {
     Unsigned,
     Signed,

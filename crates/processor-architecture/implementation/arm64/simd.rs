@@ -16,6 +16,11 @@ const HALF_VECTOR_BITS: u32 = u64::BITS;
 
 /// Which half of the elements a permutation takes, or where it starts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::simd)
+)]
 pub enum Part {
     First,
     Second,

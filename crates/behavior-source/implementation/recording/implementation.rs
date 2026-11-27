@@ -13,8 +13,10 @@ use wcontainers_processor_architecture::{
 };
 use wcontainers_processor_architecture_arm64::{Arm64, Instruction, Processor, User};
 
+pub use crate::deciding::WrittenStates;
 use crate::generated::{GeneratedCases, to_fingerprint};
 
+mod deciding;
 mod generated;
 #[cfg(test)]
 mod tests;

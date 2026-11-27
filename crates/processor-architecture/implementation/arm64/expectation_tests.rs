@@ -8,6 +8,11 @@ const BYTES: SuppressibleLoad = SuppressibleLoad {
     element_bits: u8::BITS,
     first_suppressible: 0,
     first_fault_before: u16::MAX,
+    when_read: 0x0F0E_0D0C_0B0A_0908_0706_0504_0302_0100,
+    when_zeroed: 0,
+    when_merged: 0,
+    when_suppressed: 0,
+    below_fault: 0,
 };
 
 #[test]
@@ -46,10 +51,14 @@ fn a_suppressible_load_compares_its_lanes_below_the_first_suppressed() {
     expected.suppressible_load = Some(BYTES);
     let mut observed = expected.processor.clone();
     assert!(expected.is_met_by(&observed));
-    // Suppressed from element 3: its lanes read anything, and FFR is clear from it on.
-    observed.vector_registers[3] = 0xDEAD_0000_0000_0000_0000_0000_0002_0100;
+    // Suppressed from element 3: each lane from it on holds what it read or zero, and FFR is clear from it on.
+    observed.vector_registers[3] = 0x0F0E_0000_0000_0000_0000_0504_0002_0100;
     observed.first_fault_register = 0x0007;
     assert!(expected.is_met_by(&observed));
+    // A lane from it on that holds neither.
+    observed.vector_registers[3] ^= 1 << 120;
+    assert!(!expected.is_met_by(&observed));
+    observed.vector_registers[3] ^= 1 << 120;
     // A lane below the first suppressed differs.
     observed.vector_registers[3] ^= 1 << 8;
     assert!(!expected.is_met_by(&observed));

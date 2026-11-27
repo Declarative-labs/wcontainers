@@ -5,7 +5,8 @@
 //! placement gives: one after the other, the other way round, all at one address, the odd ones on the next page, all
 //! below it, and one after the other one byte on, so that each element is misaligned and one can straddle a page's end. A vector base holds those
 //! displacements plus the placed address, which the state's builder adds; a vector of 32-bit addresses also holds them
-//! with bit 31 set, which only an extension with the sign would carry into the bits above.
+//! with bit 31 set, which only an extension with the sign would carry into the bits above, and elements just below 4
+//! GiB, which the builder leaves as they are, so that an offset added to them carries into bit 32.
 
 use alloc::vec::Vec;
 
@@ -132,6 +133,8 @@ pub(crate) fn list_operand_types(access: ElementAccess) -> Vec<OperandType> {
 const PAGE_BYTES: i64 = 1 << 12;
 /// Bit 31, the sign of a 32-bit element.
 const WORD_SIGN_BIT: i64 = 1 << 31;
+/// The lowest 32-bit vector base the builder leaves as it is: one of the last 64 KiB below 4 GiB.
+const BELOW_FOUR_GIB: u64 = 0xFFFF_0000;
 
 /// Each element's displacement from the first byte, in bytes: one after the other, the other way round, all at one
 /// address, the odd elements a page further on, and one after the other one byte on where an element has more than one
@@ -205,14 +208,22 @@ pub(crate) fn to_offset_values(
 }
 
 /// The values of a vector base before the placed address is added: each displacement, and for elements of 32 bits,
-/// one after the other with bit 31 set, which a base extended with its sign would carry into the bits above.
+/// one after the other with bit 31 set, which a base extended with its sign would carry into the bits above, and one
+/// after the other ending at 4 GiB, which the builder leaves as they are, so that any immediate but zero, and an Xm
+/// with low bits, carries the address of some element past 4 GiB.
 pub(crate) fn to_address_values(element_bits: u32, memory_bytes: u32) -> Vec<OperandValue> {
     let mut patterns = to_displacements(element_bits, memory_bytes);
     if element_bits == u32::BITS {
         let elements = i64::from(VECTOR_BITS / element_bits);
+        let size = i64::from(memory_bytes);
         patterns.push(
             (0..elements)
-                .map(|element| element * i64::from(memory_bytes) + WORD_SIGN_BIT)
+                .map(|element| element * size + WORD_SIGN_BIT)
+                .collect(),
+        );
+        patterns.push(
+            (0..elements)
+                .map(|element| (1 << u32::BITS) - (elements - element) * size)
                 .collect(),
         );
     }
@@ -227,7 +238,8 @@ pub(crate) fn to_address_values(element_bits: u32, memory_bytes: u32) -> Vec<Ope
         .collect()
 }
 
-/// Adds the base, the address of the first byte less the access's offset, to every element of the vector base.
+/// Adds the base, the address of the first byte less the access's offset, to every element of the vector base, but
+/// for a 32-bit element in the last 64 KiB below 4 GiB.
 pub(crate) fn place_vector_base(
     access: ElementAccess,
     word: u32,
@@ -240,7 +252,12 @@ pub(crate) fn place_vector_base(
     let placed = (0..VECTOR_BITS / element_bits).fold(0_u128, |vector, element| {
         let shift = element * element_bits;
         let held = ((*register >> shift) & mask) as u64;
-        vector | ((u128::from(held.wrapping_add(base)) & mask) << shift)
+        let placed = if element_bits == u32::BITS && held >= BELOW_FOUR_GIB {
+            held
+        } else {
+            held.wrapping_add(base)
+        };
+        vector | ((u128::from(placed) & mask) << shift)
     });
     *register = placed;
 }

@@ -22,6 +22,22 @@ const STRUCTURE_SPACE: FixedBits = FixedBits {
 };
 /// The feature of the structure loads and stores of the base Advanced SIMD extension.
 const ADVANCED_SIMD: &str = "FEAT_AdvSIMD";
+
+/// Compares byte by byte, as `==` on text cannot run in a constant, where a baked structure instruction is made.
+const fn is_same_text(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
 const Q: Field = Field::new(30, 1);
 /// L: a load, not a store.
 const LOAD: Field = Field::new(22, 1);
@@ -49,6 +65,11 @@ pub struct StructureInstruction(Instruction<Infallible>);
 
 /// What the instruction does in each case the manual leaves open or a chip does its own way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub struct StructureChoices {
     pub misaligned_stack_pointer: MisalignedStackPointer,
     /// None for a load.
@@ -157,12 +178,18 @@ fn decode(word: u32) -> Result<Decoded, Exception> {
 
 impl StructureInstruction {
     /// None for an instruction that is not a structure load or store of the base Advanced SIMD extension.
-    pub fn new(instruction: Instruction<Infallible>) -> Option<Self> {
-        let record = instruction.to_record()?;
-        (record.feature == ADVANCED_SIMD
+    pub const fn new(instruction: Instruction<Infallible>) -> Option<Self> {
+        let Some(record) = instruction.to_record() else {
+            return None;
+        };
+        if is_same_text(record.feature, ADVANCED_SIMD)
             && record.fixed_bits.mask & STRUCTURE_SPACE.mask == STRUCTURE_SPACE.mask
-            && STRUCTURE_SPACE.is_matching(record.fixed_bits.value))
-        .then_some(Self(instruction))
+            && STRUCTURE_SPACE.is_matching(record.fixed_bits.value)
+        {
+            Some(Self(instruction))
+        } else {
+            None
+        }
     }
 
     pub const fn instruction(self) -> Instruction<Infallible> {
