@@ -175,8 +175,8 @@ void wc_nir_alpha_to_one(struct nir_shader *nir);
 /* NIR's own serialised form, the cache's key (plan 15.3). */
 bool wc_nir_serialize(const struct nir_shader *nir, struct wc_bytes *out);
 
-/* Candidate A's first step: the shader prepared and written as SPIR-V by Zink's compiler in its
- * native Vulkan mode. The shader is changed by the preparation. */
+/* Candidate A's first step: a copy of the shader prepared and written as SPIR-V by Zink's compiler in its
+ * native Vulkan mode (the shader itself is left as it was). False for a shader not in the form that mode takes. */
 bool wc_nir_to_spirv(struct nir_shader *nir, struct wc_words *out);
 
 struct nir_shader *wc_nir_clone(const struct nir_shader *nir);

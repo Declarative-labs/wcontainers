@@ -1,4 +1,4 @@
-//! Writes the Mesa compiler's crates from the C bridge's headers (crates/nir/bridge's bridge.h and flat.h): the trait
+//! Writes the Mesa compiler's crates from the C bridge's headers (crates/mesa-compiler/implementation/direct/bridge's bridge.h and flat.h): the trait
 //! `MesaCompiler` in `crates/mesa-compiler/interface.rs`, owned plain data for every structure, and the
 //! `implementation/direct` crate, which calls the bridge's functions with every pointer made from its own memory or
 //! the caller's slices, copies the bridge's memory out whole into owned values and gives it back once.
@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use crate::cheader::{CFunction, CParam, Header};
 
 /// The first line of every file written.
-const HEADER: &str = "// Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/nir/bridge). Do not edit.\n";
+const HEADER: &str = "// Written by tools/api-crate-generator from the Mesa compiler bridge's bridge.h and flat.h (crates/mesa-compiler/implementation/direct/bridge). Do not edit.\n";
 
 /// Functions the trait does not offer, each with its reason.
 const NOT_OFFERED: &[(&str, &str)] = &[
@@ -699,7 +699,7 @@ pub fn generate(texts: &[String], out: &std::path::Path) -> Result<String, Strin
     let mut report = String::new();
     let mut interface = String::from(HEADER);
     interface.push_str(
-        "//! Mesa's shader compiler as our C bridge offers it (crates/nir/bridge: NIR made from SPIR-V or GLSL, changed for the\n//! routes, read as a flat form, written as SPIR-V), as a safe trait. Every enumeration the bridge writes is a `u32` the\n//! caller converts by a checked `TryFrom`.\n\n",
+        "//! Mesa's shader compiler as our C bridge offers it (crates/mesa-compiler/implementation/direct/bridge: NIR made from SPIR-V or GLSL, changed for the\n//! routes, read as a flat form, written as SPIR-V), as a safe trait. Every enumeration the bridge writes is a `u32` the\n//! caller converts by a checked `TryFrom`.\n\n",
     );
     let mut mirrors = String::new();
     write_structures(&header, &comments, &mut interface, &mut mirrors)?;

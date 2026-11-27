@@ -1,4 +1,4 @@
-//! Mesa's compiler through our C bridge (crates/nir/bridge): every bridge function a safe method of
+//! Mesa's compiler through our C bridge (crates/mesa-compiler/implementation/direct/bridge): every bridge function a safe method of
 //! wcontainers-mesa-compiler's trait, each shader a value of `Shader` that owns one NIR shader and gives it back when
 //! dropped, and every structure the bridge fills copied out whole into owned values before the bridge's free.
 //!

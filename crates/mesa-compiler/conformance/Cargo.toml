@@ -1,0 +1,18 @@
+[package]
+name = "wcontainers-mesa-compiler-conformance"
+description = "The tests every implementation of wcontainers-mesa-compiler runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-mesa-compiler = { path = ".." }
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+#version 450
+layout(local_size_x = 4) in;
+layout(std430, binding = 0) buffer Results { uint values[]; };
+layout(binding = 0, rgba8) uniform writeonly image2D written;
+void main() {
+    values[gl_LocalInvocationID.x] = gl_LocalInvocationID.x;
+    imageStore(written, ivec2(gl_LocalInvocationID.xy), vec4(1.0));
+}
