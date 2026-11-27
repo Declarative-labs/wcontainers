@@ -2343,9 +2343,11 @@ emit_square(nir_builder *b, const struct written_slots *written,
 struct nir_shader *
 wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest)
 {
-   /* The program whose points are drawn: a vertex or evaluation program (a geometry program's own points are
-    * wc_nir_geometry_squares'), and a generic slot for gl_PointCoord. */
-   if ((vs->info.stage != MESA_SHADER_VERTEX && vs->info.stage != MESA_SHADER_TESS_EVAL) || at >= WC_GENERIC_SLOTS)
+   /* The program whose points are drawn is a vertex or evaluation program: the only caller,
+    * wc_prepared_points_as_squares, is reached only through the typed glue's `prepared_points_as_squares<S:
+    * stage::TakesPreparedPointsAsSquares>`, implemented for those two stages (a geometry program's own points are
+    * wc_nir_geometry_squares'). A generic slot for gl_PointCoord. */
+   if (at >= WC_GENERIC_SLOTS)
       return NULL;
    nir_shader *lowered = nir_shader_clone(NULL, vs);
    wc_nir_lower_io(lowered);
@@ -2360,7 +2362,7 @@ wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest)
    const bool clipped = lowered->info.outputs_written &
                         (VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 | VARYING_BIT_CLIP_VERTEX);
    ralloc_free(lowered);
-   if (written->indirect || clipped || at >= WC_GENERIC_SLOTS) {
+   if (written->indirect || clipped) {
       free(written);
       return NULL;
    }
@@ -2483,8 +2485,10 @@ rewrite_to_squares(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 struct nir_shader *
 wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest, uint32_t block)
 {
-   if (gs->info.stage != MESA_SHADER_GEOMETRY || gs->info.gs.output_primitive != MESA_PRIM_POINTS ||
-       at >= WC_GENERIC_SLOTS)
+   /* A geometry program: the only caller, wc_prepared_geometry_points_as_squares, is reached only through the typed
+    * glue's `prepared_geometry_points_as_squares<S: stage::TakesPreparedGeometryPointsAsSquares>`, implemented for the
+    * geometry stage alone. */
+   if (gs->info.gs.output_primitive != MESA_PRIM_POINTS || at >= WC_GENERIC_SLOTS)
       return NULL;
    nir_shader *nir = nir_shader_clone(NULL, gs);
    wc_nir_lower_io(nir);

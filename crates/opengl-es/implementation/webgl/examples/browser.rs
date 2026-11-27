@@ -112,6 +112,10 @@ pub fn suite_measure() {
     let waited = (now() - start) / f64::from(queries);
     let turns = context.turns() - turns_before;
     assert_eq!(context.get_error(), gl::NO_ERROR);
+    // What the measurement is for: each read waited for its result, so the triangle over the buffer passed samples in
+    // every query (a read that did not wait answers 0), and the wait took the browser's turns.
+    assert_eq!(passed, queries, "every query of the triangle over the buffer passed samples");
+    assert!(turns > 0, "the reads waited for the browser's turns");
     REPORT.set(format!(
         "queries {queries}, each passed {passed}; a draw read back {plain:.3} ms, a draw in a query read back as soon as it ended {waited:.3} ms; turns {turns} ({:.2} a query)",
         f64::from(u32::try_from(turns).unwrap_or(u32::MAX)) / f64::from(queries)

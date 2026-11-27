@@ -1264,9 +1264,9 @@ fn egl_call<E: Egl>(egl: &E, handles: &mut Handles<E>, which: u64, state: &mut u
 
 /// A hostile caller: `calls` calls picked by the seed over every OpenGL ES method (on two contexts, with this
 /// context's live fence, a deleted one and the other context's) and every EGL method (with this library's handles,
-/// another library's, and destroyed ones). Nothing may end the process; returns the calls made, and how many of them
-/// the implementation refused itself (OpenGL ES's, EGL's): the rest reached the library.
-pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64, counts: &Counts<E, G>) -> [u64; 3] {
+/// another library's, and destroyed ones). Nothing may end the process; returns the calls made, how many of them the
+/// implementation refused itself (OpenGL ES's, EGL's: the rest reached the library), and the calls of each method.
+pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64, counts: &Counts<E, G>) -> Fuzzed {
     let mut state = seed | 1;
     let made = reached::<E, G>(folder);
     let other = reached::<E, G>(folder);
@@ -1292,19 +1292,42 @@ pub fn fuzz<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, seed: u64, calls: u64, c
     let _ = made.egl.choose_config(&made.display, &[egl::NONE], &mut own);
     handles.configs.extend(own.into_iter().flatten());
     let methods = u64::try_from(METHODS).unwrap_or(0);
+    let mut gl_methods = vec![0_u64; METHODS];
+    let mut egl_methods = vec![0_u64; usize::try_from(EGL_METHODS).unwrap_or(0)];
     for _ in 0..calls {
         let picked = next(&mut state);
         if picked % 1024 < EGL_SHARE {
-            egl_call(&made.egl, &mut handles, (picked >> 10) % EGL_METHODS, &mut state);
+            let which = (picked >> 10) % EGL_METHODS;
+            if let Some(count) = usize::try_from(which).ok().and_then(|at| egl_methods.get_mut(at)) {
+                *count += 1;
+            }
+            egl_call(&made.egl, &mut handles, which, &mut state);
             continue;
         }
         let gl = if (picked >> 10).is_multiple_of(4) { &other.gl } else { &made.gl };
         let Some(fence) = chosen(&fences, &mut state) else { continue };
         let which = usize::try_from((picked >> 12) % methods).unwrap_or(0);
+        if let Some(count) = gl_methods.get_mut(which) {
+            *count += 1;
+        }
         call_one(gl, &fence, which, usize::try_from(next(&mut state) >> 1).unwrap_or(0));
     }
     let _ = made.egl.make_current(&made.display, None, None, None);
-    [calls, (counts.gl)(&made.gl) + (counts.gl)(&other.gl), (counts.egl)(&made.egl)]
+    Fuzzed { calls, refused: (counts.gl)(&made.gl) + (counts.gl)(&other.gl), egl_refused: (counts.egl)(&made.egl), gl_methods, egl_methods }
+}
+
+/// What `fuzz` did.
+pub struct Fuzzed {
+    /// The calls picked.
+    pub calls: u64,
+    /// OpenGL ES calls the implementation refused itself.
+    pub refused: u64,
+    /// EGL calls the implementation refused itself.
+    pub egl_refused: u64,
+    /// The calls of each OpenGL ES method, by its place in `call_one`.
+    pub gl_methods: Vec<u64>,
+    /// The calls of each EGL method, by its place in `egl_call`.
+    pub egl_methods: Vec<u64>,
 }
 
 /// The number the environment names, else `default`: a run asked for by name takes its input from the environment,
@@ -1322,8 +1345,26 @@ const MEASURE_DRAWS: u64 = 1_000;
 /// `FUZZ_CALLS` where they name none).
 pub fn fuzz_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, counts: &Counts<E, G>) {
     let (seed, calls) = (given("WCONTAINERS_FUZZ_SEED", FUZZ_SEED), given("WCONTAINERS_FUZZ_CALLS", FUZZ_CALLS));
-    let [made, refused, egl_refused] = fuzz::<E, G>(folder, seed, calls, counts);
-    println!("FUZZ seed {seed} calls {made}, refused by the implementation itself: OpenGL ES {refused}, EGL {egl_refused}");
+    let fuzzed = fuzz::<E, G>(folder, seed, calls, counts);
+    let (gl_never, egl_never) = (never_called(&fuzzed.gl_methods), never_called(&fuzzed.egl_methods));
+    println!(
+        "FUZZ seed {seed} calls {}, refused by the implementation itself: OpenGL ES {}, EGL {}; methods called: OpenGL ES {} of {METHODS}, EGL {} of {EGL_METHODS}",
+        fuzzed.calls,
+        fuzzed.refused,
+        fuzzed.egl_refused,
+        METHODS - gl_never.len(),
+        fuzzed.egl_methods.len() - egl_never.len()
+    );
+    // What the run is for: every method called with hostile arguments, the process still standing, and some calls
+    // refused by the implementation itself (its checks were reached).
+    assert_eq!(fuzzed.calls, calls, "every call picked");
+    assert!(gl_never.is_empty() && egl_never.is_empty(), "methods never called in seed {seed}: OpenGL ES {gl_never:?}, EGL {egl_never:?}");
+    assert!(fuzzed.refused > 0 && fuzzed.egl_refused > 0, "the implementation refused no call in seed {seed}: {} {}", fuzzed.refused, fuzzed.egl_refused);
+}
+
+/// The places of the methods called no time.
+fn never_called(counts: &[u64]) -> Vec<usize> {
+    counts.iter().enumerate().filter(|(_, count)| **count == 0).map(|(at, _)| at).collect()
 }
 
 /// The nanoseconds each of `times` calls takes, timed together.
@@ -1360,6 +1401,10 @@ pub fn draw_costs<E: Egl, G: OnEgl<E>>(folder: Option<&Path>, draws: u32) -> [f6
     let draw = timed(draws, || gl.draw_arrays(gl::TRIANGLES, 0, 3));
     gl.finish();
     assert_eq!(gl.get_error(), gl::NO_ERROR);
+    // The draws timed drew: every pixel of the buffer is the program's white.
+    let mut read = vec![0_u8; IMAGE];
+    gl.read_pixels(0, 0, SIDE, SIDE, gl::RGBA, gl::UNSIGNED_BYTE, PixelPack::Bytes(&mut read));
+    assert!(read.iter().all(|byte| *byte == u8::MAX), "the draws timed drew the triangle over the buffer: {read:?}");
     let answered = timed(draws, || {
         let _ = gl.get_error();
     });
@@ -1376,6 +1421,7 @@ pub fn measure_from_the_environment<E: Egl, G: OnEgl<E>>(folder: Option<&Path>) 
     made.gl.get_integerv(gl::MAX_VERTEX_ATTRIBS, &mut most);
     for round in 0..5 {
         let [draw, answered, state] = draw_costs::<E, G>(folder, draws);
+        assert!([draw, answered, state].iter().all(|cost| cost.is_finite() && *cost > 0.0), "every cost measured: {draw} {answered} {state}");
         println!("MEASURE round {round} draws {draws} attributes {}: draw {draw:.0} ns, glGetError {answered:.0} ns, glGetVertexAttribiv {state:.0} ns", most[0]);
     }
 }

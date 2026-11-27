@@ -38,8 +38,8 @@ enum MemoryLength {
 /// What one field of a flat copy holds.
 #[derive(Clone)]
 enum Kind {
-    /// A number of the Rust type, a bit-field's width if it is one.
-    Number { rust: &'static str, bits: Option<u32> },
+    /// A number of the Rust type, a bit-field's width if it is one, and the trait's type of a declared value it holds.
+    Number { rust: &'static str, bits: Option<u32>, value: Option<String> },
     /// A C `bool` (a byte, 0 or 1).
     Flag,
     /// An object of the kind, by its key.
@@ -61,12 +61,12 @@ struct Field {
 }
 
 /// The flat name of a structure: `pipe_draw_info.index` to `wc_flat_pipe_draw_info__index`.
-fn c_flat(name: &str) -> String {
+pub(crate) fn c_flat(name: &str) -> String {
     format!("wc_flat_{}", name.replace('.', "__"))
 }
 
 /// Its Rust mirror: `FlatDrawInfoIndex`.
-fn rust_flat(name: &str) -> String {
+pub(crate) fn rust_flat(name: &str) -> String {
     format!("Flat{}", type_name(name))
 }
 
@@ -89,6 +89,9 @@ fn c_number(rust: &str) -> &'static str {
 fn array_length(header: &Header, text: &str) -> Option<usize> {
     if let Ok(number) = text.parse() {
         return Some(number);
+    }
+    if let Some(known) = header.known_numbers.get(text) {
+        return usize::try_from(*known).ok();
     }
     let mut value = header.defines.get(text)?.trim().trim_start_matches('(').trim_end_matches(')').to_string();
     for _ in 0..4 {
@@ -127,8 +130,10 @@ fn kind_of(structure: &str, field: &CParam, header: &Header) -> Result<Kind, Str
     };
     Ok(match field.pointers {
         0 => {
-            if let Some(rust) = number(base) {
-                if rust == "bool" { Kind::Flag } else { Kind::Number { rust, bits } }
+            if let Some((ty, rust)) = header.field_value_type(structure, &field.name).or_else(|| header.value_type(base)) {
+                Kind::Number { rust, bits, value: Some(ty) }
+            } else if let Some(rust) = number(base) {
+                if rust == "bool" { Kind::Flag } else { Kind::Number { rust, bits, value: None } }
             } else if let Some(inner) = base.strip_prefix("struct ").or_else(|| base.strip_prefix("union ")) {
                 if inner == "pipe_color_union" || (header.unions.iter().any(|union| union == inner) && !inner.contains('.')) {
                     Kind::Color
@@ -301,7 +306,7 @@ fn keys_of(field: &Field, place: &str, siblings: &[Field], depth: usize, out: &m
 fn owned_value(field: &Field, place: &str, siblings: &[Field], depth: usize) -> String {
     if depth < field.dims.len() {
         // A plain array of numbers without a width to check is copied whole.
-        if depth == 0 && matches!(field.kind, Kind::Number { bits: None, .. } | Kind::Color) {
+        if depth == 0 && matches!(field.kind, Kind::Number { bits: None, value: None, .. } | Kind::Color) {
             return place.to_string();
         }
         let element = format!("element{depth}");
@@ -315,9 +320,11 @@ fn owned_value(field: &Field, place: &str, siblings: &[Field], depth: usize) -> 
     }
     let value = if depth > 0 { format!("*{place}") } else { place.to_string() };
     match &field.kind {
-        Kind::Number { rust, bits: Some(bits) } if !rust.starts_with('i') && *bits < 64 => {
-            format!("within({value}, {bits})?")
-        }
+        Kind::Number { rust, bits: Some(bits), value: declared } if !rust.starts_with('i') && *bits < 64 => match declared {
+            Some(ty) => format!("wcontainers_gallium::{ty}(within({value}, {bits})?)"),
+            None => format!("within({value}, {bits})?"),
+        },
+        Kind::Number { value: Some(ty), .. } => format!("wcontainers_gallium::{ty}({value})"),
         Kind::Number { .. } | Kind::Color => value,
         Kind::Flag => format!("flag({value})?"),
         Kind::Object(kind) => format!("held.{}({value})?", crate::names::snake_case(kind)),
@@ -365,7 +372,7 @@ fn c_copy_at(field: &Field, from: &str, to: &str, header: &Header, dim: usize, i
 }
 
 /// Writes flat.h, flat.c (the flattening functions) and flat.rs for the structures the trait layer wrote.
-pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path) -> Result<String, String> {
+pub fn generate(header: &Header, written: &BTreeSet<String>, values: &crate::gallium_values::Values, crate_folder: &Path) -> Result<String, String> {
     let mut writer = Writer { header, done: BTreeSet::new(), c_types: String::new(), rust: String::new(), failures: Vec::new() };
     for name in written {
         writer.structure(name);
@@ -388,6 +395,7 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path
         }
         let _ = writeln!(functions, "void {}_from(const struct {name} *in, struct {} *out)\n{{\n    memset(out, 0, sizeof *out);\n{body}}}\n", c_flat(name), c_flat(name));
     }
+    let (layout_cases, field_rows, left_rows, field_count) = field_layouts(header, &writer.done)?;
     if !writer.failures.is_empty() {
         return Err(format!("GALLIUM GLUE FAILED {}:\n  {}", writer.failures.len(), writer.failures.join("\n  ")));
     }
@@ -400,11 +408,11 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path
     }
     write(
         direct.join("flat.h"),
-        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n#endif\n", writer.c_types),
+        &format!("{HEADER_C}/* Mesa's structures as the glue copies them: no bit-field, no union, every object its address. */\n#ifndef WC_GALLIUM_FLAT_H\n#define WC_GALLIUM_FLAT_H\n\n#include <stddef.h>\n#include <stdint.h>\n\n{}\n/* Each structure Mesa passes, flattened (flat.c). */\n{}\n#endif\n", writer.c_types, writer.done.iter().filter(|name| !name.contains('.')).map(|name| format!("struct {name};\nvoid {}_from(const struct {name} *in, struct {} *out);\n", c_flat(name), c_flat(name))).collect::<String>()),
     )?;
     write(
         direct.join("flat.c"),
-        &format!("{HEADER_C}/* Each structure Mesa passes, copied into its flat form; and each flat form's size, which the Rust side checks. */\n#include <string.h>\n\n#include \"pipe/p_context.h\"\n#include \"pipe/p_defines.h\"\n#include \"pipe/p_screen.h\"\n#include \"pipe/p_state.h\"\n#include \"util/u_transfer_helper.h\"\n\n#include \"flat.h\"\n\n{prototypes}\nsize_t wc_flat_size(unsigned which);\n\n{functions}size_t wc_flat_size(unsigned which)\n{{\n    switch (which) {{\n{sizes}        default: return 0;\n    }}\n}}\n"),
+        &format!("{HEADER_C}/* Each structure Mesa passes, copied into its flat form; and each flat form's size, which the Rust side checks. */\n#include <string.h>\n\n#include \"pipe/p_context.h\"\n#include \"pipe/p_defines.h\"\n#include \"pipe/p_screen.h\"\n#include \"pipe/p_state.h\"\n#include \"util/u_transfer_helper.h\"\n#include \"util/blend.h\"\n#include \"compiler/shader_enums.h\"\n\n#include \"flat.h\"\n\n{prototypes}\nsize_t wc_flat_size(unsigned which);\nsize_t wc_flat_layout(unsigned which, unsigned what);\nint64_t wc_value(unsigned which);\n\n{functions}size_t wc_flat_size(unsigned which)\n{{\n    switch (which) {{\n{sizes}        default: return 0;\n    }}\n}}\n\n/* Field `which` of FIELDS in flat.rs: `what` 0 its offset in the flat form, 1 its size there, 2 its offset in Mesa's\n * structure (from the structure holding it, for a nested one), 3 its size there; a bit-field's Mesa offset and size are\n * WC_BIT_FIELD (no offsetof); a field not listed, WC_NO_FIELD. */\n#define WC_BIT_FIELD ((size_t)-1)\n#define WC_NO_FIELD ((size_t)-2)\nsize_t wc_flat_layout(unsigned which, unsigned what)\n{{\n    switch (which * 4 + what) {{\n{layout_cases}        default: return WC_NO_FIELD;\n    }}\n}}\n\n/* Value `which` of values() in flat.rs, as C computes it from Mesa's headers. */\nint64_t wc_value(unsigned which)\n{{\n    switch (which) {{\n{}        default: return INT64_MIN;\n    }}\n}}\n", crate::gallium_values::c_cases(values)),
     )?;
     let mut size_checks = String::new();
     for (at, name) in size_names.iter().enumerate() {
@@ -412,14 +420,73 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path
     }
     write(
         direct.join("flat.rs"),
-        &format!("{HEADER_RUST}//! Mesa's structures as the glue's C copies them (flat.h): mirrors with C's layout (no bit-field, no union, each\n//! object its key), the keys and client memory each names, and the trait's owned structure made from each.\n\nuse wcontainers_gallium::Gallium;\n\nuse crate::held::{{Held, Keys, ObjectKind, each, flag, within}};\n\n{}/// Each flat form's index in flat.c's `wc_flat_size` and its size in Rust.\npub const SIZES: &[(u32, usize)] = &[\n{size_checks}];\n", writer.rust),
+        &format!("{HEADER_RUST}//! Mesa's structures as the glue's C copies them (flat.h): mirrors with C's layout (no bit-field, no union, each\n//! object its key), the keys and client memory each names, and the trait's owned structure made from each.\n\nuse wcontainers_gallium::Gallium;\n\nuse crate::FieldLayout;\nuse crate::held::{{Held, Keys, ObjectKind, each, flag, within}};\n\n{}/// Each flat form's index in flat.c's `wc_flat_size` and its size in Rust.\npub const SIZES: &[(u32, usize)] = &[\n{size_checks}];\n\n/// Every field of every flat form, in flat.c's `wc_flat_layout` order: its Mesa structure, its name, its offset and size\n/// in the Rust mirror, its width if Mesa declares it a bit-field, and whether its size in Mesa is its size here (a\n/// number, a flag, an object, client memory or a color; not a structure, flattened, nor a bit-field), or at least its\n/// size there (an enumeration, which Mesa may pack).\npub const FIELDS: &[FieldLayout] = &[\n{field_rows}];\n\n/// The fields of Mesa's structures the flat forms do not carry (`FIELDS_LEFT_OUT` of the generator, each with its reason\n/// in interface.rs): with FIELDS, every field of each structure.\npub const LEFT_OUT: &[(&str, &str)] = &[\n{left_rows}];\n\n/// Every declared value of the trait (values.rs) with its C name, in flat.c's `wc_value` order.\npub fn values() -> Vec<(&'static str, i64)> {{\n    vec![\n{}    ]\n}}\n", writer.rust, crate::gallium_values::rust_list(values)),
     )?;
     write(direct.join("implementation.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/implementation.rs")))?;
+    std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
     write(direct.join("held.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/held.rs")))?;
+    write(direct.join("registry.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/registry.rs")))?;
+    let (serve_rust, serve_c, served) = crate::gallium_serve::generate(header)?;
+    write(direct.join("serve.rs"), &serve_rust)?;
+    write(direct.join("serve.c"), &serve_c)?;
+    write(direct.join("caller.c"), &format!("{HEADER_C}{}", include_str!("../templates/gallium/caller.c")))?;
+    write(direct.join("tests").join("served.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/served.rs")))?;
     write(direct.join("build.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/build.rs")))?;
     write(direct.join("Cargo.toml"), include_str!("../templates/gallium/direct.toml"))?;
-    std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
     write(direct.join("tests").join("layouts.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/layouts.rs")))?;
     let counted: Vec<&str> = COUNTED.to_vec();
-    Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function); counted kinds {}\n", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
+    Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function), {field_count} fields; counted kinds {}\n{served}", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
+}
+
+/// The C type of a Mesa structure by the generator's name (`pipe_draw_info.index` is reached from `struct pipe_draw_info`).
+fn mesa_top(header: &Header, name: &str) -> (String, String) {
+    let (top, path) = name.split_once('.').map_or((name, ""), |(top, path)| (top, path));
+    let keyword = if header.unions.iter().any(|union| union == top) { "union" } else { "struct" };
+    (format!("{keyword} {top}"), path.to_string())
+}
+
+/// For every field of every flat form: flat.c's `wc_flat_layout` cases (offset and size in the flat form and in Mesa's
+/// structure, by C's own offsetof and sizeof), flat.rs's FIELDS rows (the same in Rust by offset_of and size_of) and
+/// LEFT_OUT rows, and the count of fields.
+fn field_layouts(header: &Header, done: &BTreeSet<String>) -> Result<(String, String, String, usize), String> {
+    let (mut cases, mut rows, mut left) = (String::new(), String::new(), String::new());
+    let mut which = 0_usize;
+    for name in done {
+        let (mesa, path) = mesa_top(header, name);
+        let flat = c_flat(name);
+        let declared = header.structures.get(name).ok_or_else(|| format!("{name}: no structure read"))?;
+        for field in declared.iter().filter(|field| left_out(name, &field.name).is_some()) {
+            let _ = writeln!(left, "    (\"{name}\", \"{}\"),", field.name);
+        }
+        for field in fields(name, header)? {
+            let bits = declared.iter().find(|declared| declared.name == field.c).and_then(|declared| declared.bits.as_ref()).and_then(|bits| array_length(header, bits.trim()));
+            let member = if path.is_empty() { field.c.clone() } else { format!("{path}.{}", field.c) };
+            let mesa_offset = if path.is_empty() { format!("offsetof({mesa}, {member})") } else { format!("offsetof({mesa}, {member}) - offsetof({mesa}, {path})") };
+            let at = which * 4;
+            let _ = writeln!(cases, "        case {}: return offsetof(struct {flat}, {});", at, field.c);
+            let _ = writeln!(cases, "        case {}: return sizeof(((struct {flat} *)0)->{});", at + 1, field.c);
+            if bits.is_some() {
+                let _ = writeln!(cases, "        case {}: case {}: return WC_BIT_FIELD;", at + 2, at + 3);
+            } else {
+                let _ = writeln!(cases, "        case {}: return {mesa_offset};", at + 2);
+                let _ = writeln!(cases, "        case {}: return sizeof((({mesa} *)0)->{member});", at + 3);
+            }
+            let same_size = bits.is_none() && !matches!(field.kind, Kind::Nested(_));
+            // An enumeration's size is the compiler's (Mesa packs some: `enum mesa_prim` is one byte under GCC and
+            // Clang, p_state.h:864); the flat form holds it in 32 bits, so its size there is at least Mesa's.
+            let declared_base = declared.iter().find(|declared| declared.name == field.c).map(|declared| declared_type(&declared.base)).unwrap_or_default();
+            let at_least = declared_base.starts_with("enum ") || declared_base == "mesa_shader_stage" || declared_base == "gl_shader_stage";
+            let _ = writeln!(
+                rows,
+                "    FieldLayout {{ structure: \"{name}\", field: \"{}\", flat_offset: core::mem::offset_of!({}, {}), flat_size: core::mem::size_of::<{}>(), bits: {}, same_size: {same_size}, at_least: {at_least} }},",
+                field.c,
+                rust_flat(name),
+                field.rust,
+                rust_field_type(&field),
+                bits.unwrap_or(0)
+            );
+            which += 1;
+        }
+    }
+    Ok((cases, rows, left, which))
 }

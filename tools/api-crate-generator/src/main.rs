@@ -13,6 +13,10 @@ mod emit;
 mod gallium;
 mod gallium_glue;
 mod gallium_interface;
+mod gallium_layouts;
+mod gallium_recording;
+mod gallium_serve;
+mod gallium_values;
 mod khronos;
 mod layout;
 mod mapping;
@@ -122,6 +126,24 @@ fn main() -> ExitCode {
             Ok(report) => {
                 print!("{report}");
                 ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("api-crate-generator: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    // The independent count: clang's record layouts of Mesa's headers against the glue test's field rows.
+    if let ("gallium-layouts", [dump, printed]) = (command.as_str(), rest) {
+        let texts: Result<Vec<String>, String> = [dump, printed].iter().map(|path| std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))).collect();
+        return match texts.map(|texts| gallium_layouts::compare(&texts[0], &texts[1])) {
+            Ok(Ok(report)) => {
+                print!("{report}");
+                ExitCode::SUCCESS
+            }
+            Ok(Err(report)) => {
+                print!("{report}");
+                ExitCode::FAILURE
             }
             Err(error) => {
                 eprintln!("api-crate-generator: {error}");

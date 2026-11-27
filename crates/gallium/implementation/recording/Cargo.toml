@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-gallium-recording"
+description = "A Gallium implementation that records every call, for the serving glue's tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-gallium = { path = "../.." }
+wcontainers-mesa-compiler = { path = "../../../mesa-compiler" }
+wcontainers-mesa-compiler-direct = { path = "../../../mesa-compiler/implementation/direct" }
+
+[lints]
+workspace = true

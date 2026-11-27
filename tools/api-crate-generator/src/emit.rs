@@ -103,6 +103,9 @@ enum Typedef {
     Newtype,
 }
 
+/// The named length of each array of a count the header fixes, by name: length, C name, link.
+type NamedLengths = BTreeMap<String, (i128, String, Option<String>)>;
+
 struct Generator<'a> {
     apis: &'a [&'a Api],
     read: metadata::Namespaces,
@@ -121,7 +124,7 @@ struct Generator<'a> {
     /// Root interfaces whose subtree's methods never name `Self::Api`, written without that associated type.
     apiless: RefCell<BTreeSet<Key>>,
     /// Per crate, the named length of each array of a count the header fixes: name, length, C name, link.
-    lengths: RefCell<BTreeMap<usize, BTreeMap<String, (i128, String, Option<String>)>>>,
+    lengths: RefCell<BTreeMap<usize, NamedLengths>>,
     /// Every interface's own methods as the metadata has them, before a slice: the C tables keep every entry.
     all_methods: BTreeMap<Key, Vec<Method>>,
     /// Each method's kinds and treatment (src/kinds.rs), once classified.
@@ -1596,10 +1599,11 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
             let name = generator.record_name(&record_key);
             match record.kind {
                 RecordKind::Enum => generator.enumeration_text(record, &name, &mut enumerations[api]),
-                RecordKind::Typedef => match generator.typedef_form(&record_key) {
-                    Typedef::Newtype => generator.typedef_text(record, &name, &mut structures[api]),
-                    _ => {}
-                },
+                RecordKind::Typedef => {
+                    if let Typedef::Newtype = generator.typedef_form(&record_key) {
+                        generator.typedef_text(record, &name, &mut structures[api]);
+                    }
+                }
                 RecordKind::Struct | RecordKind::Union => generator.record_text(record, &name, api, &mut structures[api]),
                 RecordKind::Delegate => {}
             }
