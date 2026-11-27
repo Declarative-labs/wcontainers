@@ -196,6 +196,7 @@ struct wc_flat_pipe_surface {
 
 /* Mesa's `pipe_framebuffer_state`, flat. */
 struct wc_flat_pipe_framebuffer_state {
+    uint32_t width;
     uint32_t height;
     uint16_t layers;
     uint8_t samples;
@@ -362,6 +363,7 @@ struct wc_flat_pipe_sampler_state {
     uint32_t reduction_mode;
     uint32_t pad;
     float lod_bias;
+    float min_lod;
     float max_lod;
     uint32_t border_color[4];
     uint32_t border_color_format;

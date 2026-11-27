@@ -40,7 +40,7 @@ const SHADERS: &[(&str, &str)] = &[
 const FIELDS_LEFT_OUT: &[(&str, &str, &str)] = &[
     ("pipe_resource", "screen", "the screen that made it: the glue's own, the implementation is the screen"),
     ("pipe_resource", "reference", "Mesa's count: the glue's, as every count (Role::Counts)"),
-    ("pipe_resource", "reference)", "Mesa's count, declared through the EXCLUSIVE_CACHELINE macro (the header reader names it so): the glue's"),
+    ("pipe_resource", "__cl_space", "the padding of the EXCLUSIVE_CACHELINE macro around the count (util/u_memory.h:103): no value"),
     ("pipe_resource", "clientptr_heap", "the frontend's heap of client pointers, which the driver never reads (the glue's, zero)"),
     ("pipe_resource", "next", "a chain of planes the driver makes itself; resource_create's template has none (st_texture.c:106)"),
     ("pipe_sampler_view", "reference", "Mesa's count: the glue's"),
@@ -85,14 +85,9 @@ fn handle(kind: &str, ty: &str) -> String {
     if COUNTED.contains(&kind) { format!("Arc<{ty}>") } else { ty.to_string() }
 }
 
-/// A field's declared type: the header reader gives a second declarator of one declaration (`float min_lod, max_lod;`)
-/// the first's name with its type (`float min_lod,`), dropped here.
+/// A field's declared type, its `const` dropped.
 pub(crate) fn declared_type(base: &str) -> String {
-    let base = base.trim_start_matches("const ").trim();
-    match base.rsplit_once(' ') {
-        Some((ty, last)) if last.ends_with(',') => ty.to_string(),
-        _ => base.to_string(),
-    }
+    base.trim_start_matches("const ").trim().to_string()
 }
 
 /// Parameters Mesa passes as NULL (READ at the callers): a single value becomes an `Option`, a list `Option<&[T]>` with
@@ -104,6 +99,9 @@ const NULLABLE: &[(&str, &str, &str)] = &[
     ("set_shader_buffers", "buffers", "NULL unbinds the slots (st_atom_storagebuf.c)"),
     ("set_shader_images", "images", "NULL unbinds the slots (st_atom_image.c)"),
     ("set_sampler_views", "views", "NULL unbinds the slots (st_atom_texture.c)"),
+    // A query of the pointer's first kind only: render_condition's method for a Query takes None, which ends the
+    // condition; its method for an EndOnlyQuery always has one.
+    ("render_condition", "query", "NULL ends the condition (main/condrender.c:99, st_cb_readpixels.c:148)"),
 ];
 
 fn nullable(pointer: &str, param: &str) -> bool {
@@ -327,6 +325,13 @@ fn on_screen(entry: &Entry) -> bool {
 
 /// The kinds of objects a method reads or takes in place of a C handle: one method per kind.
 fn split_kinds(entry: &Entry) -> Vec<Option<&'static str>> {
+    // A turn that also reads another kind (end_query: an active query turned back, an end-only query only ended) is one
+    // method for the turned kind and one for the read kind.
+    let turned = entry.roles.iter().find_map(|role| if let Role::TurnsOrGivesBack(from, _, _) = role { Some(*from) } else { None });
+    let read = entry.roles.iter().find_map(|role| if let Role::Reads([kind]) = role { Some(*kind) } else { None });
+    if let (Some(turned), Some(read)) = (turned, read) {
+        return vec![Some(turned), Some(read)];
+    }
     for role in entry.roles {
         match role {
             Role::GivesBack(kinds) | Role::Makes(kinds) if kinds.len() > 1 => return kinds.iter().map(|kind| Some(*kind)).collect(),
@@ -380,10 +385,15 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
     let made_kind = || {
         entry.roles.iter().find_map(|role| match role {
             Role::Makes(kinds) => Some(kind.unwrap_or(kinds[0])),
-            Role::Turns(_, to) | Role::TurnsOrGivesBack(_, to) => Some(*to),
+            Role::TurnsOrGivesBack(_, to, _) => Some(*to),
             _ => None,
         })
     };
+    // The kind a turn takes by value, when this method is the turn's (not the read kind's of the same pointer).
+    let turns = entry.roles.iter().find_map(|role| match role {
+        Role::TurnsOrGivesBack(from, to, _) if kind.is_none_or(|k| k == *from) => Some((*from, *to)),
+        _ => None,
+    });
     let names: Vec<String> = function
         .params
         .iter()
@@ -456,14 +466,11 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             ("struct pipe_context", 1) => format!("{name}: Option<&{}>", kind_type("Context", screen)),
             ("struct pipe_query", 1) => {
                 let gives = entry.roles.iter().any(|role| matches!(role, Role::GivesBack(_)));
-                let turns = entry.roles.iter().find_map(|role| match role {
-                    Role::Turns(from, _) | Role::TurnsOrGivesBack(from, _) => Some(*from),
-                    _ => None,
-                });
                 match (turns, kind) {
-                    (Some(from), None) => format!("{name}: {}", kind_type(from, screen)),
-                    (Some(_), Some(k)) | (None, Some(k)) if gives => format!("{name}: {}", kind_type(k, screen)),
-                    (Some(_), Some(k)) | (None, Some(k)) => format!("{name}: &{}", kind_type(k, screen)),
+                    (Some((from, _)), _) => format!("{name}: {}", kind_type(from, screen)),
+                    (None, Some(k)) if gives => format!("{name}: {}", kind_type(k, screen)),
+                    (None, Some(k)) if nullable(entry.pointer, &param.name) && split_kinds(entry).first() == Some(&Some(k)) => format!("{name}: Option<&{}>", kind_type(k, screen)),
+                    (None, Some(k)) => format!("{name}: &{}", kind_type(k, screen)),
                     (None, None) => format!("{name}: &{}", kind_type("Query", screen)),
                 }
             }
@@ -531,11 +538,8 @@ fn signature(entry: &Entry, function: &CFunction, kind: Option<&str>, header: &H
             ("char", 1) => "Vec<u8>".to_string(),
             ("void", 1) if entry.pointer.ends_with("_map") => format!("Option<Mapped<{}>>", kind_type("Mapping", screen)),
             (_, 1) => format!("Option<{}>", kind_type(made_kind().ok_or_else(|| format!("{}: returns an object of no kind", entry.pointer))?, screen)),
-            ("bool", 0) if entry.roles.iter().any(|role| matches!(role, Role::Turns(..))) => {
-                let to = made_kind().unwrap_or("Query");
-                format!("Option<{}>", kind_type(to, screen))
-            }
-            ("bool", 0) => match entry.roles.iter().find_map(|role| if let Role::TurnsOrGivesBack(from, to) = role { Some((*from, *to)) } else { None }) {
+            // A turn that fails hands back what it took: Mesa keeps its handle (each turn's reason in the plan).
+            ("bool", 0) => match turns {
                 Some((from, to)) => format!("Result<{}, {}>", kind_type(to, screen), kind_type(from, screen)),
                 None => "bool".to_string(),
             },
@@ -575,6 +579,12 @@ pub fn generate(in_scope: &str, texts: &[String], out: &std::path::Path) -> Resu
                     let target = if on_screen(entry) { &mut screen_methods } else { &mut context_methods };
                     let of_kind = kind.map(|kind| format!(", on a {kind}")).unwrap_or_default();
                     let _ = writeln!(target, "    /// Mesa's `{}.{}`{of_kind}, called first at {}.", entry.structure, entry.pointer, entry.caller);
+                    if let Some(why) = entry.roles.iter().find_map(|role| match role {
+                        Role::TurnsOrGivesBack(from, _, why) if kind.is_none_or(|k| k == *from) => Some(*why),
+                        _ => None,
+                    }) {
+                        let _ = writeln!(target, "    ///\n    /// A failure hands back what it took: {why}.");
+                    }
                     if arguments > MOST_ARGUMENTS {
                         let _ = writeln!(target, "    #[expect(clippy::too_many_arguments, reason = \"the pointer's parameters, as Mesa's header declares them\")]");
                     }

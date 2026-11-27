@@ -192,11 +192,15 @@ enum ValueForm {
 const GUID_ABI: &str = "component_object_model_direct::GuidAbi";
 
 /// What the glue writes for one method.
+/// A count with a range: the count's index, the most, the start's index, the keep value, and the indices the keep value
+/// leaves unread.
+type CountRange = (usize, u32, Option<usize>, Option<u32>, Vec<usize>);
+
 struct Glued {
     parts: Vec<(String, Part)>,
     /// Counts with a range (an exception line): the count's index, the most, the start's index, the keep value, and
     /// the indices the keep value leaves unread.
-    ranges: Vec<(usize, u32, Option<usize>, Option<u32>, Vec<usize>)>,
+    ranges: Vec<CountRange>,
     status: bool,
     /// A value the method returns, not a status.
     returned: Option<Part>,

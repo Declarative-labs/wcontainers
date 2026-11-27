@@ -30,7 +30,8 @@ pub struct PipeBox {
 /// Mesa's `struct pipe_resource`, owned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResourceTemplate {
-    // `reference)` is not carried: Mesa's count, declared through the EXCLUSIVE_CACHELINE macro (the header reader names it so): the glue's.
+    // `__cl_space` is not carried: the padding of the EXCLUSIVE_CACHELINE macro around the count (util/u_memory.h:103): no value.
+    // `reference` is not carried: Mesa's count: the glue's, as every count (Role::Counts).
     /// The `width0` of `pipe_resource`.
     pub width0: u32,
     /// The `height0` of `pipe_resource`.
@@ -454,6 +455,8 @@ pub struct SamplerState {
     pub pad: u32,
     /// The `lod_bias` of `pipe_sampler_state`.
     pub lod_bias: f32,
+    /// The `min_lod` of `pipe_sampler_state`.
+    pub min_lod: f32,
     /// The `max_lod` of `pipe_sampler_state`.
     pub max_lod: f32,
     /// The `border_color` of `pipe_sampler_state`.
@@ -688,6 +691,8 @@ pub struct ConstantBuffer<'a, Resource> {
 /// Mesa's `struct pipe_framebuffer_state`, owned, each object it names a reference of its kind.
 #[derive(Debug)]
 pub struct FramebufferState<'a, Resource> {
+    /// The `width` of `pipe_framebuffer_state`.
+    pub width: u32,
     /// The `height` of `pipe_framebuffer_state`.
     pub height: u32,
     /// The `layers` of `pipe_framebuffer_state`.
@@ -937,6 +942,8 @@ pub trait GalliumContext: Sized {
     type Screen: Gallium<Context = Self>;
 
     /// Mesa's `pipe_context.begin_query`, called first at mesa/main/performance_monitor.c:198.
+    ///
+    /// A failure hands back what it took: a failed begin leaves q->pq set and free_queries destroys it, never begun (mesa/main/queryobj.c:239 to 247).
     fn begin_query(&self, q: <Self::Screen as Gallium>::Query) -> Result<<Self::Screen as Gallium>::ActiveQuery, <Self::Screen as Gallium>::Query>;
 
     /// Mesa's `pipe_context.bind_blend_state`, called first at gallium/auxiliary/cso_cache/cso_context.c:449.
@@ -1089,8 +1096,13 @@ pub trait GalliumContext: Sized {
     /// Mesa's `pipe_context.draw_vbo`, called first at gallium/auxiliary/cso_cache/cso_context.h:314.
     fn draw_vbo(&self, info: &DrawInfo<'_, <Self::Screen as Gallium>::Resource>, drawid_offset: u32, indirect: Option<&DrawIndirectInfo<'_, <Self::Screen as Gallium>::Resource, <Self::Screen as Gallium>::StreamOutputTarget>>, draws: &[DrawStartCountBias]);
 
-    /// Mesa's `pipe_context.end_query`, called first at mesa/main/performance_monitor.c:223.
-    fn end_query(&self, q: <Self::Screen as Gallium>::ActiveQuery) -> Option<<Self::Screen as Gallium>::Query>;
+    /// Mesa's `pipe_context.end_query`, on a ActiveQuery, called first at mesa/main/performance_monitor.c:223.
+    ///
+    /// A failure hands back what it took: a failed end leaves q->pq set, and st/mesa ends, reads or destroys that same query later (mesa/main/queryobj.c:277 to 282).
+    fn end_query(&self, q: <Self::Screen as Gallium>::ActiveQuery) -> Result<<Self::Screen as Gallium>::Query, <Self::Screen as Gallium>::ActiveQuery>;
+
+    /// Mesa's `pipe_context.end_query`, on a EndOnlyQuery, called first at mesa/main/performance_monitor.c:223.
+    fn end_query_end_only_query(&self, q: &<Self::Screen as Gallium>::EndOnlyQuery) -> bool;
 
     /// Mesa's `pipe_context.flush`, called first at mesa/state_tracker/st_interop.c:438.
     fn flush(&self, flags: u32) -> Option<<Self::Screen as Gallium>::Fence>;
@@ -1120,7 +1132,7 @@ pub trait GalliumContext: Sized {
     fn memory_barrier(&self, flags: u32);
 
     /// Mesa's `pipe_context.render_condition`, on a Query, called first at gallium/auxiliary/cso_cache/cso_context.c:1084.
-    fn render_condition(&self, query: &<Self::Screen as Gallium>::Query, condition: bool, mode: u32);
+    fn render_condition(&self, query: Option<&<Self::Screen as Gallium>::Query>, condition: bool, mode: u32);
 
     /// Mesa's `pipe_context.render_condition`, on a EndOnlyQuery, called first at gallium/auxiliary/cso_cache/cso_context.c:1084.
     fn render_condition_end_only_query(&self, query: &<Self::Screen as Gallium>::EndOnlyQuery, condition: bool, mode: u32);

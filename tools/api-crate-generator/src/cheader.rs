@@ -44,6 +44,9 @@ pub struct Header {
     /// The structures that are unions (a member `union { ... } index;` is recorded as the structure
     /// `pipe_draw_info.index`, a union).
     pub unions: Vec<String>,
+    /// Every member declaration naming several fields (`float min_lod, max_lod;`): the structure and the names, each a
+    /// field of its own. Before 2026-11-27 the reader kept only the last name of such a declaration.
+    pub several_names: Vec<(String, Vec<String>)>,
 }
 
 impl Header {
@@ -333,18 +336,39 @@ fn members(header: &mut Header, name: &str, body: &str) -> Vec<CParam> {
             }
             continue;
         }
+        // Mesa's EXCLUSIVE_CACHELINE(decl) (util/u_memory.h:103) is `union { char __cl_space[MESA_CACHE_LINE_SIZE];
+        // decl; }`, an anonymous union: its two members are the structure's own (p_state.h:572, pipe_resource's count).
+        if let Some(inner) = member.strip_prefix("EXCLUSIVE_CACHELINE(").and_then(|rest| rest.strip_suffix(')')) {
+            fields.push(declaration("char __cl_space[MESA_CACHE_LINE_SIZE]"));
+            fields.push(declaration(inner));
+            continue;
+        }
         if let Some(function) = function_pointer(member) {
             callbacks.push(function);
             continue;
         }
-        let field = declaration(member);
-        if field.pointers == 0
-            && let Some(typed) = header.function_types.get(field.base.trim())
-        {
-            callbacks.push(CFunction { name: field.name.clone(), ..typed.clone() });
-            continue;
+        // One declaration may name several fields (`float min_lod, max_lod;`, `unsigned a:1, b:2;`, `int *p, n;`): each
+        // later declarator takes the first one's type words, not its stars, array or width.
+        let declarators = split_parameters(member);
+        let first = declaration(&declarators[0]);
+        let type_words = first.base.clone();
+        let declared: Vec<CParam> = declarators
+            .iter()
+            .enumerate()
+            .map(|(at, declarator)| if at == 0 { first.clone() } else { declaration(&format!("{type_words} {}", declarator.trim())) })
+            .collect();
+        if declared.len() > 1 {
+            header.several_names.push((name.to_string(), declared.iter().map(|field| field.name.clone()).collect()));
         }
-        fields.push(field);
+        for field in declared {
+            if field.pointers == 0
+                && let Some(typed) = header.function_types.get(field.base.trim())
+            {
+                callbacks.push(CFunction { name: field.name.clone(), ..typed.clone() });
+                continue;
+            }
+            fields.push(field);
+        }
     }
     if !callbacks.is_empty() {
         header.callbacks.entry(name.to_string()).or_default().extend(callbacks);
@@ -472,5 +496,48 @@ pub fn census(header: &Header) -> String {
     for (name, fields) in &header.structures {
         let _ = writeln!(report, "STRUCTURE {name}: {} fields", fields.len());
     }
+    report.push_str(&several_names(header));
     report
+}
+
+/// Every member declaration naming several fields, with the names the reader kept only the last of before 2026-11-27.
+pub fn several_names(header: &Header) -> String {
+    let mut report = String::new();
+    let dropped: usize = header.several_names.iter().map(|(_, names)| names.len() - 1).sum();
+    let _ = writeln!(report, "SEVERAL NAMES: {} declarations, {dropped} fields the reader dropped before (all but the last of each)", header.several_names.len());
+    for (structure, names) in &header.several_names {
+        let _ = writeln!(report, "  {structure}: {} (dropped before: {})", names.join(", "), names[..names.len() - 1].join(", "));
+    }
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read;
+
+    /// Every name of a declaration naming several fields is a field of its own, with the type words of the first and
+    /// its own stars, array and width (the defect of p_state.h:487, `float min_lod, max_lod;`, which lost min_lod).
+    #[test]
+    fn a_declaration_of_several_names_is_a_field_each() {
+        let header = read(&["struct s { float min_lod, max_lod; unsigned a:1, b:3; const int *p, n[4]; struct inner x, *y; bool last; };".to_string()]);
+        type Read = (String, String, usize, Option<String>, Option<String>);
+        let fields: Vec<Read> =
+            header.structures["s"].iter().map(|field| (field.name.clone(), field.base.clone(), field.pointers, field.array.clone(), field.bits.clone())).collect();
+        let expected: Vec<Read> = [
+            ("min_lod", "float", 0, None, None),
+            ("max_lod", "float", 0, None, None),
+            ("a", "unsigned", 0, None, Some("1")),
+            ("b", "unsigned", 0, None, Some("3")),
+            ("p", "const int", 1, None, None),
+            ("n", "const int", 0, Some("4"), None),
+            ("x", "struct inner", 0, None, None),
+            ("y", "struct inner", 1, None, None),
+            ("last", "bool", 0, None, None),
+        ]
+        .iter()
+        .map(|(name, base, pointers, array, bits)| (name.to_string(), base.to_string(), *pointers, array.map(str::to_string), bits.map(str::to_string)))
+        .collect();
+        assert_eq!(fields, expected);
+        assert_eq!(header.several_names.len(), 4);
+    }
 }

@@ -529,7 +529,7 @@ fn egl_body(method: &Method) -> Body {
             },
             Part::Handle { kind, optional } => {
                 let check = match *kind {
-                    "Display" => format!("self.display_address(handle)"),
+                    "Display" => "self.display_address(handle)".to_string(),
                     "Config" => format!("self.config_address(handle, {})", display.clone().unwrap_or_default()),
                     _ => format!("self.held_address(&handle.held, {})", display.clone().unwrap_or_default()),
                 };
@@ -633,7 +633,7 @@ fn method_text(set: &Set, method: &Method) -> String {
     let body = if egl { egl_body(method) } else { gl_body(set, method) };
     let field = method_name(set, &method.command.name);
     let mut text = String::new();
-    let _ = writeln!(text, "    {} {{", signature(set, method, false).replacen("fn ", "fn ", 1).replace("&Fence", "&Fence"));
+    let _ = writeln!(text, "    {} {{", signature(set, method, false));
     if egl {
         let gate = if method.command.name.starts_with("eglDestroy") { "writing" } else { "reading" };
         let _ = writeln!(text, "        let _gate = self.{gate}();");

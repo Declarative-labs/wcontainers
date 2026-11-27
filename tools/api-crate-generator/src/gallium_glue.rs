@@ -388,6 +388,7 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path
         }
         let _ = writeln!(functions, "void {}_from(const struct {name} *in, struct {} *out)\n{{\n    memset(out, 0, sizeof *out);\n{body}}}\n", c_flat(name), c_flat(name));
     }
+    let (layout_cases, field_rows, left_rows, field_count) = field_layouts(header, &writer.done)?;
     if !writer.failures.is_empty() {
         return Err(format!("GALLIUM GLUE FAILED {}:\n  {}", writer.failures.len(), writer.failures.join("\n  ")));
     }
@@ -404,7 +405,7 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path
     )?;
     write(
         direct.join("flat.c"),
-        &format!("{HEADER_C}/* Each structure Mesa passes, copied into its flat form; and each flat form's size, which the Rust side checks. */\n#include <string.h>\n\n#include \"pipe/p_context.h\"\n#include \"pipe/p_defines.h\"\n#include \"pipe/p_screen.h\"\n#include \"pipe/p_state.h\"\n#include \"util/u_transfer_helper.h\"\n\n#include \"flat.h\"\n\n{prototypes}\nsize_t wc_flat_size(unsigned which);\n\n{functions}size_t wc_flat_size(unsigned which)\n{{\n    switch (which) {{\n{sizes}        default: return 0;\n    }}\n}}\n"),
+        &format!("{HEADER_C}/* Each structure Mesa passes, copied into its flat form; and each flat form's size, which the Rust side checks. */\n#include <string.h>\n\n#include \"pipe/p_context.h\"\n#include \"pipe/p_defines.h\"\n#include \"pipe/p_screen.h\"\n#include \"pipe/p_state.h\"\n#include \"util/u_transfer_helper.h\"\n\n#include \"flat.h\"\n\n{prototypes}\nsize_t wc_flat_size(unsigned which);\nsize_t wc_flat_layout(unsigned which, unsigned what);\n\n{functions}size_t wc_flat_size(unsigned which)\n{{\n    switch (which) {{\n{sizes}        default: return 0;\n    }}\n}}\n\n/* Field `which` of FIELDS in flat.rs: `what` 0 its offset in the flat form, 1 its size there, 2 its offset in Mesa's\n * structure (from the structure holding it, for a nested one), 3 its size there; a bit-field's Mesa offset and size are\n * WC_BIT_FIELD (no offsetof); a field not listed, WC_NO_FIELD. */\n#define WC_BIT_FIELD ((size_t)-1)\n#define WC_NO_FIELD ((size_t)-2)\nsize_t wc_flat_layout(unsigned which, unsigned what)\n{{\n    switch (which * 4 + what) {{\n{layout_cases}        default: return WC_NO_FIELD;\n    }}\n}}\n"),
     )?;
     let mut size_checks = String::new();
     for (at, name) in size_names.iter().enumerate() {
@@ -412,7 +413,7 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path
     }
     write(
         direct.join("flat.rs"),
-        &format!("{HEADER_RUST}//! Mesa's structures as the glue's C copies them (flat.h): mirrors with C's layout (no bit-field, no union, each\n//! object its key), the keys and client memory each names, and the trait's owned structure made from each.\n\nuse wcontainers_gallium::Gallium;\n\nuse crate::held::{{Held, Keys, ObjectKind, each, flag, within}};\n\n{}/// Each flat form's index in flat.c's `wc_flat_size` and its size in Rust.\npub const SIZES: &[(u32, usize)] = &[\n{size_checks}];\n", writer.rust),
+        &format!("{HEADER_RUST}//! Mesa's structures as the glue's C copies them (flat.h): mirrors with C's layout (no bit-field, no union, each\n//! object its key), the keys and client memory each names, and the trait's owned structure made from each.\n\nuse wcontainers_gallium::Gallium;\n\nuse crate::FieldLayout;\nuse crate::held::{{Held, Keys, ObjectKind, each, flag, within}};\n\n{}/// Each flat form's index in flat.c's `wc_flat_size` and its size in Rust.\npub const SIZES: &[(u32, usize)] = &[\n{size_checks}];\n\n/// Every field of every flat form, in flat.c's `wc_flat_layout` order: its Mesa structure, its name, its offset and size\n/// in the Rust mirror, its width if Mesa declares it a bit-field, and whether its size in Mesa is its size here (a\n/// number, a flag, an object, client memory or a color; not a structure, flattened, nor a bit-field), or at least its\n/// size there (an enumeration, which Mesa may pack).\npub const FIELDS: &[FieldLayout] = &[\n{field_rows}];\n\n/// The fields of Mesa's structures the flat forms do not carry (`FIELDS_LEFT_OUT` of the generator, each with its reason\n/// in interface.rs): with FIELDS, every field of each structure.\npub const LEFT_OUT: &[(&str, &str)] = &[\n{left_rows}];\n", writer.rust),
     )?;
     write(direct.join("implementation.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/implementation.rs")))?;
     write(direct.join("held.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/held.rs")))?;
@@ -421,5 +422,58 @@ pub fn generate(header: &Header, written: &BTreeSet<String>, crate_folder: &Path
     std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
     write(direct.join("tests").join("layouts.rs"), &format!("{HEADER_RUST}{}", include_str!("../templates/gallium/layouts.rs")))?;
     let counted: Vec<&str> = COUNTED.to_vec();
-    Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function); counted kinds {}\n", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
+    Ok(format!("GALLIUM GLUE: {} flat structures ({} with a flattening function), {field_count} fields; counted kinds {}\n", writer.done.len(), writer.done.iter().filter(|name| !name.contains('.')).count(), counted.join(" ")))
+}
+
+/// The C type of a Mesa structure by the generator's name (`pipe_draw_info.index` is reached from `struct pipe_draw_info`).
+fn mesa_top(header: &Header, name: &str) -> (String, String) {
+    let (top, path) = name.split_once('.').map_or((name, ""), |(top, path)| (top, path));
+    let keyword = if header.unions.iter().any(|union| union == top) { "union" } else { "struct" };
+    (format!("{keyword} {top}"), path.to_string())
+}
+
+/// For every field of every flat form: flat.c's `wc_flat_layout` cases (offset and size in the flat form and in Mesa's
+/// structure, by C's own offsetof and sizeof), flat.rs's FIELDS rows (the same in Rust by offset_of and size_of) and
+/// LEFT_OUT rows, and the count of fields.
+fn field_layouts(header: &Header, done: &BTreeSet<String>) -> Result<(String, String, String, usize), String> {
+    let (mut cases, mut rows, mut left) = (String::new(), String::new(), String::new());
+    let mut which = 0_usize;
+    for name in done {
+        let (mesa, path) = mesa_top(header, name);
+        let flat = c_flat(name);
+        let declared = header.structures.get(name).ok_or_else(|| format!("{name}: no structure read"))?;
+        for field in declared.iter().filter(|field| left_out(name, &field.name).is_some()) {
+            let _ = writeln!(left, "    (\"{name}\", \"{}\"),", field.name);
+        }
+        for field in fields(name, header)? {
+            let bits = declared.iter().find(|declared| declared.name == field.c).and_then(|declared| declared.bits.as_ref()).and_then(|bits| array_length(header, bits.trim()));
+            let member = if path.is_empty() { field.c.clone() } else { format!("{path}.{}", field.c) };
+            let mesa_offset = if path.is_empty() { format!("offsetof({mesa}, {member})") } else { format!("offsetof({mesa}, {member}) - offsetof({mesa}, {path})") };
+            let at = which * 4;
+            let _ = writeln!(cases, "        case {}: return offsetof(struct {flat}, {});", at, field.c);
+            let _ = writeln!(cases, "        case {}: return sizeof(((struct {flat} *)0)->{});", at + 1, field.c);
+            if bits.is_some() {
+                let _ = writeln!(cases, "        case {}: case {}: return WC_BIT_FIELD;", at + 2, at + 3);
+            } else {
+                let _ = writeln!(cases, "        case {}: return {mesa_offset};", at + 2);
+                let _ = writeln!(cases, "        case {}: return sizeof((({mesa} *)0)->{member});", at + 3);
+            }
+            let same_size = bits.is_none() && !matches!(field.kind, Kind::Nested(_));
+            // An enumeration's size is the compiler's (Mesa packs some: `enum mesa_prim` is one byte under GCC and
+            // Clang, p_state.h:864); the flat form holds it in 32 bits, so its size there is at least Mesa's.
+            let declared_base = declared.iter().find(|declared| declared.name == field.c).map(|declared| declared_type(&declared.base)).unwrap_or_default();
+            let at_least = declared_base.starts_with("enum ") || declared_base == "mesa_shader_stage" || declared_base == "gl_shader_stage";
+            let _ = writeln!(
+                rows,
+                "    FieldLayout {{ structure: \"{name}\", field: \"{}\", flat_offset: core::mem::offset_of!({}, {}), flat_size: core::mem::size_of::<{}>(), bits: {}, same_size: {same_size}, at_least: {at_least} }},",
+                field.c,
+                rust_flat(name),
+                field.rust,
+                rust_field_type(&field),
+                bits.unwrap_or(0)
+            );
+            which += 1;
+        }
+    }
+    Ok((cases, rows, left, which))
 }
