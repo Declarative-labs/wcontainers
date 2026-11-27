@@ -8,6 +8,183 @@ byte-identical to his main (MEASURED: `git diff --stat owner/main HEAD` over tho
 
 Marks: MEASURED (run on a rented machine, the command given), READ (read in a file), INFERRED (not run).
 
+## X2, 2026-11-27: the list merged, a 2^48 space, the linter, the presented chip, the costs (newest; older sections follow)
+
+His main `ac696ea19` is still in the branch (MEASURED: `git fetch <his checkout> main`, FETCH_HEAD `ac696ea19`, nothing to
+merge). Every owner interface file is byte-identical to his main (MEASURED: `git diff ac696ea19 HEAD` over each
+`crates/*/interface.rs` of his main is empty). Commits, all pushed: `1242fecd5` merges `arm64-instructions` 079919923;
+`b9257a686` adds the access cost test; `732842ebf` the translator's address windows; `733297805` the executor's windows;
+`dac03cd41` their tests; `5c7f30eb7` the linter work.
+
+### 1. `arm64-instructions-for-wasmtime` merged into `arm64-instructions`
+
+`arm64-instructions` 39ec6ca78 -> `233a8e39b` (normal merge of aba673597, "merge arm64-instructions-for-wasmtime into
+arm64-instructions"), `4caea397f` (the build script as rustfmt wants it), `079919923` (the Apple M5 and Neoverse V2 chip
+crates name no reservation granule: `reservation_granule_bytes: None`, as their other unmeasured choices). Pushed.
+
+MEASURED on Graviton4 at `079919923` (log `fetched/list-merge/bar.log`, `tests.log`):
+
+| Run | Result |
+|---|---|
+| `cargo fmt --check` of the arm64, Apple M5, Neoverse V2, collected and measured crates | 0 (build.rs:231 fixed) |
+| clippy `-D warnings`, same crates, all targets | 0 |
+| `cargo check` of the Apple M5 and Neoverse V2 crates | 0 (they did not build before) |
+| whole list through the owner's `measure_instructions` (`this_chip_measures_as_its_baked_sample`, `CriticalValueCut`) | passes in 285 s: the fresh measurement of every listed instruction equals the baked Neoverse V2 sample, and `measure_instructions` returns no error, so no instruction disagrees; the sample holds all 4,430 listed instructions (`every_arm64_sample_holds_each_listed_instruction...` passes) |
+| planted-bug harness (`planted_bugs`, one core) | 669 of 671 caught in 99 s, the same as at 39ec6ca78 (missed: 508 pointer authentication, 3618 SVE as before) |
+| tests of the five crates, `--no-fail-fast` | all pass except `agrees_with_recordings` in Apple M5 and Neoverse V2, which compares their ten hand-written instructions with a recording of all 4,430; it failed the same way when those crates were restored (orchestrator log line 2078) |
+
+`cargo fmt --check` of the whole workspace still differs in other tracks' files (x86 crates, direct3d-12, volatile-bytes
+tests, two owner interface files `precise-instruction-set/interface.rs` and `privilege-level/interface.rs`); none is
+mine and none was touched.
+
+### 2. The top page of a 2^48 space: address windows
+
+A space has the 2^48 bytes of a 48-bit virtual address. The design (contract in `crates/translator/src/contract.rs`,
+"Address windows"):
+
+- The addresses are cut into windows of 4 GiB (65,536 windows). The guest memory (the WebAssembly memory) holds eight
+  of them, each at a place followed by 64 KiB whose first page shows the next window's first page. Window 0 is always
+  at place 0; any other window gets a place when one of its addresses is first given bytes or permissions.
+- The window table (65,537 i64s in the state memory, ending where the permission table starts) gives each window's
+  place; a window with none gives a place past the permission table, whose pages allow nothing.
+- What the generated code does to an address: nothing new on the fast path. The fast permission test reads the
+  permission byte of the address as computed, but only within window 0's pages; any other address fails it. Its slow
+  path untags the address as before and then places it: `place = table[min(address >> 32, 65536)] + (address &
+  0xffff_ffff)` (one i64 load from the state memory, nine more operations), checks the place exactly, and the access
+  uses the place. A fault is reported at the address as the program computed it. Group checks, frame checks, kept runs
+  and loop proofs (which use the address as computed) are limited to window 0, so an address outside it never skips its
+  check. An access across the end of a window reaches the next window's first page through the page after the place.
+- The switch is the ARM64 offer: `Offer { addresses: Addresses::Windows, .. }`, which this executor gives
+  (`Guest::address_windows`, default false). With the default offer the translator's output is byte-identical
+  (MEASURED x86-64: `WC_OUTPUT_SETS=bench` output test, 505 modules, sha256 `62764764...2396` at `b9257a686` and with
+  the change).
+- The executor keeps page records, backings and permission bytes by place, splits every range at window ends, and
+  borrows in one part per window. A ninth window is refused (`InvalidAddressError` from `set_permissions` and `borrow`,
+  `OutOfMemory` from `map_from` and `copy_from`). Code still runs only below the array of slots' cover (just under
+  4 GiB): the list's unexecutable state stays the one past it. The exclusive monitor's address is given back as the
+  address, not the place.
+
+What it costs per access (`tests/access_cost.rs`, fastest of 5 runs of 50,000,000 rounds, minus the same loop without
+the accesses; MEASURED at `b9257a686` before and `dac03cd41` after):
+
+| Loop | ARM64 before | ARM64 after | x86-64 before | x86-64 after |
+|---|---|---|---|---|
+| load, add, store one word, below 4 GiB (0x20000) | 0.54 ns | 0.54 ns | 0.00 ns | 0.00 ns |
+| the same at 0x1_0001_0000 (window 1) | refused | 2.80 ns | refused | 2.76 ns |
+| the same on the top page (0xffff_ffff_f000) | refused | 2.76 ns | refused | 2.76 ns |
+| each word of a page in turn, below 4 GiB | 0.45 ns | 0.63 ns | 0.78 ns | 0.91 ns |
+| the same in window 1 | refused | 3.96 ns | refused | 3.57 ns |
+| the same on the top page | refused | 3.94 ns | refused | 3.55 ns |
+| trap cost (`tests/trap_cost.rs`) | 80.8 ns | 80.8 ns | 73.6 ns | 70.9 ns |
+
+Below 4 GiB the code is unchanged (the before and after rows differ within the noise of a loaded machine, the ARM64 one
+at load 95 to 125). Outside window 0 every access takes the slow path, about 2.8 ns more; a kept run or group check
+there would remove most of it, which is the next speed step (it changes window 0's code too).
+
+The bar at `dac03cd41` (MEASURED):
+
+| Run | ARM64 (Graviton4) | x86-64 |
+|---|---|---|
+| executor suite without the full-list tests | 23 of 23 | 23 of 23 |
+| `tests/windows.rs` (top page, across a window's end both ways, faults, monitor, copy and map, ninth window) | 7 of 7 | 7 of 7 |
+| slice 1, time slice 4, volatile-bytes 5, `wasmtime-direct` 5 | pass | pass |
+| full list (`agrees` and `behavior_source`, `CriticalValueCut`) | **0 disagree**: 5 of 5 (`agrees_with_precise_instruction_set` and the behavior-source suite 4 of 4) in 6,491 s at load 84 to 125 | **0 disagree**: 5 of 5 in 4,754 s |
+| containers through the kernel harness (tree = `dac03cd41` + `origin/kernel-port` f02018c89, `--features runtime`) | hello 1 of 1; busybox 3 of 4, the same 2 of 35 host-specific commands (`/proc/config.gz`, `/proc/sys`); counterclock 2 of 2 | not run |
+
+At the tip `5c7f30eb7` (the linter work only) on x86-64: fmt 0, clippy `-D warnings` 0 over the translator, guest-cpu,
+arm64, x86, executor and wasmtime crates, the suite 23 of 23 and windows 7 of 7, the translator's and arm64's tests pass
+(MEASURED, `fetched/run10-x86/20261127-143058-20768.log`). The generator's states hold no address above 4 GiB (the slice
+test: 78,836 states, 0 refused, before and after), so the full list does not reach outside window 0; `tests/windows.rs`
+does.
+
+Logs: `fetched/run10-arm/`, `fetched/run10-x86/`.
+
+### 3. The linter (`cargo reviewable check`, reviewable-rust da55b9d7, no model key)
+
+Findings in my two crates, MEASURED on Graviton4 (whole workspace run, findings by path). Before: 409 at `53cbce1e9`
+(161 waiting on the model); 463 on the windows work before this pass (`fetched/lint10/`). After, at `5c7f30eb7`
+(`fetched/lint12/`):
+
+| Rule | At `5c7f30eb7` | Why left |
+|---|---|---|
+| `summary_unanswered`, `name_unanswered` | 243 | the model's answers (no key); the new code added names and summaries |
+| `magic_literal` | 0 (was 75, then 87) | |
+| `number_constant_without_link`, `verb_not_first`, `literal_restates_constant`, `function_summary_not_third_person` | 0 | tuning numbers link to the table below |
+| `summary_not_one_line`, `summary_too_long`, `summary_starts_with_name`, `comment_too_long` | 13 | 11 in `crates/wasmtime/interface.rs` and 2 SAFETY comments of marked uses in the direct crate: the API crate's interface states the contract its marked uses rely on, so its wording is for the owner's review of that crate |
+| `public_outside_interface` | 26 | owner question 5 (how an executor is built: `new`), derives a type adds beyond its trait, and the direct crate's types whose fields must stay private (they hold the host memory) |
+| `conformance_not_run` | 11 | the executor suite's `tests!` takes four values and the behavior-source and volatile-bytes suites run beside it: the suite's shape, not this crate's |
+| `constant_defined_twice` | 14 | each test file is its own crate and cannot name another's constant; four name other crates' constants |
+| `implementation_folder`, `interface_item`, `comment_budget_exceeded` | 4 | `VolatileBytes` implemented outside its interface's folder (the API crate shape), the API crate's re-export and its comments |
+| **all** | **311** (executor 239, `crates/wasmtime` 72) | 243 wait on the model, 68 on the reasons given |
+
+The translator's own new lines (`crates/translator`, the address windows) were not counted here.
+
+### Tuning numbers
+
+Each tuning number's link points here. They were chosen, not measured, unless the row says so.
+
+| Constant | Value | Why |
+|---|---|---|
+| `HOST_WINDOWS` | 8 | Linux places a program's text and heap, its mappings and its stack in three or four windows; eight is 32 GiB of host addresses per space |
+| `KEPT_TRANSLATIONS` | 2^16 | a process may map only so many; the full list makes millions of single-instruction modules |
+| `DEFAULT_SLICE` | 2^22 events | a few milliseconds of a short loop |
+| `SCRATCH_STEPS` | 2^10 | bounds a scratch store's instances and slots |
+| `BLOCKS_BYTES` | 1 MiB | thread blocks of a space |
+| `CHUNK_PAGES`, `COPY_BYTES` | 2^12, 1 MiB | record chunk and copy buffer sizes |
+| `PAGES_BEHIND`, `PAGES_AHEAD` | 1, 4 | the code a run-time translation sees around its start |
+| `CPU_HOOK_ARGUMENTS` | 8 | room for the guest hooks' arguments; a test checks each fits |
+| wasmtime suite `PAGES`, `GUARD_PAGES` | 4, 2 | small memories for the API crate's tests |
+
+### 4. The chip this executor presents
+
+READ from `crates/arm64/src/forms.rs` (`OFFERED_FEATURES`), the list's `PRESENTED_SYSTEM_REGISTERS` and the behaviors the
+full list measured; the ID register fields are INFERRED from the Arm ARM.
+
+| Feature | Presented | Decided by | ID register field | HWCAP |
+|---|---|---|---|---|
+| FEAT_FP, FEAT_AdvSIMD | yes | translator | PFR0.FP = 0, PFR0.AdvSIMD = 0 (no half precision) | `fp`, `asimd` |
+| FEAT_CRC32 | yes | translator | ISAR0.CRC32 = 1 | `crc32` |
+| FEAT_LSE | yes | translator | ISAR0.Atomic = 2 | `atomics` |
+| FEAT_LSE2 | no | a misaligned ordered or atomic access is an alignment fault | MMFR2.AT = 0 | no `uscat` |
+| FEAT_FP16 | no | the half-precision fixed-point conversions are undefined; FPCR keeps no FZ16 | PFR0.FP and AdvSIMD = 0 | no `fphp`, `asimdhp` |
+| FEAT_AES, FEAT_PMULL | no | PMULL of 64-bit elements is undefined | ISAR0.AES = 0 | no `aes`, `pmull` |
+| FEAT_SSBS | no | MRS and MSR of SSBS are undefined | PFR1.SSBS = 0 | no `ssbs` |
+| FEAT_DIT | no | MRS and MSR of DIT are undefined | PFR0.DIT = 0 | no `dit` |
+| FEAT_MTE | no | MRS and MSR of TCO are undefined | PFR1.MTE = 0 | no `mte` (HWCAP2) |
+| FEAT_RNG | no | MRS of RNDR and RNDRRS is undefined | ISAR0.RNDR = 0 | no `rng` (HWCAP2) |
+| AArch32 | no | FPSR's N, Z, C, V read zero | PFR0.EL0 = 1 | none |
+| SHA1/2/3, SM3/4, SVE, PAuth, BTI, DotProd, FCMA, JSCVT, LRCPC, BF16, I8MM | no | not offered | 0 | none |
+| CTR_EL0 | 0x8444_C004 | MRS CTR_EL0 | DIC = 0, IDC = 0 | |
+| DCZID_EL0 | block of 64 bytes (BS = 4) | DC ZVA | | |
+| TPIDRRO_EL0 | 0 | MRS | | |
+| FPCR, FPSR bits held | 0x07C0_0000 (AHP, DN, FZ, RMode); 0x0800_009F (QC and the cumulative flags) | MRS and MSR | | |
+| Addresses | 48 bits (this section's windows) | | MMFR0.PARange is the kernel's | |
+
+For the kernel track: the call of the owner's interfaces that carries this chip is `BehaviorSource::measure_instruction`
+(`crates/behavior-source/interface.rs`, which `Executor` extends): measured on this executor, MRS gives the
+`SystemRegisterChoices` above, a misaligned LDAR the LSE2 answer, SCVTF (fixed point, half) the FP16 answer, PMULL
+(64-bit) the PMULL answer. The kernel turns them into `ProcessorFeatures::Arm64(Arm64Features)`
+(`crates/kernel/arm64_features.rs`) and passes it as `supported` to `ProcessorInputs::choose_processor_features`
+(`crates/system/interface.rs`). No owner call returns `Arm64Features` from an executor directly.
+
+### 5. The trap cost and a kernel call end to end
+
+| | ARM64 (Graviton4) |
+|---|---|
+| one trap, answered from inside the run (`tests/trap_cost.rs`) | 80.8 ns |
+| one `getpid` end to end through the kernel on this executor (throwaway `callcost` guest and test in the kernel harness, 200,000 and 400,000 calls, the difference, median of 5) | 3,629 ns (3,544 ns before the windows, at `b9257a686`) |
+| the same on the stand-in | 21,042 ns (21,004 ns) |
+
+The kernel's own handling, not the trap, is most of a call: 81 ns of the 3.6 microseconds. Logs:
+`fetched/run10-arm/callcost-before.log`, `containers-after.log`. The guest and test are in
+`wcontainers-scratch/executor-wasmtime/callcost/` (not committed: the harness is the kernel track's).
+
+### Next
+
+X2's bar holds by my measurement at `dac03cd41` on both machines; the independent check has not run. Left: the 243 linter findings that wait
+on the model's answers; a kept run outside window 0 (speed); code above 4 GiB (the array of slots covers only the first
+4 GiB). X3 (the stand-in) waits on nothing from this branch.
+
 ## X2, 2026-11-26 evening: the orchestrator's three rulings (newest first; the sections after this one are older)
 
 His main `ac696ea19` is still in the branch (MEASURED: `git fetch <his checkout> main`, FETCH_HEAD `ac696ea19`,
