@@ -56,7 +56,7 @@ pub(crate) struct Translated {
 }
 
 impl Translated {
-    /// How many pieces the translation puts in the lookup table.
+    /// Counts the pieces the translation puts in the lookup table.
     pub(crate) fn pieces(&self) -> usize {
         self.modules.iter().map(|(_, pieces)| pieces.len()).sum()
     }

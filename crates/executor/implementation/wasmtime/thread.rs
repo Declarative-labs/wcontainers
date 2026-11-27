@@ -387,8 +387,9 @@ fn resume(caller: &mut Caller<'_, ThreadData>) -> bool {
     true
 }
 
-/// [`resume`] from a hook that returns no unwind payload: the thread raises its own stop flag to leave at its next stop
-/// check, and stays counted in guest code until then.
+/// Resumes from a hook that returns no unwind payload, as [`resume`] does.
+///
+/// The thread raises its own stop flag to leave at its next stop check, and stays counted in guest code until then.
 fn resume_in_place(caller: &mut Caller<'_, ThreadData>) {
     let seen = caller.data().narrowed_seen;
     enter_guest(caller);
@@ -541,7 +542,7 @@ fn ask<Returned>(
         .expect("the trap handler of the run in progress")
 }
 
-/// The system call hook: the handler's answer goes to x0, or the run ends at the call.
+/// Answers the system call hook: the handler's answer goes to x0, or the run ends at the call.
 fn system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) -> i64 {
     leave_guest(caller.data_mut());
     let first = request.arguments[0].cast_signed();
@@ -578,7 +579,7 @@ fn system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) 
     }
 }
 
-/// The stop hook: a change, an interrupt, the end of a slice, or the end of a step or of a run stopped the thread.
+/// Answers the stop hook: a change, an interrupt, the end of a slice, or the end of a step or run stopped the thread.
 fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
     leave_guest(caller.data_mut());
     let data = caller.data();
@@ -638,8 +639,7 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
     }
 }
 
-/// The memory fault hook: a write to a page holding code drops the code and runs the thread again; any other fault
-/// goes to the handler, which retries the instruction or ends the run at it.
+/// Answers the memory fault hook: a write to code drops the code and runs again; the handler takes any other fault.
 fn memory_fault(caller: &mut Caller<'_, ThreadData>, computed: u64, write: bool) -> i32 {
     leave_guest(caller.data_mut());
     // The hook is given the address as the program computed it, tag and all; the pages and the handler see the address
@@ -697,7 +697,7 @@ fn memory_fault(caller: &mut Caller<'_, ThreadData>, computed: u64, write: bool)
     contract::UNWIND_LEAVE
 }
 
-/// Whether the thread's instruction is DC CVAC or DC CIVAC, whose fault is a data abort of cache maintenance.
+/// Returns whether the thread's instruction is DC CVAC or DC CIVAC, whose fault is a data abort of cache maintenance.
 fn is_cache_maintenance(data: &ThreadData) -> bool {
     let pc = program_counter(data);
     let mut word = [0; INSTRUCTION_BYTES];
@@ -709,7 +709,7 @@ fn is_cache_maintenance(data: &ThreadData) -> bool {
         )
 }
 
-/// The load code hook: puts a piece for the address in place, or ends the run at a fetch fault or the end of a step.
+/// Answers the load code hook: puts a piece for the address in place, or ends the run at a fetch fault or step end.
 fn load_code(caller: &mut Caller<'_, ThreadData>, address: u64, exact: bool) -> i32 {
     leave_guest(caller.data_mut());
     let space = space_of(caller.data());
@@ -827,7 +827,7 @@ fn place_load(
     true
 }
 
-/// The trap hook: the instruction raises its exception, which ends the run.
+/// Answers the trap hook: the instruction raises its exception, which ends the run.
 fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
     leave_guest(caller.data_mut());
     let pc = program_counter(caller.data());
@@ -901,7 +901,7 @@ fn to_system_access(word: u32) -> SystemAccess {
     }
 }
 
-/// The guest's own code changed hook (ARM64 `ic ivau`): drops the code of the line holding the address.
+/// Answers the guest's own code changed hook (ARM64 `ic ivau`): drops the code of the line holding the address.
 fn code_changed(caller: &mut Caller<'_, ThreadData>, address: u64, line: u64) {
     leave_guest(caller.data_mut());
     let data = caller.data();
@@ -914,7 +914,7 @@ fn code_changed(caller: &mut Caller<'_, ThreadData>, address: u64, line: u64) {
     resume_in_place(caller);
 }
 
-/// The guest's own hook at the index: `Guest::run_hook` on the bytes of the thread's state it names.
+/// Answers the guest's own hook at the index with `Guest::run_hook` on the bytes of the thread's state it names.
 fn cpu_hook(
     caller: &Caller<'_, ThreadData>,
     index: CpuHookIndex,
@@ -947,7 +947,7 @@ fn cpu_hook(
     }
 }
 
-/// The WebAssembly type of a hook's parameter or result.
+/// Converts a hook's parameter or result type to wasmtime's.
 fn val_type(ty: wasm_encoder::ValType) -> ValType {
     match ty {
         wasm_encoder::ValType::I32 => ValType::I32,
@@ -956,7 +956,7 @@ fn val_type(ty: wasm_encoder::ValType) -> ValType {
     }
 }
 
-/// The hooks of one store, by import name.
+/// Makes the hooks of one store, by import name.
 fn make_hooks(store: &mut Store<ThreadData>) -> Vec<(&'static str, Func)> {
     let mut hooks = vec![
         (
