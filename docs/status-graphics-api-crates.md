@@ -1079,6 +1079,53 @@ corpus tests: lavapipe.rs 17, llvmpipe.rs 39; 115 in all on graphics-layout; MEA
 of 051b56c5f (38 methods, `MesaCompiler + Clone`, wc_nir_* names); the typed trait of d6e535461 replaces it, so its
 nir needs the move to the 14 methods (the walk of the suite, conformance/suite.rs, is the pattern).
 
+## AC8, started: Gallium's trait planned with its objects typed from the start (2026-11-27)
+
+Scope: the function pointers our OpenGL driver sets (READ graphics-implementations 92cfc5a76, crates/opengl/src: 11 of
+pipe_screen, 84 of pipe_context, and u_transfer_helper's transfer_map, transfer_unmap and transfer_flush_region),
+listed in tools/api-crate-generator/inputs/gallium/in-scope.txt. A pointer our driver leaves null is not offered.
+
+`src/gallium.rs` (command `gallium-plan`) gives each pointer its roles over 21 kinds of object, each an associated type
+of the trait to come: Screen, Context, Resource, Fence, the five states (Blend, DepthStencilAlpha, Rasterizer, Sampler,
+VertexElements), one shader type per stage (VertexShader, FragmentShader, GeometryShader, TessControlShader,
+TessEvaluationShader, ComputeShader; each made from mesa-compiler's `Received` of that stage, so a program made for
+one stage cannot be bound at another and the NIR the driver gets is the type received_prepare takes), SamplerView,
+StreamOutputTarget, Query, ActiveQuery, EndOnlyQuery and Mapping. Roles: makes (returned by value), gives back (taken
+by value), binds (`Option<&K>` at slots), turns (begin_query takes a Query and gives an ActiveQuery; end_query the
+reverse), reads (by reference), counts (fence_reference, the views' and resources' release: the last release ends the
+object). Orders taken from Mesa's callers (READ Mesa 26.3.1): the cso context deletes no bound blend, depth-stencil,
+rasterizer or vertex elements state (cso_context.c:137 to 169) but may delete a bound sampler (same place, "nothing to
+do for samplers"), so the glue keeps a bound object alive until it is unbound; a timestamp query is only ended
+(queryobj.c:269 to 277), hence EndOnlyQuery; DeleteQueries ends an active query first (queryobj.c:676 to 687) but the
+context's teardown destroys one without (queryobj.c:1403 to 1417), so destroy_query takes an ActiveQuery too. Every
+pointer names its first caller in Mesa (file:line), found by grep over st/mesa, main, the cso context, util and the DRI
+front end (wcontainers-scratch/graphics-api-crates/ac8/callers.txt).
+
+The C front end (src/cheader.rs) now reads what Gallium's headers are written in: structures and unions nested in
+others (`union { ... } index` as the structure `pipe_draw_info.index`, one copy per declarator of `struct { ... } dst,
+src`), bit-fields, unnamed parameters (`struct pipe_context *`), `static inline` bodies, and the conditionals (GCC,
+little-endian and POSIX hold; C++, big-endian and Windows do not).
+
+MEASURED at d07d2b122 (pushed; x86-64 job gac-s, log wcontainers-scratch/graphics-api-crates/ac8/plan-d07d2b122.log):
+generator build with no warning, its 17 tests; the Mesa compiler's crates written twice IDENTICAL and SAME AS WRITTEN
+(the front end's changes leave them as they were); census of the headers: pipe_context 151 function pointers,
+pipe_screen 81 (232; the brief's 234 counted two typedefs), 128 parameter types; **plan status 0**: 98 pointers planned,
+each once, each found in its structure (u_transfer_vtbl read from u_transfer_helper.h), every kind made and given back
+by some pointer; **UNMAPPED 0**: every parameter and return by a row of the Gallium rule (number by value 90, the context
+87, nothing 68, an object by reference or taken 31, plain data copied 21 + 1 exception, an object of the pointer's kind
+21, an object made 16, a declared value checked 11, the library 11, plain data naming objects 9, a program (Received) 6,
+and the rest below 4), five exception lines (two surfaces and a box Mesa passes as non-const but only reads; two of the
+front end's own pointers, carried as numbers and never read). The plain structures the pointers read and the objects
+they name are listed (e.g. pipe_framebuffer_state: cbufs.texture, zsbuf.texture, resolve; pipe_draw_info:
+index.resource, a union with a user pointer).
+
+Next in AC8: interface.rs written from the plan (the kinds as associated types, the plain structures as owned data with
+each handle a reference of its kind, bit-fields as their declared type with the width checked), then the serving glue in
+`gallium/implementation/direct` over bindgen's layouts (as crates/opengl's build.rs takes them), a hostile C caller of
+the 98 pointers and the fuzzing. Open in the plan: pipe_draw_info's user index pointer and pipe_shader_state's
+error_message (a string the driver allocates for Mesa) need their own rows; the driver must not report user index
+buffers for the first to stay out.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
