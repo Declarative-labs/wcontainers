@@ -258,7 +258,7 @@ def main(arguments):
         split = arguments.index("--")
         only = set()
         if "--only" in arguments[:split]:
-            only = {int(n) for n in arguments[arguments.index("--only") + 1].split(",")}
+            only = {int(n) for n in arguments[arguments.index("--only") + 1].split(",") if n.strip()}
         return run(arguments[1], only, arguments[split + 1:])
     print(__doc__)
     return 2
