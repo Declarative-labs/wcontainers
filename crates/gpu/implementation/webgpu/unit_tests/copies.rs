@@ -319,9 +319,9 @@ fn buffers_and_writes_fill_depth_exactly() {
     }
 }
 
-/// Part of a texture of the group copied into part of a depth texture by a draw: `r32float` and
-/// `r32uint` holding float bits into 32-bit depth, and 24-bit depth into 24-bit depth. Texels
-/// outside the rectangle keep their clear.
+/// Part of a texture of the group copied into part of a depth texture by a draw: `r32float`, and
+/// `r32uint` and `r32sint` holding float bits, into 32-bit depth, and 24-bit depth into 24-bit depth.
+/// Texels outside the rectangle keep their clear.
 #[test]
 fn group_textures_copy_into_part_of_depth_exactly() {
     let mut b = device();
@@ -329,7 +329,12 @@ fn group_textures_copy_into_part_of_depth_exactly() {
         let words = source_words(format);
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let sources: &[Format] = match format {
-            Format::Depth32Float => &[Format::R32Float, Format::R32Uint, Format::Depth32Float],
+            Format::Depth32Float => &[
+                Format::R32Float,
+                Format::R32Uint,
+                Format::R32Sint,
+                Format::Depth32Float,
+            ],
             // A combined format is copied with both aspects, only from itself.
             _ => &[format],
         };

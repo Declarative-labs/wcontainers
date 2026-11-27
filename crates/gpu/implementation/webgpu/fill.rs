@@ -19,14 +19,13 @@ pub(crate) const COVER_VERTICES: Range<u32> = 0..3;
 /// Bits of a stencil value: the stencil draw's programs, one a bit.
 const STENCIL_BITS: usize = u8::BITS as usize;
 
-/// The bits of a 32-bit float without its sign: above infinity's, the float is a NaN.
-const FLOAT_MAGNITUDE_MASK: u32 = !(1 << (u32::BITS - 1));
-
 /// Returns WGSL for the depth a draw writes from the float whose bits `bits` gives: a NaN becomes zero, as
-/// plan 4.12 lists, whatever a device's depth clamp does with it (lavapipe makes it one).
+/// plan 4.12 lists, whatever a device's depth clamp does with it (lavapipe makes it one). Bits above
+/// infinity's are a NaN of either sign or a negative value; a negative value becomes zero too, as the
+/// draw's clamp makes it (and -0 zero, which 4.12 allows).
 fn depth_of_float_bits(bits: &str) -> String {
     let infinity = f32::INFINITY.to_bits();
-    format!("select(bitcast<f32>({bits}), 0.0, ({bits} & {FLOAT_MAGNITUDE_MASK}u) > {infinity}u)")
+    format!("select(bitcast<f32>({bits}), 0.0, {bits} > {infinity}u)")
 }
 
 /// The name of the empty fragment stage.
@@ -471,8 +470,8 @@ pub(crate) fn quantise(gpu: &mut WebGpu, target: &PackedTarget) {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 // WebGPU makes multisampled textures only as attachments.
                 usage: wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    .union(wgpu::TextureUsages::TEXTURE_BINDING)
+                    .union(wgpu::TextureUsages::RENDER_ATTACHMENT),
                 view_formats: &[],
             })
         })
@@ -504,8 +503,8 @@ pub(crate) fn quantise(gpu: &mut WebGpu, target: &PackedTarget) {
         dimension: Some(wgpu::TextureViewDimension::D2),
         base_mip_level: target.mip,
         mip_level_count: Some(1),
+        // A 2D view takes one layer.
         base_array_layer: if three_d { 0 } else { target.z },
-        array_layer_count: Some(1),
         ..Default::default()
     });
     let encoder = gpu.encoder();
@@ -611,8 +610,8 @@ pub(crate) fn convert_by_draw(
             }),
             base_mip_level: mip,
             mip_level_count: Some(1),
+            // A 2D or 3D view takes one layer.
             base_array_layer: slice.unwrap_or(0),
-            array_layer_count: Some(1),
             ..Default::default()
         })
     };
@@ -988,10 +987,10 @@ pub(crate) fn depth_by_draw(
 /// The value times 2^-24 is exact and the quotient lies above it by more than half a float step and
 /// at most one, so the nearest float is its bits plus one (zero stays zero); a sum of products may be
 /// regrouped (Mesa does) and WGSL's division may be 2.5 ulp off.
-const NEAREST_OF_UNORM24: &str =
+pub(crate) const NEAREST_OF_UNORM24: &str =
     "bitcast<f32>(bitcast<u32>(f32({V}) * 0x1p-24f) + select(0u, 1u, {V} != 0u))";
 /// Where [`NEAREST_OF_UNORM24`] takes its value.
-const VALUE: &str = "{V}";
+pub(crate) const VALUE: &str = "{V}";
 /// The stored 24-bit value of a sampled depth `v.x`, by [`unorm24_functions`].
 const UNORM24_OF_SAMPLE: &str = "unorm24(v.x)";
 
@@ -1013,7 +1012,7 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
         // its nearest float: the sampled float itself can store as the next value (llvmpipe samples
         // k as k times the rounded reciprocal, up to two float steps above k / (2^24 - 1)).
         DepthSource::Depth24 => {
-            functions = unorm24_functions(gpu);
+            functions = unorm24_functions(gpu.depth24_by_product);
             (
                 "texture_2d<f32>",
                 NEAREST_OF_UNORM24.replace(VALUE, UNORM24_OF_SAMPLE),
@@ -1299,21 +1298,20 @@ pub(crate) fn aspect_by_draw(
 }
 
 /// The 24-bit value stored for a sampled depth `d`, by the device's own conversion: `{SAMPLED}` is the
-/// float the device gives for a stored `c`. Rounding d (2^24 - 1) alone can be one high: in the upper part
-/// of each binade the nearest float and a product with the rounded reciprocal give one float for
-/// neighbouring values, and the product itself rounds (a scan of all 2^24 words under both conversions
-/// found it never one low). So the rounded value and the one below it are each converted as the device
-/// does, the one giving d's bits kept (the rounded value where neither does). Words the device samples
-/// to one float are told apart by [`decide_colliding`].
+/// float the device gives for a stored `c`. Under both conversions d is at least c / (2^24 - 1): c 2^-24
+/// is exact, the quotient lies above it by at most one float step and d by one step or more. So the
+/// product d (2^24 - 1), rounded once, is at least c, and its whole part `e` is c or one high (in the
+/// upper part of each binade neighbouring values give one float). So e and the value below it are each
+/// converted as the device does, the one giving d's bits kept (e where neither does). A sampled depth
+/// is at most 1, so e is at most 2^24 - 1; at 0, `e - 1u` wraps to a word whose float is above 1, which
+/// no sampled depth has. Words the device samples to one float are told apart by [`decide_colliding`].
 const UNORM24_READ: &str = "fn sampled24(c: u32) -> u32 {
     return {SAMPLED};
 }
 fn unorm24(d: f32) -> u32 {
-    let e = min(u32(round(d * {MAX}.0)), {MAX}u);
+    let e = u32(d * {MAX}.0);
     let bits = bitcast<u32>(d);
-    if (sampled24(e) == bits) { return e; }
-    if (e > 0u && sampled24(e - 1u) == bits) { return e - 1u; }
-    return e;
+    return select(e, e - 1u, sampled24(e) != bits && sampled24(e - 1u) == bits);
 }
 ";
 
@@ -1471,7 +1469,7 @@ fn decide_colliding(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: target,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::COPY_SRC),
         view_formats: &[],
     });
     let depth_format = src_tex.format();
@@ -1607,9 +1605,10 @@ fn decide_colliding(
     );
 }
 
-/// Writes the WGSL function `unorm24(d)`: the 24-bit value this device stored for a sampled depth.
-fn unorm24_functions(gpu: &WebGpu) -> String {
-    let sampled = if gpu.depth24_by_product {
+/// Writes the WGSL function `unorm24(d)`: the 24-bit value a device stored for a sampled depth, on a
+/// device sampling by the product ([`SAMPLED_PRODUCT`]) where `by_product`, else by the nearest float.
+pub(crate) fn unorm24_functions(by_product: bool) -> String {
+    let sampled = if by_product {
         SAMPLED_PRODUCT
     } else {
         SAMPLED_NEAREST
@@ -1631,7 +1630,7 @@ fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat)
             format!("u32(round(v.x * {}.0))", u16::MAX),
         ),
         AspectRead::Unorm24 => {
-            functions = unorm24_functions(gpu);
+            functions = unorm24_functions(gpu.depth24_by_product);
             ("texture_2d<f32>", UNORM24_OF_SAMPLE.to_string())
         }
         AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),

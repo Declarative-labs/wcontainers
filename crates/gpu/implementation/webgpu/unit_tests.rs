@@ -53,10 +53,12 @@ mod queries;
 mod bindings;
 mod copies;
 mod depth_probe;
+mod fills;
 mod first_draws;
 mod pulled_costs;
 mod query_sets;
 mod scenes;
+mod unorm24_read;
 mod writes;
 
 use crate::WebGpu;
