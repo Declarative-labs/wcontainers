@@ -307,6 +307,11 @@ shared!(
     a_capture_after_an_indexed_draw_of_its_buffers_in_an_earlier_pass_writes_its_vertices,
     depth_copies_through_buffers_keep_their_pitches_and_values,
     every_24_bit_depth_word_copies_out_as_written,
+    a_24_bit_depth_level_and_a_texel_off_its_origin_copy_out_as_written,
+    depth32float_texels_at_the_floats_of_24_bit_words_copy_out_as_written,
+    the_largest_16_bit_index_without_restart_is_a_vertex,
+    a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written,
+    every_16_bit_depth_word_copies_out_as_written,
 );
 
 thread_local! {

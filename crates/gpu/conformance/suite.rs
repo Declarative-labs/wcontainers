@@ -7301,6 +7301,59 @@ pub fn every_24_bit_depth_word_copies_out_as_written<B: Gpu>(mut b: B) {
     assert!(wrong.is_empty(), "{} words: {wrong:?}", wrong.len());
 }
 
+/// Every one of the 2^16 depth words, written into a 256 by 256 `Depth16Unorm` texture (word i at
+/// texel i) and copied out to a buffer, comes back as written: a back end reading depth by sampling
+/// it finds each word from its float. Every word that came back otherwise is named.
+pub fn every_16_bit_depth_word_copies_out_as_written<B: Gpu>(mut b: B) {
+    let format = Format::Depth16Unorm;
+    if !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
+        return;
+    }
+    let side = 1u32 << 8;
+    let t = texture(
+        &mut b,
+        format,
+        (side, side),
+        1,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let written: Vec<u8> = (0..=u16::MAX).flat_map(u16::to_le_bytes).collect();
+    b.write_texture(
+        &region(&t, 0, 0, 0, 0),
+        extent(side, side, 1),
+        &written,
+        side * 2,
+        side,
+        WriteMode::Ordered,
+    );
+    let size = u64::from(side * side) * 2;
+    let out = buffer(&mut b, size, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    b.copy_texture_to_buffer(
+        &region(&t, 0, 0, 0, 0),
+        &CopyBufferTexture {
+            buffer: &out,
+            offset: 0,
+            row_pitch: side * 2,
+            rows_per_layer: side,
+        },
+        extent(side, side, 1),
+    );
+    let got = read_buffer(&mut b, &out, 0, size);
+    let wrong: Vec<String> = got
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(0..=u16::MAX)
+        .filter_map(|(bytes, word)| {
+            let read = u16::from_le_bytes(*bytes);
+            (read != word).then(|| format!("{word:#06x} read as {read:#06x}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{} words: {wrong:?}", wrong.len());
+    ok(&mut b);
+}
+
 /// Writes `words` into level `mip` of `t` (`side` texels wide and high at that level) and copies
 /// the rectangle at `at` of `size` out of it: the words it reads, a row after another.
 fn depth_words_out<B: Gpu>(
@@ -7466,8 +7519,8 @@ pub fn the_largest_16_bit_index_without_restart_is_a_vertex<B: Gpu>(mut b: B) {
 }
 
 /// After a draw whose viewport's depth range is 0.25 to 0.75, the 24-bit words a device may sample
-/// alike still copy out as written: a back end's own draws for the copy take the full depth range,
-/// whatever the guest's last draw left (`DEPTH24_UNORM` promises the stored word).
+/// alike still copy out as written, whatever depth range the guest's last draw left
+/// (`DEPTH24_UNORM` promises the stored word).
 pub fn a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written<B: Gpu>(mut b: B) {
     const N: u32 = 4;
     let format = Format::Depth24Plus;
@@ -7959,6 +8012,11 @@ macro_rules! tests {
         #[test]
         fn a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written() {
             $crate::a_24_bit_depth_copy_after_a_narrow_depth_range_copies_out_as_written($value);
+        }
+
+        #[test]
+        fn every_16_bit_depth_word_copies_out_as_written() {
+            $crate::every_16_bit_depth_word_copies_out_as_written($value);
         }
 
         $crate::tests!(@StandaloneGpu $standalone_gpu ($value) $(($standalone_gpu_value))?);
