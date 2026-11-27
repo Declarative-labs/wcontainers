@@ -7301,6 +7301,99 @@ pub fn every_24_bit_depth_word_copies_out_as_written<B: Gpu>(mut b: B) {
     assert!(wrong.is_empty(), "{} words: {wrong:?}", wrong.len());
 }
 
+/// Writes `words` into level `mip` of `t` (`side` texels wide and high at that level) and copies
+/// the rectangle at `at` of `size` out of it: the words it reads, a row after another.
+fn depth_words_out<B: Gpu>(
+    b: &mut B,
+    t: &B::Texture,
+    mip: u32,
+    side: u32,
+    words: &[u32],
+    at: (u32, u32),
+    size: (u32, u32),
+) -> Vec<u32> {
+    let written: Vec<u8> = words.iter().copied().flat_map(u32::to_le_bytes).collect();
+    b.write_texture(
+        &region(t, mip, 0, 0, 0),
+        extent(side, side, 1),
+        &written,
+        side * 4,
+        side,
+        WriteMode::Ordered,
+    );
+    // A buffer row of 256 bytes, the pitch every back end copies at.
+    let pitch = 256;
+    let bytes = u64::from(pitch * size.1);
+    let out = buffer(b, bytes, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    b.copy_texture_to_buffer(
+        &region(t, mip, 0, at.0, at.1),
+        &CopyBufferTexture {
+            buffer: &out,
+            offset: 0,
+            row_pitch: pitch,
+            rows_per_layer: size.1,
+        },
+        extent(size.0, size.1, 1),
+    );
+    let got = read_buffer(b, &out, 0, bytes);
+    (0..size.1)
+        .flat_map(|y| (0..size.0).map(move |x| (y * pitch + x * 4) as usize))
+        .map(|at| u32::from_le_bytes(got[at..at + 4].try_into().expect("a word")))
+        .collect()
+}
+
+/// The 24-bit depth words a device may sample alike (2^24 - 2 and 2^24 - 1 both sample to 1.0 where
+/// sampling multiplies by the reciprocal of 2^24 - 1 and rounds), written at level 1 of a
+/// `Depth24Plus` texture, copy out as written: the whole level, and a one-texel rectangle off its
+/// origin, each word in the low 24 bits (`DEPTH24_UNORM` promises the stored word).
+pub fn a_24_bit_depth_level_and_a_texel_off_its_origin_copy_out_as_written<B: Gpu>(mut b: B) {
+    let format = Format::Depth24Plus;
+    if !b.caps().features.contains(Features::DEPTH24_UNORM)
+        || !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT)
+    {
+        return;
+    }
+    let t = texture(
+        &mut b,
+        format,
+        (4, 4),
+        1,
+        2,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let words = [0xff_fffe, 0xff_ffff, 0x00_0001, 0xff_fffe];
+    let low = |got: Vec<u32>| got.into_iter().map(|w| w & 0xff_ffff).collect::<Vec<_>>();
+    let whole = depth_words_out(&mut b, &t, 1, 2, &words, (0, 0), (2, 2));
+    assert_eq!(low(whole), words, "level 1, whole");
+    let one = depth_words_out(&mut b, &t, 1, 2, &words, (1, 1), (1, 1));
+    assert_eq!(low(one), [0xff_fffe], "level 1, the texel at (1, 1)");
+    let one = depth_words_out(&mut b, &t, 1, 2, &words, (1, 0), (1, 1));
+    assert_eq!(low(one), [0xff_ffff], "level 1, the texel at (1, 0)");
+    ok(&mut b);
+}
+
+/// `Depth32Float` texels holding the floats a device stores 24-bit words as (the float just above
+/// 2^24 - 2 over 2^24, 0x3f7f_ffff, and 1.0) copy out as the bits written: a float format's copy
+/// is its bits, whatever words 24-bit depth samples alike.
+pub fn depth32float_texels_at_the_floats_of_24_bit_words_copy_out_as_written<B: Gpu>(mut b: B) {
+    let format = Format::Depth32Float;
+    if !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
+        return;
+    }
+    let t = texture(
+        &mut b,
+        format,
+        (2, 2),
+        1,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let words = [0x3f7f_ffff, 0x3f80_0000, 0x3f7f_fffe, 0x0000_0000];
+    let got = depth_words_out(&mut b, &t, 0, 2, &words, (0, 0), (2, 2));
+    assert_eq!(got, words, "the bits of each float");
+    ok(&mut b);
+}
+
 /// Runs each suite function as its own test on a back end made anew for every test.
 ///
 /// A back end is built alone through [`StandaloneGpu`], so every implementation says `StandaloneGpu: yes`.
@@ -7715,6 +7808,16 @@ macro_rules! tests {
         #[test]
         fn every_24_bit_depth_word_copies_out_as_written() {
             $crate::every_24_bit_depth_word_copies_out_as_written($value);
+        }
+
+        #[test]
+        fn a_24_bit_depth_level_and_a_texel_off_its_origin_copy_out_as_written() {
+            $crate::a_24_bit_depth_level_and_a_texel_off_its_origin_copy_out_as_written($value);
+        }
+
+        #[test]
+        fn depth32float_texels_at_the_floats_of_24_bit_words_copy_out_as_written() {
+            $crate::depth32float_texels_at_the_floats_of_24_bit_words_copy_out_as_written($value);
         }
 
         $crate::tests!(@StandaloneGpu $standalone_gpu ($value) $(($standalone_gpu_value))?);

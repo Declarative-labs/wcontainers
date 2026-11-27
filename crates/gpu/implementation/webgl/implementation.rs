@@ -2243,7 +2243,9 @@ fn decide_colliding<O: OpenGlEs>(
                 depth_or_layers: 1,
                 mip_levels: 1,
                 samples: 1,
-                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                // This back end reads a single-sampled texture's usage nowhere (`make_texture`
+                // checks it only for multisampled ones).
+                usage: TextureUsage::empty(),
                 cube: false,
                 reinterpret: false,
             },

@@ -1068,3 +1068,44 @@ fn buffer_copies_take_each_layer_from_its_rows() {
     eprintln!("seed {seed}: {line}; slow paths {:?}", b.slow_paths());
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// A surface handle the back end never made is refused by each call naming it, with the reason every
+/// such handle is refused for (plan 4.10, `GpuError::GONE`).
+#[test]
+fn a_surface_never_made_is_refused_by_configure_and_present() {
+    let mut b = device();
+    let never = crate::Surface(u64::MAX);
+    assert_eq!(
+        b.configure_surface(&never, Format::Rgba8Unorm, 4, 4, false),
+        Err(wcontainers_gpu::error::GpuError::Invalid(
+            wcontainers_gpu::error::GpuError::GONE
+        ))
+    );
+    assert_eq!(
+        b.present(&never),
+        Err(wcontainers_gpu::error::GpuError::Invalid(
+            wcontainers_gpu::error::GpuError::GONE
+        ))
+    );
+}
+
+/// On a device sampling some 24-bit words alike, the comparison pass's pipeline is made once for each
+/// 24-bit depth format a read compares against (`fill::decide_colliding` keeps it by format): a read of
+/// a format already read makes no pipeline, the first read of the other 24-bit format exactly one.
+#[test]
+fn the_comparison_pass_is_made_once_a_depth_format() {
+    let mut b = device();
+    if b.depth24_colliding.is_empty() {
+        eprintln!("this device samples every 24-bit word as its own float: no comparison pass");
+        return;
+    }
+    let (plain, _) = depth_texture(&mut b, Format::Depth24Plus);
+    let (stencilled, _) = depth_texture(&mut b, Format::Depth24PlusStencil8);
+    read(&mut b, &plain, 4);
+    let before = b.counters().pipelines;
+    read(&mut b, &plain, 4);
+    assert_eq!(b.counters().pipelines, before, "a format read before");
+    read(&mut b, &stencilled, 4);
+    assert_eq!(b.counters().pipelines, before + 1, "the other 24-bit format");
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}

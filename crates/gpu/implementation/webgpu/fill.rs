@@ -1345,7 +1345,9 @@ pub(crate) fn colliding(by_product: bool) -> Vec<u32> {
             let read = |bits: u32| {
                 let e = ((f32::from_bits(bits) * Format::UNORM24_MAX as f32).round() as u32)
                     .min(Format::UNORM24_MAX);
-                if e > 0 && sampled(e) != bits && sampled(e - 1) == bits {
+                // Only word 0 reads as 0, and it samples as its own float, so `e - 1` is never
+                // reached at 0.
+                if sampled(e) != bits && sampled(e - 1) == bits {
                     e - 1
                 } else {
                     e
