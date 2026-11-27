@@ -1794,3 +1794,592 @@ fn every_load_store_operand_list_is_one_the_proven_read_takes() {
     }
     assert!(checked > 100, "{checked} loads and stores");
 }
+
+/// The branch family Arm's decode gives an encoding with these fixed bits, from the
+/// [A64 encoding index](https://developer.arm.com/documentation/ddi0602/latest/Index-by-Encoding)'s fields; none for an
+/// encoding of no family the branch table models. It shares no code with `to_branch_operation`.
+fn to_decoded_branch(fixed: encoding::FixedBits) -> Option<branch::BranchOperation> {
+    use branch::BranchOperation as O;
+    use branch::BranchWhen::{NonZero, Zero};
+    let is = |mask: u32, value: u32| fixed.mask & mask == mask && fixed.value & mask == value;
+    // PC-rel. addressing: op<31>, 10000<28:24>.
+    let address = |op: u32| is(1 << 31 | 0b11111 << 24, op << 31 | 0b10000 << 24);
+    // Unconditional branch (immediate): op<31>, 00101<30:26>.
+    let immediate = |op: u32| is(1 << 31 | 0b11111 << 26, op << 31 | 0b00101 << 26);
+    // Compare and branch (immediate): 011010<30:25>, op<24>; test and branch (immediate): 011011<30:25>, op<24>.
+    let compare = |op: u32| is(0b111_1111 << 24, (0b011010 << 1 | op) << 24);
+    let test = |op: u32| is(0b111_1111 << 24, (0b011011 << 1 | op) << 24);
+    // Unconditional branch (register): 1101011<31:25>, opc<24:21>, op2<20:16> = 11111, op3<15:10>, Rn<9:5>, op4<4:0>.
+    let register = |opc: u32, op3: u32, rn: Option<u32>, op4: Option<u32>| {
+        let rn_mask = if rn.is_some() { 0b11111 << 5 } else { 0 };
+        let op4_mask = if op4.is_some() { 0b11111 } else { 0 };
+        is(
+            0b111_1111 << 25 | 0b1111 << 21 | 0b11111 << 16 | 0b11_1111 << 10 | rn_mask | op4_mask,
+            0b110_1011 << 25
+                | opc << 21
+                | 0b11111 << 16
+                | op3 << 10
+                | rn.unwrap_or(0) << 5
+                | op4.unwrap_or(0),
+        )
+    };
+    // op3 000010 is the A key, 000011 the B key; op4 11111 names no modifier.
+    let (a, b, none) = (0b00_0010, 0b00_0011, Some(0b11111));
+    Some(if address(0) {
+        O::FormAddress
+    } else if address(1) {
+        O::FormPageAddress
+    } else if immediate(0) {
+        O::Branch
+    } else if immediate(1) {
+        O::BranchWithLink
+    // Conditional branch (immediate): 0101010<31:25>, o1<24> = 0, o0<4> = 0 (o0 = 1 is BC.cond).
+    } else if is(0xFF00_0010, 0b0101_0100 << 24) {
+        O::BranchConditionally
+    } else if compare(0) {
+        O::CompareAndBranch(Zero)
+    } else if compare(1) {
+        O::CompareAndBranch(NonZero)
+    } else if test(0) {
+        O::TestBitAndBranch(Zero)
+    } else if test(1) {
+        O::TestBitAndBranch(NonZero)
+    } else if register(0b0000, 0, None, Some(0))
+        || register(0b0000, a, None, none)
+        || register(0b0000, b, None, none)
+        || register(0b1000, a, None, None)
+        || register(0b1000, b, None, None)
+    {
+        O::BranchToRegister
+    } else if register(0b0001, 0, None, Some(0))
+        || register(0b0001, a, None, none)
+        || register(0b0001, b, None, none)
+        || register(0b1001, a, None, None)
+        || register(0b1001, b, None, None)
+    {
+        O::BranchWithLinkToRegister
+    } else if register(0b0010, 0, None, Some(0))
+        || register(0b0010, a, Some(0b11111), none)
+        || register(0b0010, b, Some(0b11111), none)
+    {
+        O::Return
+    } else {
+        return None;
+    })
+}
+
+#[test]
+fn the_branch_table_gives_each_listed_instruction_the_family_arm_decodes() {
+    let mut families = 0;
+    for instruction in LISTED_INSTRUCTIONS {
+        let record = instruction
+            .to_record()
+            .expect("every listed instruction has a record");
+        let decoded = to_decoded_branch(record.fixed_bits);
+        assert_eq!(
+            branch::to_branch_operation(instruction),
+            decoded,
+            "{instruction:?}"
+        );
+        families += usize::from(decoded.is_some());
+    }
+    // ADR, ADRP, B, BL, B.cond, two CBZ, two CBNZ, TBZ, TBNZ, five BR, five BLR and three RET.
+    assert_eq!(families, 24);
+}
+
+#[test]
+fn only_b_cond_reads_the_flags_and_only_bl_and_blr_write_x30() {
+    use Instruction as I;
+    for instruction in LISTED_INSTRUCTIONS {
+        let Some(operation) = branch::to_branch_operation(instruction) else {
+            continue;
+        };
+        // ConditionHolds reads PSTATE.NZCV only in B.cond; BranchType_DIRCALL and BranchType_INDCALL write X30.
+        assert_eq!(
+            operation.reads_condition_flags(),
+            instruction == I::BCond,
+            "{instruction:?}"
+        );
+        assert_eq!(
+            operation.links(),
+            matches!(
+                instruction,
+                I::Bl | I::Blr | I::Blraaz | I::Blrabz | I::Blraa | I::Blrab
+            ),
+            "{instruction:?}"
+        );
+    }
+}
+
+/// The integer operation Arm's decode gives an encoding with these fixed bits, from the
+/// [A64 encoding index](https://developer.arm.com/documentation/ddi0602/latest/Index-by-Encoding)'s fields of Data
+/// Processing -- Immediate, Data Processing -- Register and the PSTATE writes; none for an encoding of no operation the
+/// integer table models. It shares no code with `to_integer_operation`.
+fn to_decoded_integer(fixed: encoding::FixedBits) -> Option<integer::IntegerOperation> {
+    use integer::FlagSetting::{Preserves, Sets};
+    use integer::IntegerOperation as O;
+    use integer::{BitfieldFill, Comparison, CrcPolynomial, SelectAlternative};
+    use operand::Signedness::{Signed, Unsigned};
+    // The bits <high:low>, where every one of them is fixed.
+    let bits = |high: u32, low: u32| {
+        let mask = (u32::MAX >> (31 - high + low)) << low;
+        (fixed.mask & mask == mask).then_some((fixed.value & mask) >> low)
+    };
+    let is = |high: u32, low: u32, value: u32| bits(high, low) == Some(value);
+    let setting = |s: u32| if s == 1 { Sets } else { Preserves };
+    let (sf, op, s) = (bits(31, 31), bits(30, 30), bits(29, 29));
+    // Add/subtract (immediate): op<30>, S<29>, 100010<28:23>.
+    if is(28, 23, 0b10_0010) {
+        return Some(if op? == 0 {
+            O::Add(setting(s?))
+        } else {
+            O::Subtract(setting(s?))
+        });
+    }
+    // Logical (immediate): opc<30:29>, 100100<28:23>.
+    if is(28, 23, 0b10_0100) {
+        return Some(
+            [O::And(Preserves), O::Or, O::ExclusiveOr, O::And(Sets)][bits(30, 29)? as usize],
+        );
+    }
+    // Move wide (immediate): opc<30:29>, 100101<28:23>; opc 01 is unallocated.
+    if is(28, 23, 0b10_0101) {
+        return [
+            Some(O::MoveWideNot),
+            None,
+            Some(O::MoveWideZero),
+            Some(O::MoveWideKeep),
+        ][bits(30, 29)? as usize];
+    }
+    // Bitfield: opc<30:29>, 100110<28:23>; opc 11 is unallocated.
+    if is(28, 23, 0b10_0110) {
+        use BitfieldFill::{DestinationBits, SignBits, Zeros};
+        return [SignBits, DestinationBits, Zeros]
+            .get(bits(30, 29)? as usize)
+            .map(|&fill| O::Bitfield(fill));
+    }
+    // Extract: op21<30:29> = 00, 100111<28:23>, o0<21> = 0.
+    if is(28, 23, 0b10_0111) && is(30, 29, 0) && is(21, 21, 0) {
+        return Some(O::Extract);
+    }
+    // Logical (shifted register): opc<30:29>, 01010<28:24>, N<21>.
+    if is(28, 24, 0b01010) {
+        let operations = [
+            [O::And(Preserves), O::AndNot(Preserves)],
+            [O::Or, O::OrNot],
+            [O::ExclusiveOr, O::ExclusiveOrNot],
+            [O::And(Sets), O::AndNot(Sets)],
+        ];
+        return Some(operations[bits(30, 29)? as usize][bits(21, 21)? as usize]);
+    }
+    // Add/subtract (shifted register): 01011<28:24>, 0<21>; (extended register): 01011<28:24>, opt<23:22> = 00, 1<21>.
+    if is(28, 24, 0b01011) && (is(21, 21, 0) || (is(21, 21, 1) && is(23, 22, 0))) {
+        return Some(if op? == 0 {
+            O::Add(setting(s?))
+        } else {
+            O::Subtract(setting(s?))
+        });
+    }
+    // Data-processing (2 source): op0<30> = 0, S<29> = 0, 11010110<28:21>, opcode<15:10>.
+    if is(28, 21, 0b1101_0110) && op == Some(0) && s == Some(0) {
+        let opcode = bits(15, 10)?;
+        return match opcode {
+            0b00_0010 => Some(O::Divide(Unsigned)),
+            0b00_0011 => Some(O::Divide(Signed)),
+            0b00_1000 => Some(O::ShiftLeftVariable),
+            0b00_1001 => Some(O::ShiftRightLogicalVariable),
+            0b00_1010 => Some(O::ShiftRightArithmeticVariable),
+            0b00_1011 => Some(O::RotateRightVariable),
+            // CRC32 and CRC32C: 010<15:13>, C<12>, sz<11:10>.
+            0b01_0000..=0b01_0111 => Some(O::Crc32 {
+                polynomial: if opcode & 0b100 == 0 {
+                    CrcPolynomial::Crc32
+                } else {
+                    CrcPolynomial::Crc32C
+                },
+                bytes: 1 << (opcode & 0b11),
+            }),
+            _ => None,
+        };
+    }
+    // Data-processing (1 source): op0<30> = 1, S<29> = 0, 11010110<28:21>, opcode2<20:16> = 00000, opcode<15:10>.
+    if is(28, 21, 0b1101_0110) && op == Some(1) && s == Some(0) && is(20, 16, 0) {
+        return match (bits(15, 10)?, sf?) {
+            (0b00_0000, _) => Some(O::ReverseBits),
+            (0b00_0001, _) => Some(O::ReverseBytes { container_bits: 16 }),
+            // REV32 of an X register and REV of a W register.
+            (0b00_0010, _) => Some(O::ReverseBytes { container_bits: 32 }),
+            (0b00_0011, 1) => Some(O::ReverseBytes { container_bits: 64 }),
+            (0b00_0100, _) => Some(O::CountLeadingZeros),
+            (0b00_0101, _) => Some(O::CountLeadingSignBits),
+            _ => None,
+        };
+    }
+    if is(28, 21, 0b1101_0000) {
+        // Rotate right into flags: sf op S = 1 0 1, imm6, 00001<14:10>, Rn, o2<4> = 0, mask.
+        if sf == Some(1) && op == Some(0) && s == Some(1) && is(14, 10, 0b00001) && is(4, 4, 0) {
+            return Some(O::RotateMaskInsertFlags);
+        }
+        // Evaluate into flags: sf op S = 0 0 1, opcode2<20:15> = 0, sz<14>, 0010<13:10>, Rn, o3<4> = 0, mask = 1101.
+        if sf == Some(0)
+            && op == Some(0)
+            && s == Some(1)
+            && is(20, 15, 0)
+            && is(13, 10, 0b0010)
+            && is(4, 0, 0b0_1101)
+        {
+            return Some(O::SetFlags {
+                bits: if bits(14, 14)? == 0 { 8 } else { 16 },
+            });
+        }
+        // Add/subtract (with carry): op3<15:10> = 000000.
+        if is(15, 10, 0) {
+            return Some(if op? == 0 {
+                O::AddWithCarry(setting(s?))
+            } else {
+                O::SubtractWithCarry(setting(s?))
+            });
+        }
+        return None;
+    }
+    // Conditional compare (register and immediate): op<30>, S<29> = 1, 11010010<28:21>, o2<10> = 0, o3<4> = 0.
+    if is(28, 21, 0b1101_0010) && s == Some(1) && is(10, 10, 0) && is(4, 4, 0) {
+        return Some(O::ConditionalCompare(if op? == 0 {
+            Comparison::Sum
+        } else {
+            Comparison::Difference
+        }));
+    }
+    // Conditional select: op<30>, S<29> = 0, 11010100<28:21>, op2<11:10>.
+    if is(28, 21, 0b1101_0100) && s == Some(0) {
+        use SelectAlternative::{Increment, Invert, Negate, Select};
+        let alternatives = [
+            [Some(Select), Some(Increment), None, None],
+            [Some(Invert), Some(Negate), None, None],
+        ];
+        return alternatives[op? as usize][bits(11, 10)? as usize].map(O::ConditionalSelect);
+    }
+    // Data-processing (3 source): op54<30:29> = 00, 11011<28:24>, op31<23:21>, o0<15>.
+    if is(28, 24, 0b11011) && is(30, 29, 0) {
+        return match (bits(23, 21)?, bits(15, 15)?) {
+            (0b000, 0) => Some(O::MultiplyAdd),
+            (0b000, 1) => Some(O::MultiplySubtract),
+            (0b001, 0) => Some(O::MultiplyAddLong(Signed)),
+            (0b001, 1) => Some(O::MultiplySubtractLong(Signed)),
+            (0b010, 0) => Some(O::MultiplyHigh(Signed)),
+            (0b101, 0) => Some(O::MultiplyAddLong(Unsigned)),
+            (0b101, 1) => Some(O::MultiplySubtractLong(Unsigned)),
+            (0b110, 0) => Some(O::MultiplyHigh(Unsigned)),
+            _ => None,
+        };
+    }
+    // PSTATE: MSR (immediate) with op1 = 000, CRn = 0100, CRm<11:8> should be 0000, Rt = 11111; op2<7:5> 000 CFINV,
+    // 001 XAFLAG, 010 AXFLAG.
+    let pstate = |op2: u32| is(31, 12, 0b1101_0101_0000_0000_0100) && is(7, 0, op2 << 5 | 0b11111);
+    if pstate(0b000) {
+        return Some(O::InvertCarry);
+    }
+    if pstate(0b001) {
+        return Some(O::ConvertFlagsFromExternalFormat);
+    }
+    if pstate(0b010) {
+        return Some(O::ConvertFlagsToExternalFormat);
+    }
+    None
+}
+
+#[test]
+fn the_integer_table_gives_each_listed_instruction_the_operation_arm_decodes() {
+    let mut operations = 0;
+    for instruction in LISTED_INSTRUCTIONS {
+        let record = instruction
+            .to_record()
+            .expect("every listed instruction has a record");
+        let decoded = to_decoded_integer(record.fixed_bits);
+        assert_eq!(
+            integer::to_integer_operation(instruction),
+            decoded,
+            "{instruction:?} ({})",
+            record.mnemonic
+        );
+        operations += usize::from(decoded.is_some());
+    }
+    assert!(operations > 100, "{operations} integer instructions");
+}
+
+#[test]
+fn integer_instructions_read_the_flags_and_their_register_as_the_manual_says() {
+    for instruction in LISTED_INSTRUCTIONS {
+        let Some(operation) = integer::to_integer_operation(instruction) else {
+            continue;
+        };
+        let mnemonic = instruction.to_record().expect("listed").mnemonic;
+        let inputs = operation.to_implicit_inputs();
+        // PSTATE.NZCV is read by the forms with carry, the conditional selects and compares, and the instructions that
+        // change only some flags or convert them; X[d] by MOVK and BFM, which keep part of it.
+        let reads_flags = [
+            "adc", "adcs", "sbc", "sbcs", "csel", "csinc", "csinv", "csneg", "ccmn", "ccmp",
+            "rmif", "setf8", "setf16", "cfinv", "axflag", "xaflag",
+        ]
+        .contains(&mnemonic);
+        assert_eq!(inputs.condition_flags, reads_flags, "{instruction:?}");
+        assert_eq!(
+            inputs.destination,
+            ["movk", "bfm"].contains(&mnemonic),
+            "{instruction:?}"
+        );
+        assert!(
+            !inputs.program_counter && !inputs.floating_point_control,
+            "{instruction:?}"
+        );
+    }
+}
+
+/// The load or store Arm's decode gives an encoding of general-purpose or SIMD and floating-point registers with these
+/// fixed bits, from the [A64 encoding index](https://developer.arm.com/documentation/ddi0602/latest/Index-by-Encoding)'s
+/// fields of Loads and Stores and its pointer authentication loads: what it transfers, the bytes of each register, and
+/// where an ordered, atomic or exclusive access must lie; none for an encoding of no load or store the table models. It
+/// shares no code with `to_load_store_operation`.
+fn to_decoded_load_store(fixed: encoding::FixedBits) -> Option<load_store::LoadStoreOperation> {
+    use load_store::AtomicOperation::{
+        Add, Clear, ExclusiveOr, Set, SignedMaximum, SignedMinimum, Swap, UnsignedMaximum,
+        UnsignedMinimum,
+    };
+    use load_store::{Alignment, AtomicOperation, LoadStoreOperation, Transfer};
+    use operand::Signedness::{Signed, Unsigned};
+    let bits = |high: u32, low: u32| {
+        let mask = (u32::MAX >> (31 - high + low)) << low;
+        (fixed.mask & mask == mask).then_some((fixed.value & mask) >> low)
+    };
+    let is = |high: u32, low: u32, value: u32| bits(high, low) == Some(value);
+    // A field the manual writes as (1)(1)(1)(1)(1): ones where the list fixes it, and should-be ones where it does not.
+    let ones = |high: u32, low: u32| {
+        bits(high, low).is_none_or(|value| value == (1 << (high - low + 1)) - 1)
+    };
+    let operation = |transfer, bytes, alignment| {
+        Some(LoadStoreOperation {
+            transfer,
+            bytes,
+            alignment,
+        })
+    };
+    // size<31:30> gives the bytes of a general-purpose access.
+    let size_bytes = || bits(31, 30).map(|size| 1 << size);
+    // A single register with size<31:30>, V<26> and opc<23:22> (LDR, STR, LDUR, LDTR and their sign-extending forms):
+    // for general-purpose registers opc 00 stores, 01 loads, 1x loads signed (LDRSB, LDRSH, LDRSW; size 11 opc 10 is
+    // PRFM, and the rest unallocated); for SIMD and floating-point registers size:opc<1> gives 1, 2, 4, 8 or 16 bytes and
+    // opc<0> loads.
+    let single = |prefetch: bool, unprivileged: bool| {
+        let (size, vector, opc) = (bits(31, 30)?, bits(26, 26)?, bits(23, 22)?);
+        if vector == 1 {
+            if unprivileged {
+                return None;
+            }
+            let bytes = match (size, opc >> 1) {
+                (_, 0) => 1 << size,
+                (0, 1) => 16,
+                _ => return None,
+            };
+            let transfer = if opc & 1 == 1 {
+                Transfer::Load(Unsigned)
+            } else {
+                Transfer::Store
+            };
+            return operation(transfer, bytes, Alignment::Unchecked);
+        }
+        let transfer = match (size, opc) {
+            (_, 0) => Transfer::Store,
+            (_, 1) => Transfer::Load(Unsigned),
+            (0b11, 0b10) if prefetch => Transfer::Prefetch,
+            (0b00 | 0b01, _) | (0b10, 0b10) => Transfer::Load(Signed),
+            _ => return None,
+        };
+        operation(transfer, 1 << size, Alignment::Unchecked)
+    };
+    // Load/store register (unsigned immediate): size, 111<29:27>, V<26>, 01<25:24>, opc<23:22>.
+    if is(29, 27, 0b111) && is(25, 24, 0b01) {
+        return single(true, false);
+    }
+    // Load/store register (unscaled immediate, immediate post-indexed, unprivileged, immediate pre-indexed): 111<29:27>,
+    // 00<25:24>, 0<21>, op2<11:10> 00, 01, 10, 11; only the unscaled form has PRFUM.
+    if is(29, 27, 0b111) && is(25, 24, 0) && is(21, 21, 0) {
+        let op2 = bits(11, 10)?;
+        return single(op2 == 0, op2 == 0b10);
+    }
+    // Load/store register (register offset): 111<29:27>, 00<25:24>, 1<21>, 10<11:10>.
+    if is(29, 27, 0b111) && is(25, 24, 0) && is(21, 21, 1) && is(11, 10, 0b10) {
+        // [RPRFM](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RPRFM--Range-prefetch-memory-):
+        // the PRFM of size 11, V 0, opc 10 with option<14> = 1 and Rt<4:3> = 11 is a range prefetch hint.
+        if is(31, 30, 0b11) && is(26, 26, 0) && is(23, 22, 0b10) && is(14, 14, 1) && is(4, 3, 0b11)
+        {
+            return None;
+        }
+        return single(true, false);
+    }
+    // Load register (pac): size 11, 111<29:27>, V<26> = 0, 00<25:24>, M<23>, S<22>, 1<21>, W<11>, 1<10>; with the data
+    // keys off it loads the doubleword at its base plus offset.
+    if is(31, 26, 0b11_1110) && is(25, 24, 0) && is(21, 21, 1) && is(10, 10, 1) {
+        return operation(Transfer::Load(Unsigned), 8, Alignment::Unchecked);
+    }
+    // Atomic memory operations: size, 111<29:27>, V<26> = 0, 00<25:24>, A<23>, R<22>, 1<21>, Rs, o3<15>, opc<14:12>,
+    // 00<11:10>; o3 = 1 with opc 000 is SWP, and with opc 100, A = 1, R = 0 and Rs = 11111 is LDAPR.
+    if is(29, 26, 0b1110) && is(25, 24, 0) && is(21, 21, 1) && is(11, 10, 0) {
+        let atomic = |operation: AtomicOperation| Transfer::Atomic(operation);
+        let transfer = match (bits(15, 15)?, bits(14, 12)?) {
+            (0, opc) => atomic(
+                [
+                    Add,
+                    Clear,
+                    ExclusiveOr,
+                    Set,
+                    SignedMaximum,
+                    SignedMinimum,
+                    UnsignedMaximum,
+                    UnsignedMinimum,
+                ][opc as usize],
+            ),
+            (1, 0b000) => atomic(Swap),
+            (1, 0b100) if is(23, 22, 0b10) && ones(20, 16) => Transfer::Load(Unsigned),
+            _ => return None,
+        };
+        return operation(transfer, size_bytes()?, Alignment::WithinSixteenBytes);
+    }
+    // LDAPUR, STLUR and the sign-extending LDAPURS (RCpc unscaled immediate): size, 011001<29:24>, opc<23:22>, 0<21>,
+    // 00<11:10>; opc 00 stores, 01 loads, 10 sign-extends to 64 bits (bytes, halfwords, words), 11 to 32 (bytes,
+    // halfwords).
+    if is(29, 24, 0b01_1001) && is(21, 21, 0) && is(11, 10, 0) {
+        let size = bits(31, 30)?;
+        let transfer = match (size, bits(23, 22)?) {
+            (_, 0) => Transfer::Store,
+            (_, 1) => Transfer::Load(Unsigned),
+            (0b00..=0b10, 0b10) | (0b00 | 0b01, 0b11) => Transfer::Load(Signed),
+            _ => return None,
+        };
+        return operation(transfer, 1 << size, Alignment::WithinSixteenBytes);
+    }
+    // Load/store exclusive and ordered, compare and swap: size<31:30>, 001000<29:24>, o2<23>, L<22>, o1<21>, Rs, o0<15>,
+    // Rt2<14:10>.
+    if is(29, 24, 0b00_1000) {
+        let (o2, load, o1) = (bits(23, 23)?, bits(22, 22)? == 1, bits(21, 21)?);
+        return match (o2, o1) {
+            // Load/store exclusive register: LDXR, LDAXR, STXR, STLXR.
+            (0, 0) => {
+                let transfer = if load {
+                    Transfer::Load(Unsigned)
+                } else {
+                    Transfer::StoreExclusive
+                };
+                operation(transfer, size_bytes()?, Alignment::Exclusive)
+            }
+            // Load/store exclusive pair (1<31>, sz<30>), or compare and swap pair (0<31>, sz<30>, Rt2 = 11111).
+            (0, 1) => {
+                let bytes = if bits(30, 30)? == 0 { 4 } else { 8 };
+                match bits(31, 31)? {
+                    1 => operation(
+                        if load {
+                            Transfer::Load(Unsigned)
+                        } else {
+                            Transfer::StoreExclusive
+                        },
+                        bytes,
+                        Alignment::Exclusive,
+                    ),
+                    _ if ones(14, 10) => operation(
+                        Transfer::CompareAndSwapPair,
+                        bytes,
+                        Alignment::WithinSixteenBytes,
+                    ),
+                    _ => None,
+                }
+            }
+            // Load/store ordered: LDAR, LDLAR, STLR, STLLR.
+            (1, 0) => operation(
+                if load {
+                    Transfer::Load(Unsigned)
+                } else {
+                    Transfer::Store
+                },
+                size_bytes()?,
+                Alignment::WithinSixteenBytes,
+            ),
+            // Compare and swap (Rt2 = 11111).
+            _ if ones(14, 10) => operation(
+                Transfer::Atomic(AtomicOperation::CompareAndSwap),
+                size_bytes()?,
+                Alignment::WithinSixteenBytes,
+            ),
+            _ => None,
+        };
+    }
+    // Load register (literal): opc<31:30>, 011<29:27>, V<26>, 00<25:24>: opc 00 a word, 01 a doubleword, 10 LDRSW, 11
+    // PRFM; for SIMD and floating-point registers 4, 8 or 16 bytes.
+    if is(29, 27, 0b011) && is(25, 24, 0) {
+        let (opc, vector) = (bits(31, 30)?, bits(26, 26)?);
+        let (transfer, bytes) = match (vector, opc) {
+            (0, 0b00) => (Transfer::Load(Unsigned), 4),
+            (0, 0b01) => (Transfer::Load(Unsigned), 8),
+            (0, 0b10) => (Transfer::Load(Signed), 4),
+            (0, _) => (Transfer::Prefetch, 8),
+            (_, 0b11) => return None,
+            (_, opc) => (Transfer::Load(Unsigned), 4 << opc),
+        };
+        return operation(transfer, bytes, Alignment::Unchecked);
+    }
+    // Load/store pair (no-allocate, post-indexed, offset, pre-indexed): opc<31:30>, 101<29:27>, V<26>, 0<25>, L<22>;
+    // for general-purpose registers opc 00 words, 10 doublewords, 01 LDPSW (STGP and the no-allocate 01 are no plain
+    // pair); for SIMD and floating-point registers opc 00, 01, 10 give 4, 8 or 16 bytes.
+    if is(29, 27, 0b101) && is(25, 25, 0) {
+        let (opc, vector, load) = (bits(31, 30)?, bits(26, 26)?, bits(22, 22)? == 1);
+        let no_allocate = is(24, 23, 0);
+        let plain = if load {
+            Transfer::Load(Unsigned)
+        } else {
+            Transfer::Store
+        };
+        let (transfer, bytes) = match (vector, opc) {
+            (0, 0b00) => (plain, 4),
+            (0, 0b10) => (plain, 8),
+            (0, 0b01) if load && !no_allocate => (Transfer::Load(Signed), 4),
+            (1, 0b00..=0b10) => (plain, 4 << opc),
+            _ => return None,
+        };
+        return operation(transfer, bytes, Alignment::Unchecked);
+    }
+    None
+}
+
+#[test]
+fn the_load_store_table_gives_each_listed_instruction_the_operation_arm_decodes() {
+    let mut operations = 0;
+    let mut differing = Vec::new();
+    for instruction in LISTED_INSTRUCTIONS {
+        let record = instruction
+            .to_record()
+            .expect("every listed instruction has a record");
+        let decoded = to_decoded_load_store(record.fixed_bits);
+        let tabled = load_store::to_load_store_operation(instruction);
+        if tabled != decoded {
+            differing.push(alloc::format!(
+                "{instruction:?} ({}): {tabled:?}, decoded {decoded:?}",
+                record.mnemonic
+            ));
+        }
+        operations += usize::from(decoded.is_some());
+    }
+    assert!(differing.is_empty(), "{}", differing.join("\n"));
+    assert!(operations > 300, "{operations} loads and stores");
+}
+
+#[test]
+fn the_architecture_addresses_the_lower_48_bits_and_has_one_value() {
+    // A 4 KiB granule without FEAT_LVA gives EL0 the virtual addresses below 2^48.
+    assert_eq!(
+        Arm64::<User>::ADDRESSABLE,
+        0..0x0001_0000_0000_0000,
+        "the lower half's 48 bits"
+    );
+    // The architecture holds no state, so every value of it is every other.
+    let architecture = Arm64::<User>::default();
+    assert!(architecture == Arm64::<User>::default());
+    assert!(architecture.clone() == architecture);
+}
