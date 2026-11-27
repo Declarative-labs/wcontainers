@@ -405,7 +405,8 @@ int wc_caller_case(uintptr_t address, int which)
     if (which < 0 || which >= wc_caller_cases())
         return 1;
     struct pipe_screen *screen = (struct pipe_screen *)address;
-    struct pipe_context *ctx = screen->context_create(screen, NULL, 0);
+    /* A private pointer and flags of their own, which the implementation must receive as they are. */
+    struct pipe_context *ctx = screen->context_create(screen, (void *)(uintptr_t)0x5a5a, PIPE_CONTEXT_ROBUST_BUFFER_ACCESS);
     if (!ctx)
         return 2;
     const int status = cases[which](ctx);

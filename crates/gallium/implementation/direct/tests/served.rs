@@ -60,6 +60,9 @@ const FILLED: &[&str] = &[
     "create_sampler_state arg1 SamplerState { wrap_s: TexWrap(1), wrap_t: TexWrap(2), wrap_r: TexWrap(3), min_img_filter: TexFilter(1), min_mip_filter: TexMipfilter(3), mag_img_filter: TexFilter(1), compare_mode: TexCompare(1), compare_func: CompareFunc(1), unnormalized_coords: 1, max_anisotropy: 30, seamless_cube_map: 1, border_color_is_integer: 1, reduction_mode: TexReductionMode(2), pad: 3, lod_bias: 1189.25, min_lod: 1190.25, max_lod: 1191.25, border_color: [1192, 1193, 1194, 1195], border_color_format: Format(1196) }",
     "create_vertex_elements_state arg2 [VertexElement { src_offset: 1197, vertex_buffer_index: 72, dual_slot: true, src_format: 1, src_stride: 1201, instance_divisor: 1202 }, VertexElement { src_offset: 1203, vertex_buffer_index: 78, dual_slot: true, src_format: 7, src_stride: 1207, instance_divisor: 1208 }]",
 ];
+/// How every case makes its context: caller.c's private pointer (0x5a5a) and PIPE_CONTEXT_ROBUST_BUFFER_ACCESS (1 << 2).
+const CONTEXT_CREATED: &str = "context_create priv_ 23130 flags 4";
+
 /// How the first case binds its two samplers: the vertex stage (MESA_SHADER_VERTEX, 0), from slot 3.
 const BOUND_SAMPLERS: &str = "bind_sampler_states shader MesaShaderStage(0) start_slot 3 samplers [Some(";
 
@@ -85,6 +88,9 @@ fn holds(which: i32) -> Result<(), String> {
     }
     if names != *expected {
         return Err(format!("case {which}: calls {names:?}, expected {expected:?}"));
+    }
+    if calls.first().map(String::as_str) != Some(CONTEXT_CREATED) {
+        return Err(format!("case {which}: the context made as {:?}, expected {CONTEXT_CREATED}", calls.first()));
     }
     if which == 0 {
         // Each state's call as received, in full and in order: every field of every state the value caller.c set.

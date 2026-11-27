@@ -50,6 +50,9 @@ const EXPECTED: &[&[&str]] = &[
 ];
 
 // FILLED
+/// How every case makes its context: caller.c's private pointer (0x5a5a) and PIPE_CONTEXT_ROBUST_BUFFER_ACCESS (1 << 2).
+const CONTEXT_CREATED: &str = "context_create priv_ 23130 flags 4";
+
 /// How the first case binds its two samplers: the vertex stage (MESA_SHADER_VERTEX, 0), from slot 3.
 const BOUND_SAMPLERS: &str = "bind_sampler_states shader MesaShaderStage(0) start_slot 3 samplers [Some(";
 
@@ -75,6 +78,9 @@ fn holds(which: i32) -> Result<(), String> {
     }
     if names != *expected {
         return Err(format!("case {which}: calls {names:?}, expected {expected:?}"));
+    }
+    if calls.first().map(String::as_str) != Some(CONTEXT_CREATED) {
+        return Err(format!("case {which}: the context made as {:?}, expected {CONTEXT_CREATED}", calls.first()));
     }
     if which == 0 {
         // Each state's call as received, in full and in order: every field of every state the value caller.c set.
