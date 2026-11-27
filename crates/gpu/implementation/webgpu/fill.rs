@@ -66,7 +66,7 @@ pub(crate) enum DepthSource {
     FloatBitsSigned,
     /// 24-bit unorm depth in the low bits of an `r32uint` texture.
     Unorm24,
-    /// 24-bit unorm depth read from a 24-bit depth texture, written again as the same 24-bit value.
+    /// A 24-bit depth texture's stored values, written again as the same values.
     Depth24,
     /// 16-bit unorm depth as the integers of an `r16uint` texture.
     Unorm16,
@@ -987,13 +987,19 @@ pub(crate) fn depth_by_draw(
     }
 }
 
-/// The float nearest the 24-bit unorm value `{V}` stands for, `{V}` / (2^24 - 1): `{V}` 2^-24 is
-/// exact, and the remainder more than half and at most one of that float's steps, so the nearest
-/// float is `{V}` 2^-24's bits plus one (zero stays zero). In integers, so that no compiler regroups
-/// a sum of products (Mesa makes x (2^-24 + 2^-48) of one, whose sum rounds to 2^-24, one step
-/// low); WGSL's division may be 2.5 ulp off.
+/// WGSL for the float nearest the 24-bit unorm value at [`VALUE`], by integers only.
+///
+/// The value times 2^-24 is exact and the quotient lies above it by more than half a float step and
+/// at most one, so the nearest float is its bits plus one (zero stays zero); a sum of products may be
+/// regrouped (Mesa does) and WGSL's division may be 2.5 ulp off.
 const NEAREST_OF_UNORM24: &str =
     "bitcast<f32>(bitcast<u32>(f32({V}) * 0x1p-24f) + select(0u, 1u, {V} != 0u))";
+/// Where [`NEAREST_OF_UNORM24`] takes its value.
+const VALUE: &str = "{V}";
+/// The stored 24-bit value of a sampled depth `v.x`, by [`unorm24_functions`].
+const UNORM24_OF_SAMPLE: &str = "unorm24(v.x)";
+/// A texture sampled as floats.
+const FLOAT_TEXTURE: &str = "texture_2d<f32>";
 
 fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource) -> DepthProgram {
     let cover = cover(gpu);
@@ -1007,7 +1013,7 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
         ),
         DepthSource::Unorm24 => (
             "texture_2d<u32>",
-            NEAREST_OF_UNORM24.replace("{V}", &format!("(v.x & {UNORM24_MAX}u)")),
+            NEAREST_OF_UNORM24.replace(VALUE, &format!("(v.x & {UNORM24_MAX}u)")),
         ),
         // The stored value found by the device's own conversion, as a read finds it, and written as
         // its nearest float: the sampled float itself can store as the next value (llvmpipe samples
@@ -1015,8 +1021,8 @@ fn depth_program(gpu: &mut WebGpu, format: wgpu::TextureFormat, how: DepthSource
         DepthSource::Depth24 => {
             functions = unorm24_functions(gpu);
             (
-                "texture_2d<f32>",
-                NEAREST_OF_UNORM24.replace("{V}", "unorm24(v.x)"),
+                FLOAT_TEXTURE,
+                NEAREST_OF_UNORM24.replace(VALUE, UNORM24_OF_SAMPLE),
             )
         }
         DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
@@ -1306,7 +1312,7 @@ const SAMPLED_NEAREST: &str = "select(bitcast<u32>(f32(c) * 0x1p-24f) + 1u, 0u, 
 /// 2^-24 (1 + 2^-23), gives (llvmpipe and lavapipe).
 const SAMPLED_PRODUCT: &str = "bitcast<u32>(f32(c) * 0x1.000002p-24f)";
 
-/// `unorm24(d)`, the 24-bit value stored for a sampled depth by this device's own conversion.
+/// Writes the WGSL function `unorm24(d)`: the 24-bit value this device stored for a sampled depth.
 fn unorm24_functions(gpu: &WebGpu) -> String {
     let sampled = if gpu.depth24_by_product {
         SAMPLED_PRODUCT
@@ -1331,7 +1337,7 @@ fn read_program(gpu: &mut WebGpu, read: AspectRead, target: wgpu::TextureFormat)
         ),
         AspectRead::Unorm24 => {
             functions = unorm24_functions(gpu);
-            ("texture_2d<f32>", "unorm24(v.x)".to_string())
+            (FLOAT_TEXTURE, UNORM24_OF_SAMPLE.to_string())
         }
         AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)".into()),
         AspectRead::Stencil => ("texture_2d<u32>", "v.x".into()),
