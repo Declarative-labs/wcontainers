@@ -98,6 +98,11 @@
 
 use std::ffi::{CStr, CString};
 
+mod reference;
+mod right;
+
+pub use right::{bindings_right, samplers_right, squares_right, transforms_right};
+
 use wcontainers_mesa_compiler::{MesaCompiler, NearestSampler, PositionTransform, PreparedForm, SlotRange, Squares, TextureSwizzle, VariantForm, VariantSettings, constants};
 
 /// The bridge's stages (enum wc_stage).
@@ -1236,6 +1241,26 @@ macro_rules! tests {
         #[test]
         fn every_argument_tells() {
             $crate::every_argument_tells($value);
+        }
+
+        #[test]
+        fn transforms_right() {
+            $crate::transforms_right($value);
+        }
+
+        #[test]
+        fn samplers_right() {
+            $crate::samplers_right($value);
+        }
+
+        #[test]
+        fn bindings_right() {
+            $crate::bindings_right($value);
+        }
+
+        #[test]
+        fn squares_right() {
+            $crate::squares_right($value);
         }
 
         #[test]
