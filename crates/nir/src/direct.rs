@@ -33,7 +33,6 @@ use zerocopy::TryFromBytes;
 const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
 type WorkgroupSize = [u32; VectorSize::Tri as usize];
-const SOURCES: usize = wcontainers_mesa_compiler::constants::SOURCES as usize;
 /// The source of an image store holding the value (after the image, coordinate and sample).
 const IMAGE_STORE_VALUE: usize = 3;
 /// A helper block's row, as a uniform block aligns a vector of four words.
@@ -505,7 +504,7 @@ struct FlatInstr {
     components: u32,
     bits: u32,
     sources: u32,
-    src: [FlatSrc; SOURCES],
+    src: [FlatSrc; wcontainers_mesa_compiler::constants::SOURCES as usize],
     value: [u32; VectorSize::MAX],
     ty: u32,
     tex: [u32; TEX_SRCS],
