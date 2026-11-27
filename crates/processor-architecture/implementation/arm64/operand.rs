@@ -4,7 +4,9 @@
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 
-use crate::encoding::Field;
+use crate::encoding::{Field, fields_fit_within};
+#[cfg(verus_keep_ghost)]
+use crate::encoding::{fields_fit, fields_width};
 use crate::floating_point::Precision;
 #[cfg(verus_keep_ghost)]
 use crate::pseudocode::ones;
@@ -107,6 +109,84 @@ pub enum Operand {
     },
     /// TODO: temporary placeholder until every operand of every listed instruction is modeled.
     Unmodeled,
+}
+
+impl Operand {
+    /// Whether every field of the operand lies inside a 32-bit encoding and holds no more bits than its value takes.
+    pub open spec fn fits(self) -> bool {
+        match self {
+            Operand::GeneralPurposeRegister { number, .. } => number.fits(),
+            Operand::FloatingPointRegister { number, .. } => number.fits(),
+            Operand::VectorRegister { number, .. } => number.fits(),
+            Operand::Ignored(field) => field.fits(),
+            Operand::GeneralPurposeRegisterPair { number, .. } => number.fits(),
+            Operand::SplitImmediate(fields) => fields_fit(fields@) && fields_width(fields@) <= 64,
+            Operand::ShiftedRegister { number, shift_type, amount, .. } =>
+                number.fits() && shift_type.fits() && shift_type.width <= 2 && amount.fits(),
+            Operand::ExtendedRegister { number, extend_type, amount, .. } =>
+                number.fits() && extend_type.fits() && extend_type.width <= 3 && amount.fits(),
+            Operand::ArithmeticImmediate { value, shift } =>
+                value.fits() && value.width <= 12 && shift.fits() && shift.width <= 1,
+            Operand::BitmaskImmediate { field, width } =>
+                field.fits() && field.width <= if width == RegisterWidth::Bits32 { 12u32 } else { 13u32 },
+            Operand::WideImmediateShift { field, .. } => field.fits() && field.width <= 2,
+            Operand::UnsignedImmediate(field) => field.fits(),
+            Operand::SignedImmediate(field) => field.fits() && 0 < field.width,
+            Operand::Condition(field) => field.fits() && field.width <= 4,
+            Operand::ProgramCounterOffset { fields, scale } =>
+                fields_fit(fields@) && 1 <= fields_width(fields@) <= 64 && scale < 64,
+            Operand::AddressBase { number, .. } => number.fits(),
+            Operand::AddressOffset { field, scale, .. } => field.fits() && 0 < field.width && scale <= 4,
+            Operand::SplitAddressOffset { fields, scale } =>
+                fields_fit(fields@) && 1 <= fields_width(fields@) <= 64 && scale < 64,
+            Operand::RegisterOffset { number, signed, doubleword, shift } =>
+                number.fits() && (signed matches Some(field) ==> field.fits())
+                    && (doubleword matches Some(field) ==> field.fits()) && shift.fits(),
+            Operand::Unmodeled => true,
+        }
+    }
+
+    /// Whether every field of the operand lies inside a 32-bit encoding and holds no more bits than its value takes.
+    pub fn is_well_formed(&self) -> (well_formed: bool)
+        ensures
+            well_formed == self.fits(),
+    {
+        match *self {
+            Operand::GeneralPurposeRegister { number, .. }
+            | Operand::FloatingPointRegister { number, .. }
+            | Operand::VectorRegister { number, .. }
+            | Operand::GeneralPurposeRegisterPair { number, .. }
+            | Operand::AddressBase { number, .. } => number.is_inside(),
+            Operand::Ignored(field) | Operand::UnsignedImmediate(field) => field.is_inside(),
+            Operand::SplitImmediate(fields) => fields_fit_within(fields, 0),
+            Operand::ShiftedRegister { number, shift_type, amount, .. } =>
+                number.is_inside() && shift_type.is_inside() && shift_type.width <= 2 && amount.is_inside(),
+            Operand::ExtendedRegister { number, extend_type, amount, .. } =>
+                number.is_inside() && extend_type.is_inside() && extend_type.width <= 3 && amount.is_inside(),
+            Operand::ArithmeticImmediate { value, shift } =>
+                value.is_inside() && value.width <= 12 && shift.is_inside() && shift.width <= 1,
+            Operand::BitmaskImmediate { field, width } =>
+                field.is_inside() && field.width <= match width {
+                    RegisterWidth::Bits32 => 12,
+                    RegisterWidth::Bits64 => 13,
+                },
+            Operand::WideImmediateShift { field, .. } => field.is_inside() && field.width <= 2,
+            Operand::SignedImmediate(field) => field.is_inside() && 0 < field.width,
+            Operand::Condition(field) => field.is_inside() && field.width <= 4,
+            Operand::ProgramCounterOffset { fields, scale } | Operand::SplitAddressOffset { fields, scale } =>
+                fields_fit_within(fields, 1) && scale < 64,
+            Operand::AddressOffset { field, scale, .. } => field.is_inside() && 0 < field.width && scale <= 4,
+            Operand::RegisterOffset { number, signed, doubleword, shift } =>
+                number.is_inside() && match signed {
+                    Some(field) => field.is_inside(),
+                    None => true,
+                } && match doubleword {
+                    Some(field) => field.is_inside(),
+                    None => true,
+                } && shift.is_inside(),
+            Operand::Unmodeled => true,
+        }
+    }
 }
 
 /// Where a load or store's address is, and what it writes back to its base.

@@ -606,4 +606,55 @@ pub open spec fn crc32(acc: u64, val: u64, size: nat, polynomial: CrcPolynomial)
     reverse_bits_value((data & 0xffff_ffff) as u64, 32)
 }
 
+/// The Operation of [RMIF](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RMIF--Rotate--mask-insert-flags-):
+/// `tmp = ROR(X[n, 64], lsb)`, then each flag whose bit of mask is set, N at mask<3> to V at mask<0>, takes tmp's bit
+/// at the same place, every other flag kept.
+pub open spec fn rotate_mask_insert_flags(source: u64, lsb: nat, mask: u64, nzcv: Nzcv) -> Nzcv {
+    let tmp = nzcv_immediate(ror(source as int, lsb, 64) as u64);
+    let selected = nzcv_immediate(mask);
+    Nzcv {
+        negative: if selected.negative { tmp.negative } else { nzcv.negative },
+        zero: if selected.zero { tmp.zero } else { nzcv.zero },
+        carry: if selected.carry { tmp.carry } else { nzcv.carry },
+        overflow: if selected.overflow { tmp.overflow } else { nzcv.overflow },
+    }
+}
+
+/// The Operation of [SETF8 and SETF16](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SETF8--SETF16--Evaluation-of-8-bit-or-16-bit-flag-values-)
+/// on the low `bits` bits, `msb = bits - 1`: `PSTATE.N = X[n]<msb>; PSTATE.Z = IsZeroBit(X[n]<msb:0>); PSTATE.V =
+/// X[n]<msb + 1> EOR X[n]<msb>`, C kept.
+pub open spec fn set_flags(source: u64, bits: u32, nzcv: Nzcv) -> Nzcv {
+    let msb = (bits - 1) as u32;
+    Nzcv {
+        negative: (source >> msb) & 1 == 1,
+        zero: is_zero(source as int, bits as nat),
+        carry: nzcv.carry,
+        overflow: (source >> bits) & 1 != (source >> msb) & 1,
+    }
+}
+
+/// The Operation of [CFINV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CFINV--Invert-carry-flag-):
+/// `PSTATE.C = NOT(PSTATE.C)`.
+pub open spec fn invert_carry(nzcv: Nzcv) -> Nzcv {
+    Nzcv { carry: !nzcv.carry, ..nzcv }
+}
+
+/// The Operation of [AXFLAG](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AXFLAG--Convert-floating-point-condition-flags-from-Arm-to-external-format-):
+/// `N = '0'; Z = PSTATE.Z OR PSTATE.V; C = PSTATE.C AND NOT(PSTATE.V); V = '0'`.
+pub open spec fn flags_to_external_format(nzcv: Nzcv) -> Nzcv {
+    Nzcv { negative: false, zero: nzcv.zero || nzcv.overflow, carry: nzcv.carry && !nzcv.overflow, overflow: false }
+}
+
+/// The Operation of [XAFLAG](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/XAFLAG--Convert-floating-point-condition-flags-from-external-format-to-Arm-format-):
+/// `N = NOT(PSTATE.C) AND NOT(PSTATE.Z); Z = PSTATE.Z AND PSTATE.C; C = PSTATE.C OR PSTATE.Z; V = NOT(PSTATE.C) AND
+/// PSTATE.Z`.
+pub open spec fn flags_from_external_format(nzcv: Nzcv) -> Nzcv {
+    Nzcv {
+        negative: !nzcv.carry && !nzcv.zero,
+        zero: nzcv.zero && nzcv.carry,
+        carry: nzcv.carry || nzcv.zero,
+        overflow: !nzcv.carry && nzcv.zero,
+    }
+}
+
 } // verus!

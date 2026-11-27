@@ -8,9 +8,11 @@ use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 
 use crate::condition_flags::{
-    CONDITIONS, ConditionFlags, IMMEDIATE_CARRY, IMMEDIATE_NEGATIVE, IMMEDIATE_OVERFLOW,
-    IMMEDIATE_ZERO, Nzcv,
+    CONDITIONS, IMMEDIATE_CARRY, IMMEDIATE_NEGATIVE, IMMEDIATE_OVERFLOW, IMMEDIATE_ZERO, Nzcv,
 };
+use crate::encoding::concatenate;
+#[cfg(verus_keep_ghost)]
+use crate::encoding::{Field, concatenation, fields_width};
 use crate::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Rotation, Signedness,
 };
@@ -24,11 +26,16 @@ use crate::pseudocode::{
     reversed_byte, ror, set_bits, shifted_register, sint, uint, variable_shift,
     wide_immediate_position, written,
 };
+#[cfg(verus_keep_ghost)]
+use crate::pseudocode::{
+    flags_from_external_format, flags_to_external_format, invert_carry, rotate_mask_insert_flags,
+    set_flags,
+};
 use crate::registers::{read_register, write_register};
+#[cfg(verus_keep_ghost)]
+use crate::registers::{register_file_written, register_read, stack_pointer_written};
 use crate::{Exception, Instruction, Processor};
 
-/// The most source operands an instruction reads: CCMP's register, second operand, flags and condition.
-const MAXIMUM_SOURCES: usize = 4;
 verus! {
 
 /// The [shift amount](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value-#:~:text=sh) a set shift bit gives an arithmetic immediate.
@@ -314,10 +321,15 @@ const fn crc(polynomial: CrcPolynomial, bits: u32) -> IntegerOperation {
     }
 }
 
+verus! {
+
+/// The most source operands an instruction reads: CCMP's register, second operand, flags and condition.
+pub const MAXIMUM_SOURCES: usize = 4;
+
 /// The result an operation writes to its destination, and the flags it sets.
 struct Outcome {
     result: Option<u64>,
-    flags: Option<ConditionFlags>,
+    flags: Option<Nzcv>,
 }
 
 /// The operands of an instruction as its operation reads them.
@@ -326,14 +338,293 @@ pub(crate) struct ReadOperands {
     pub destination: Option<(u32, RegisterThirtyOne)>,
     /// The width of the first register of the syntax.
     pub width: Option<RegisterWidth>,
-    sources: [u64; MAXIMUM_SOURCES],
-    count: usize,
+    pub(crate) sources: [u64; MAXIMUM_SOURCES],
+    pub(crate) count: usize,
 }
 
-impl ReadOperands {
-    /// The value of every operand but the written register, in the order of the syntax.
-    pub fn sources(&self) -> &[u64] {
-        &self.sources[..self.count]
+/// The value of the register an operand's field names in the word, with 31 the zero register or the stack pointer.
+pub open spec fn register_operand<L>(processor: Processor<L>, word: u32, number: Field, thirty_one: RegisterThirtyOne) -> int {
+    register_read(processor.general_purpose_registers@, processor.stack_pointer, number.value(word), thirty_one) as int
+}
+
+/// The value an operand gives its operation, as the instruction's decode reads it from the word and the registers: none
+/// where the encoding is UNDEFINED, and where the operand gives no value or its fields do not fit.
+pub open spec fn source_value<L>(processor: Processor<L>, word: u32, operand: Operand) -> Option<int> {
+    if !operand.fits() {
+        None
+    } else {
+        match operand {
+            Operand::GeneralPurposeRegister { number, width, thirty_one, .. } =>
+                Some(uint(register_operand(processor, word, number, thirty_one), width.bits())),
+            Operand::ShiftedRegister { number, shift_type, amount, width, rotation } => shifted_register(
+                register_operand(processor, word, number, RegisterThirtyOne::ZeroRegister),
+                shift_type.value(word),
+                amount.value(word),
+                width.bits(),
+                rotation,
+            ),
+            Operand::ExtendedRegister { number, extend_type, amount, width } => extended_register(
+                register_operand(processor, word, number, RegisterThirtyOne::ZeroRegister),
+                extend_type.value(word),
+                amount.value(word),
+                width.bits(),
+            ),
+            Operand::ArithmeticImmediate { value, shift } =>
+                Some(arithmetic_immediate_value(value.value(word), shift.value(word))),
+            Operand::BitmaskImmediate { field, width } => bitmask_immediate_value(field.value(word), width.bits()),
+            Operand::WideImmediateShift { field, width } => match wide_immediate_position(field.value(word), width.bits()) {
+                Some(position) => Some(position as int),
+                None => None,
+            },
+            Operand::UnsignedImmediate(field) => Some(field.value(word) as int),
+            Operand::Condition(field) => Some(field.value(word) as int),
+            Operand::SignedImmediate(field) =>
+                Some(uint(sint(word as int / (pow2(field.lowest_bit as nat) as int), field.width as nat), 64)),
+            Operand::ProgramCounterOffset { fields, scale } =>
+                Some(uint(sint(concatenation(word, fields@) as int, fields_width(fields@)) * pow2(scale as nat), 64)),
+            Operand::SplitImmediate(fields) => Some(concatenation(word, fields@) as int),
+            _ => None,
+        }
+    }
+}
+
+/// What an instruction reads from its operands in the word: the register it writes and what its number 31 names, the
+/// width of its first register, and the value of every other operand in the order of the syntax; none where an operand
+/// is UNDEFINED or gives no value, or where more operands than an operation reads give values.
+pub open spec fn operands_read<L>(processor: Processor<L>, word: u32, operands: Seq<Operand>)
+    -> Option<(Option<(u32, RegisterThirtyOne)>, Option<RegisterWidth>, Seq<int>)>
+    decreases operands.len(),
+{
+    if operands.len() == 0 {
+        Some((None, None, Seq::empty()))
+    } else {
+        match operands_read(processor, word, operands.drop_last()) {
+            None => None,
+            Some((destination, width, sources)) => {
+                let operand = operands.last();
+                let width = match (width, operand) {
+                    (None, Operand::GeneralPurposeRegister { width, .. }) => Some(width),
+                    _ => width,
+                };
+                match operand {
+                    Operand::GeneralPurposeRegister { number, thirty_one, access: OperandAccess::Written, .. } =>
+                        if number.fits() {
+                            Some((Some((number.value(word) as u32, thirty_one)), width, sources))
+                        } else {
+                            None
+                        },
+                    _ => match source_value(processor, word, operand) {
+                        Some(value) if sources.len() < MAXIMUM_SOURCES => Some((destination, width, sources.push(value))),
+                        _ => None,
+                    },
+                }
+            },
+        }
+    }
+}
+
+/// What an integer operation gives on `n`-bit operands with the register it writes holding `kept` and the flags before:
+/// the result, where it writes one, and the flags it sets, where it sets them; none (UNDEFINED) where Arm's decode
+/// refuses the operands, and where the operands are not those the operation reads.
+pub open spec fn integer_outcome(operation: IntegerOperation, width: RegisterWidth, kept: u64, sources: Seq<u64>, flags: Nzcv)
+    -> Option<(Option<int>, Option<Nzcv>)>
+{
+    let n = width.bits();
+    let count = sources.len();
+    match operation {
+        IntegerOperation::Add(_) | IntegerOperation::Subtract(_) | IntegerOperation::AddWithCarry(_)
+        | IntegerOperation::SubtractWithCarry(_) | IntegerOperation::And(_) | IntegerOperation::AndNot(_)
+        | IntegerOperation::Or | IntegerOperation::OrNot | IntegerOperation::ExclusiveOr
+        | IntegerOperation::ExclusiveOrNot => if count == 2 {
+            let (result, set) = arithmetic_or_logical(operation, n, sources[0], sources[1], flags);
+            Some((Some(result), set))
+        } else {
+            None
+        },
+        IntegerOperation::MoveWideNot | IntegerOperation::MoveWideZero | IntegerOperation::MoveWideKeep =>
+            if count == 2 && sources[0] < 0x1_0000 && sources[1] % 16 == 0 && sources[1] < n {
+                Some((Some(move_wide(operation, n, kept, sources[0] as int, sources[1] as nat)), None))
+            } else {
+                None
+            },
+        // SBFM, BFM and UBFM: `if sf == '0' && (N != '0' || immr<5> != '0' || imms<5> != '0') then UNDEFINED`.
+        IntegerOperation::Bitfield(fill) => if count == 3 && sources[1] < n && sources[2] < n {
+            match bitfield_move(fill, n, kept, sources[0], sources[1] as nat, sources[2] as nat) {
+                Some(result) => Some((Some(result), None)),
+                None => None,
+            }
+        } else {
+            None
+        },
+        // EXTR: `if sf == '0' && imms<5> == '1' then UNDEFINED`.
+        IntegerOperation::Extract =>
+            if count == 3 && sources[0] < pow2(n) && sources[1] < pow2(n) && sources[2] < n {
+                Some((Some(extract(n, sources[0], sources[1], sources[2] as nat)), None))
+            } else {
+                None
+            },
+        IntegerOperation::ConditionalSelect(alternative) => if count == 3 && sources[2] < 16 {
+            Some((Some(conditional_select(alternative, n, sources[0], sources[1], sources[2] as nat, flags)), None))
+        } else {
+            None
+        },
+        IntegerOperation::ConditionalCompare(comparison) => if count == 4 && sources[3] < 16 {
+            Some((None, Some(conditional_compare(comparison, n, sources[0], sources[1], sources[2], sources[3] as nat, flags))))
+        } else {
+            None
+        },
+        IntegerOperation::ReverseBits => if count == 1 {
+            Some((Some(uint(reverse_bits_value(sources[0], n) as int, n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::ReverseBytes { container_bits } =>
+            if count == 1 && (container_bits == 16 || container_bits == 32 || container_bits == 64) && container_bits <= n {
+                Some((Some(uint(reverse_bytes_value(sources[0], n, container_bits as nat) as int, n)), None))
+            } else {
+                None
+            },
+        IntegerOperation::CountLeadingZeros => if count == 1 && sources[0] < pow2(n) {
+            Some((Some(uint(count_leading_zero_bits(uint(sources[0] as int, n) as nat, n), n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::CountLeadingSignBits => if count == 1 && sources[0] < pow2(n) {
+            Some((Some(uint(count_leading_sign_bits(sources[0], n), n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::ShiftLeftVariable | IntegerOperation::ShiftRightLogicalVariable
+        | IntegerOperation::ShiftRightArithmeticVariable | IntegerOperation::RotateRightVariable =>
+            if count == 2 && sources[0] < pow2(n) {
+                Some((Some(variable_shift(operation, sources[0], sources[1], n)), None))
+            } else {
+                None
+            },
+        IntegerOperation::Divide(signedness) => if count == 2 && sources[0] < pow2(n) && sources[1] < pow2(n) {
+            Some((Some(divide(signedness, sources[0], sources[1], n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::MultiplyAdd | IntegerOperation::MultiplySubtract => if count == 3 {
+            Some((Some(multiply_add(operation is MultiplySubtract, sources[0], sources[1], sources[2], n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::MultiplyAddLong(signedness) => if count == 3 {
+            Some((Some(uint(multiply_add_long(false, sources[0], sources[1], sources[2], signedness), n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::MultiplySubtractLong(signedness) => if count == 3 {
+            Some((Some(uint(multiply_add_long(true, sources[0], sources[1], sources[2], signedness), n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::MultiplyHigh(signedness) => if count == 2 {
+            Some((Some(uint(multiply_high(sources[0], sources[1], signedness), n)), None))
+        } else {
+            None
+        },
+        IntegerOperation::Crc32 { polynomial, bytes } =>
+            if count == 2 && (bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8) {
+                Some((Some(uint(crc32(sources[0], sources[1], (bytes * 8) as nat, polynomial) as int, n)), None))
+            } else {
+                None
+            },
+        IntegerOperation::RotateMaskInsertFlags => if count == 3 && n == 64 && sources[1] < 64 && sources[2] < 16 {
+            Some((None, Some(rotate_mask_insert_flags(sources[0], sources[1] as nat, sources[2], flags))))
+        } else {
+            None
+        },
+        IntegerOperation::SetFlags { bits } => if count == 1 && (bits == 8 || bits == 16) {
+            Some((None, Some(set_flags(sources[0], bits, flags))))
+        } else {
+            None
+        },
+        IntegerOperation::InvertCarry => if count == 0 { Some((None, Some(invert_carry(flags)))) } else { None },
+        IntegerOperation::ConvertFlagsToExternalFormat =>
+            if count == 0 { Some((None, Some(flags_to_external_format(flags)))) } else { None },
+        IntegerOperation::ConvertFlagsFromExternalFormat =>
+            if count == 0 { Some((None, Some(flags_from_external_format(flags)))) } else { None },
+    }
+}
+
+/// The register an integer instruction writes, with the value, and the flags it sets, from the processor and the word:
+/// the operation's outcome on its operands' values, the result's low `n` bits written where it gives one and names a
+/// register; or the exception, UNDEFINED.
+pub open spec fn integer_effect<L>(processor: Processor<L>, word: u32, operands: Seq<Operand>, operation: IntegerOperation)
+    -> Result<(Option<(u32, u64, RegisterThirtyOne)>, Option<Nzcv>), Exception>
+{
+    match operands_read(processor, word, operands) {
+        None => Err(Exception::UndefinedInstruction),
+        Some((destination, width, sources)) => {
+            // An instruction that names no register changes only the flags, at no width.
+            let width = match width {
+                Some(width) => width,
+                None => RegisterWidth::Bits64,
+            };
+            let kept = match destination {
+                Some((number, thirty_one)) =>
+                    register_read(processor.general_purpose_registers@, processor.stack_pointer, number as nat, thirty_one),
+                None => 0,
+            };
+            match integer_outcome(operation, width, kept, sources.map_values(|value: int| value as u64), processor.condition_flags) {
+                None => Err(Exception::UndefinedInstruction),
+                Some((result, flags)) => Ok((
+                    match (result, destination) {
+                        (Some(result), Some((number, thirty_one))) => Some((number, uint(result, width.bits()) as u64, thirty_one)),
+                        _ => None,
+                    },
+                    flags,
+                )),
+            }
+        },
+    }
+}
+
+/// The processor after an instruction that writes the register, if any, and sets the flags, if any, and changes
+/// nothing else.
+pub open spec fn effect_applied<L>(
+    before: Processor<L>,
+    after: Processor<L>,
+    write: Option<(u32, u64, RegisterThirtyOne)>,
+    flags: Option<Nzcv>,
+) -> bool {
+    &&& after.general_purpose_registers@ == match write {
+        Some((number, value, _)) => register_file_written(before.general_purpose_registers@, number as nat, value),
+        None => before.general_purpose_registers@,
+    }
+    &&& after.stack_pointer == match write {
+        Some((number, value, thirty_one)) => stack_pointer_written(before.stack_pointer, number as nat, value, thirty_one),
+        None => before.stack_pointer,
+    }
+    &&& after.condition_flags == match flags {
+        Some(flags) => flags,
+        None => before.condition_flags,
+    }
+    &&& after == (Processor {
+        general_purpose_registers: after.general_purpose_registers,
+        stack_pointer: after.stack_pointer,
+        condition_flags: after.condition_flags,
+        ..before
+    })
+}
+
+/// Where the operands up to `count` are UNDEFINED, so are all of them.
+proof fn lemma_operands_read_prefix<L>(processor: Processor<L>, word: u32, operands: Seq<Operand>, count: int)
+    requires
+        0 <= count <= operands.len(),
+        operands_read(processor, word, operands.take(count)) is None,
+    ensures
+        operands_read(processor, word, operands) is None,
+    decreases operands.len() - count,
+{
+    if count < operands.len() {
+        assert(operands.take(count + 1).drop_last() =~= operands.take(count));
+        lemma_operands_read_prefix(processor, word, operands, count + 1);
+    } else {
+        assert(operands.take(count) =~= operands);
     }
 }
 
@@ -342,29 +633,87 @@ pub(crate) fn read_operands<LevelSpecific>(
     processor: &Processor<LevelSpecific>,
     word: u32,
     operands: &[Operand],
-) -> Result<ReadOperands, Exception> {
+) -> (read: Result<ReadOperands, Exception>)
+    ensures
+        match operands_read(*processor, word, operands@) {
+            Some((destination, width, sources)) => read matches Ok(read) && read.destination == destination
+                && read.width == width && read.count == sources.len() && read.count <= MAXIMUM_SOURCES
+                && forall|index: int| 0 <= index < sources.len() ==> read.sources[index] as int == #[trigger] sources[index],
+            None => read == Err::<ReadOperands, Exception>(Exception::UndefinedInstruction),
+        },
+{
     let mut read = ReadOperands {
         destination: None,
         width: None,
-        sources: [0; MAXIMUM_SOURCES],
+        sources: [0, 0, 0, 0],
         count: 0,
     };
-    for operand in operands {
-        if let Operand::GeneralPurposeRegister { width, .. } = *operand {
-            read.width.get_or_insert(width);
+    let mut index: usize = 0;
+    while index < operands.len()
+        invariant
+            index <= operands.len(),
+            operands_read(*processor, word, operands@.take(index as int)) matches Some((destination, width, sources))
+                && read.destination == destination && read.width == width && read.count == sources.len()
+                && read.count <= MAXIMUM_SOURCES
+                && forall|at: int| 0 <= at < sources.len() ==> read.sources[at] as int == #[trigger] sources[at],
+        decreases operands.len() - index,
+    {
+        let operand = operands[index];
+        proof {
+            assert(operands@.take(index + 1).drop_last() =~= operands@.take(index as int));
+            assert(operands@.take(index + 1).last() == operand);
         }
-        match *operand {
-            Operand::GeneralPurposeRegister {
-                number,
-                thirty_one,
-                access: OperandAccess::Written,
-                ..
-            } => read.destination = Some((number.read(word), thirty_one)),
+        // VERUS: no specification of `Option::get_or_insert`, so the first width is kept by a test.
+        let register_width = match operand {
+            Operand::GeneralPurposeRegister { width, .. } => Some(width),
+            _ => None,
+        };
+        if read.width.is_none() {
+            read.width = register_width;
+        }
+        match operand {
+            Operand::GeneralPurposeRegister { number, thirty_one, access: OperandAccess::Written, .. } => {
+                // VERUS: the operand lists are a table Verus does not read, so a field outside the encoding is refused
+                // as UNDEFINED.
+                if !number.is_inside() {
+                    proof {
+                        lemma_operands_read_prefix(*processor, word, operands@, index + 1);
+                    }
+                    return Err(Exception::UndefinedInstruction);
+                }
+                let destination = number.read(word);
+                proof {
+                    number.lemma_value_below(word, 32);
+                    vstd::arithmetic::power2::lemma2_to64();
+                }
+                read.destination = Some((destination, thirty_one));
+            },
             _ => {
-                read.sources[read.count] = read_source(processor, word, operand)?;
+                let value = match read_source(processor, word, &operand) {
+                    Ok(value) => value,
+                    Err(exception) => {
+                        proof {
+                            lemma_operands_read_prefix(*processor, word, operands@, index + 1);
+                        }
+                        return Err(exception);
+                    },
+                };
+                // VERUS: the operand lists are a table Verus does not read, so more values than an operation reads
+                // are refused as UNDEFINED.
+                if read.count >= MAXIMUM_SOURCES {
+                    proof {
+                        lemma_operands_read_prefix(*processor, word, operands@, index + 1);
+                    }
+                    return Err(Exception::UndefinedInstruction);
+                }
+                read.sources[read.count] = value;
                 read.count += 1;
-            }
+            },
         }
+        index += 1;
+    }
+    proof {
+        assert(operands@.take(index as int) =~= operands@);
     }
     Ok(read)
 }
@@ -375,24 +724,36 @@ pub fn simulate_integer<LevelSpecific>(
     word: u32,
     operands: &[Operand],
     operation: IntegerOperation,
-) -> Result<(), Exception> {
+) -> (outcome: Result<(), Exception>)
+    ensures
+        match integer_effect(*old(processor), word, operands@, operation) {
+            Err(exception) => outcome == Err::<(), Exception>(exception) && *final(processor) == *old(processor),
+            Ok((write, flags)) => outcome == Ok::<(), Exception>(()) && effect_applied(*old(processor), *final(processor), write, flags),
+        },
+{
     let read = read_operands(processor, word, operands)?;
+    let ghost sources = match operands_read(*old(processor), word, operands@) {
+        Some((_, _, sources)) => sources,
+        None => Seq::empty(),
+    };
+    proof {
+        assert(read.sources@.take(read.count as int) =~= sources.map_values(|value: int| value as u64));
+    }
     // An instruction that names no register changes only the flags, at no width.
-    let width = read.width.unwrap_or(RegisterWidth::Bits64);
-    let kept = read.destination.map_or(0, |(number, thirty_one)| {
-        read_register(processor, number, thirty_one)
-    });
-    let outcome = apply(
-        operation,
-        width,
-        kept,
-        read.sources(),
-        ConditionFlags::from(processor.condition_flags),
-    )?;
+    let width = match read.width {
+        Some(width) => width,
+        None => RegisterWidth::Bits64,
+    };
+    let kept = match read.destination {
+        Some((number, thirty_one)) => read_register(processor, number, thirty_one),
+        None => 0,
+    };
+    let outcome = apply(operation, width, kept, &read.sources, read.count, processor.condition_flags)?;
     if let (Some(result), Some((number, thirty_one))) = (outcome.result, read.destination) {
-        let thirty_one = if crate::planted::any(&[402, 420]) {
+        // VERUS: `planted::any` has no specification, so it is two `is`.
+        let thirty_one = if crate::planted::is(402) || crate::planted::is(420) {
             RegisterThirtyOne::ZeroRegister
-        } else if crate::planted::any(&[416, 135]) {
+        } else if crate::planted::is(416) || crate::planted::is(135) {
             RegisterThirtyOne::StackPointer
         } else {
             thirty_one
@@ -403,20 +764,21 @@ pub fn simulate_integer<LevelSpecific>(
             width.to_mask()
         };
         let mut value = result & mask;
-        if (crate::planted::is(209) || crate::planted::is(223)) && width == RegisterWidth::Bits32 {
+        proof {
+            crate::lemmas::lemma_mask(result, width.bits());
+        }
+        // VERUS: no `==` on `RegisterWidth` in executable code, so the width is matched.
+        if (crate::planted::is(209) || crate::planted::is(223)) && matches!(width, RegisterWidth::Bits32) {
             value |= read_register(processor, number, thirty_one) & !width.to_mask();
         }
-        if crate::planted::is(217)
-            && let (IntegerOperation::AddWithCarry(_), &[first, second]) =
-                (operation, read.sources())
-        {
+        if crate::planted::is(217) && matches!(operation, IntegerOperation::AddWithCarry(_)) && read.count == 2 {
             let carry = processor.condition_flags.carry;
-            value = first + second + u64::from(carry);
+            value = read.sources[0] + read.sources[1] + carry as u64;
         }
         write_register(processor, number, value, thirty_one);
     }
     if let Some(flags) = outcome.flags {
-        processor.condition_flags = Nzcv::from(flags);
+        processor.condition_flags = flags;
     }
     Ok(())
 }
@@ -426,7 +788,21 @@ pub(crate) fn read_source<LevelSpecific>(
     processor: &Processor<LevelSpecific>,
     word: u32,
     operand: &Operand,
-) -> Result<u64, Exception> {
+) -> (value: Result<u64, Exception>)
+    ensures
+        match source_value(*processor, word, *operand) {
+            Some(expected) => value matches Ok(value) && value as int == expected,
+            None => value == Err::<u64, Exception>(Exception::UndefinedInstruction),
+        },
+{
+    // VERUS: the operand lists are a table Verus does not read, so an operand whose fields do not fit, or that gives no
+    // value, is refused as UNDEFINED where it would have read past its field or panicked.
+    if !operand.is_well_formed() {
+        return Err(Exception::UndefinedInstruction);
+    }
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+    }
     Ok(match *operand {
         Operand::GeneralPurposeRegister {
             number,
@@ -442,20 +818,23 @@ pub(crate) fn read_source<LevelSpecific>(
                 match thirty_one {
                     RegisterThirtyOne::StackPointer if crate::planted::is(103) => {
                         RegisterThirtyOne::ZeroRegister
-                    }
+                    },
                     RegisterThirtyOne::ZeroRegister if crate::planted::is(139) => {
                         RegisterThirtyOne::StackPointer
-                    }
+                    },
                     other => other,
                 }
             };
             let value = read_register(processor, number.read(word), thirty_one);
-            if crate::planted::any(&[423, 144]) {
+            if crate::planted::is(423) || crate::planted::is(144) {
                 value
             } else {
+                proof {
+                    crate::lemmas::lemma_mask(value, width.bits());
+                }
                 value & width.to_mask()
             }
-        }
+        },
         Operand::ShiftedRegister {
             number,
             shift_type,
@@ -468,6 +847,9 @@ pub(crate) fn read_source<LevelSpecific>(
                 number.read(word),
                 RegisterThirtyOne::ZeroRegister,
             );
+            proof {
+                shift_type.lemma_value_below(word, 2);
+            }
             match shift_register(
                 value,
                 shift_type.read(word),
@@ -478,7 +860,7 @@ pub(crate) fn read_source<LevelSpecific>(
                 Some(shifted) => shifted,
                 None => return Err(Exception::UndefinedInstruction),
             }
-        }
+        },
         Operand::ExtendedRegister {
             number,
             extend_type,
@@ -490,66 +872,90 @@ pub(crate) fn read_source<LevelSpecific>(
                 number.read(word),
                 RegisterThirtyOne::ZeroRegister,
             );
+            proof {
+                extend_type.lemma_value_below(word, 3);
+            }
             match extend_register(value, extend_type.read(word), amount.read(word), width) {
                 Some(extended) => extended,
                 None => return Err(Exception::UndefinedInstruction),
             }
-        }
+        },
         Operand::ArithmeticImmediate { value, shift } => {
+            proof {
+                value.lemma_value_below(word, 12);
+                shift.lemma_value_below(word, 1);
+            }
             arithmetic_immediate(value.read(word), shift.read(word))
-        }
+        },
         Operand::BitmaskImmediate { field, width } => {
+            proof {
+                field.lemma_value_below(word, 13);
+                if width == RegisterWidth::Bits32 {
+                    field.lemma_value_below(word, 12);
+                }
+            }
             match bitmask_immediate(field.read(word), width) {
                 Some(wmask) => wmask,
                 None => return Err(Exception::UndefinedInstruction),
             }
-        }
+        },
         Operand::WideImmediateShift { field, width } => {
+            proof {
+                field.lemma_value_below(word, 2);
+            }
             match wide_immediate_shift(field.read(word), width) {
                 Some(shift) => shift,
                 None => return Err(Exception::UndefinedInstruction),
             }
-        }
-        Operand::UnsignedImmediate(field) | Operand::Condition(field) => {
-            u64::from(field.read(word))
-        }
-        Operand::SignedImmediate(field) => field.read_signed(word) as u64,
+        },
+        // VERUS: no specification of `From<u32>`, so the value is cast.
+        Operand::UnsignedImmediate(field) | Operand::Condition(field) => field.read(word) as u64,
+        Operand::SignedImmediate(field) => {
+            let value = field.read_signed(word);
+            proof {
+                crate::lemmas::lemma_signed_pattern(value);
+            }
+            value as u64
+        },
         Operand::ProgramCounterOffset { fields, scale } => {
             let scale = if (crate::planted::is(142) || crate::planted::is(164)) && scale == 2 {
                 0
             } else {
                 scale
             };
-            let (bits, width) = fields.iter().fold((0_u64, 0), |(bits, width), field| {
-                (
-                    (bits << field.width) | u64::from(field.read(word)),
-                    width + field.width,
-                )
-            });
+            // VERUS: no specification of `Iterator::fold`, so the fields are joined by a loop.
+            let (bits, width) = concatenate(word, fields);
             let shift = u64::BITS - width;
             let scale = if crate::planted::is(251) {
                 scale - 1
             } else {
                 scale
             };
-            if crate::planted::any(&[253, 287, 24]) {
+            if crate::planted::is(253) || crate::planted::is(287) || crate::planted::is(24) {
                 return Ok(bits << scale);
             }
-            ((((bits << shift) as i64) >> shift) << scale) as u64
-        }
-        Operand::SplitImmediate(fields) => fields.iter().fold(0, |bits, field| {
-            (bits << field.width) | u64::from(field.read(word))
-        }),
-        Operand::AddressBase { .. }
-        | Operand::AddressOffset { .. }
-        | Operand::SplitAddressOffset { .. }
-        | Operand::RegisterOffset { .. }
-        | Operand::GeneralPurposeRegisterPair { .. }
-        | Operand::FloatingPointRegister { .. }
-        | Operand::VectorRegister { .. }
-        | Operand::Ignored(_)
-        | Operand::Unmodeled => panic!("{operand:?} is no operand of a value"),
+            let extended = ((bits << shift) as i64) >> shift;
+            proof {
+                crate::lemmas::lemma_sign_extension(bits, shift);
+                crate::lemmas::lemma_signed_shift_left(extended, scale);
+            }
+            (extended << scale) as u64
+        },
+        Operand::SplitImmediate(fields) => concatenate(word, fields).0,
+        // VERUS: an operand that gives no value is refused as UNDEFINED, where it panicked.
+        _ => return Err(Exception::UndefinedInstruction),
     })
+}
+
+} // verus!
+
+// VERUS: no specification of slicing an array by a range, so this accessor, which only unproven code calls, stays
+// outside `verus!`.
+impl ReadOperands {
+    /// The value of every operand but the written register, in the order of the syntax.
+    pub fn sources(&self) -> &[u64] {
+        &self.sources[..self.count]
+    }
 }
 
 verus! {
@@ -1575,11 +1981,6 @@ fn compute_move_wide(operation: IntegerOperation, width: RegisterWidth, kept: u6
 
 } // verus!
 
-/// The flags of an immediate whose bits are N, Z, C and V from the most significant.
-fn to_condition_flags(nzcv: u64) -> ConditionFlags {
-    ConditionFlags::from(to_nzcv(nzcv))
-}
-
 verus! {
 
 /// The flags of an immediate whose bits are N, Z, C and V from the most significant.
@@ -2446,86 +2847,119 @@ fn accumulate_crc(checksum: u64, value: u64, bytes: u32, polynomial: CrcPolynomi
 
 } // verus!
 
+verus! {
+
+/// Applies the operation to the values of its operands, the first `count` of `sources`, at the width, with the
+/// register it writes holding `kept` and the flags before.
 fn apply(
     operation: IntegerOperation,
     width: RegisterWidth,
     kept: u64,
-    sources: &[u64],
-    flags: ConditionFlags,
-) -> Result<Outcome, Exception> {
+    sources: &[u64; MAXIMUM_SOURCES],
+    count: usize,
+    flags: Nzcv,
+) -> (outcome: Result<Outcome, Exception>)
+    requires
+        count <= MAXIMUM_SOURCES,
+    ensures
+        match integer_outcome(operation, width, kept, sources@.take(count as int), flags) {
+            Some((result, set)) => outcome matches Ok(outcome) && outcome.flags == set && match outcome.result {
+                Some(value) => result == Some(value as int),
+                None => result is None,
+            },
+            None => outcome == Err::<Outcome, Exception>(Exception::UndefinedInstruction),
+        },
+{
     use IntegerOperation as O;
     let mask = width.to_mask();
-    let written = |result: u64| Outcome {
-        result: Some(if crate::planted::is(104) {
-            result
-        } else {
-            result & mask
-        }),
-        flags: None,
-    };
-    Ok(match (operation, sources) {
-        (
-            O::Add(_)
-            | O::Subtract(_)
-            | O::AddWithCarry(_)
-            | O::SubtractWithCarry(_)
-            | O::And(_)
-            | O::AndNot(_)
-            | O::Or
-            | O::OrNot
-            | O::ExclusiveOr
-            | O::ExclusiveOrNot,
-            &[first, second],
-        ) => {
-            let (result, result_flags) =
-                compute_arithmetic_or_logical(operation, width, first, second, Nzcv::from(flags));
+    let ghost n = width.bits();
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+    }
+    // VERUS: no slice patterns, so each arm checks how many values it has; where it has others than it reads it is
+    // refused as UNDEFINED, where it panicked.
+    let (first, second, third, fourth) = (sources[0], sources[1], sources[2], sources[3]);
+    Ok(match operation {
+        O::Add(_)
+        | O::Subtract(_)
+        | O::AddWithCarry(_)
+        | O::SubtractWithCarry(_)
+        | O::And(_)
+        | O::AndNot(_)
+        | O::Or
+        | O::OrNot
+        | O::ExclusiveOr
+        | O::ExclusiveOrNot => {
+            if count != 2 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            let (result, result_flags) = compute_arithmetic_or_logical(operation, width, first, second, flags);
             Outcome {
                 result: Some(result),
-                flags: result_flags.map(ConditionFlags::from),
+                flags: result_flags,
             }
-        }
-        (O::MoveWideNot | O::MoveWideZero | O::MoveWideKeep, &[immediate, shift]) => Outcome {
-            result: Some(compute_move_wide(operation, width, kept, immediate, shift)),
-            flags: None,
         },
-        (O::Bitfield(fill), &[source, immr, imms]) => {
-            match compute_bitfield(fill, width, kept, source, immr, imms) {
+        O::MoveWideNot | O::MoveWideZero | O::MoveWideKeep => {
+            if count != 2 || first >= 0x1_0000 || second % 16 != 0 || second >= width.to_bits() as u64 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: Some(compute_move_wide(operation, width, kept, first, second)),
+                flags: None,
+            }
+        },
+        O::Bitfield(fill) => {
+            if count != 3 || second >= width.to_bits() as u64 || third >= width.to_bits() as u64 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            match compute_bitfield(fill, width, kept, first, second, third) {
                 Some(result) => Outcome {
                     result: Some(result),
                     flags: None,
                 },
                 None => return Err(Exception::UndefinedInstruction),
             }
-        }
-        (O::Extract, &[first, second, lowest_bit]) => Outcome {
-            result: Some(compute_extract(width, first, second, lowest_bit)),
-            flags: None,
         },
-        (O::ConditionalSelect(alternative), &[first, second, condition]) => Outcome {
-            result: Some(compute_conditional_select(
-                alternative,
-                width,
-                first,
-                second,
-                condition,
-                Nzcv::from(flags),
-            )),
-            flags: None,
+        O::Extract => {
+            if count != 3 || first > mask || second > mask || third >= width.to_bits() as u64 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: Some(compute_extract(width, first, second, third)),
+                flags: None,
+            }
         },
-        (O::ConditionalCompare(comparison), &[first, second, nzcv, condition]) => Outcome {
-            result: None,
-            flags: Some(ConditionFlags::from(compute_conditional_compare(
-                comparison,
-                width,
-                first,
-                second,
-                nzcv,
-                condition,
-                Nzcv::from(flags),
-            ))),
+        O::ConditionalSelect(alternative) => {
+            if count != 3 || third >= 16 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: Some(compute_conditional_select(alternative, width, first, second, third, flags)),
+                flags: None,
+            }
         },
-        (O::ReverseBits, &[source]) => written(compute_reverse_bits(width, source)),
-        (O::ReverseBytes { container_bits }, &[source]) => {
+        O::ConditionalCompare(comparison) => {
+            if count != 4 || fourth >= 16 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: None,
+                flags: Some(compute_conditional_compare(comparison, width, first, second, third, fourth, flags)),
+            }
+        },
+        O::ReverseBits => {
+            if count != 1 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            low_bits_outcome(compute_reverse_bits(width, first), width)
+        },
+        O::ReverseBytes { container_bits } => {
+            if count != 1 || !(container_bits == 16 || container_bits == 32 || container_bits == 64)
+                || container_bits > width.to_bits()
+            {
+                return Err(Exception::UndefinedInstruction);
+            }
             let container_bits = if crate::planted::is(239) {
                 u32::BITS
             } else {
@@ -2541,123 +2975,206 @@ fn apply(
             } else {
                 container_bits
             };
-            written(reverse_bytes(source, container_bits, width))
-        }
-        (O::CountLeadingZeros, &[source]) => written(compute_count_leading_zeros(width, source)),
-        (O::CountLeadingSignBits, &[source]) => {
-            written(compute_count_leading_sign_bits(width, source))
-        }
-        (
-            O::ShiftLeftVariable
-            | O::ShiftRightLogicalVariable
-            | O::ShiftRightArithmeticVariable
-            | O::RotateRightVariable,
-            &[first, second],
-        ) => Outcome {
-            result: Some(compute_variable_shift(operation, width, first, second)),
-            flags: None,
+            low_bits_outcome(reverse_bytes(first, container_bits, width), width)
         },
-        (O::Divide(signedness), &[first, second]) => Outcome {
-            result: Some(compute_divide(signedness, width, first, second)),
-            flags: None,
+        O::CountLeadingZeros => {
+            if count != 1 || first > mask {
+                return Err(Exception::UndefinedInstruction);
+            }
+            low_bits_outcome(compute_count_leading_zeros(width, first), width)
         },
-        (O::MultiplyAdd | O::MultiplySubtract, &[first, second, third]) => Outcome {
-            result: Some(compute_multiply_add(operation, width, first, second, third)),
-            flags: None,
+        O::CountLeadingSignBits => {
+            if count != 1 || first > mask {
+                return Err(Exception::UndefinedInstruction);
+            }
+            low_bits_outcome(compute_count_leading_sign_bits(width, first), width)
         },
-        (O::MultiplyAddLong(_) | O::MultiplySubtractLong(_), &[first, second, third]) => {
-            written(compute_multiply_add_long(operation, first, second, third))
-        }
-        (O::MultiplyHigh(signedness), &[first, second]) => {
-            written(compute_multiply_high(signedness, first, second))
-        }
-        (O::Crc32 { polynomial, bytes }, &[checksum, value]) if crate::planted::is(412) => {
-            written(accumulate_crc(checksum, value >> 8, bytes, polynomial))
-        }
-        (O::Crc32 { polynomial, bytes }, &[checksum, value]) => {
-            written(accumulate_crc(checksum, value, bytes, polynomial))
-        }
-        (O::RotateMaskInsertFlags, &[source, rotation, selected]) => {
+        O::ShiftLeftVariable | O::ShiftRightLogicalVariable | O::ShiftRightArithmeticVariable | O::RotateRightVariable => {
+            if count != 2 || first > mask {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: Some(compute_variable_shift(operation, width, first, second)),
+                flags: None,
+            }
+        },
+        O::Divide(signedness) => {
+            if count != 2 || first > mask || second > mask {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: Some(compute_divide(signedness, width, first, second)),
+                flags: None,
+            }
+        },
+        O::MultiplyAdd | O::MultiplySubtract => {
+            if count != 3 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: Some(compute_multiply_add(operation, width, first, second, third)),
+                flags: None,
+            }
+        },
+        O::MultiplyAddLong(_) | O::MultiplySubtractLong(_) => {
+            if count != 3 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            low_bits_outcome(compute_multiply_add_long(operation, first, second, third), width)
+        },
+        O::MultiplyHigh(signedness) => {
+            if count != 2 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            low_bits_outcome(compute_multiply_high(signedness, first, second), width)
+        },
+        O::Crc32 { polynomial, bytes } => {
+            if count != 2 || !(bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8) {
+                return Err(Exception::UndefinedInstruction);
+            }
+            if crate::planted::is(412) {
+                low_bits_outcome(accumulate_crc(first, second >> 8, bytes, polynomial), width)
+            } else {
+                low_bits_outcome(accumulate_crc(first, second, bytes, polynomial), width)
+            }
+        },
+        O::RotateMaskInsertFlags => {
+            if count != 3 || !matches!(width, RegisterWidth::Bits64) || second >= 64 || third >= 16 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            // VERUS: no specification of `u64::rotate_left`, so planted bug 136 rotates right by the rest of 64.
             let rotated = if crate::planted::is(136) {
-                source.rotate_left(rotation as u32)
+                rotate_right(first, (u64::BITS - second as u32) % u64::BITS, RegisterWidth::Bits64)
             } else {
-                rotate_right(source, rotation as u32, width)
+                rotate_right(first, second as u32, width)
             };
-            let selected = to_condition_flags(selected);
+            let selected = to_nzcv(third);
+            let inserted = to_nzcv(rotated);
+            proof {
+                vstd::arithmetic::div_mod::lemma_small_mod(first as nat, pow2(64));
+            }
             Outcome {
                 result: None,
-                flags: Some((flags & !selected) | (to_condition_flags(rotated) & selected)),
+                flags: Some(Nzcv {
+                    negative: if selected.negative { inserted.negative } else { flags.negative },
+                    zero: if selected.zero { inserted.zero } else { flags.zero },
+                    carry: if selected.carry { inserted.carry } else { flags.carry },
+                    overflow: if selected.overflow { inserted.overflow } else { flags.overflow },
+                }),
             }
-        }
-        (O::SetFlags { bits }, &[source]) => {
-            let mut set = flags & ConditionFlags::CARRY;
-            let top = source
-                >> if crate::planted::is(16) {
-                    bits
-                } else {
-                    bits - 1
-                };
-            set.set(ConditionFlags::NEGATIVE, top & 1 != 0);
-            set.set(ConditionFlags::ZERO, source & low_ones(bits) == 0);
-            let overflow_top = if crate::planted::is(137) {
-                source >> bits
-            } else {
-                top
-            };
-            set.set(
-                ConditionFlags::OVERFLOW,
-                (overflow_top ^ (overflow_top >> 1)) & 1 != 0,
-            );
-            Outcome {
-                result: None,
-                flags: Some(set),
-            }
-        }
-        (O::InvertCarry, &[]) => Outcome {
-            result: None,
-            flags: Some(if crate::planted::is(413) {
-                flags ^ ConditionFlags::CARRY ^ ConditionFlags::OVERFLOW
-            } else {
-                flags ^ ConditionFlags::CARRY
-            }),
         },
-        (O::ConvertFlagsToExternalFormat, &[]) => {
-            let zero = flags.contains(ConditionFlags::ZERO);
-            let carry = flags.contains(ConditionFlags::CARRY);
-            let overflow = flags.contains(ConditionFlags::OVERFLOW);
-            let mut set = ConditionFlags::empty();
-            set.set(
-                ConditionFlags::ZERO,
-                zero || (overflow && !crate::planted::is(138)),
-            );
-            set.set(ConditionFlags::CARRY, carry && !overflow);
+        O::SetFlags { bits } => {
+            if count != 1 || !(bits == 8 || bits == 16) {
+                return Err(Exception::UndefinedInstruction);
+            }
             Outcome {
                 result: None,
-                flags: Some(set),
+                flags: Some(compute_set_flags(first, bits, flags)),
             }
-        }
-        (O::ConvertFlagsFromExternalFormat, &[]) => {
-            let zero = flags.contains(ConditionFlags::ZERO);
-            let carry = flags.contains(ConditionFlags::CARRY);
-            let mut set = ConditionFlags::empty();
-            set.set(
-                ConditionFlags::NEGATIVE,
-                !carry && (zero == crate::planted::is(244)),
-            );
-            set.set(ConditionFlags::ZERO, zero && carry);
-            set.set(ConditionFlags::CARRY, carry || zero);
-            set.set(ConditionFlags::OVERFLOW, !carry && zero);
+        },
+        O::InvertCarry => {
+            if count != 0 {
+                return Err(Exception::UndefinedInstruction);
+            }
             Outcome {
                 result: None,
-                flags: Some(set),
+                flags: Some(if crate::planted::is(413) {
+                    Nzcv { carry: !flags.carry, overflow: !flags.overflow, ..flags }
+                } else {
+                    Nzcv { carry: !flags.carry, ..flags }
+                }),
             }
-        }
-        _ => panic!(
-            "{operation:?} reads other operands than {} values",
-            sources.len()
-        ),
+        },
+        O::ConvertFlagsToExternalFormat => {
+            if count != 0 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: None,
+                flags: Some(Nzcv {
+                    negative: false,
+                    zero: flags.zero || (flags.overflow && !crate::planted::is(138)),
+                    carry: flags.carry && !flags.overflow,
+                    overflow: false,
+                }),
+            }
+        },
+        O::ConvertFlagsFromExternalFormat => {
+            if count != 0 {
+                return Err(Exception::UndefinedInstruction);
+            }
+            Outcome {
+                result: None,
+                flags: Some(Nzcv {
+                    negative: !flags.carry && (flags.zero == crate::planted::is(244)),
+                    zero: flags.zero && flags.carry,
+                    carry: flags.carry || flags.zero,
+                    overflow: !flags.carry && flags.zero,
+                }),
+            }
+        },
     })
 }
+
+/// The outcome of an operation that writes the low bits of its result and sets no flags.
+fn low_bits_outcome(result: u64, width: RegisterWidth) -> (outcome: Outcome)
+    ensures
+        outcome.result matches Some(value) && value as int == uint(result as int, width.bits()),
+        outcome.flags is None,
+{
+    let mask = if crate::planted::is(104) {
+        u64::MAX
+    } else {
+        width.to_mask()
+    };
+    proof {
+        crate::lemmas::lemma_mask(result, width.bits());
+    }
+    Outcome {
+        result: Some(result & mask),
+        flags: None,
+    }
+}
+
+/// The flags SETF8 and SETF16 set from the low `bits` bits of the source, C kept.
+fn compute_set_flags(source: u64, bits: u32, flags: Nzcv) -> (set: Nzcv)
+    requires
+        bits == 8 || bits == 16,
+    ensures
+        set == set_flags(source, bits, flags),
+{
+    let top = source >> if crate::planted::is(16) {
+        bits
+    } else {
+        bits - 1
+    };
+    let overflow_top = if crate::planted::is(137) {
+        source >> bits
+    } else {
+        top
+    };
+    let zero = source & low_ones(bits) == 0;
+    proof {
+        crate::lemmas::lemma_mask(source, bits as nat);
+        let msb = (bits - 1) as u32;
+        assert((top & 1 != 0) == ((source >> msb) & 1 == 1)) by (bit_vector)
+            requires
+                top == source >> msb;
+        assert((((top ^ (top >> 1u32)) & 1) != 0) == ((source >> bits) & 1 != (source >> msb) & 1)) by (bit_vector)
+            requires
+                top == source >> msb,
+                msb + 1 == bits,
+                bits <= 16;
+    }
+    Nzcv {
+        negative: top & 1 != 0,
+        zero,
+        carry: flags.carry,
+        overflow: (overflow_top ^ (overflow_top >> 1u32)) & 1 != 0,
+    }
+}
+
+} // verus!
 
 verus! {
 

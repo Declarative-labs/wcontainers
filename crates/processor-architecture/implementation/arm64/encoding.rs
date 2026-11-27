@@ -89,6 +89,176 @@ impl Field {
         }
         ((unsigned as i64) << bits_above) >> bits_above
     }
+
+    /// The field's bits of the word, `UInt(word<lowest_bit + width - 1:lowest_bit>)`.
+    pub open spec fn value(self, word: u32) -> nat {
+        uint(word as int / (pow2(self.lowest_bit as nat) as int), self.width as nat) as nat
+    }
+
+    /// The field's bits of the word are below 2^bits where the field holds at most `bits` bits.
+    pub proof fn lemma_value_below(self, word: u32, bits: nat)
+        requires
+            self.width <= bits,
+        ensures
+            self.value(word) < pow2(bits),
+    {
+        vstd::arithmetic::power2::lemma_pow2_pos(self.lowest_bit as nat);
+        vstd::arithmetic::power2::lemma_pow2_pos(self.width as nat);
+        vstd::arithmetic::div_mod::lemma_div_pos_is_pos(word as int, pow2(self.lowest_bit as nat) as int);
+        vstd::arithmetic::div_mod::lemma_mod_pos_bound(
+            word as int / (pow2(self.lowest_bit as nat) as int),
+            pow2(self.width as nat) as int,
+        );
+        if self.width < bits {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(self.width as nat, bits);
+        }
+    }
+
+    pub const fn is_inside(self) -> (inside: bool)
+        ensures
+            inside == self.fits(),
+    {
+        self.lowest_bit < u32::BITS && self.width <= u32::BITS - self.lowest_bit
+    }
+}
+
+/// Whether every field lies inside a 32-bit encoding.
+pub open spec fn fields_fit(fields: Seq<Field>) -> bool {
+    forall|index: int| 0 <= index < fields.len() ==> #[trigger] fields[index].fits()
+}
+
+/// The bits the fields hold together.
+pub open spec fn fields_width(fields: Seq<Field>) -> nat
+    decreases fields.len(),
+{
+    if fields.len() == 0 { 0 } else { fields_width(fields.drop_last()) + fields.last().width as nat }
+}
+
+/// The fields' bits of the word one after the other, the first the most significant: `field0:field1:...`.
+pub open spec fn concatenation(word: u32, fields: Seq<Field>) -> nat
+    decreases fields.len(),
+{
+    if fields.len() == 0 {
+        0
+    } else {
+        concatenation(word, fields.drop_last()) * pow2(fields.last().width as nat) + fields.last().value(word)
+    }
+}
+
+/// The fields of a prefix are at most as wide as all of them.
+pub proof fn lemma_fields_width_prefix(fields: Seq<Field>, count: int)
+    requires
+        0 <= count <= fields.len(),
+    ensures
+        fields_width(fields.take(count)) <= fields_width(fields),
+    decreases fields.len() - count,
+{
+    if count < fields.len() {
+        lemma_fields_width_prefix(fields, count + 1);
+        assert(fields.take(count + 1).drop_last() =~= fields.take(count));
+    } else {
+        assert(fields.take(count) =~= fields);
+    }
+}
+
+/// Whether every field lies inside a 32-bit encoding and together they hold between `least` and 64 bits.
+pub fn fields_fit_within(fields: &[Field], least: u32) -> (within: bool)
+    ensures
+        within == (fields_fit(fields@) && least <= fields_width(fields@) <= 64),
+{
+    let mut width: u32 = 0;
+    let mut index: usize = 0;
+    while index < fields.len()
+        invariant
+            index <= fields.len(),
+            fields_fit(fields@.take(index as int)),
+            width == fields_width(fields@.take(index as int)),
+            width <= 64,
+        decreases fields.len() - index,
+    {
+        let field = fields[index];
+        proof {
+            assert(fields@.take(index + 1).drop_last() =~= fields@.take(index as int));
+            assert(fields@.take(index + 1).last() == field);
+            lemma_fields_width_prefix(fields@, index + 1);
+        }
+        if !field.is_inside() {
+            proof {
+                assert(!fields@[index as int].fits());
+            }
+            return false;
+        }
+        if width + field.width > 64 {
+            return false;
+        }
+        width += field.width;
+        index += 1;
+        proof {
+            assert forall|i: int| 0 <= i < fields@.take(index as int).len() implies #[trigger] fields@.take(index as int)[i].fits() by {
+                if i < index - 1 {
+                    assert(fields@.take(index as int)[i] == fields@.take(index - 1)[i]);
+                }
+            }
+        }
+    }
+    proof {
+        assert(fields@.take(index as int) =~= fields@);
+    }
+    width >= least
+}
+
+/// The fields' bits of the word one after the other, the first the most significant, and how many bits they hold.
+pub fn concatenate(word: u32, fields: &[Field]) -> (concatenated: (u64, u32))
+    requires
+        fields_fit(fields@),
+        fields_width(fields@) <= 64,
+    ensures
+        concatenated.0 as nat == concatenation(word, fields@),
+        concatenated.1 as nat == fields_width(fields@),
+        (concatenated.0 as nat) < pow2(concatenated.1 as nat),
+{
+    let mut bits: u64 = 0;
+    let mut width: u32 = 0;
+    let mut index: usize = 0;
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+    }
+    while index < fields.len()
+        invariant
+            index <= fields.len(),
+            fields_fit(fields@),
+            fields_width(fields@) <= 64,
+            bits as nat == concatenation(word, fields@.take(index as int)),
+            width as nat == fields_width(fields@.take(index as int)),
+            (bits as nat) < pow2(width as nat),
+        decreases fields.len() - index,
+    {
+        let field = fields[index];
+        proof {
+            assert(fields@.take(index + 1).drop_last() =~= fields@.take(index as int));
+            assert(fields@.take(index + 1).last() == field);
+            lemma_fields_width_prefix(fields@, index + 1);
+            assert(fields@[index as int].fits());
+        }
+        let value = field.read(word);
+        proof {
+            let field_value = word as int / (pow2(field.lowest_bit as nat) as int);
+            vstd::arithmetic::power2::lemma_pow2_pos(field.lowest_bit as nat);
+            vstd::arithmetic::power2::lemma_pow2_pos(field.width as nat);
+            vstd::arithmetic::div_mod::lemma_div_pos_is_pos(word as int, pow2(field.lowest_bit as nat) as int);
+            vstd::arithmetic::div_mod::lemma_mod_pos_bound(field_value, pow2(field.width as nat) as int);
+            crate::lemmas::lemma_concatenate(bits, value as u64, width as nat, field.width);
+        }
+        // VERUS: no specification links `|` to `+`, so the field's bits are added below the shifted bits, which are zero
+        // there.
+        bits = (bits << field.width) + value as u64;
+        width += field.width;
+        index += 1;
+    }
+    proof {
+        assert(fields@.take(index as int) =~= fields@);
+    }
+    (bits, width)
 }
 
 } // verus!

@@ -419,6 +419,53 @@ pub proof fn lemma_modulo_width(x: int, n: nat)
     }
 }
 
+/// A value of `width` bits shifted left by `step` bits, plus a value below 2^step, is `high:low`, of `width + step` bits.
+pub proof fn lemma_concatenate(high: u64, low: u64, width: nat, step: u32)
+    requires
+        (high as nat) < pow2(width),
+        (low as nat) < pow2(step as nat),
+        width + step <= 64,
+        step < 64,
+    ensures
+        (high << step) as nat == high * pow2(step as nat),
+        high * pow2(step as nat) + low < pow2((width + step) as nat),
+        pow2((width + step) as nat) <= pow2(64),
+        pow2(64) == 0x1_0000_0000_0000_0000,
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::arithmetic::power2::lemma2_to64_rest();
+    lemma_pow2_pos(step as nat);
+    lemma_pow2_pos(width);
+    lemma_pow2_adds(width, step as nat);
+    let (h, l, high_bits, step_bits) = (high as int, low as int, pow2(width) as int, pow2(step as nat) as int);
+    assert(h * step_bits + l < high_bits * step_bits) by (nonlinear_arith)
+        requires
+            0 <= h < high_bits,
+            0 <= l < step_bits;
+    if width + step < 64 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases((width + step) as nat, 64);
+    }
+    vstd::bits::lemma_u64_shl_is_mul(high, step as u64);
+    assert(high << step == high << (step as u64)) by (bit_vector);
+}
+
+/// A signed value shifted left, as a 64-bit pattern, is its product with 2^s modulo 2^64.
+pub proof fn lemma_signed_shift_left(x: i64, s: u32)
+    requires
+        s < 64,
+    ensures
+        ((x << s) as u64) as int == uint(x as int * pow2(s as nat), 64),
+{
+    assert(((x << s) as u64) == ((x as u64) << s)) by (bit_vector)
+        requires
+            s < 64;
+    lemma_shift_left(x as u64, s, 64);
+    vstd::arithmetic::power2::lemma2_to64_rest();
+    assert(((x as u64) << s) & 0xffff_ffff_ffff_ffffu64 == (x as u64) << s) by (bit_vector);
+    lemma_signed_pattern(x);
+    vstd::arithmetic::div_mod::lemma_mul_mod_noop_left(x as int, pow2(s as nat) as int, pow2(64) as int);
+}
+
 /// A signed value's 64-bit pattern, as `as u64` gives it, is its value modulo 2^64.
 pub proof fn lemma_signed_pattern(x: i64)
     ensures

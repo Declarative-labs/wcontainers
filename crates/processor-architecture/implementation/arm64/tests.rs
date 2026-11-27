@@ -1540,3 +1540,101 @@ fn every_flag_value_converts_to_its_bit_and_back() {
         assert_eq!(ConditionFlags::from(Nzcv::from(flags)), flags);
     }
 }
+
+/// The proven integer instructions refuse, as UNDEFINED, an operand list that gives other values than their operation
+/// reads, which Verus cannot rule out from tables it does not read: every listed integer instruction's list gives the
+/// values its operation reads, each in the range the operation takes, so that no listed word meets that refusal.
+#[test]
+fn every_integer_operand_list_gives_the_values_its_operation_reads() {
+    use crate::integer::{IntegerOperation as O, MAXIMUM_SOURCES, to_integer_operation};
+    use crate::operand::{Operand, OperandAccess, RegisterWidth};
+    let mut checked = 0;
+    for instruction in LISTED_INSTRUCTIONS {
+        let Some(operation) = to_integer_operation(instruction) else {
+            continue;
+        };
+        let operands = instruction
+            .to_record()
+            .expect("a listed instruction")
+            .operands;
+        assert!(
+            operands.iter().all(Operand::is_well_formed),
+            "{instruction:?}"
+        );
+        let values: Vec<Operand> = operands
+            .iter()
+            .copied()
+            .filter(|operand| {
+                !matches!(
+                    operand,
+                    Operand::GeneralPurposeRegister {
+                        access: OperandAccess::Written,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        let width = operands.iter().find_map(|operand| match operand {
+            Operand::GeneralPurposeRegister { width, .. } => Some(*width),
+            _ => None,
+        });
+        let bits = width.map_or(u64::BITS, RegisterWidth::to_bits);
+        // A register read at the instruction's width gives a value below 2^bits.
+        let register = |operand: &Operand| matches!(operand, Operand::GeneralPurposeRegister { width: read, .. } if Some(*read) == width);
+        let immediate = |operand: &Operand, most: u32| matches!(operand, Operand::UnsignedImmediate(field) | Operand::Condition(field) if field.width <= most);
+        let arity = match operation {
+            O::InvertCarry
+            | O::ConvertFlagsToExternalFormat
+            | O::ConvertFlagsFromExternalFormat => 0,
+            O::ReverseBits
+            | O::ReverseBytes { .. }
+            | O::CountLeadingZeros
+            | O::CountLeadingSignBits
+            | O::SetFlags { .. } => 1,
+            O::Bitfield(_)
+            | O::Extract
+            | O::ConditionalSelect(_)
+            | O::MultiplyAdd
+            | O::MultiplySubtract
+            | O::MultiplyAddLong(_)
+            | O::MultiplySubtractLong(_)
+            | O::RotateMaskInsertFlags => 3,
+            O::ConditionalCompare(_) => 4,
+            _ => 2,
+        };
+        assert_eq!(values.len(), arity, "{instruction:?}");
+        assert!(arity <= MAXIMUM_SOURCES);
+        let fits = match operation {
+            O::MoveWideNot | O::MoveWideZero | O::MoveWideKeep => {
+                immediate(&values[0], 16) && matches!(values[1], Operand::WideImmediateShift { .. })
+            }
+            O::Bitfield(_) => immediate(&values[1], 6) && immediate(&values[2], 6),
+            O::Extract => register(&values[0]) && register(&values[1]) && immediate(&values[2], 6),
+            O::ConditionalSelect(_) => {
+                matches!(values[2], Operand::Condition(field) if field.width <= 4)
+            }
+            O::ConditionalCompare(_) => {
+                matches!(values[3], Operand::Condition(field) if field.width <= 4)
+            }
+            O::ReverseBytes { container_bits } => {
+                [16, 32, 64].contains(&container_bits) && container_bits <= bits
+            }
+            O::CountLeadingZeros
+            | O::CountLeadingSignBits
+            | O::ShiftLeftVariable
+            | O::ShiftRightLogicalVariable
+            | O::ShiftRightArithmeticVariable
+            | O::RotateRightVariable => register(&values[0]),
+            O::Divide(_) => register(&values[0]) && register(&values[1]),
+            O::Crc32 { bytes, .. } => [1, 2, 4, 8].contains(&bytes),
+            O::RotateMaskInsertFlags => {
+                bits == u64::BITS && immediate(&values[1], 6) && immediate(&values[2], 4)
+            }
+            O::SetFlags { bits } => [8, 16].contains(&bits),
+            _ => true,
+        };
+        assert!(fits, "{instruction:?}: {values:?}");
+        checked += 1;
+    }
+    assert_eq!(checked, 133, "integer instructions");
+}
