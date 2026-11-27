@@ -446,3 +446,44 @@ comments (the model's key is needed to answer them). Logs: SCRATCH/kernel-port/k
   node, backend's `arguments_taken_once_match_reference`: still past 1,500 s (open, below).
 - Also: embedder 36 of 36 (compute-used fixed), rseqabort 2 of 2, streams 18 of 18, sharedviews
   3 of 3, round_trips 7 of 7, hello, shell.
+
+### KS at `b7406836f` (MEASURED: fresh clone of the pushed tip, job kernel-port-ks3/20261126-213754-1463701, 21:37 to 00:04 UTC, load 8 to 38, three targets at a time, 4 test threads, 2,400 s per target)
+- clippy `--all-targets --no-deps -D warnings` of the kernel and the harness 0; rustfmt `--check` 0;
+  kernel unit tests 31 passed; the kernel's conformance suite on the stand-in 22 passed.
+- Harness: 114 targets: 87 pass, 25 fail, 2 reach the bound (was 68, 34, 12). Tests: 350 passed,
+  37 failed, 8 ignored (was 287, 53, 8). Logs: SCRATCH/kernel-port/ks3/ks-suite, ks3/whole.log.
+- fails16's 35: all 35 fail, each in a finished target (`proc_task` and `timers` now inside
+  finished threads and timers targets; `file_capabilities`, `special_files` in backend's log).
+- Failing beyond fails16, each with its cause:
+  - python, all three: the guest ends by SIGSEGV (exit 139); language modules after test_bool,
+    with 2 saves made. Cause not found yet (open; the system program crashed before this run too).
+  - sharedmap `remapped_file_pages_match_reference`: pages a `remap_file_pages` maps at another
+    offset of the block read zeros (INFERRED: the stand-in's `map_from` at an offset; the kernel
+    calls `PageTable::map_from` with the offset, guest_machine.rs `map_shared`).
+- Bounded: backend (`arguments_taken_once_match_reference` past 2,400 s with saves; its program
+  alone finishes in 18 s per seed, MEASURED with a probe, so INFERRED a later seed or the reference
+  side; open), node (`start_up` bounded, `system_program` failed, no detail before the bound).
+- Fixed since the last KS: aio, procstatus fdinfo, counterclock (2), embedder compute-used,
+  rseqabort, saving, go, java (2), outside (2), threads saving (2), timers wall clock, runners
+  code written over (executor `af5897634`), privatemap and sharedviews (executor), layer1 replay,
+  streams input closed; and cpulimit, cputime, deadlines, edges, processes, repeats, turns finish.
+- The stand-in's own suite (`--test conformance`, executor track's): `behavior_source::
+  next_state_after_an_error_executes_as_on_a_fresh_source` fails; `execution_is_deterministic`,
+  `execute_agrees_with_execute_in_place`, `measured_behavior_agrees_with_the_source` did not
+  finish in 1,500 s in `--release` (job 20261127-000521). Not measured as holding.
+- LTP 30 to the end (2,623 s): 6 verdicts match (listen01, mprotect01, recvfrom01,
+  rt_sigprocmask01, sendto01, sigaction01), 24 hang at LTP's own timeout, as at the last KS.
+  Logs: ks3/ltp30.log, ks3/ltp30/.
+- KS IS NOT REACHED: python (3), sharedmap remapped, backend's arguments_taken_once, node and the
+  24 LTP hangs.
+
+### Linter (MEASURED at `dc510b1b0`'s tree plus the fork fix, no key): the kernel's own crates
+31,381 (31,350 at the last run): magic_literal +16 (the syndrome's field shifts and the tests'
+encodings), name_unanswered +3, the summary shape rules +8, comment rules +2,
+constant_defined_twice +1, summary_unanswered +1. Logs: SCRATCH/kernel-port/ks3/lint.
+
+### Next (mine, waiting on nothing)
+- python's SIGSEGV: find the faulting address and whether the kernel or the stand-in gives it.
+- The 24 LTP hangs: one test's output, to see whether the parent misses its child's end.
+- backend's arguments_taken_once and node: which seed or side runs past the bound.
+- sharedmap remapped: a stand-in suite case of `map_from` at an offset, for the executor track.
