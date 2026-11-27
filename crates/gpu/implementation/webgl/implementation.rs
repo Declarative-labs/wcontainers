@@ -2205,8 +2205,9 @@ const UNORM24_SCALE: u32 = (1 << 24) - 1;
 /// After a read of 24-bit depth by sampling into layer `dst.1` of `dst` (`size` texels), the
 /// comparison passes ([`depth::EQUAL`]): for each word the device samples as another's float, a
 /// draw with the depth test EQUAL at that word writes it where the source (level, layer and
-/// region origin `src`) stores it. The source is the depth attachment where the region starts at
-/// its origin, else a copy of the region made by a blit, which keeps the stored words.
+/// region origin `src`) stores it, the source as the depth attachment. A region off the origin is
+/// decided in a colour texture reaching the region's place, the read copied there and back by
+/// blits of integer colour, which keep every bit (a blit of the depth itself may sample it).
 fn decide_colliding<O: OpenGlEs>(
     gpu: &mut Gl<O>,
     src: (&TextureRef, u32, u32, [u32; 2]),
@@ -2214,53 +2215,52 @@ fn decide_colliding<O: OpenGlEs>(
     size: (i32, i32),
 ) -> Result<(), GpuError> {
     let (texture, mip, layer, at) = src;
-    let copied = if at == [0, 0] {
+    let extent = Extent {
+        width: size.0 as u32,
+        height: size.1 as u32,
+        depth_or_layers: 1,
+    };
+    let region = |texture: &TextureRef, layer, origin| Region {
+        texture: texture.clone(),
+        mip: 0,
+        layer,
+        origin,
+        stencil: false,
+    };
+    let placed_at = Origin {
+        x: at[0],
+        y: at[1],
+        z: 0,
+    };
+    let placed = if at == [0, 0] {
         None
     } else {
-        let copy = make_texture(
+        let placed = make_texture(
             gpu,
             &TextureDesc {
                 dimension: TextureDimension::D2,
-                format: texture.desc.format,
-                width: size.0 as u32,
-                height: size.1 as u32,
+                format: dst.0.desc.format,
+                width: at[0] + extent.width,
+                height: at[1] + extent.height,
                 depth_or_layers: 1,
                 mip_levels: 1,
                 samples: 1,
-                usage: TextureUsage::RENDER | TextureUsage::COPY_DST,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
                 cube: false,
                 reinterpret: false,
             },
         )?;
-        let from = Region {
-            texture: texture.clone(),
-            mip,
-            layer,
-            origin: Origin {
-                x: at[0],
-                y: at[1],
-                z: 0,
-            },
-            stencil: false,
-        };
-        let to = Region {
-            texture: copy.clone(),
-            mip: 0,
-            layer: 0,
-            origin: Origin::default(),
-            stencil: false,
-        };
-        let extent = Extent {
-            width: size.0 as u32,
-            height: size.1 as u32,
-            depth_or_layers: 1,
-        };
-        blit_same(gpu, &from, &to, extent);
-        Some(copy)
+        blit_same(
+            gpu,
+            &region(dst.0, dst.1, Origin::default()),
+            &region(&placed, 0, placed_at),
+            extent,
+        );
+        Some(placed)
     };
-    let (depth, depth_mip, depth_layer) = match &copied {
-        Some(copy) => (copy, 0, 0),
-        None => (texture, mip, layer),
+    let (target, target_layer, rect) = match &placed {
+        Some(placed) => (placed, 0, [at[0] as i32, at[1] as i32, size.0, size.1]),
+        None => (dst.0, dst.1, [0, 0, size.0, size.1]),
     };
     if gpu.equal_pass.is_none() {
         match depth::build_equal(&gpu.gl) {
@@ -2268,7 +2268,7 @@ fn decide_colliding<O: OpenGlEs>(
             Err(log) => return Err(own_program_failed(gpu, log)),
         }
     }
-    let fb = own_framebuffer(gpu, &[(dst.0, 0, dst.1), (depth, depth_mip, depth_layer)]);
+    let fb = own_framebuffer(gpu, &[(target, 0, target_layer), (texture, mip, layer)]);
     let words = gpu.depth24_colliding.clone();
     for word in words {
         let pass = gpu.equal_pass.as_ref().expect("built above");
@@ -2276,10 +2276,16 @@ fn decide_colliding<O: OpenGlEs>(
         gpu.gl.use_program(program);
         gpu.gl.uniform1ui(word_at, word);
         gpu.gl.uniform1f(depth_at, depth::nearest(word));
-        own_equal_draw_into(gpu, fb, [0, 0, size.0, size.1]);
+        own_equal_draw_into(gpu, fb, rect);
     }
-    if let Some(copy) = copied {
-        destroy_held(gpu, Held::Texture(copy));
+    if let Some(placed) = placed {
+        blit_same(
+            gpu,
+            &region(&placed, 0, placed_at),
+            &region(dst.0, dst.1, Origin::default()),
+            extent,
+        );
+        destroy_held(gpu, Held::Texture(placed));
     }
     Ok(())
 }
