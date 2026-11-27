@@ -57,6 +57,16 @@ pub fn status<T>(result: &Result<T, HResult>) -> i32 {
     }
 }
 
+/// Returns the status C must see for a call that may answer not yet ready: S_OK when ready, `not_yet` (a status of
+/// success) when not, the failure otherwise.
+pub fn status_ready(result: &Result<bool, HResult>, not_yet: i32) -> i32 {
+    match result {
+        Ok(true) => S_OK.0,
+        Ok(false) => not_yet,
+        Err(failure) => failed(*failure).0,
+    }
+}
+
 /// Returns a failure as C must see it: negative, else E_FAIL.
 pub fn failed(failure: HResult) -> HResult {
     if failure.0 < 0 { failure } else { E_FAIL }

@@ -408,22 +408,22 @@ pub struct DeviceTable {
     pub device_create_depth_stencil_view:
         unsafe extern "system" fn(Raw, Raw, *const u8, *mut Raw) -> i32,
     pub device_create_input_layout:
-        unsafe extern "system" fn(Raw, *mut u8, u32, *mut u8, usize, *mut u8) -> i32,
+        unsafe extern "system" fn(Raw, *const u8, u32, *const u8, usize, *mut Raw) -> i32,
     pub device_create_vertex_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader_with_stream_output: unsafe extern "system" fn(
         Raw,
-        *mut u8,
+        *const u8,
         usize,
-        *mut u8,
+        *const u8,
         u32,
-        *mut u8,
+        *const u8,
         u32,
         u32,
         Raw,
-        *mut u8,
+        *mut Raw,
     ) -> i32,
     pub device_create_pixel_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
@@ -439,7 +439,7 @@ pub struct DeviceTable {
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_rasterizer_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_sampler_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
-    pub device_create_query: unsafe extern "system" fn(Raw, *mut u8, *mut u8) -> i32,
+    pub device_create_query: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_predicate: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_counter: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_deferred_context: unsafe extern "system" fn(Raw, u32, *mut Raw) -> i32,
@@ -505,22 +505,22 @@ pub struct Device1Table {
     pub device_create_depth_stencil_view:
         unsafe extern "system" fn(Raw, Raw, *const u8, *mut Raw) -> i32,
     pub device_create_input_layout:
-        unsafe extern "system" fn(Raw, *mut u8, u32, *mut u8, usize, *mut u8) -> i32,
+        unsafe extern "system" fn(Raw, *const u8, u32, *const u8, usize, *mut Raw) -> i32,
     pub device_create_vertex_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader_with_stream_output: unsafe extern "system" fn(
         Raw,
-        *mut u8,
+        *const u8,
         usize,
-        *mut u8,
+        *const u8,
         u32,
-        *mut u8,
+        *const u8,
         u32,
         u32,
         Raw,
-        *mut u8,
+        *mut Raw,
     ) -> i32,
     pub device_create_pixel_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
@@ -536,7 +536,7 @@ pub struct Device1Table {
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_rasterizer_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_sampler_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
-    pub device_create_query: unsafe extern "system" fn(Raw, *mut u8, *mut u8) -> i32,
+    pub device_create_query: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_predicate: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_counter: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_deferred_context: unsafe extern "system" fn(Raw, u32, *mut Raw) -> i32,
@@ -621,22 +621,22 @@ pub struct Device2Table {
     pub device_create_depth_stencil_view:
         unsafe extern "system" fn(Raw, Raw, *const u8, *mut Raw) -> i32,
     pub device_create_input_layout:
-        unsafe extern "system" fn(Raw, *mut u8, u32, *mut u8, usize, *mut u8) -> i32,
+        unsafe extern "system" fn(Raw, *const u8, u32, *const u8, usize, *mut Raw) -> i32,
     pub device_create_vertex_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader_with_stream_output: unsafe extern "system" fn(
         Raw,
-        *mut u8,
+        *const u8,
         usize,
-        *mut u8,
+        *const u8,
         u32,
-        *mut u8,
+        *const u8,
         u32,
         u32,
         Raw,
-        *mut u8,
+        *mut Raw,
     ) -> i32,
     pub device_create_pixel_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
@@ -652,7 +652,7 @@ pub struct Device2Table {
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_rasterizer_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_sampler_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
-    pub device_create_query: unsafe extern "system" fn(Raw, *mut u8, *mut u8) -> i32,
+    pub device_create_query: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_predicate: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_counter: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_deferred_context: unsafe extern "system" fn(Raw, u32, *mut Raw) -> i32,
@@ -743,22 +743,22 @@ pub struct Device3Table {
     pub device_create_depth_stencil_view:
         unsafe extern "system" fn(Raw, Raw, *const u8, *mut Raw) -> i32,
     pub device_create_input_layout:
-        unsafe extern "system" fn(Raw, *mut u8, u32, *mut u8, usize, *mut u8) -> i32,
+        unsafe extern "system" fn(Raw, *const u8, u32, *const u8, usize, *mut Raw) -> i32,
     pub device_create_vertex_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub device_create_geometry_shader_with_stream_output: unsafe extern "system" fn(
         Raw,
-        *mut u8,
+        *const u8,
         usize,
-        *mut u8,
+        *const u8,
         u32,
-        *mut u8,
+        *const u8,
         u32,
         u32,
         Raw,
-        *mut u8,
+        *mut Raw,
     ) -> i32,
     pub device_create_pixel_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
@@ -774,7 +774,7 @@ pub struct Device3Table {
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_rasterizer_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_sampler_state: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
-    pub device_create_query: unsafe extern "system" fn(Raw, *mut u8, *mut u8) -> i32,
+    pub device_create_query: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_predicate: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_counter: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub device_create_deferred_context: unsafe extern "system" fn(Raw, u32, *mut Raw) -> i32,
@@ -885,22 +885,22 @@ pub(crate) struct Device4Table {
     pub(crate) device_create_depth_stencil_view:
         unsafe extern "system" fn(Raw, Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_input_layout:
-        unsafe extern "system" fn(Raw, *mut u8, u32, *mut u8, usize, *mut u8) -> i32,
+        unsafe extern "system" fn(Raw, *const u8, u32, *const u8, usize, *mut Raw) -> i32,
     pub(crate) device_create_vertex_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub(crate) device_create_geometry_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub(crate) device_create_geometry_shader_with_stream_output: unsafe extern "system" fn(
         Raw,
-        *mut u8,
+        *const u8,
         usize,
-        *mut u8,
+        *const u8,
         u32,
-        *mut u8,
+        *const u8,
         u32,
         u32,
         Raw,
-        *mut u8,
+        *mut Raw,
     )
         -> i32,
     pub(crate) device_create_pixel_shader:
@@ -920,7 +920,7 @@ pub(crate) struct Device4Table {
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_sampler_state:
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
-    pub(crate) device_create_query: unsafe extern "system" fn(Raw, *mut u8, *mut u8) -> i32,
+    pub(crate) device_create_query: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_predicate: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_counter: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_deferred_context: unsafe extern "system" fn(Raw, u32, *mut Raw) -> i32,
@@ -1042,22 +1042,22 @@ pub(crate) struct Device5Table {
     pub(crate) device_create_depth_stencil_view:
         unsafe extern "system" fn(Raw, Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_input_layout:
-        unsafe extern "system" fn(Raw, *mut u8, u32, *mut u8, usize, *mut u8) -> i32,
+        unsafe extern "system" fn(Raw, *const u8, u32, *const u8, usize, *mut Raw) -> i32,
     pub(crate) device_create_vertex_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub(crate) device_create_geometry_shader:
         unsafe extern "system" fn(Raw, *const u8, usize, Raw, *mut Raw) -> i32,
     pub(crate) device_create_geometry_shader_with_stream_output: unsafe extern "system" fn(
         Raw,
-        *mut u8,
+        *const u8,
         usize,
-        *mut u8,
+        *const u8,
         u32,
-        *mut u8,
+        *const u8,
         u32,
         u32,
         Raw,
-        *mut u8,
+        *mut Raw,
     )
         -> i32,
     pub(crate) device_create_pixel_shader:
@@ -1077,7 +1077,7 @@ pub(crate) struct Device5Table {
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_sampler_state:
         unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
-    pub(crate) device_create_query: unsafe extern "system" fn(Raw, *mut u8, *mut u8) -> i32,
+    pub(crate) device_create_query: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_predicate: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_counter: unsafe extern "system" fn(Raw, *const u8, *mut Raw) -> i32,
     pub(crate) device_create_deferred_context: unsafe extern "system" fn(Raw, u32, *mut Raw) -> i32,
@@ -1270,7 +1270,7 @@ pub struct DeviceContextTable {
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8),
     pub device_context_copy_resource: unsafe extern "system" fn(Raw, Raw, Raw),
     pub device_context_update_subresource:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32),
     pub device_context_copy_structure_count: unsafe extern "system" fn(Raw, Raw, u32, Raw),
     pub device_context_clear_render_target_view: unsafe extern "system" fn(Raw, Raw, *const u8),
     pub device_context_clear_unordered_access_view_uint:
@@ -1430,7 +1430,7 @@ pub struct DeviceContext1Table {
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8),
     pub device_context_copy_resource: unsafe extern "system" fn(Raw, Raw, Raw),
     pub device_context_update_subresource:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32),
     pub device_context_copy_structure_count: unsafe extern "system" fn(Raw, Raw, u32, Raw),
     pub device_context_clear_render_target_view: unsafe extern "system" fn(Raw, Raw, *const u8),
     pub device_context_clear_unordered_access_view_uint:
@@ -1516,7 +1516,7 @@ pub struct DeviceContext1Table {
     pub device_context1_copy_subresource_region1:
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8, u32),
     pub device_context1_update_subresource1:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32, u32),
     pub device_context1_discard_resource: unsafe extern "system" fn(Raw, Raw),
     pub device_context1_discard_view: unsafe extern "system" fn(Raw, Raw),
     pub device_context1_vs_set_constant_buffers1:
@@ -1623,7 +1623,7 @@ pub struct DeviceContext2Table {
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8),
     pub device_context_copy_resource: unsafe extern "system" fn(Raw, Raw, Raw),
     pub device_context_update_subresource:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32),
     pub device_context_copy_structure_count: unsafe extern "system" fn(Raw, Raw, u32, Raw),
     pub device_context_clear_render_target_view: unsafe extern "system" fn(Raw, Raw, *const u8),
     pub device_context_clear_unordered_access_view_uint:
@@ -1709,7 +1709,7 @@ pub struct DeviceContext2Table {
     pub device_context1_copy_subresource_region1:
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8, u32),
     pub device_context1_update_subresource1:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32, u32),
     pub device_context1_discard_resource: unsafe extern "system" fn(Raw, Raw),
     pub device_context1_discard_view: unsafe extern "system" fn(Raw, Raw),
     pub device_context1_vs_set_constant_buffers1:
@@ -1841,7 +1841,7 @@ pub struct DeviceContext3Table {
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8),
     pub device_context_copy_resource: unsafe extern "system" fn(Raw, Raw, Raw),
     pub device_context_update_subresource:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32),
     pub device_context_copy_structure_count: unsafe extern "system" fn(Raw, Raw, u32, Raw),
     pub device_context_clear_render_target_view: unsafe extern "system" fn(Raw, Raw, *const u8),
     pub device_context_clear_unordered_access_view_uint:
@@ -1927,7 +1927,7 @@ pub struct DeviceContext3Table {
     pub device_context1_copy_subresource_region1:
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8, u32),
     pub device_context1_update_subresource1:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32, u32),
     pub device_context1_discard_resource: unsafe extern "system" fn(Raw, Raw),
     pub device_context1_discard_view: unsafe extern "system" fn(Raw, Raw),
     pub device_context1_vs_set_constant_buffers1:
@@ -2068,7 +2068,7 @@ pub(crate) struct DeviceContext4Table {
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8),
     pub(crate) device_context_copy_resource: unsafe extern "system" fn(Raw, Raw, Raw),
     pub(crate) device_context_update_subresource:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32),
     pub(crate) device_context_copy_structure_count: unsafe extern "system" fn(Raw, Raw, u32, Raw),
     pub(crate) device_context_clear_render_target_view:
         unsafe extern "system" fn(Raw, Raw, *const u8),
@@ -2177,7 +2177,7 @@ pub(crate) struct DeviceContext4Table {
     pub(crate) device_context1_copy_subresource_region1:
         unsafe extern "system" fn(Raw, Raw, u32, u32, u32, u32, Raw, u32, *const u8, u32),
     pub(crate) device_context1_update_subresource1:
-        unsafe extern "system" fn(Raw, Raw, u32, *mut u8, *mut u8, u32, u32, u32),
+        unsafe extern "system" fn(Raw, Raw, u32, *const u8, *const u8, u32, u32, u32),
     pub(crate) device_context1_discard_resource: unsafe extern "system" fn(Raw, Raw),
     pub(crate) device_context1_discard_view: unsafe extern "system" fn(Raw, Raw),
     pub(crate) device_context1_vs_set_constant_buffers1:

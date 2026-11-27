@@ -860,12 +860,14 @@ pub trait DeviceContext: DeviceChild {
     /// The header's `End`, [as Microsoft documents it](https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-end).
     fn end(&self, async_: AsynchronousRef<'_, Self::Api>);
     /// The header's `GetData`, [as Microsoft documents it](https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-getdata).
+    ///
+    /// Answers `true` for S_OK, the data written, and `false` for 0x1 (S_FALSE), not yet ready and nothing written.
     fn get_data(
         &self,
         async_: AsynchronousRef<'_, Self::Api>,
         data: Option<&impl wcontainers_volatile_bytes::VolatileBytes>,
         get_data_flags: u32,
-    ) -> Result<(), HResult>;
+    ) -> Result<bool, HResult>;
     /// The header's `SetPredication`, [as Microsoft documents it](https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-setpredication).
     fn set_predication(
         &self,
@@ -981,7 +983,7 @@ pub trait DeviceContext: DeviceChild {
         dst_resource: ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
     );
@@ -1381,7 +1383,7 @@ pub trait DeviceContext1: DeviceContext {
         dst_resource: ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
         copy_flags: u32,

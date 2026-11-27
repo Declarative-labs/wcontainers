@@ -7116,6 +7116,56 @@ pub(crate) unsafe fn unknown_object_of<A: System>(
     body()
 }
 
+/// Takes over a reference to an object of `ID3D11Query`, which several kinds are: as the most derived kind whose newest interface
+/// it answers (each asked by QueryInterface); none for null or an object that answers none.
+///
+/// # Safety
+/// `raw` is null or a live object of `ID3D11Query` whose reference the caller gives up, and which may be called from any thread as
+/// `Interface` states.
+#[expect(
+    unsafe_code,
+    reason = "the promise that a pointer is a live COM object"
+)]
+pub(crate) unsafe fn query_object_of<A: System>(raw: Raw) -> Option<direct3d_11::QueryObject<A>> {
+    #[deny(unsafe_code)]
+    let body = move || {
+        #[expect(
+            unsafe_code,
+            reason = "the promise of the caller: a live COM object, which is an IUnknown"
+        )]
+        // SAFETY: the caller's promise: any COM object is an IUnknown; the reference it gave up is released when this drops.
+        let unknown = unsafe { ForeignObject::<UnknownTable>::from_owned(raw) }?;
+        #[expect(
+            unsafe_code,
+            reason = "QueryInterface for the newest interface of the kind"
+        )]
+        // SAFETY: `direct3d_11::constants::IID_ID3D11_PREDICATE` names the interface `PredicateTable` lays out.
+        if let Some(object) = unsafe {
+            unknown.query::<PredicateTable>(&direct3d_11::constants::IID_ID3D11_PREDICATE)
+        } {
+            return Some(direct3d_11::QueryObject::Predicate(SystemPredicate {
+                object,
+                api: PhantomData,
+            }));
+        }
+        #[expect(
+            unsafe_code,
+            reason = "QueryInterface for the newest interface of the kind"
+        )]
+        // SAFETY: `direct3d_11::constants::IID_ID3D11_QUERY1` names the interface `Query1Table` lays out.
+        if let Some(object) =
+            unsafe { unknown.query::<Query1Table>(&direct3d_11::constants::IID_ID3D11_QUERY1) }
+        {
+            return Some(direct3d_11::QueryObject::Query(SystemQuery {
+                object,
+                api: PhantomData,
+            }));
+        }
+        None
+    };
+    body()
+}
+
 /// An API value whose objects are the C side's: every kind is this crate's object type.
 pub trait System:
     direct3d_11::Direct3D11<
@@ -11647,10 +11697,53 @@ impl<A: System> direct3d_11::Device for SystemDevice<A> {
         <Self::Api as direct3d_11::Direct3D11>::InputLayout,
         component_object_model::structures::HResult,
     > {
-        let _ = input_element_descs;
-        let _ = shader_bytecode_with_input_signature;
-        // Refused by its form (the report's NOT GLUED): the system is not called.
-        Err(E_NOTIMPL)
+        let Some(input_element_descs_length) = input_element_descs.len().checked_mul(32) else {
+            return Err(E_INVALIDARG);
+        };
+        let mut input_element_descs_bytes =
+            vec![u8::MIN; input_element_descs_length.next_multiple_of(8)];
+        for (value, bytes) in input_element_descs
+            .iter()
+            .zip(input_element_descs_bytes.as_chunks_mut::<32>().0.iter_mut())
+        {
+            encode_windows_win32_graphics_direct_3d11_d_3d11_input_element_desc(value, bytes);
+        }
+        let input_element_descs_c: Vec<u64> = input_element_descs_bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_ne_bytes(*word))
+            .collect();
+        let Ok(num_elements) = u32::try_from(input_element_descs.len()) else {
+            return Err(E_INVALIDARG);
+        };
+        let shader_bytecode_with_input_signature_c: Vec<u8> =
+            shader_bytecode_with_input_signature.to_vec();
+        let bytecode_length: usize = shader_bytecode_with_input_signature.len();
+        let mut input_layout: Raw = null_mut();
+        #[expect(unsafe_code, reason = "ID3D11Device::CreateInputLayout, called out")]
+        // SAFETY: a live object whose table holds `ID3D11Device::CreateInputLayout` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self.object.entry_points().device_create_input_layout)(
+                self.object.raw(),
+                input_element_descs_c.as_ptr().cast::<u8>(),
+                num_elements,
+                shader_bytecode_with_input_signature_c.as_ptr().cast::<u8>(),
+                bytecode_length,
+                &raw mut input_layout,
+            )
+        };
+        succeeded(returned)?;
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11Device::CreateInputLayout: ppInputLayout, Out and ComOutPtr"
+        )]
+        // SAFETY: the metadata's `ppInputLayout` is `Out` and `ComOutPtr`: after a success, null or one reference to an object of `ID3D11InputLayout`.
+        let Some(input_layout) = (unsafe { SystemInputLayout::<A>::from_owned(input_layout) })
+        else {
+            return Err(E_FAIL);
+        };
+        Ok(input_layout)
     }
     fn create_vertex_shader(
         &self,
@@ -11732,13 +11825,74 @@ impl<A: System> direct3d_11::Device for SystemDevice<A> {
         <Self::Api as direct3d_11::Direct3D11>::GeometryShader,
         component_object_model::structures::HResult,
     > {
-        let _ = shader_bytecode;
-        let _ = so_declaration;
-        let _ = buffer_strides;
-        let _ = rasterized_stream;
-        let _ = class_linkage;
-        // Refused by its form (the report's NOT GLUED): the system is not called.
-        Err(E_NOTIMPL)
+        let shader_bytecode_c: Vec<u8> = shader_bytecode.to_vec();
+        let bytecode_length: usize = shader_bytecode.len();
+        let Some(so_declaration_length) = so_declaration.len().checked_mul(24) else {
+            return Err(E_INVALIDARG);
+        };
+        let mut so_declaration_bytes = vec![u8::MIN; so_declaration_length.next_multiple_of(8)];
+        for (value, bytes) in so_declaration
+            .iter()
+            .zip(so_declaration_bytes.as_chunks_mut::<24>().0.iter_mut())
+        {
+            encode_windows_win32_graphics_direct_3d11_d_3d11_so_declaration_entry(value, bytes);
+        }
+        let so_declaration_c: Vec<u64> = so_declaration_bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_ne_bytes(*word))
+            .collect();
+        let Ok(num_entries) = u32::try_from(so_declaration.len()) else {
+            return Err(E_INVALIDARG);
+        };
+        let buffer_strides_c: Vec<u32> = buffer_strides.to_vec();
+        let Ok(num_strides) = u32::try_from(buffer_strides.len()) else {
+            return Err(E_INVALIDARG);
+        };
+        let mut geometry_shader: Raw = null_mut();
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput, called out"
+        )]
+        // SAFETY: a live object whose table holds `ID3D11Device::CreateGeometryShaderWithStreamOutput` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self
+                .object
+                .entry_points()
+                .device_create_geometry_shader_with_stream_output)(
+                self.object.raw(),
+                shader_bytecode_c.as_ptr().cast::<u8>(),
+                bytecode_length,
+                if so_declaration_c.is_empty() {
+                    null()
+                } else {
+                    so_declaration_c.as_ptr().cast::<u8>()
+                },
+                num_entries,
+                if buffer_strides_c.is_empty() {
+                    null()
+                } else {
+                    buffer_strides_c.as_ptr().cast::<u8>()
+                },
+                num_strides,
+                rasterized_stream,
+                class_linkage.map_or(null_mut(), |held| held.raw()),
+                &raw mut geometry_shader,
+            )
+        };
+        succeeded(returned)?;
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput: ppGeometryShader, Out and ComOutPtr"
+        )]
+        // SAFETY: the metadata's `ppGeometryShader` is `Out` and `ComOutPtr`: after a success, null or one reference to an object of `ID3D11GeometryShader`.
+        let Some(geometry_shader) =
+            (unsafe { SystemGeometryShader::<A>::from_owned(geometry_shader) })
+        else {
+            return Err(E_FAIL);
+        };
+        Ok(geometry_shader)
     }
     fn create_pixel_shader(
         &self,
@@ -12059,9 +12213,33 @@ impl<A: System> direct3d_11::Device for SystemDevice<A> {
         query_desc: &direct3d_11::structures::QueryDesc,
     ) -> Result<direct3d_11::QueryObject<Self::Api>, component_object_model::structures::HResult>
     {
-        let _ = query_desc;
-        // Refused by its form (the report's NOT GLUED): the system is not called.
-        Err(E_NOTIMPL)
+        let mut query_desc_bytes = Aligned::<
+            { size_of::<WindowsWin32GraphicsDirect3d11D3d11QueryDescLayout>() },
+        >::default();
+        encode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(
+            query_desc,
+            &mut query_desc_bytes.0,
+        );
+        let mut query: Raw = null_mut();
+        #[expect(unsafe_code, reason = "ID3D11Device::CreateQuery, called out")]
+        // SAFETY: a live object whose table holds `ID3D11Device::CreateQuery` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self.object.entry_points().device_create_query)(
+                self.object.raw(),
+                query_desc_bytes.0.as_ptr(),
+                &raw mut query,
+            )
+        };
+        succeeded(returned)?;
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11Device::CreateQuery: ppQuery, Out and ComOutPtr"
+        )]
+        // SAFETY: the metadata's `ppQuery` is `Out` and `ComOutPtr`: after a success, null or one reference to an object of `ID3D11Query`.
+        let Some(query) = (unsafe { query_object_of::<A>(query) }) else {
+            return Err(E_FAIL);
+        };
+        Ok(query)
     }
     fn create_predicate(
         &self,
@@ -13688,19 +13866,60 @@ impl<A: System> direct3d_11::DeviceContext1 for SystemDeviceContext<A> {
         dst_resource: direct3d_11::ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&direct3d_11::structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
         copy_flags: u32,
     ) {
-        let _ = dst_resource;
-        let _ = dst_subresource;
-        let _ = dst_box;
-        let _ = src_data;
-        let _ = src_row_pitch;
-        let _ = src_depth_pitch;
-        let _ = copy_flags;
-        // Refused by its kinds (src/kinds.rs), the system never called: pSrcData: a raw pointer with no size, which the system reads or writes as it likes.
+        let dst_box_bytes = dst_box.map(|value| {
+            let mut bytes =
+                Aligned::<{ size_of::<WindowsWin32GraphicsDirect3d11D3d11BoxLayout>() }>::default();
+            encode_windows_win32_graphics_direct_3d11_d_3d11_box(value, &mut bytes.0);
+            bytes
+        });
+        let Some(src_data_needed) = upload_length(
+            &dst_resource,
+            dst_subresource,
+            dst_box,
+            src_row_pitch,
+            src_depth_pitch,
+        ) else {
+            return;
+        };
+        if src_data.len() < src_data_needed {
+            return;
+        }
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11DeviceContext1::UpdateSubresource1, called out"
+        )]
+        // SAFETY: a live object whose table holds `ID3D11DeviceContext1::UpdateSubresource1` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self
+                .object
+                .entry_points()
+                .device_context1_update_subresource1)(
+                self.object.raw(),
+                {
+                    let held = &dst_resource;
+                    match held {
+                        direct3d_11::ResourceRef::Buffer(object) => object.raw(),
+                        direct3d_11::ResourceRef::Texture1D(object) => object.raw(),
+                        direct3d_11::ResourceRef::Texture2D(object) => object.raw(),
+                        direct3d_11::ResourceRef::Texture3D(object) => object.raw(),
+                    }
+                },
+                dst_subresource,
+                dst_box_bytes
+                    .as_ref()
+                    .map_or(null(), |bytes| bytes.0.as_ptr()),
+                src_data.as_ptr(),
+                src_row_pitch,
+                src_depth_pitch,
+                copy_flags,
+            )
+        };
+        let () = returned;
     }
     fn discard_resource(&self, resource: direct3d_11::ResourceRef<'_, Self::Api>) {
         let _ = resource;
@@ -15280,7 +15499,7 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
         async_: direct3d_11::AsynchronousRef<'_, Self::Api>,
         data: Option<&impl wcontainers_volatile_bytes::VolatileBytes>,
         get_data_flags: u32,
-    ) -> Result<(), component_object_model::structures::HResult> {
+    ) -> Result<bool, component_object_model::structures::HResult> {
         let Ok(data_length) = usize::try_from(data.map_or(0, |bytes| bytes.len())) else {
             return Err(E_INVALIDARG);
         };
@@ -15315,10 +15534,13 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
             )
         };
         succeeded(returned)?;
+        if returned == 0x1 {
+            return Ok(false);
+        }
         if let Some(bytes) = data {
             bytes.write(&data_buffer);
         }
-        Ok(())
+        Ok(true)
     }
     fn set_predication(
         &self,
@@ -15900,17 +16122,55 @@ impl<A: System> direct3d_11::DeviceContext for SystemDeviceContext<A> {
         dst_resource: direct3d_11::ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&direct3d_11::structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
     ) {
-        let _ = dst_resource;
-        let _ = dst_subresource;
-        let _ = dst_box;
-        let _ = src_data;
-        let _ = src_row_pitch;
-        let _ = src_depth_pitch;
-        // Refused by its kinds (src/kinds.rs), the system never called: pSrcData: a raw pointer with no size, which the system reads or writes as it likes.
+        let dst_box_bytes = dst_box.map(|value| {
+            let mut bytes =
+                Aligned::<{ size_of::<WindowsWin32GraphicsDirect3d11D3d11BoxLayout>() }>::default();
+            encode_windows_win32_graphics_direct_3d11_d_3d11_box(value, &mut bytes.0);
+            bytes
+        });
+        let Some(src_data_needed) = upload_length(
+            &dst_resource,
+            dst_subresource,
+            dst_box,
+            src_row_pitch,
+            src_depth_pitch,
+        ) else {
+            return;
+        };
+        if src_data.len() < src_data_needed {
+            return;
+        }
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11DeviceContext::UpdateSubresource, called out"
+        )]
+        // SAFETY: a live object whose table holds `ID3D11DeviceContext::UpdateSubresource` where the metadata orders it; every pointer passed is ours for the call.
+        let returned = unsafe {
+            (self.object.entry_points().device_context_update_subresource)(
+                self.object.raw(),
+                {
+                    let held = &dst_resource;
+                    match held {
+                        direct3d_11::ResourceRef::Buffer(object) => object.raw(),
+                        direct3d_11::ResourceRef::Texture1D(object) => object.raw(),
+                        direct3d_11::ResourceRef::Texture2D(object) => object.raw(),
+                        direct3d_11::ResourceRef::Texture3D(object) => object.raw(),
+                    }
+                },
+                dst_subresource,
+                dst_box_bytes
+                    .as_ref()
+                    .map_or(null(), |bytes| bytes.0.as_ptr()),
+                src_data.as_ptr(),
+                src_row_pitch,
+                src_depth_pitch,
+            )
+        };
+        let () = returned;
     }
     fn copy_structure_count(
         &self,

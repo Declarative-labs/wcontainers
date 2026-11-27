@@ -2652,6 +2652,71 @@ pub(crate) fn encode_windows_win32_graphics_dxgi_dxgi_outdupl_frame_info(
     );
 }
 
+/// `DXGI_OUTDUPL_MOVE_RECT` as C lays it out: its offsets and size are this type's.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout {
+    source_point: WindowsWin32FoundationPointLayout,
+    destination_rect: WindowsWin32FoundationRectLayout,
+}
+
+/// Reads `DXGI_OUTDUPL_MOVE_RECT` from the 24 bytes C lays it out in.
+pub(crate) fn decode_windows_win32_graphics_dxgi_dxgi_outdupl_move_rect(
+    bytes: &[u8],
+) -> directx_graphics_infrastructure::structures::OutduplMoveRect {
+    directx_graphics_infrastructure::structures::OutduplMoveRect {
+        source_point: decode_windows_win32_foundation_point(
+            &bytes[offset_of!(
+                WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+                source_point
+            )
+                ..offset_of!(
+                    WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+                    source_point
+                ) + size_of::<WindowsWin32FoundationPointLayout>()],
+        ),
+        destination_rect: decode_windows_win32_foundation_rect(
+            &bytes[offset_of!(
+                WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+                destination_rect
+            )
+                ..offset_of!(
+                    WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+                    destination_rect
+                ) + size_of::<WindowsWin32FoundationRectLayout>()],
+        ),
+    }
+}
+
+/// Writes `DXGI_OUTDUPL_MOVE_RECT` as the 24 bytes C lays it out in.
+pub(crate) fn encode_windows_win32_graphics_dxgi_dxgi_outdupl_move_rect(
+    value: &directx_graphics_infrastructure::structures::OutduplMoveRect,
+    bytes: &mut [u8],
+) {
+    encode_windows_win32_foundation_point(
+        &value.source_point,
+        &mut bytes[offset_of!(
+            WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+            source_point
+        )
+            ..offset_of!(
+                WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+                source_point
+            ) + size_of::<WindowsWin32FoundationPointLayout>()],
+    );
+    encode_windows_win32_foundation_rect(
+        &value.destination_rect,
+        &mut bytes[offset_of!(
+            WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+            destination_rect
+        )
+            ..offset_of!(
+                WindowsWin32GraphicsDxgiDxgiOutduplMoveRectLayout,
+                destination_rect
+            ) + size_of::<WindowsWin32FoundationRectLayout>()],
+    );
+}
+
 /// `DXGI_OUTDUPL_POINTER_SHAPE_INFO` as C lays it out: its offsets and size are this type's.
 #[derive(Clone, Copy)]
 #[repr(C)]

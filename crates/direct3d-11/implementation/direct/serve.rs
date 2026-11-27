@@ -305,11 +305,11 @@ impl<V: direct3d_11::Device> Tables<V> {
         device_create_unordered_access_view: device_create_unordered_access_view::<V>,
         device_create_render_target_view: device_create_render_target_view::<V>,
         device_create_depth_stencil_view: device_create_depth_stencil_view::<V>,
-        device_create_input_layout: device_create_input_layout_refused,
+        device_create_input_layout: device_create_input_layout::<V>,
         device_create_vertex_shader: device_create_vertex_shader::<V>,
         device_create_geometry_shader: device_create_geometry_shader::<V>,
         device_create_geometry_shader_with_stream_output:
-            device_create_geometry_shader_with_stream_output_refused,
+            device_create_geometry_shader_with_stream_output::<V>,
         device_create_pixel_shader: device_create_pixel_shader::<V>,
         device_create_hull_shader: device_create_hull_shader::<V>,
         device_create_domain_shader: device_create_domain_shader::<V>,
@@ -319,7 +319,7 @@ impl<V: direct3d_11::Device> Tables<V> {
         device_create_depth_stencil_state: device_create_depth_stencil_state::<V>,
         device_create_rasterizer_state: device_create_rasterizer_state::<V>,
         device_create_sampler_state: device_create_sampler_state::<V>,
-        device_create_query: device_create_query_refused,
+        device_create_query: device_create_query::<V>,
         device_create_predicate: device_create_predicate::<V>,
         device_create_counter: device_create_counter::<V>,
         device_create_deferred_context: device_create_deferred_context::<V>,
@@ -357,11 +357,11 @@ impl<V: direct3d_11::Device1> Tables<V> {
         device_create_unordered_access_view: device_create_unordered_access_view::<V>,
         device_create_render_target_view: device_create_render_target_view::<V>,
         device_create_depth_stencil_view: device_create_depth_stencil_view::<V>,
-        device_create_input_layout: device_create_input_layout_refused,
+        device_create_input_layout: device_create_input_layout::<V>,
         device_create_vertex_shader: device_create_vertex_shader::<V>,
         device_create_geometry_shader: device_create_geometry_shader::<V>,
         device_create_geometry_shader_with_stream_output:
-            device_create_geometry_shader_with_stream_output_refused,
+            device_create_geometry_shader_with_stream_output::<V>,
         device_create_pixel_shader: device_create_pixel_shader::<V>,
         device_create_hull_shader: device_create_hull_shader::<V>,
         device_create_domain_shader: device_create_domain_shader::<V>,
@@ -371,7 +371,7 @@ impl<V: direct3d_11::Device1> Tables<V> {
         device_create_depth_stencil_state: device_create_depth_stencil_state::<V>,
         device_create_rasterizer_state: device_create_rasterizer_state::<V>,
         device_create_sampler_state: device_create_sampler_state::<V>,
-        device_create_query: device_create_query_refused,
+        device_create_query: device_create_query::<V>,
         device_create_predicate: device_create_predicate::<V>,
         device_create_counter: device_create_counter::<V>,
         device_create_deferred_context: device_create_deferred_context::<V>,
@@ -416,11 +416,11 @@ impl<V: direct3d_11::Device2> Tables<V> {
         device_create_unordered_access_view: device_create_unordered_access_view::<V>,
         device_create_render_target_view: device_create_render_target_view::<V>,
         device_create_depth_stencil_view: device_create_depth_stencil_view::<V>,
-        device_create_input_layout: device_create_input_layout_refused,
+        device_create_input_layout: device_create_input_layout::<V>,
         device_create_vertex_shader: device_create_vertex_shader::<V>,
         device_create_geometry_shader: device_create_geometry_shader::<V>,
         device_create_geometry_shader_with_stream_output:
-            device_create_geometry_shader_with_stream_output_refused,
+            device_create_geometry_shader_with_stream_output::<V>,
         device_create_pixel_shader: device_create_pixel_shader::<V>,
         device_create_hull_shader: device_create_hull_shader::<V>,
         device_create_domain_shader: device_create_domain_shader::<V>,
@@ -430,7 +430,7 @@ impl<V: direct3d_11::Device2> Tables<V> {
         device_create_depth_stencil_state: device_create_depth_stencil_state::<V>,
         device_create_rasterizer_state: device_create_rasterizer_state::<V>,
         device_create_sampler_state: device_create_sampler_state::<V>,
-        device_create_query: device_create_query_refused,
+        device_create_query: device_create_query::<V>,
         device_create_predicate: device_create_predicate::<V>,
         device_create_counter: device_create_counter::<V>,
         device_create_deferred_context: device_create_deferred_context::<V>,
@@ -479,11 +479,11 @@ impl<V: direct3d_11::Device3> Tables<V> {
         device_create_unordered_access_view: device_create_unordered_access_view::<V>,
         device_create_render_target_view: device_create_render_target_view::<V>,
         device_create_depth_stencil_view: device_create_depth_stencil_view::<V>,
-        device_create_input_layout: device_create_input_layout_refused,
+        device_create_input_layout: device_create_input_layout::<V>,
         device_create_vertex_shader: device_create_vertex_shader::<V>,
         device_create_geometry_shader: device_create_geometry_shader::<V>,
         device_create_geometry_shader_with_stream_output:
-            device_create_geometry_shader_with_stream_output_refused,
+            device_create_geometry_shader_with_stream_output::<V>,
         device_create_pixel_shader: device_create_pixel_shader::<V>,
         device_create_hull_shader: device_create_hull_shader::<V>,
         device_create_domain_shader: device_create_domain_shader::<V>,
@@ -493,7 +493,7 @@ impl<V: direct3d_11::Device3> Tables<V> {
         device_create_depth_stencil_state: device_create_depth_stencil_state::<V>,
         device_create_rasterizer_state: device_create_rasterizer_state::<V>,
         device_create_sampler_state: device_create_sampler_state::<V>,
-        device_create_query: device_create_query_refused,
+        device_create_query: device_create_query::<V>,
         device_create_predicate: device_create_predicate::<V>,
         device_create_counter: device_create_counter::<V>,
         device_create_deferred_context: device_create_deferred_context::<V>,
@@ -553,11 +553,11 @@ impl<V: direct3d_11::Device4> Tables<V> {
         device_create_unordered_access_view: device_create_unordered_access_view::<V>,
         device_create_render_target_view: device_create_render_target_view::<V>,
         device_create_depth_stencil_view: device_create_depth_stencil_view::<V>,
-        device_create_input_layout: device_create_input_layout_refused,
+        device_create_input_layout: device_create_input_layout::<V>,
         device_create_vertex_shader: device_create_vertex_shader::<V>,
         device_create_geometry_shader: device_create_geometry_shader::<V>,
         device_create_geometry_shader_with_stream_output:
-            device_create_geometry_shader_with_stream_output_refused,
+            device_create_geometry_shader_with_stream_output::<V>,
         device_create_pixel_shader: device_create_pixel_shader::<V>,
         device_create_hull_shader: device_create_hull_shader::<V>,
         device_create_domain_shader: device_create_domain_shader::<V>,
@@ -567,7 +567,7 @@ impl<V: direct3d_11::Device4> Tables<V> {
         device_create_depth_stencil_state: device_create_depth_stencil_state::<V>,
         device_create_rasterizer_state: device_create_rasterizer_state::<V>,
         device_create_sampler_state: device_create_sampler_state::<V>,
-        device_create_query: device_create_query_refused,
+        device_create_query: device_create_query::<V>,
         device_create_predicate: device_create_predicate::<V>,
         device_create_counter: device_create_counter::<V>,
         device_create_deferred_context: device_create_deferred_context::<V>,
@@ -629,11 +629,11 @@ impl<V: direct3d_11::Device5> Tables<V> {
         device_create_unordered_access_view: device_create_unordered_access_view::<V>,
         device_create_render_target_view: device_create_render_target_view::<V>,
         device_create_depth_stencil_view: device_create_depth_stencil_view::<V>,
-        device_create_input_layout: device_create_input_layout_refused,
+        device_create_input_layout: device_create_input_layout::<V>,
         device_create_vertex_shader: device_create_vertex_shader::<V>,
         device_create_geometry_shader: device_create_geometry_shader::<V>,
         device_create_geometry_shader_with_stream_output:
-            device_create_geometry_shader_with_stream_output_refused,
+            device_create_geometry_shader_with_stream_output::<V>,
         device_create_pixel_shader: device_create_pixel_shader::<V>,
         device_create_hull_shader: device_create_hull_shader::<V>,
         device_create_domain_shader: device_create_domain_shader::<V>,
@@ -643,7 +643,7 @@ impl<V: direct3d_11::Device5> Tables<V> {
         device_create_depth_stencil_state: device_create_depth_stencil_state::<V>,
         device_create_rasterizer_state: device_create_rasterizer_state::<V>,
         device_create_sampler_state: device_create_sampler_state::<V>,
-        device_create_query: device_create_query_refused,
+        device_create_query: device_create_query::<V>,
         device_create_predicate: device_create_predicate::<V>,
         device_create_counter: device_create_counter::<V>,
         device_create_deferred_context: device_create_deferred_context::<V>,
@@ -761,7 +761,7 @@ impl<V: direct3d_11::DeviceContext> Tables<V> {
         device_context_rs_set_scissor_rects: device_context_rs_set_scissor_rects::<V>,
         device_context_copy_subresource_region: device_context_copy_subresource_region::<V>,
         device_context_copy_resource: device_context_copy_resource::<V>,
-        device_context_update_subresource: device_context_update_subresource_refused,
+        device_context_update_subresource: device_context_update_subresource::<V>,
         device_context_copy_structure_count: device_context_copy_structure_count::<V>,
         device_context_clear_render_target_view: device_context_clear_render_target_view::<V>,
         device_context_clear_unordered_access_view_uint:
@@ -893,7 +893,7 @@ impl<V: direct3d_11::DeviceContext1> Tables<V> {
         device_context_rs_set_scissor_rects: device_context_rs_set_scissor_rects::<V>,
         device_context_copy_subresource_region: device_context_copy_subresource_region::<V>,
         device_context_copy_resource: device_context_copy_resource::<V>,
-        device_context_update_subresource: device_context_update_subresource_refused,
+        device_context_update_subresource: device_context_update_subresource::<V>,
         device_context_copy_structure_count: device_context_copy_structure_count::<V>,
         device_context_clear_render_target_view: device_context_clear_render_target_view::<V>,
         device_context_clear_unordered_access_view_uint:
@@ -968,7 +968,7 @@ impl<V: direct3d_11::DeviceContext1> Tables<V> {
         device_context_get_context_flags: device_context_get_context_flags::<V>,
         device_context_finish_command_list: device_context_finish_command_list::<V>,
         device_context1_copy_subresource_region1: device_context1_copy_subresource_region1::<V>,
-        device_context1_update_subresource1: device_context1_update_subresource1_refused,
+        device_context1_update_subresource1: device_context1_update_subresource1::<V>,
         device_context1_discard_resource: device_context1_discard_resource::<V>,
         device_context1_discard_view: device_context1_discard_view::<V>,
         device_context1_vs_set_constant_buffers1: device_context1_vs_set_constant_buffers1::<V>,
@@ -1044,7 +1044,7 @@ impl<V: direct3d_11::DeviceContext2> Tables<V> {
         device_context_rs_set_scissor_rects: device_context_rs_set_scissor_rects::<V>,
         device_context_copy_subresource_region: device_context_copy_subresource_region::<V>,
         device_context_copy_resource: device_context_copy_resource::<V>,
-        device_context_update_subresource: device_context_update_subresource_refused,
+        device_context_update_subresource: device_context_update_subresource::<V>,
         device_context_copy_structure_count: device_context_copy_structure_count::<V>,
         device_context_clear_render_target_view: device_context_clear_render_target_view::<V>,
         device_context_clear_unordered_access_view_uint:
@@ -1119,7 +1119,7 @@ impl<V: direct3d_11::DeviceContext2> Tables<V> {
         device_context_get_context_flags: device_context_get_context_flags::<V>,
         device_context_finish_command_list: device_context_finish_command_list::<V>,
         device_context1_copy_subresource_region1: device_context1_copy_subresource_region1::<V>,
-        device_context1_update_subresource1: device_context1_update_subresource1_refused,
+        device_context1_update_subresource1: device_context1_update_subresource1::<V>,
         device_context1_discard_resource: device_context1_discard_resource::<V>,
         device_context1_discard_view: device_context1_discard_view::<V>,
         device_context1_vs_set_constant_buffers1: device_context1_vs_set_constant_buffers1::<V>,
@@ -1205,7 +1205,7 @@ impl<V: direct3d_11::DeviceContext3> Tables<V> {
         device_context_rs_set_scissor_rects: device_context_rs_set_scissor_rects::<V>,
         device_context_copy_subresource_region: device_context_copy_subresource_region::<V>,
         device_context_copy_resource: device_context_copy_resource::<V>,
-        device_context_update_subresource: device_context_update_subresource_refused,
+        device_context_update_subresource: device_context_update_subresource::<V>,
         device_context_copy_structure_count: device_context_copy_structure_count::<V>,
         device_context_clear_render_target_view: device_context_clear_render_target_view::<V>,
         device_context_clear_unordered_access_view_uint:
@@ -1280,7 +1280,7 @@ impl<V: direct3d_11::DeviceContext3> Tables<V> {
         device_context_get_context_flags: device_context_get_context_flags::<V>,
         device_context_finish_command_list: device_context_finish_command_list::<V>,
         device_context1_copy_subresource_region1: device_context1_copy_subresource_region1::<V>,
-        device_context1_update_subresource1: device_context1_update_subresource1_refused,
+        device_context1_update_subresource1: device_context1_update_subresource1::<V>,
         device_context1_discard_resource: device_context1_discard_resource::<V>,
         device_context1_discard_view: device_context1_discard_view::<V>,
         device_context1_vs_set_constant_buffers1: device_context1_vs_set_constant_buffers1::<V>,
@@ -1371,7 +1371,7 @@ impl<V: direct3d_11::DeviceContext4> Tables<V> {
         device_context_rs_set_scissor_rects: device_context_rs_set_scissor_rects::<V>,
         device_context_copy_subresource_region: device_context_copy_subresource_region::<V>,
         device_context_copy_resource: device_context_copy_resource::<V>,
-        device_context_update_subresource: device_context_update_subresource_refused,
+        device_context_update_subresource: device_context_update_subresource::<V>,
         device_context_copy_structure_count: device_context_copy_structure_count::<V>,
         device_context_clear_render_target_view: device_context_clear_render_target_view::<V>,
         device_context_clear_unordered_access_view_uint:
@@ -1446,7 +1446,7 @@ impl<V: direct3d_11::DeviceContext4> Tables<V> {
         device_context_get_context_flags: device_context_get_context_flags::<V>,
         device_context_finish_command_list: device_context_finish_command_list::<V>,
         device_context1_copy_subresource_region1: device_context1_copy_subresource_region1::<V>,
-        device_context1_update_subresource1: device_context1_update_subresource1_refused,
+        device_context1_update_subresource1: device_context1_update_subresource1::<V>,
         device_context1_discard_resource: device_context1_discard_resource::<V>,
         device_context1_discard_view: device_context1_discard_view::<V>,
         device_context1_vs_set_constant_buffers1: device_context1_vs_set_constant_buffers1::<V>,
@@ -5417,6 +5417,105 @@ pub(crate) fn mapped_length_found<A: direct3d_11::Direct3D11>(
     }
 }
 
+/// The bytes an upload into a subresource of `resource` reads: the box's (the whole subresource's for none), rows
+/// `row_pitch` and slices `depth_pitch` apart, by the shape's rule from its description; none for a shape no rule covers or
+/// a box outside the subresource.
+pub(crate) fn upload_length<A: direct3d_11::Direct3D11>(
+    resource: &direct3d_11::ResourceRef<'_, A>,
+    subresource: u32,
+    region: Option<&direct3d_11::structures::Box>,
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    match resource {
+        direct3d_11::ResourceRef::Buffer(object) => crate::lengths::upload_length_buffer(
+            &direct3d_11::Buffer::get_desc(*object),
+            subresource,
+            region,
+            row_pitch,
+            depth_pitch,
+        ),
+        direct3d_11::ResourceRef::Texture1D(object) => crate::lengths::upload_length_texture_1d(
+            &direct3d_11::Texture1D::get_desc(*object),
+            subresource,
+            region,
+            row_pitch,
+            depth_pitch,
+        ),
+        direct3d_11::ResourceRef::Texture2D(object) => crate::lengths::upload_length_texture_2d(
+            &direct3d_11::Texture2D::get_desc(*object),
+            subresource,
+            region,
+            row_pitch,
+            depth_pitch,
+        ),
+        direct3d_11::ResourceRef::Texture3D(object) => crate::lengths::upload_length_texture_3d(
+            &direct3d_11::Texture3D::get_desc(*object),
+            subresource,
+            region,
+            row_pitch,
+            depth_pitch,
+        ),
+    }
+}
+
+/// `upload_length` for one of our resources: only from the description it was made with, which the glue recorded;
+/// none for a resource it did not record.
+pub(crate) fn upload_length_found<A: direct3d_11::Direct3D11>(
+    resource: &ResourceRefFound<A>,
+    subresource: u32,
+    region: Option<&direct3d_11::structures::Box>,
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    match resource {
+        ResourceRefFound::Buffer(found) => found
+            .part::<Recorded<direct3d_11::structures::BufferDesc>>()
+            .and_then(|recorded| {
+                crate::lengths::upload_length_buffer(
+                    &recorded.0,
+                    subresource,
+                    region,
+                    row_pitch,
+                    depth_pitch,
+                )
+            }),
+        ResourceRefFound::Texture1D(found) => found
+            .part::<Recorded<direct3d_11::structures::Texture1DDesc>>()
+            .and_then(|recorded| {
+                crate::lengths::upload_length_texture_1d(
+                    &recorded.0,
+                    subresource,
+                    region,
+                    row_pitch,
+                    depth_pitch,
+                )
+            }),
+        ResourceRefFound::Texture2D(found) => found
+            .part::<Recorded<direct3d_11::structures::Texture2DDesc>>()
+            .and_then(|recorded| {
+                crate::lengths::upload_length_texture_2d(
+                    &recorded.0,
+                    subresource,
+                    region,
+                    row_pitch,
+                    depth_pitch,
+                )
+            }),
+        ResourceRefFound::Texture3D(found) => found
+            .part::<Recorded<direct3d_11::structures::Texture3DDesc>>()
+            .and_then(|recorded| {
+                crate::lengths::upload_length_texture_3d(
+                    &recorded.0,
+                    subresource,
+                    region,
+                    row_pitch,
+                    depth_pitch,
+                )
+            }),
+    }
+}
+
 /// Every module served, for the life of the program: the exports find theirs by type.
 static MODULES: Mutex<Vec<Arc<dyn Any + Send + Sync>>> = Mutex::new(Vec::new());
 
@@ -7415,6 +7514,129 @@ pub unsafe extern "system" fn device_create_depth_stencil_view<V: direct3d_11::D
     guarded(E_FAIL.0, body)
 }
 
+/// `ID3D11Device::CreateInputLayout` as the C side calls it.
+///
+/// # Safety
+/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
+#[expect(
+    unsafe_code,
+    reason = "ID3D11Device::CreateInputLayout, which the C side calls"
+)]
+pub unsafe extern "system" fn device_create_input_layout<V: direct3d_11::Device>(
+    this: Raw,
+    input_element_descs: *const u8,
+    num_elements: u32,
+    shader_bytecode_with_input_signature: *const u8,
+    bytecode_length: usize,
+    input_layout: *mut Raw,
+) -> i32 {
+    #[deny(unsafe_code)]
+    let body = move || {
+        let answer = guarded(Err(E_FAIL), move || {
+            let found = object::<V>(KEY, this.addr()).ok_or(E_POINTER)?;
+            let input_element_descs_count = usize::try_from(num_elements)
+                .ok()
+                .filter(|count| *count <= 1 << 16)
+                .ok_or(E_INVALIDARG)?;
+            let input_element_descs_bytes = if input_element_descs_count == 0 {
+                Some(Vec::new())
+            } else {
+                #[expect(
+                    unsafe_code,
+                    reason = "ID3D11Device::CreateInputLayout: pInputElementDescs, as the header declares it for the C side"
+                )]
+                // SAFETY: the metadata's `NativeArrayInfo` names `NumElements` as the count of `pInputElementDescs`: that many elements of 32 bytes, readable for the call.
+                unsafe {
+                    read_only_at(input_element_descs, input_element_descs_count * 32)
+                }
+            };
+            let mut input_element_descs = Vec::new();
+            for element in input_element_descs_bytes
+                .ok_or(E_INVALIDARG)?
+                .as_chunks::<32>()
+                .0
+            {
+                let mut texts = Vec::new();
+                let address = core::ptr::with_exposed_provenance::<u8>(get_usize(
+                    element,
+                    TEXTS_WINDOWS_WIN32_GRAPHICS_DIRECT_3D11_D_3D11_INPUT_ELEMENT_DESC[0],
+                ));
+                #[expect(
+                    unsafe_code,
+                    reason = "ID3D11Device::CreateInputLayout: pInputElementDescs's semantic_name, as the header declares it for the C side"
+                )]
+                // SAFETY: each element's `semantic_name` is a `PSTR` and `In`: bytes ending at the first zero byte, readable for the call, or null.
+                let text = unsafe { read_text(address, size_of::<u8>(), MOST_TEXT_UNITS) };
+                texts.push(std::ffi::CString::new(text.ok_or(E_INVALIDARG)?).unwrap_or_default());
+                input_element_descs.push(
+                    decode_windows_win32_graphics_direct_3d11_d_3d11_input_element_desc_with(
+                        element, texts,
+                    ),
+                );
+            }
+            let shader_bytecode_with_input_signature_count = Some(bytecode_length)
+                .filter(|count| *count <= 1 << 16)
+                .ok_or(E_INVALIDARG)?;
+            let shader_bytecode_with_input_signature_bytes =
+                if shader_bytecode_with_input_signature_count == 0 {
+                    Some(Vec::new())
+                } else {
+                    #[expect(
+                        unsafe_code,
+                        reason = "ID3D11Device::CreateInputLayout: pShaderBytecodeWithInputSignature, as the header declares it for the C side"
+                    )]
+                    // SAFETY: the metadata's `NativeArrayInfo` names `BytecodeLength` as the count of `pShaderBytecodeWithInputSignature`: that many elements of 1 bytes, readable for the call.
+                    unsafe {
+                        read_only_at(
+                            shader_bytecode_with_input_signature,
+                            shader_bytecode_with_input_signature_count,
+                        )
+                    }
+                };
+            let shader_bytecode_with_input_signature: Vec<_> =
+                shader_bytecode_with_input_signature_bytes
+                    .ok_or(E_INVALIDARG)?
+                    .as_chunks::<1>()
+                    .0
+                    .iter()
+                    .map(|element| get_u8(element, usize::MIN))
+                    .collect();
+            let input_layout_value = found
+                .value()
+                .create_input_layout(&input_element_descs, &shader_bytecode_with_input_signature)?;
+            let this_weak = found.weak();
+            drop(found);
+            let input_layout_record =
+                this_weak.map_or_else(record, |weak| record_related("Device", weak));
+            let input_layout_served = serve(
+                KEY,
+                input_layout_value,
+                input_layout_record,
+                input_layout_interfaces::<<V::Api as direct3d_11::Direct3D11>::InputLayout>,
+            )
+            .ok_or(E_OUTOFMEMORY)?;
+            Ok(((if input_layout.is_null() {
+                0
+            } else {
+                input_layout_served.into_address().get()
+            })
+            .to_ne_bytes(),))
+        });
+        let input_layout_written = answer
+            .as_ref()
+            .ok()
+            .map_or([u8::MIN; size_of::<usize>()], |written| written.0);
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11Device::CreateInputLayout: ppInputLayout, as the header declares it for the C side"
+        )]
+        // SAFETY: the metadata's `ppInputLayout` is `Out` and `ComOutPtr`: one interface pointer to write, or null, for the call.
+        let _ = unsafe { write_bytes(input_layout.cast::<u8>(), &input_layout_written) };
+        wcontainers_component_object_model_direct::status(&answer)
+    };
+    guarded(E_FAIL.0, body)
+}
+
 /// `ID3D11Device::CreateVertexShader` as the C side calls it.
 ///
 /// # Safety
@@ -7585,6 +7807,169 @@ pub unsafe extern "system" fn device_create_geometry_shader<V: direct3d_11::Devi
         #[expect(
             unsafe_code,
             reason = "ID3D11Device::CreateGeometryShader: ppGeometryShader, as the header declares it for the C side"
+        )]
+        // SAFETY: the metadata's `ppGeometryShader` is `Out` and `ComOutPtr`: one interface pointer to write, or null, for the call.
+        let _ = unsafe { write_bytes(geometry_shader.cast::<u8>(), &geometry_shader_written) };
+        wcontainers_component_object_model_direct::status(&answer)
+    };
+    guarded(E_FAIL.0, body)
+}
+
+/// `ID3D11Device::CreateGeometryShaderWithStreamOutput` as the C side calls it.
+///
+/// # Safety
+/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
+#[expect(
+    unsafe_code,
+    reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput, which the C side calls"
+)]
+pub unsafe extern "system" fn device_create_geometry_shader_with_stream_output<
+    V: direct3d_11::Device,
+>(
+    this: Raw,
+    shader_bytecode: *const u8,
+    bytecode_length: usize,
+    so_declaration: *const u8,
+    num_entries: u32,
+    buffer_strides: *const u8,
+    num_strides: u32,
+    rasterized_stream: u32,
+    class_linkage: Raw,
+    geometry_shader: *mut Raw,
+) -> i32 {
+    #[deny(unsafe_code)]
+    let body = move || {
+        let answer = guarded(Err(E_FAIL), move || {
+            let found = object::<V>(KEY, this.addr()).ok_or(E_POINTER)?;
+            let shader_bytecode_count = Some(bytecode_length)
+                .filter(|count| *count <= 1 << 16)
+                .ok_or(E_INVALIDARG)?;
+            let shader_bytecode_bytes = if shader_bytecode_count == 0 {
+                Some(Vec::new())
+            } else {
+                #[expect(
+                    unsafe_code,
+                    reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput: pShaderBytecode, as the header declares it for the C side"
+                )]
+                // SAFETY: the metadata's `NativeArrayInfo` names `BytecodeLength` as the count of `pShaderBytecode`: that many elements of 1 bytes, readable for the call.
+                unsafe {
+                    read_only_at(shader_bytecode, shader_bytecode_count)
+                }
+            };
+            let shader_bytecode: Vec<_> = shader_bytecode_bytes
+                .ok_or(E_INVALIDARG)?
+                .as_chunks::<1>()
+                .0
+                .iter()
+                .map(|element| get_u8(element, usize::MIN))
+                .collect();
+            let so_declaration_count = usize::try_from(num_entries)
+                .ok()
+                .filter(|count| *count <= 1 << 16)
+                .ok_or(E_INVALIDARG)?;
+            let so_declaration_bytes = if so_declaration_count == 0 || so_declaration.is_null() {
+                Some(Vec::new())
+            } else {
+                #[expect(
+                    unsafe_code,
+                    reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput: pSODeclaration, as the header declares it for the C side"
+                )]
+                // SAFETY: the metadata's `NativeArrayInfo` names `NumEntries` as the count of `pSODeclaration`: that many elements of 24 bytes, readable for the call.
+                unsafe {
+                    read_only_at(so_declaration, so_declaration_count * 24)
+                }
+            };
+            let mut so_declaration = Vec::new();
+            for element in so_declaration_bytes
+                .ok_or(E_INVALIDARG)?
+                .as_chunks::<24>()
+                .0
+            {
+                let mut texts = Vec::new();
+                let address = core::ptr::with_exposed_provenance::<u8>(get_usize(
+                    element,
+                    TEXTS_WINDOWS_WIN32_GRAPHICS_DIRECT_3D11_D_3D11_SO_DECLARATION_ENTRY[0],
+                ));
+                #[expect(
+                    unsafe_code,
+                    reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput: pSODeclaration's semantic_name, as the header declares it for the C side"
+                )]
+                // SAFETY: each element's `semantic_name` is a `PSTR` and `In`: bytes ending at the first zero byte, readable for the call, or null.
+                let text = unsafe { read_text(address, size_of::<u8>(), MOST_TEXT_UNITS) };
+                texts.push(std::ffi::CString::new(text.ok_or(E_INVALIDARG)?).unwrap_or_default());
+                so_declaration.push(
+                    decode_windows_win32_graphics_direct_3d11_d_3d11_so_declaration_entry_with(
+                        element, texts,
+                    ),
+                );
+            }
+            let buffer_strides_count = usize::try_from(num_strides)
+                .ok()
+                .filter(|count| *count <= 1 << 16)
+                .ok_or(E_INVALIDARG)?;
+            let buffer_strides_bytes = if buffer_strides_count == 0 || buffer_strides.is_null() {
+                Some(Vec::new())
+            } else {
+                #[expect(
+                    unsafe_code,
+                    reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput: pBufferStrides, as the header declares it for the C side"
+                )]
+                // SAFETY: the metadata's `NativeArrayInfo` names `NumStrides` as the count of `pBufferStrides`: that many elements of 4 bytes, readable for the call.
+                unsafe {
+                    read_only_at(buffer_strides, buffer_strides_count * 4)
+                }
+            };
+            let buffer_strides: Vec<_> = buffer_strides_bytes
+                .ok_or(E_INVALIDARG)?
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|element| get_u32(element, usize::MIN))
+                .collect();
+            let rasterized_stream = rasterized_stream;
+            let class_linkage_found = if class_linkage.is_null() {
+                None
+            } else {
+                Some(
+                    object::<<V::Api as direct3d_11::Direct3D11>::ClassLinkage>(
+                        KEY,
+                        class_linkage.addr(),
+                    )
+                    .ok_or(E_INVALIDARG)?,
+                )
+            };
+            let geometry_shader_value = found.value().create_geometry_shader_with_stream_output(
+                &shader_bytecode,
+                &so_declaration,
+                &buffer_strides,
+                rasterized_stream,
+                class_linkage_found.as_ref().map(|held| held.value()),
+            )?;
+            let this_weak = found.weak();
+            drop(found);
+            let geometry_shader_record =
+                this_weak.map_or_else(record, |weak| record_related("Device", weak));
+            let geometry_shader_served = serve(
+                KEY,
+                geometry_shader_value,
+                geometry_shader_record,
+                geometry_shader_interfaces::<<V::Api as direct3d_11::Direct3D11>::GeometryShader>,
+            )
+            .ok_or(E_OUTOFMEMORY)?;
+            Ok(((if geometry_shader.is_null() {
+                0
+            } else {
+                geometry_shader_served.into_address().get()
+            })
+            .to_ne_bytes(),))
+        });
+        let geometry_shader_written = answer
+            .as_ref()
+            .ok()
+            .map_or([u8::MIN; size_of::<usize>()], |written| written.0);
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput: ppGeometryShader, as the header declares it for the C side"
         )]
         // SAFETY: the metadata's `ppGeometryShader` is `Out` and `ComOutPtr`: one interface pointer to write, or null, for the call.
         let _ = unsafe { write_bytes(geometry_shader.cast::<u8>(), &geometry_shader_written) };
@@ -8269,6 +8654,91 @@ pub unsafe extern "system" fn device_create_sampler_state<V: direct3d_11::Device
         )]
         // SAFETY: the metadata's `ppSamplerState` is `Out` and `ComOutPtr`: one interface pointer to write, or null, for the call.
         let _ = unsafe { write_bytes(sampler_state.cast::<u8>(), &sampler_state_written) };
+        wcontainers_component_object_model_direct::status(&answer)
+    };
+    guarded(E_FAIL.0, body)
+}
+
+/// `ID3D11Device::CreateQuery` as the C side calls it.
+///
+/// # Safety
+/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
+#[expect(
+    unsafe_code,
+    reason = "ID3D11Device::CreateQuery, which the C side calls"
+)]
+pub unsafe extern "system" fn device_create_query<V: direct3d_11::Device>(
+    this: Raw,
+    query_desc: *const u8,
+    query: *mut Raw,
+) -> i32 {
+    #[deny(unsafe_code)]
+    let body = move || {
+        let answer = guarded(Err(E_FAIL), move || {
+            let found = object::<V>(KEY, this.addr()).ok_or(E_POINTER)?;
+            let mut query_desc_bytes =
+                [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11D3d11QueryDescLayout>()];
+            let query_desc_null = query_desc.is_null();
+            #[expect(
+                unsafe_code,
+                reason = "ID3D11Device::CreateQuery: pQueryDesc, as the header declares it for the C side"
+            )]
+            // SAFETY: the metadata's `pQueryDesc` is `In` and `Const`: one `QueryDesc` of 8 bytes, readable for the call.
+            let query_desc_read = unsafe { read_bytes(query_desc, &mut query_desc_bytes) };
+            let query_desc = query_desc_read.then(|| {
+                decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(&query_desc_bytes)
+            });
+            let query_desc = query_desc.ok_or(E_INVALIDARG)?;
+            let query_value = found.value().create_query(&query_desc)?;
+            let this_weak = found.weak();
+            drop(found);
+            let query_served = match query_value {
+                direct3d_11::QueryObject::Predicate(value) => {
+                    let mut query_record =
+                        this_weak.map_or_else(record, |weak| record_related("Device", weak));
+                    if let Some(value) = Some(query_desc) {
+                        query_record.push(Box::new(Recorded(value)));
+                    }
+                    serve(
+                        KEY,
+                        value,
+                        query_record,
+                        predicate_interfaces::<<V::Api as direct3d_11::Direct3D11>::Predicate>,
+                    )
+                    .ok_or(E_OUTOFMEMORY)?
+                }
+                direct3d_11::QueryObject::Query(value) => {
+                    let mut query_record =
+                        this_weak.map_or_else(record, |weak| record_related("Device", weak));
+                    if let Some(value) = Some(query_desc) {
+                        query_record.push(Box::new(Recorded(value)));
+                    }
+                    serve(
+                        KEY,
+                        value,
+                        query_record,
+                        query_interfaces::<<V::Api as direct3d_11::Direct3D11>::Query>,
+                    )
+                    .ok_or(E_OUTOFMEMORY)?
+                }
+            };
+            Ok(((if query.is_null() {
+                0
+            } else {
+                query_served.into_address().get()
+            })
+            .to_ne_bytes(),))
+        });
+        let query_written = answer
+            .as_ref()
+            .ok()
+            .map_or([u8::MIN; size_of::<usize>()], |written| written.0);
+        #[expect(
+            unsafe_code,
+            reason = "ID3D11Device::CreateQuery: ppQuery, as the header declares it for the C side"
+        )]
+        // SAFETY: the metadata's `ppQuery` is `Out` and `ComOutPtr`: one interface pointer to write, or null, for the call.
+        let _ = unsafe { write_bytes(query.cast::<u8>(), &query_written) };
         wcontainers_component_object_model_direct::status(&answer)
     };
     guarded(E_FAIL.0, body)
@@ -9782,85 +10252,6 @@ pub unsafe extern "system" fn device_get_exception_mode<V: direct3d_11::Device>(
         answer.map_or(Default::default(), |written| written.0)
     };
     guarded(Default::default(), body)
-}
-
-/// `ID3D11Device::CreateInputLayout` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
-///
-/// # Safety
-/// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D11Device::CreateInputLayout, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn device_create_input_layout_refused(
-    _this: Raw,
-    _p0: *mut u8,
-    _p1: u32,
-    _p2: *mut u8,
-    _p3: usize,
-    p4: *mut u8,
-) -> i32 {
-    #[expect(
-        unsafe_code,
-        reason = "ID3D11Device::CreateInputLayout: ppInputLayout, as the header declares it for the C side"
-    )]
-    // SAFETY: the metadata's `ppInputLayout` is `Out`: one pointer to write (COM's null on failure), or null, for the call.
-    let _ = unsafe { write_bytes(p4, &[u8::MIN; size_of::<usize>()]) };
-    wcontainers_component_object_model::constants::E_NOTIMPL.0
-}
-
-/// `ID3D11Device::CreateGeometryShaderWithStreamOutput` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
-///
-/// # Safety
-/// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn device_create_geometry_shader_with_stream_output_refused(
-    _this: Raw,
-    _p0: *mut u8,
-    _p1: usize,
-    _p2: *mut u8,
-    _p3: u32,
-    _p4: *mut u8,
-    _p5: u32,
-    _p6: u32,
-    _p7: Raw,
-    p8: *mut u8,
-) -> i32 {
-    #[expect(
-        unsafe_code,
-        reason = "ID3D11Device::CreateGeometryShaderWithStreamOutput: ppGeometryShader, as the header declares it for the C side"
-    )]
-    // SAFETY: the metadata's `ppGeometryShader` is `Out`: one pointer to write (COM's null on failure), or null, for the call.
-    let _ = unsafe { write_bytes(p8, &[u8::MIN; size_of::<usize>()]) };
-    wcontainers_component_object_model::constants::E_NOTIMPL.0
-}
-
-/// `ID3D11Device::CreateQuery` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers E_NOTIMPL.
-///
-/// # Safety
-/// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.
-#[expect(
-    unsafe_code,
-    reason = "ID3D11Device::CreateQuery, which the C side calls"
-)]
-pub(crate) unsafe extern "system" fn device_create_query_refused(
-    _this: Raw,
-    _p0: *mut u8,
-    p1: *mut u8,
-) -> i32 {
-    #[expect(
-        unsafe_code,
-        reason = "ID3D11Device::CreateQuery: ppQuery, as the header declares it for the C side"
-    )]
-    // SAFETY: the metadata's `ppQuery` is `Out`: one pointer to write (COM's null on failure), or null, for the call.
-    let _ = unsafe { write_bytes(p1, &[u8::MIN; size_of::<usize>()]) };
-    wcontainers_component_object_model::constants::E_NOTIMPL.0
 }
 
 /// `ID3D11Device::CheckCounter` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
@@ -16081,13 +16472,14 @@ pub unsafe extern "system" fn device_context_get_data<V: direct3d_11::DeviceCont
             // SAFETY: the metadata's `MemorySize` names `DataSize` as the byte count of `pData`, which is `Out`: that many bytes, writable for the call.
             let data = unsafe { writable_at(data, data_length) };
             let get_data_flags = get_data_flags;
-            let () = found
-                .value()
-                .get_data(async__found.get(), data.as_ref(), get_data_flags)?;
+            let ready =
+                found
+                    .value()
+                    .get_data(async__found.get(), data.as_ref(), get_data_flags)?;
             drop(found);
-            Ok(())
+            Ok(ready)
         });
-        wcontainers_component_object_model_direct::status(&answer)
+        wcontainers_component_object_model_direct::status_ready(&answer, 0x1)
     };
     guarded(E_FAIL.0, body)
 }
@@ -17072,6 +17464,75 @@ pub unsafe extern "system" fn device_context_copy_resource<V: direct3d_11::Devic
             let () = found
                 .value()
                 .copy_resource(dst_resource_found.get(), src_resource_found.get());
+            drop(found);
+            Some(())
+        });
+        let _ = answer;
+    };
+    guarded((), body)
+}
+
+/// `ID3D11DeviceContext::UpdateSubresource` as the C side calls it.
+///
+/// # Safety
+/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
+#[expect(
+    unsafe_code,
+    reason = "ID3D11DeviceContext::UpdateSubresource, which the C side calls"
+)]
+pub unsafe extern "system" fn device_context_update_subresource<V: direct3d_11::DeviceContext>(
+    this: Raw,
+    dst_resource: Raw,
+    dst_subresource: u32,
+    dst_box: *const u8,
+    src_data: *const u8,
+    src_row_pitch: u32,
+    src_depth_pitch: u32,
+) {
+    #[deny(unsafe_code)]
+    let body = move || {
+        let answer = guarded(None, move || {
+            let found = object::<V>(KEY, this.addr())?;
+            let dst_resource_found = ResourceRefFound::<V::Api>::find(dst_resource.addr())?;
+            let dst_subresource = dst_subresource;
+            let mut dst_box_bytes =
+                [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11D3d11BoxLayout>()];
+            let dst_box_null = dst_box.is_null();
+            #[expect(
+                unsafe_code,
+                reason = "ID3D11DeviceContext::UpdateSubresource: pDstBox, as the header declares it for the C side"
+            )]
+            // SAFETY: the metadata's `pDstBox` is `In` and `Const`: one `Box` of 24 bytes, readable for the call.
+            let dst_box_read = unsafe { read_bytes(dst_box, &mut dst_box_bytes) };
+            let dst_box = dst_box_read
+                .then(|| decode_windows_win32_graphics_direct_3d11_d_3d11_box(&dst_box_bytes));
+            if !dst_box_read && !dst_box_null {
+                return None;
+            }
+            let src_data_length = upload_length_found(
+                &dst_resource_found,
+                dst_subresource,
+                dst_box.as_ref(),
+                src_row_pitch,
+                src_depth_pitch,
+            )?;
+            #[expect(
+                unsafe_code,
+                reason = "ID3D11DeviceContext::UpdateSubresource: pSrcData, as the header declares it for the C side"
+            )]
+            // SAFETY: `pSrcData`'s exception line (src/api.rs): the bytes of the box (or the whole subresource) at the pitches, of the length the shape's rule gives from the description the resource was made with, readable for the call.
+            let src_data = unsafe { read_only_at(src_data, src_data_length) };
+            let src_data = src_data?;
+            let src_row_pitch = src_row_pitch;
+            let src_depth_pitch = src_depth_pitch;
+            let () = found.value().update_subresource(
+                dst_resource_found.get(),
+                dst_subresource,
+                dst_box.as_ref(),
+                &src_data,
+                src_row_pitch,
+                src_depth_pitch,
+            );
             drop(found);
             Some(())
         });
@@ -21263,19 +21724,6 @@ pub unsafe extern "system" fn device_context_finish_command_list<V: direct3d_11:
     guarded(E_FAIL.0, body)
 }
 
-/// `ID3D11DeviceContext::UpdateSubresource` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
-pub(crate) extern "system" fn device_context_update_subresource_refused(
-    _this: Raw,
-    _p0: Raw,
-    _p1: u32,
-    _p2: *mut u8,
-    _p3: *mut u8,
-    _p4: u32,
-    _p5: u32,
-) {
-}
-
 /// `ID3D11DeviceContext::PSGetShader` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
 /// answers no result (nothing done).
 ///
@@ -21471,6 +21919,80 @@ pub unsafe extern "system" fn device_context1_copy_subresource_region1<
                 src_resource_found.get(),
                 src_subresource,
                 src_box.as_ref(),
+                copy_flags,
+            );
+            drop(found);
+            Some(())
+        });
+        let _ = answer;
+    };
+    guarded((), body)
+}
+
+/// `ID3D11DeviceContext1::UpdateSubresource1` as the C side calls it.
+///
+/// # Safety
+/// Every pointer is what the metadata describes for this entry: a pointer of ours or of the C side's, or null.
+#[expect(
+    unsafe_code,
+    reason = "ID3D11DeviceContext1::UpdateSubresource1, which the C side calls"
+)]
+pub unsafe extern "system" fn device_context1_update_subresource1<
+    V: direct3d_11::DeviceContext1,
+>(
+    this: Raw,
+    dst_resource: Raw,
+    dst_subresource: u32,
+    dst_box: *const u8,
+    src_data: *const u8,
+    src_row_pitch: u32,
+    src_depth_pitch: u32,
+    copy_flags: u32,
+) {
+    #[deny(unsafe_code)]
+    let body = move || {
+        let answer = guarded(None, move || {
+            let found = object::<V>(KEY, this.addr())?;
+            let dst_resource_found = ResourceRefFound::<V::Api>::find(dst_resource.addr())?;
+            let dst_subresource = dst_subresource;
+            let mut dst_box_bytes =
+                [u8::MIN; size_of::<WindowsWin32GraphicsDirect3d11D3d11BoxLayout>()];
+            let dst_box_null = dst_box.is_null();
+            #[expect(
+                unsafe_code,
+                reason = "ID3D11DeviceContext1::UpdateSubresource1: pDstBox, as the header declares it for the C side"
+            )]
+            // SAFETY: the metadata's `pDstBox` is `In` and `Const`: one `Box` of 24 bytes, readable for the call.
+            let dst_box_read = unsafe { read_bytes(dst_box, &mut dst_box_bytes) };
+            let dst_box = dst_box_read
+                .then(|| decode_windows_win32_graphics_direct_3d11_d_3d11_box(&dst_box_bytes));
+            if !dst_box_read && !dst_box_null {
+                return None;
+            }
+            let src_data_length = upload_length_found(
+                &dst_resource_found,
+                dst_subresource,
+                dst_box.as_ref(),
+                src_row_pitch,
+                src_depth_pitch,
+            )?;
+            #[expect(
+                unsafe_code,
+                reason = "ID3D11DeviceContext1::UpdateSubresource1: pSrcData, as the header declares it for the C side"
+            )]
+            // SAFETY: `pSrcData`'s exception line (src/api.rs): the bytes of the box (or the whole subresource) at the pitches, of the length the shape's rule gives from the description the resource was made with, readable for the call.
+            let src_data = unsafe { read_only_at(src_data, src_data_length) };
+            let src_data = src_data?;
+            let src_row_pitch = src_row_pitch;
+            let src_depth_pitch = src_depth_pitch;
+            let copy_flags = copy_flags;
+            let () = found.value().update_subresource1(
+                dst_resource_found.get(),
+                dst_subresource,
+                dst_box.as_ref(),
+                &src_data,
+                src_row_pitch,
+                src_depth_pitch,
                 copy_flags,
             );
             drop(found);
@@ -23233,20 +23755,6 @@ pub unsafe extern "system" fn device_context1_discard_view1<V: direct3d_11::Devi
         let _ = answer;
     };
     guarded((), body)
-}
-
-/// `ID3D11DeviceContext1::UpdateSubresource1` as the C side calls it, refused by its form: nothing is read, the method is not called, and it
-/// answers no result (nothing done).
-pub(crate) extern "system" fn device_context1_update_subresource1_refused(
-    _this: Raw,
-    _p0: Raw,
-    _p1: u32,
-    _p2: *mut u8,
-    _p3: *mut u8,
-    _p4: u32,
-    _p5: u32,
-    _p6: u32,
-) {
 }
 
 /// `ID3D11DeviceContext2::UpdateTileMappings` as the C side calls it.

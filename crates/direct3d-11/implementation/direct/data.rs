@@ -5379,6 +5379,357 @@ pub(crate) fn encode_windows_win32_graphics_direct_3d11_d_3d11_render_target_vie
     );
 }
 
+/// `D3D11_INPUT_ELEMENT_DESC` as C lays it out: its offsets and size are this type's.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout {
+    semantic_name: usize,
+    semantic_index: u32,
+    format: i32,
+    input_slot: u32,
+    aligned_byte_offset: u32,
+    input_slot_class: i32,
+    instance_data_step_rate: u32,
+}
+
+/// Reads `D3D11_INPUT_ELEMENT_DESC` from the 32 bytes C lays it out in.
+pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_input_element_desc(
+    bytes: &[u8],
+) -> direct3d_11::structures::InputElementDesc {
+    direct3d_11::structures::InputElementDesc {
+        semantic_name: std::ffi::CString::default(),
+        semantic_index: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                semantic_index
+            ),
+        ),
+        format: directx_graphics_infrastructure::enumerations::Format(get_i32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                format
+            ),
+        )),
+        input_slot: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                input_slot
+            ),
+        ),
+        aligned_byte_offset: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                aligned_byte_offset
+            ),
+        ),
+        input_slot_class: direct3d_11::enumerations::InputClassification(get_i32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                input_slot_class
+            ),
+        )),
+        instance_data_step_rate: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                instance_data_step_rate
+            ),
+        ),
+    }
+}
+
+/// The offsets of `D3D11_INPUT_ELEMENT_DESC`'s texts, in the order of its fields.
+pub(crate) const TEXTS_WINDOWS_WIN32_GRAPHICS_DIRECT_3D11_D_3D11_INPUT_ELEMENT_DESC: [usize; 1] =
+    [offset_of!(
+        WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+        semantic_name
+    )];
+
+/// Reads `D3D11_INPUT_ELEMENT_DESC` from the 32 bytes C lays it out in, its texts the ones given, in the order of its fields.
+pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_input_element_desc_with(
+    bytes: &[u8],
+    texts: Vec<std::ffi::CString>,
+) -> direct3d_11::structures::InputElementDesc {
+    let mut texts = texts.into_iter();
+    direct3d_11::structures::InputElementDesc {
+        semantic_name: texts.next().unwrap_or_default(),
+        semantic_index: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                semantic_index
+            ),
+        ),
+        format: directx_graphics_infrastructure::enumerations::Format(get_i32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                format
+            ),
+        )),
+        input_slot: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                input_slot
+            ),
+        ),
+        aligned_byte_offset: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                aligned_byte_offset
+            ),
+        ),
+        input_slot_class: direct3d_11::enumerations::InputClassification(get_i32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                input_slot_class
+            ),
+        )),
+        instance_data_step_rate: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+                instance_data_step_rate
+            ),
+        ),
+    }
+}
+
+/// Writes `D3D11_INPUT_ELEMENT_DESC` as the 32 bytes C lays it out in.
+pub(crate) fn encode_windows_win32_graphics_direct_3d11_d_3d11_input_element_desc(
+    value: &direct3d_11::structures::InputElementDesc,
+    bytes: &mut [u8],
+) {
+    put_usize(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+            semantic_name
+        ),
+        value.semantic_name.as_ptr().expose_provenance(),
+    );
+    put_u32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+            semantic_index
+        ),
+        value.semantic_index,
+    );
+    put_i32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+            format
+        ),
+        value.format.0,
+    );
+    put_u32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+            input_slot
+        ),
+        value.input_slot,
+    );
+    put_u32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+            aligned_byte_offset
+        ),
+        value.aligned_byte_offset,
+    );
+    put_i32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+            input_slot_class
+        ),
+        value.input_slot_class.0,
+    );
+    put_u32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11InputElementDescLayout,
+            instance_data_step_rate
+        ),
+        value.instance_data_step_rate,
+    );
+}
+
+/// `D3D11_SO_DECLARATION_ENTRY` as C lays it out: its offsets and size are this type's.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout {
+    stream: u32,
+    semantic_name: usize,
+    semantic_index: u32,
+    start_component: u8,
+    component_count: u8,
+    output_slot: u8,
+}
+
+/// Reads `D3D11_SO_DECLARATION_ENTRY` from the 24 bytes C lays it out in.
+pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_so_declaration_entry(
+    bytes: &[u8],
+) -> direct3d_11::structures::SoDeclarationEntry {
+    direct3d_11::structures::SoDeclarationEntry {
+        stream: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                stream
+            ),
+        ),
+        semantic_name: std::ffi::CString::default(),
+        semantic_index: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                semantic_index
+            ),
+        ),
+        start_component: get_u8(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                start_component
+            ),
+        ),
+        component_count: get_u8(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                component_count
+            ),
+        ),
+        output_slot: get_u8(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                output_slot
+            ),
+        ),
+    }
+}
+
+/// The offsets of `D3D11_SO_DECLARATION_ENTRY`'s texts, in the order of its fields.
+pub(crate) const TEXTS_WINDOWS_WIN32_GRAPHICS_DIRECT_3D11_D_3D11_SO_DECLARATION_ENTRY: [usize; 1] =
+    [offset_of!(
+        WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+        semantic_name
+    )];
+
+/// Reads `D3D11_SO_DECLARATION_ENTRY` from the 24 bytes C lays it out in, its texts the ones given, in the order of its fields.
+pub(crate) fn decode_windows_win32_graphics_direct_3d11_d_3d11_so_declaration_entry_with(
+    bytes: &[u8],
+    texts: Vec<std::ffi::CString>,
+) -> direct3d_11::structures::SoDeclarationEntry {
+    let mut texts = texts.into_iter();
+    direct3d_11::structures::SoDeclarationEntry {
+        stream: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                stream
+            ),
+        ),
+        semantic_name: texts.next().unwrap_or_default(),
+        semantic_index: get_u32(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                semantic_index
+            ),
+        ),
+        start_component: get_u8(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                start_component
+            ),
+        ),
+        component_count: get_u8(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                component_count
+            ),
+        ),
+        output_slot: get_u8(
+            bytes,
+            offset_of!(
+                WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+                output_slot
+            ),
+        ),
+    }
+}
+
+/// Writes `D3D11_SO_DECLARATION_ENTRY` as the 24 bytes C lays it out in.
+pub(crate) fn encode_windows_win32_graphics_direct_3d11_d_3d11_so_declaration_entry(
+    value: &direct3d_11::structures::SoDeclarationEntry,
+    bytes: &mut [u8],
+) {
+    put_u32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+            stream
+        ),
+        value.stream,
+    );
+    put_usize(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+            semantic_name
+        ),
+        value.semantic_name.as_ptr().expose_provenance(),
+    );
+    put_u32(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+            semantic_index
+        ),
+        value.semantic_index,
+    );
+    put_u8(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+            start_component
+        ),
+        value.start_component,
+    );
+    put_u8(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+            component_count
+        ),
+        value.component_count,
+    );
+    put_u8(
+        bytes,
+        offset_of!(
+            WindowsWin32GraphicsDirect3d11D3d11SoDeclarationEntryLayout,
+            output_slot
+        ),
+        value.output_slot,
+    );
+}
+
 /// `D3D11_RASTERIZER_DESC` as C lays it out: its offsets and size are this type's.
 #[derive(Clone, Copy)]
 #[repr(C)]

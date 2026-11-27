@@ -150,6 +150,59 @@ fn outcome(number: u32, name: &str, through: Option<String>) -> bool {
     through.is_none()
 }
 
+/// Bytes of ours behind a lock, as a caller's buffer of a fixed length.
+struct Bytes(std::sync::Mutex<Vec<u8>>);
+
+impl VolatileBytes for Bytes {
+    fn len(&self) -> u64 {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len() as u64
+    }
+
+    fn read(&self, into: &mut [u8]) -> usize {
+        let held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = into.len().min(held.len());
+        into[..count].copy_from_slice(&held[..count]);
+        count
+    }
+
+    fn write(&self, bytes: &[u8]) -> usize {
+        let mut held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = bytes.len().min(held.len());
+        held[..count].copy_from_slice(&bytes[..count]);
+        count
+    }
+
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        let copy = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        sink.write(&copy)
+    }
+
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut copy = vec![
+            0_u8;
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+        ];
+        let count = source.read(&mut copy)?;
+        Ok(self.write(&copy[..count.min(copy.len())]))
+    }
+}
+
 /// Bytes that lie about their length, and count every byte the glue reads or writes through them.
 struct Lying {
     length: u64,
@@ -880,30 +933,120 @@ fn probe_18_update_subresource_reads_a_box_of_bytes() {
     let buffer = device
         .create_buffer(&buffer_desc(256), None)
         .expect("a buffer");
-    let lying = Lying {
-        length: 4,
-        touched: AtomicUsize::new(0),
-    };
+    // The whole buffer is 256 bytes: four are refused before the system sees them, whatever the pitches say; so is a box
+    // past the buffer's end.
+    let short = vec![0_u8; 4];
+    let before = reached("ID3D11DeviceContext::UpdateSubresource");
     context.update_subresource(
         ResourceRef::Buffer(&buffer),
         0,
         None,
-        &lying,
+        &short,
         1 << 20,
         1 << 30,
     );
-    let reached = reached("ID3D11DeviceContext::UpdateSubresource");
+    let past = d3d11::structures::Box {
+        left: 0,
+        top: 0,
+        front: 0,
+        right: 257,
+        bottom: 1,
+        back: 1,
+    };
+    let long = vec![0_u8; 1024];
+    context.update_subresource(ResourceRef::Buffer(&buffer), 0, Some(&past), &long, 0, 0);
+    let refused = reached("ID3D11DeviceContext::UpdateSubresource") - before;
+    // Exactly the buffer's bytes, each slice a heap allocation of that length, pass (the serving glue copies no more).
+    let whole = vec![7_u8; 256];
+    context.update_subresource(ResourceRef::Buffer(&buffer), 0, None, &whole, 0, 0);
+    let region = d3d11::structures::Box {
+        left: 16,
+        top: 0,
+        front: 0,
+        right: 48,
+        bottom: 1,
+        back: 1,
+    };
+    let part = vec![9_u8; 32];
+    context.update_subresource(ResourceRef::Buffer(&buffer), 0, Some(&region), &part, 0, 0);
+    let passed = reached("ID3D11DeviceContext::UpdateSubresource") - before - refused;
+    assert_eq!(
+        passed, 2,
+        "the exact bytes of the whole buffer and of a box reach the implementation"
+    );
     assert!(outcome(
         18,
-        "UpdateSubresource with 4 bytes and huge pitches",
-        (reached > 0).then(|| format!("{reached} calls"))
+        "UpdateSubresource with 4 bytes and huge pitches, and a box past the end",
+        (refused > 0).then(|| format!("{refused} calls"))
+    ));
+}
+
+#[test]
+fn probe_31_create_query_hands_out_a_query_or_a_predicate() {
+    let (device, context) = device();
+    // The recorder makes the least derived kind, a query, for any description; the calling glue asks the object which
+    // kind it is (a query answers no ID3D11Predicate).
+    let made = device
+        .create_query(&d3d11::structures::QueryDesc {
+            query: QueryKind(5),
+            misc_flags: 0,
+        })
+        .expect("an occlusion predicate's object");
+    let query = match made {
+        d3d11::QueryObject::Query(query) => query,
+        d3d11::QueryObject::Predicate(_) => panic!("the recorder's query crossed as a predicate"),
+    };
+    let data = Bytes(std::sync::Mutex::new(vec![0x5a; 4]));
+    let ready = context.get_data(AsynchronousRef::Query(&query), Some(&data), 0);
+    assert_eq!(
+        ready,
+        Ok(true),
+        "the recorder's data is ready (S_OK through both glues)"
+    );
+    assert!(outcome(
+        31,
+        "CreateQuery: the object crosses as the kind it answers",
+        None
+    ));
+}
+
+#[test]
+fn probe_32_input_elements_carry_their_semantic_names() {
+    let (device, _context) = device();
+    let element = |name: &[u8]| d3d11::structures::InputElementDesc {
+        semantic_name: std::ffi::CString::new(name).expect("no zero byte"),
+        semantic_index: 0,
+        format: dxgi::enumerations::Format(2),
+        input_slot: 0,
+        aligned_byte_offset: 0,
+        input_slot_class: d3d11::enumerations::InputClassification(0),
+        instance_data_step_rate: 0,
+    };
+    let before = reached("ID3D11Device::CreateInputLayout");
+    let made =
+        device.create_input_layout(&[element(b"POSITION"), element(b"TEXCOORD")], &[0_u8; 16]);
+    let short = reached("ID3D11Device::CreateInputLayout") - before;
+    assert!(
+        made.is_ok() && short == 1,
+        "two elements with short names reach the implementation once"
+    );
+    // A name past the serving glue's limit (65,536 bytes) is refused before the implementation sees it.
+    let long = vec![b'A'; 70_000];
+    let refused = device
+        .create_input_layout(&[element(&long)], &[0_u8; 16])
+        .is_err();
+    let through = reached("ID3D11Device::CreateInputLayout") - before - short;
+    assert!(outcome(
+        32,
+        "CreateInputLayout with a semantic name of 70,000 bytes",
+        (!refused || through > 0).then(|| format!("{through} calls"))
     ));
 }
 
 #[test]
 fn probe_19_get_data_into_bytes_that_lie() {
     let (device, context) = device();
-    // CreateQuery hands out a query or a predicate (not glued yet); CreateQuery1 a query.
+    // CreateQuery1 hands out a query of the newest interface.
     let query = device
         .create_query1(&QueryDesc1 {
             query: QueryKind(0),

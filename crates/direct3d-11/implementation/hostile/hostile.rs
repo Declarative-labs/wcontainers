@@ -6482,7 +6482,7 @@ impl<A: Hostile> direct3d_11::Device for HostileDevice<A> {
         let _ = &input_element_descs;
         let _ = &shader_bytecode_with_input_signature;
         record("ID3D11Device::CreateInputLayout()".to_string());
-        Err(E_NOTIMPL)
+        Ok(HostileInputLayout::new())
     }
     fn create_vertex_shader(
         &self,
@@ -6526,8 +6526,11 @@ impl<A: Hostile> direct3d_11::Device for HostileDevice<A> {
         let _ = &buffer_strides;
         let _ = &rasterized_stream;
         let _ = &class_linkage;
-        record("ID3D11Device::CreateGeometryShaderWithStreamOutput()".to_string());
-        Err(E_NOTIMPL)
+        record(format!(
+            "ID3D11Device::CreateGeometryShaderWithStreamOutput(rasterized_stream={:?})",
+            rasterized_stream
+        ));
+        Ok(HostileGeometryShader::new())
     }
     fn create_pixel_shader(
         &self,
@@ -6641,7 +6644,7 @@ impl<A: Hostile> direct3d_11::Device for HostileDevice<A> {
     {
         let _ = &query_desc;
         record("ID3D11Device::CreateQuery()".to_string());
-        Err(E_NOTIMPL)
+        Ok(direct3d_11::QueryObject::Predicate(HostilePredicate::new()))
     }
     fn create_predicate(
         &self,
@@ -7795,7 +7798,7 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
         dst_resource: direct3d_11::ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&direct3d_11::structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
         copy_flags: u32,
@@ -7807,8 +7810,10 @@ impl<A: Hostile> direct3d_11::DeviceContext1 for HostileDeviceContext<A> {
         let _ = &src_row_pitch;
         let _ = &src_depth_pitch;
         let _ = &copy_flags;
-        record("ID3D11DeviceContext1::UpdateSubresource1()".to_string());
-        touch(src_data);
+        record(format!(
+            "ID3D11DeviceContext1::UpdateSubresource1(dst_subresource={:?}, src_row_pitch={:?}, src_depth_pitch={:?}, copy_flags={:?})",
+            dst_subresource, src_row_pitch, src_depth_pitch, copy_flags
+        ));
     }
     fn discard_resource(&self, resource: direct3d_11::ResourceRef<'_, Self::Api>) {
         let _ = &resource;
@@ -8372,7 +8377,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
         async_: direct3d_11::AsynchronousRef<'_, Self::Api>,
         data: Option<&impl wcontainers_volatile_bytes::VolatileBytes>,
         get_data_flags: u32,
-    ) -> Result<(), component_object_model::structures::HResult> {
+    ) -> Result<bool, component_object_model::structures::HResult> {
         let _ = &async_;
         let _ = &data;
         let _ = &get_data_flags;
@@ -8383,7 +8388,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
         if let Some(bytes) = data {
             touch(bytes);
         }
-        Ok(())
+        Ok(false)
     }
     fn set_predication(
         &self,
@@ -8597,7 +8602,7 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
         dst_resource: direct3d_11::ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&direct3d_11::structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
     ) {
@@ -8607,8 +8612,10 @@ impl<A: Hostile> direct3d_11::DeviceContext for HostileDeviceContext<A> {
         let _ = &src_data;
         let _ = &src_row_pitch;
         let _ = &src_depth_pitch;
-        record("ID3D11DeviceContext::UpdateSubresource()".to_string());
-        touch(src_data);
+        record(format!(
+            "ID3D11DeviceContext::UpdateSubresource(dst_subresource={:?}, src_row_pitch={:?}, src_depth_pitch={:?})",
+            dst_subresource, src_row_pitch, src_depth_pitch
+        ));
     }
     fn copy_structure_count(
         &self,
@@ -22365,6 +22372,22 @@ pub fn make_all(o: &mut Objects) -> usize {
                 o.k13 = Some(p0);
             }
         }
+        // ID3D11Device::CreateInputLayout
+        if o.k21.is_none() {
+            let answer = {
+                let o = &*o;
+                made(|| {
+                    let this = o.k14.as_ref()?;
+                    let answer = direct3d_11::Device::create_input_layout(this, &[], &[]);
+                    answer.ok()
+                })
+            };
+            if let Some(p0) = answer
+                && o.k21.is_none()
+            {
+                o.k21 = Some(p0);
+            }
+        }
         // ID3D11Device::CreateVertexShader
         if o.k40.is_none() {
             let answer = {
@@ -22388,6 +22411,29 @@ pub fn make_all(o: &mut Objects) -> usize {
                 made(|| {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::create_geometry_shader(this, &[], None);
+                    answer.ok()
+                })
+            };
+            if let Some(p0) = answer
+                && o.k18.is_none()
+            {
+                o.k18 = Some(p0);
+            }
+        }
+        // ID3D11Device::CreateGeometryShaderWithStreamOutput
+        if o.k18.is_none() {
+            let answer = {
+                let o = &*o;
+                made(|| {
+                    let this = o.k14.as_ref()?;
+                    let answer = direct3d_11::Device::create_geometry_shader_with_stream_output(
+                        this,
+                        &[],
+                        &[],
+                        &[],
+                        Default::default(),
+                        None,
+                    );
                     answer.ok()
                 })
             };
@@ -33197,6 +33243,16 @@ pub fn drive_where(
             true
         });
     }
+    // ID3D11Device::CreateInputLayout on Device
+    if wanted(ID_3D11_DEVICE) {
+        driven.attempt(|| {
+            let Some(this) = o.k14.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::Device::create_input_layout(this, &[], &[]);
+            true
+        });
+    }
     // ID3D11Device::CreateVertexShader on Device
     if wanted(ID_3D11_DEVICE) {
         driven.attempt(|| {
@@ -33214,6 +33270,23 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::Device::create_geometry_shader(this, &[], None);
+            true
+        });
+    }
+    // ID3D11Device::CreateGeometryShaderWithStreamOutput on Device
+    if wanted(ID_3D11_DEVICE) {
+        driven.attempt(|| {
+            let Some(this) = o.k14.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::Device::create_geometry_shader_with_stream_output(
+                this,
+                &[],
+                &[],
+                &[],
+                Default::default(),
+                None,
+            );
             true
         });
     }
@@ -33315,6 +33388,21 @@ pub fn drive_where(
                 this,
                 &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_sampler_desc(
                     &[u8::MIN; 52],
+                ),
+            );
+            true
+        });
+    }
+    // ID3D11Device::CreateQuery on Device
+    if wanted(ID_3D11_DEVICE) {
+        driven.attempt(|| {
+            let Some(this) = o.k14.as_ref() else {
+                return false;
+            };
+            let _ = direct3d_11::Device::create_query(
+                this,
+                &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(
+                    &[u8::MIN; 8],
                 ),
             );
             true
@@ -33945,6 +34033,38 @@ pub fn drive_where(
                 v2,
                 Default::default(),
                 None,
+                Default::default(),
+            );
+            true
+        });
+    }
+    // ID3D11DeviceContext1::UpdateSubresource1 on DeviceContext
+    if wanted(ID_3D11_DEVICE_CONTEXT1) {
+        driven.attempt(|| {
+            let Some(this) = o.k15.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let _ = direct3d_11::DeviceContext1::update_subresource1(
+                this,
+                v1,
+                Default::default(),
+                None,
+                &[],
+                Default::default(),
+                Default::default(),
                 Default::default(),
             );
             true
@@ -34859,6 +34979,37 @@ pub fn drive_where(
                 return false;
             };
             let _ = direct3d_11::DeviceContext::copy_resource(this, v1, v2);
+            true
+        });
+    }
+    // ID3D11DeviceContext::UpdateSubresource on DeviceContext
+    if wanted(ID_3D11_DEVICE_CONTEXT) {
+        driven.attempt(|| {
+            let Some(this) = o.k15.as_ref() else {
+                return false;
+            };
+            let Some(v1) = (if let Some(x) = o.k4.as_ref() {
+                Some(direct3d_11::ResourceRef::Buffer(x))
+            } else if let Some(x) = o.k35.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture1D(x))
+            } else if let Some(x) = o.k36.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture2D(x))
+            } else if let Some(x) = o.k37.as_ref() {
+                Some(direct3d_11::ResourceRef::Texture3D(x))
+            } else {
+                None
+            }) else {
+                return false;
+            };
+            let _ = direct3d_11::DeviceContext::update_subresource(
+                this,
+                v1,
+                Default::default(),
+                None,
+                &[],
+                Default::default(),
+                Default::default(),
+            );
             true
         });
     }
@@ -44567,8 +44718,30 @@ fn fuzz_112(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
-/// ID3D11Device::CreateVertexShader on Device, of random arguments.
+/// ID3D11Device::CreateInputLayout on Device, of random arguments.
 fn fuzz_113(o: &Objects, r: &mut Rng) -> bool {
+    let Some(this) = o.k14.as_ref() else {
+        return false;
+    };
+    let count = r.below(SLICE_LENGTHS);
+    let s1: Vec<_> = (0..count)
+        .map(|_| {
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_input_element_desc(
+                &r.bytes(32),
+            )
+        })
+        .collect();
+    let s2: Vec<_> = (0..count).map(|_| r.value::<u8>()).collect();
+    let _ = <direct3d_11_direct::SystemDevice<Api> as direct3d_11::Device>::create_input_layout(
+        this,
+        s1.as_slice(),
+        s2.as_slice(),
+    );
+    true
+}
+
+/// ID3D11Device::CreateVertexShader on Device, of random arguments.
+fn fuzz_114(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44583,7 +44756,7 @@ fn fuzz_113(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateGeometryShader on Device, of random arguments.
-fn fuzz_114(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_115(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44597,8 +44770,27 @@ fn fuzz_114(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
+/// ID3D11Device::CreateGeometryShaderWithStreamOutput on Device, of random arguments.
+fn fuzz_116(o: &Objects, r: &mut Rng) -> bool {
+    let Some(this) = o.k14.as_ref() else {
+        return false;
+    };
+    let count = r.below(SLICE_LENGTHS);
+    let s1: Vec<_> = (0..count).map(|_| r.value::<u8>()).collect();
+    let s2: Vec<_> = (0..count)
+        .map(|_| {
+            data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_so_declaration_entry(
+                &r.bytes(24),
+            )
+        })
+        .collect();
+    let s3: Vec<_> = (0..count).map(|_| r.value::<u32>()).collect();
+    let _ = <direct3d_11_direct::SystemDevice<Api> as direct3d_11::Device>::create_geometry_shader_with_stream_output(this, s1.as_slice(), s2.as_slice(), s3.as_slice(), r.value::<u32>(), o.k6.as_ref().filter(|_| r.coin()));
+    true
+}
+
 /// ID3D11Device::CreatePixelShader on Device, of random arguments.
-fn fuzz_115(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_117(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44613,7 +44805,7 @@ fn fuzz_115(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateHullShader on Device, of random arguments.
-fn fuzz_116(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_118(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44628,7 +44820,7 @@ fn fuzz_116(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateDomainShader on Device, of random arguments.
-fn fuzz_117(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_119(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44643,7 +44835,7 @@ fn fuzz_117(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateComputeShader on Device, of random arguments.
-fn fuzz_118(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_120(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44658,7 +44850,7 @@ fn fuzz_118(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateClassLinkage on Device, of random arguments.
-fn fuzz_119(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_121(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44669,7 +44861,7 @@ fn fuzz_119(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateBlendState on Device, of random arguments.
-fn fuzz_120(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_122(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44684,7 +44876,7 @@ fn fuzz_120(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateDepthStencilState on Device, of random arguments.
-fn fuzz_121(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_123(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44700,7 +44892,7 @@ fn fuzz_121(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateRasterizerState on Device, of random arguments.
-fn fuzz_122(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_124(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44715,7 +44907,7 @@ fn fuzz_122(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateSamplerState on Device, of random arguments.
-fn fuzz_123(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_125(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44729,8 +44921,21 @@ fn fuzz_123(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
+/// ID3D11Device::CreateQuery on Device, of random arguments.
+fn fuzz_126(o: &Objects, r: &mut Rng) -> bool {
+    let Some(this) = o.k14.as_ref() else {
+        return false;
+    };
+    let count = r.below(SLICE_LENGTHS);
+    let _ = <direct3d_11_direct::SystemDevice<Api> as direct3d_11::Device>::create_query(
+        this,
+        &data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_query_desc(&r.bytes(8)),
+    );
+    true
+}
+
 /// ID3D11Device::CreatePredicate on Device, of random arguments.
-fn fuzz_124(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_127(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44743,7 +44948,7 @@ fn fuzz_124(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateCounter on Device, of random arguments.
-fn fuzz_125(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_128(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44758,7 +44963,7 @@ fn fuzz_125(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CreateDeferredContext on Device, of random arguments.
-fn fuzz_126(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_129(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44771,7 +44976,7 @@ fn fuzz_126(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::OpenSharedResource on Device, of random arguments.
-fn fuzz_127(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_130(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44785,7 +44990,7 @@ fn fuzz_127(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CheckFormatSupport on Device, of random arguments.
-fn fuzz_128(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_131(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44798,7 +45003,7 @@ fn fuzz_128(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CheckMultisampleQualityLevels on Device, of random arguments.
-fn fuzz_129(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_132(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44808,7 +45013,7 @@ fn fuzz_129(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CheckCounterInfo on Device, of random arguments.
-fn fuzz_130(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_133(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44819,7 +45024,7 @@ fn fuzz_130(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::CheckFeatureSupport on Device, of random arguments.
-fn fuzz_131(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_134(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44834,7 +45039,7 @@ fn fuzz_131(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::SetPrivateData on Device, of random arguments.
-fn fuzz_132(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_135(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44850,7 +45055,7 @@ fn fuzz_132(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::SetPrivateDataInterface on Device, of random arguments.
-fn fuzz_133(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_136(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44865,7 +45070,7 @@ fn fuzz_133(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::GetFeatureLevel on Device, of random arguments.
-fn fuzz_134(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_137(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44875,7 +45080,7 @@ fn fuzz_134(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::GetCreationFlags on Device, of random arguments.
-fn fuzz_135(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_138(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44886,7 +45091,7 @@ fn fuzz_135(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::GetDeviceRemovedReason on Device, of random arguments.
-fn fuzz_136(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_139(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44899,7 +45104,7 @@ fn fuzz_136(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::GetImmediateContext on Device, of random arguments.
-fn fuzz_137(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_140(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44910,7 +45115,7 @@ fn fuzz_137(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::SetExceptionMode on Device, of random arguments.
-fn fuzz_138(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_141(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44923,7 +45128,7 @@ fn fuzz_138(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Device::GetExceptionMode on Device, of random arguments.
-fn fuzz_139(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_142(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44934,7 +45139,7 @@ fn fuzz_139(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Device, of random arguments.
-fn fuzz_140(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_143(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44945,7 +45150,7 @@ fn fuzz_140(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Device, of random arguments.
-fn fuzz_141(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_144(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44955,7 +45160,7 @@ fn fuzz_141(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Device, of random arguments.
-fn fuzz_142(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_145(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44965,7 +45170,7 @@ fn fuzz_142(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::GetAdapter on Device, of random arguments.
-fn fuzz_143(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_146(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44975,7 +45180,7 @@ fn fuzz_143(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::CreateSurface on Device, of random arguments.
-fn fuzz_144(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_147(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -44990,7 +45195,7 @@ fn fuzz_144(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::SetGPUThreadPriority on Device, of random arguments.
-fn fuzz_145(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_148(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45000,7 +45205,7 @@ fn fuzz_145(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::GetGPUThreadPriority on Device, of random arguments.
-fn fuzz_146(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_149(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45010,7 +45215,7 @@ fn fuzz_146(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice1::SetMaximumFrameLatency on Device, of random arguments.
-fn fuzz_147(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_150(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45020,7 +45225,7 @@ fn fuzz_147(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice1::GetMaximumFrameLatency on Device, of random arguments.
-fn fuzz_148(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_151(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45030,7 +45235,7 @@ fn fuzz_148(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice2::OfferResources on Device, of random arguments.
-fn fuzz_149(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_152(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45043,7 +45248,7 @@ fn fuzz_149(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice2::ReclaimResources on Device, of random arguments.
-fn fuzz_150(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_153(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45056,7 +45261,7 @@ fn fuzz_150(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice2::EnqueueSetEvent on Device, of random arguments.
-fn fuzz_151(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_154(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45066,7 +45271,7 @@ fn fuzz_151(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice3::Trim on Device, of random arguments.
-fn fuzz_152(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_155(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45079,7 +45284,7 @@ fn fuzz_152(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice4::OfferResources1 on Device, of random arguments.
-fn fuzz_153(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_156(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45092,7 +45297,7 @@ fn fuzz_153(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice4::ReclaimResources1 on Device, of random arguments.
-fn fuzz_154(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_157(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45105,7 +45310,7 @@ fn fuzz_154(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::Enter on Device, of random arguments.
-fn fuzz_155(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_158(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45115,7 +45320,7 @@ fn fuzz_155(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::Leave on Device, of random arguments.
-fn fuzz_156(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_159(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45125,7 +45330,7 @@ fn fuzz_156(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::SetMultithreadProtected on Device, of random arguments.
-fn fuzz_157(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_160(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45135,7 +45340,7 @@ fn fuzz_157(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::GetMultithreadProtected on Device, of random arguments.
-fn fuzz_158(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_161(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45145,7 +45350,7 @@ fn fuzz_158(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Device, of random arguments.
-fn fuzz_159(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_162(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k14.as_ref() else {
         return false;
     };
@@ -45155,7 +45360,7 @@ fn fuzz_159(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext4::Signal on DeviceContext, of random arguments.
-fn fuzz_160(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_163(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45172,7 +45377,7 @@ fn fuzz_160(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext4::Wait on DeviceContext, of random arguments.
-fn fuzz_161(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_164(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45189,7 +45394,7 @@ fn fuzz_161(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext3::Flush1 on DeviceContext, of random arguments.
-fn fuzz_162(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_165(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45203,7 +45408,7 @@ fn fuzz_162(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext3::SetHardwareProtectionState on DeviceContext, of random arguments.
-fn fuzz_163(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_166(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45213,7 +45418,7 @@ fn fuzz_163(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext3::GetHardwareProtectionState on DeviceContext, of random arguments.
-fn fuzz_164(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_167(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45223,7 +45428,7 @@ fn fuzz_164(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::UpdateTileMappings on DeviceContext, of random arguments.
-fn fuzz_165(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_168(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45264,7 +45469,7 @@ fn fuzz_165(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::CopyTileMappings on DeviceContext, of random arguments.
-fn fuzz_166(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_169(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45314,7 +45519,7 @@ fn fuzz_166(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::CopyTiles on DeviceContext, of random arguments.
-fn fuzz_167(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_170(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45347,7 +45552,7 @@ fn fuzz_167(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::ResizeTilePool on DeviceContext, of random arguments.
-fn fuzz_168(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_171(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45360,7 +45565,7 @@ fn fuzz_168(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::TiledResourceBarrier on DeviceContext, of random arguments.
-fn fuzz_169(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_172(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45370,7 +45575,7 @@ fn fuzz_169(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::IsAnnotationEnabled on DeviceContext, of random arguments.
-fn fuzz_170(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_173(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45380,7 +45585,7 @@ fn fuzz_170(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::SetMarkerInt on DeviceContext, of random arguments.
-fn fuzz_171(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_174(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45391,7 +45596,7 @@ fn fuzz_171(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::BeginEventInt on DeviceContext, of random arguments.
-fn fuzz_172(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_175(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45402,7 +45607,7 @@ fn fuzz_172(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext2::EndEvent on DeviceContext, of random arguments.
-fn fuzz_173(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_176(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45415,7 +45620,7 @@ fn fuzz_173(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::CopySubresourceRegion1 on DeviceContext, of random arguments.
-fn fuzz_174(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_177(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45469,8 +45674,44 @@ fn fuzz_174(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
+/// ID3D11DeviceContext1::UpdateSubresource1 on DeviceContext, of random arguments.
+fn fuzz_178(o: &Objects, r: &mut Rng) -> bool {
+    let Some(this) = o.k15.as_ref() else {
+        return false;
+    };
+    let count = r.below(SLICE_LENGTHS);
+    let v1 = {
+        let mut choices = Vec::new();
+        if let Some(x) = o.k4.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Buffer(x));
+        }
+        if let Some(x) = o.k35.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Texture1D(x));
+        }
+        if let Some(x) = o.k36.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Texture2D(x));
+        }
+        if let Some(x) = o.k37.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Texture3D(x));
+        }
+        if choices.is_empty() {
+            return false;
+        }
+        let at = r.below(choices.len());
+        choices.swap_remove(at)
+    };
+    let v2 = if r.coin() {
+        Some(&data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_box(&r.bytes(24)))
+    } else {
+        None
+    };
+    let s3: Vec<_> = (0..count).map(|_| r.value::<u8>()).collect();
+    let _ = <direct3d_11_direct::SystemDeviceContext<Api> as direct3d_11::DeviceContext1>::update_subresource1(this, v1, r.value::<u32>(), v2, s3.as_slice(), r.value::<u32>(), r.value::<u32>(), r.value::<u32>());
+    true
+}
+
 /// ID3D11DeviceContext1::DiscardResource on DeviceContext, of random arguments.
-fn fuzz_175(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_179(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45500,7 +45741,7 @@ fn fuzz_175(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::DiscardView on DeviceContext, of random arguments.
-fn fuzz_176(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_180(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45542,7 +45783,7 @@ fn fuzz_176(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::VSSetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_177(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_181(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45557,7 +45798,7 @@ fn fuzz_177(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::HSSetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_178(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_182(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45572,7 +45813,7 @@ fn fuzz_178(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::DSSetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_179(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_183(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45587,7 +45828,7 @@ fn fuzz_179(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::GSSetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_180(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_184(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45602,7 +45843,7 @@ fn fuzz_180(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::PSSetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_181(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_185(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45617,7 +45858,7 @@ fn fuzz_181(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::CSSetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_182(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_186(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45632,7 +45873,7 @@ fn fuzz_182(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::VSGetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_183(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_187(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45642,7 +45883,7 @@ fn fuzz_183(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::HSGetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_184(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_188(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45652,7 +45893,7 @@ fn fuzz_184(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::DSGetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_185(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_189(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45662,7 +45903,7 @@ fn fuzz_185(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::GSGetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_186(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_190(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45672,7 +45913,7 @@ fn fuzz_186(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::PSGetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_187(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_191(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45682,7 +45923,7 @@ fn fuzz_187(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::CSGetConstantBuffers1 on DeviceContext, of random arguments.
-fn fuzz_188(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_192(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45692,7 +45933,7 @@ fn fuzz_188(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::SwapDeviceContextState on DeviceContext, of random arguments.
-fn fuzz_189(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_193(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45705,7 +45946,7 @@ fn fuzz_189(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::ClearView on DeviceContext, of random arguments.
-fn fuzz_190(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_194(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45755,7 +45996,7 @@ fn fuzz_190(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext1::DiscardView1 on DeviceContext, of random arguments.
-fn fuzz_191(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_195(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45799,7 +46040,7 @@ fn fuzz_191(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::VSSetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_192(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_196(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45812,7 +46053,7 @@ fn fuzz_192(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::PSSetShaderResources on DeviceContext, of random arguments.
-fn fuzz_193(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_197(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45825,7 +46066,7 @@ fn fuzz_193(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::PSSetShader on DeviceContext, of random arguments.
-fn fuzz_194(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_198(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45843,7 +46084,7 @@ fn fuzz_194(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::PSSetSamplers on DeviceContext, of random arguments.
-fn fuzz_195(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_199(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45856,7 +46097,7 @@ fn fuzz_195(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::VSSetShader on DeviceContext, of random arguments.
-fn fuzz_196(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_200(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45874,7 +46115,7 @@ fn fuzz_196(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DrawIndexed on DeviceContext, of random arguments.
-fn fuzz_197(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_201(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45890,7 +46131,7 @@ fn fuzz_197(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::Draw on DeviceContext, of random arguments.
-fn fuzz_198(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_202(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45904,7 +46145,7 @@ fn fuzz_198(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::Map on DeviceContext, of random arguments.
-fn fuzz_199(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_203(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45940,7 +46181,7 @@ fn fuzz_199(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::Unmap on DeviceContext, of random arguments.
-fn fuzz_200(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_204(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45974,7 +46215,7 @@ fn fuzz_200(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::PSSetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_201(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_205(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45987,7 +46228,7 @@ fn fuzz_201(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IASetInputLayout on DeviceContext, of random arguments.
-fn fuzz_202(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_206(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -45997,7 +46238,7 @@ fn fuzz_202(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IASetVertexBuffers on DeviceContext, of random arguments.
-fn fuzz_203(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_207(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46012,7 +46253,7 @@ fn fuzz_203(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IASetIndexBuffer on DeviceContext, of random arguments.
-fn fuzz_204(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_208(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46022,7 +46263,7 @@ fn fuzz_204(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DrawIndexedInstanced on DeviceContext, of random arguments.
-fn fuzz_205(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_209(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46032,7 +46273,7 @@ fn fuzz_205(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DrawInstanced on DeviceContext, of random arguments.
-fn fuzz_206(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_210(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46042,7 +46283,7 @@ fn fuzz_206(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GSSetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_207(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_211(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46055,7 +46296,7 @@ fn fuzz_207(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GSSetShader on DeviceContext, of random arguments.
-fn fuzz_208(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_212(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46073,7 +46314,7 @@ fn fuzz_208(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IASetPrimitiveTopology on DeviceContext, of random arguments.
-fn fuzz_209(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_213(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46083,7 +46324,7 @@ fn fuzz_209(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::VSSetShaderResources on DeviceContext, of random arguments.
-fn fuzz_210(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_214(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46096,7 +46337,7 @@ fn fuzz_210(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::VSSetSamplers on DeviceContext, of random arguments.
-fn fuzz_211(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_215(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46109,7 +46350,7 @@ fn fuzz_211(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::Begin on DeviceContext, of random arguments.
-fn fuzz_212(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_216(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46138,7 +46379,7 @@ fn fuzz_212(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::End on DeviceContext, of random arguments.
-fn fuzz_213(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_217(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46166,7 +46407,7 @@ fn fuzz_213(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GetData on DeviceContext, of random arguments.
-fn fuzz_214(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_218(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46199,7 +46440,7 @@ fn fuzz_214(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::SetPredication on DeviceContext, of random arguments.
-fn fuzz_215(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_219(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46209,7 +46450,7 @@ fn fuzz_215(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GSSetShaderResources on DeviceContext, of random arguments.
-fn fuzz_216(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_220(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46222,7 +46463,7 @@ fn fuzz_216(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GSSetSamplers on DeviceContext, of random arguments.
-fn fuzz_217(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_221(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46235,7 +46476,7 @@ fn fuzz_217(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMSetRenderTargets on DeviceContext, of random arguments.
-fn fuzz_218(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_222(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46248,7 +46489,7 @@ fn fuzz_218(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews on DeviceContext, of random arguments.
-fn fuzz_219(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_223(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46268,7 +46509,7 @@ fn fuzz_219(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMSetBlendState on DeviceContext, of random arguments.
-fn fuzz_220(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_224(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46283,7 +46524,7 @@ fn fuzz_220(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMSetDepthStencilState on DeviceContext, of random arguments.
-fn fuzz_221(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_225(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46293,7 +46534,7 @@ fn fuzz_221(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::SOSetTargets on DeviceContext, of random arguments.
-fn fuzz_222(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_226(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46307,7 +46548,7 @@ fn fuzz_222(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DrawAuto on DeviceContext, of random arguments.
-fn fuzz_223(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_227(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46319,7 +46560,7 @@ fn fuzz_223(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DrawIndexedInstancedIndirect on DeviceContext, of random arguments.
-fn fuzz_224(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_228(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46332,7 +46573,7 @@ fn fuzz_224(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DrawInstancedIndirect on DeviceContext, of random arguments.
-fn fuzz_225(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_229(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46345,7 +46586,7 @@ fn fuzz_225(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::Dispatch on DeviceContext, of random arguments.
-fn fuzz_226(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_230(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46360,7 +46601,7 @@ fn fuzz_226(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DispatchIndirect on DeviceContext, of random arguments.
-fn fuzz_227(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_231(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46373,7 +46614,7 @@ fn fuzz_227(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::RSSetState on DeviceContext, of random arguments.
-fn fuzz_228(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_232(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46387,7 +46628,7 @@ fn fuzz_228(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::RSSetViewports on DeviceContext, of random arguments.
-fn fuzz_229(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_233(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46404,7 +46645,7 @@ fn fuzz_229(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::RSSetScissorRects on DeviceContext, of random arguments.
-fn fuzz_230(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_234(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46419,7 +46660,7 @@ fn fuzz_230(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CopySubresourceRegion on DeviceContext, of random arguments.
-fn fuzz_231(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_235(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46474,7 +46715,7 @@ fn fuzz_231(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CopyResource on DeviceContext, of random arguments.
-fn fuzz_232(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_236(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46526,8 +46767,44 @@ fn fuzz_232(o: &Objects, r: &mut Rng) -> bool {
     true
 }
 
+/// ID3D11DeviceContext::UpdateSubresource on DeviceContext, of random arguments.
+fn fuzz_237(o: &Objects, r: &mut Rng) -> bool {
+    let Some(this) = o.k15.as_ref() else {
+        return false;
+    };
+    let count = r.below(SLICE_LENGTHS);
+    let v1 = {
+        let mut choices = Vec::new();
+        if let Some(x) = o.k4.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Buffer(x));
+        }
+        if let Some(x) = o.k35.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Texture1D(x));
+        }
+        if let Some(x) = o.k36.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Texture2D(x));
+        }
+        if let Some(x) = o.k37.as_ref() {
+            choices.push(direct3d_11::ResourceRef::Texture3D(x));
+        }
+        if choices.is_empty() {
+            return false;
+        }
+        let at = r.below(choices.len());
+        choices.swap_remove(at)
+    };
+    let v2 = if r.coin() {
+        Some(&data_direct3d_11::decode_windows_win32_graphics_direct_3d11_d_3d11_box(&r.bytes(24)))
+    } else {
+        None
+    };
+    let s3: Vec<_> = (0..count).map(|_| r.value::<u8>()).collect();
+    let _ = <direct3d_11_direct::SystemDeviceContext<Api> as direct3d_11::DeviceContext>::update_subresource(this, v1, r.value::<u32>(), v2, s3.as_slice(), r.value::<u32>(), r.value::<u32>());
+    true
+}
+
 /// ID3D11DeviceContext::CopyStructureCount on DeviceContext, of random arguments.
-fn fuzz_233(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_238(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46543,7 +46820,7 @@ fn fuzz_233(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::ClearRenderTargetView on DeviceContext, of random arguments.
-fn fuzz_234(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_239(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46556,7 +46833,7 @@ fn fuzz_234(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::ClearUnorderedAccessViewUint on DeviceContext, of random arguments.
-fn fuzz_235(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_240(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46569,7 +46846,7 @@ fn fuzz_235(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::ClearUnorderedAccessViewFloat on DeviceContext, of random arguments.
-fn fuzz_236(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_241(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46582,7 +46859,7 @@ fn fuzz_236(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::ClearDepthStencilView on DeviceContext, of random arguments.
-fn fuzz_237(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_242(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46595,7 +46872,7 @@ fn fuzz_237(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GenerateMips on DeviceContext, of random arguments.
-fn fuzz_238(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_243(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46611,7 +46888,7 @@ fn fuzz_238(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::SetResourceMinLOD on DeviceContext, of random arguments.
-fn fuzz_239(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_244(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46641,7 +46918,7 @@ fn fuzz_239(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GetResourceMinLOD on DeviceContext, of random arguments.
-fn fuzz_240(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_245(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46671,7 +46948,7 @@ fn fuzz_240(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::ResolveSubresource on DeviceContext, of random arguments.
-fn fuzz_241(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_246(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46721,7 +46998,7 @@ fn fuzz_241(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::ExecuteCommandList on DeviceContext, of random arguments.
-fn fuzz_242(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_247(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46734,7 +47011,7 @@ fn fuzz_242(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::HSSetShaderResources on DeviceContext, of random arguments.
-fn fuzz_243(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_248(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46747,7 +47024,7 @@ fn fuzz_243(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::HSSetShader on DeviceContext, of random arguments.
-fn fuzz_244(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_249(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46765,7 +47042,7 @@ fn fuzz_244(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::HSSetSamplers on DeviceContext, of random arguments.
-fn fuzz_245(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_250(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46778,7 +47055,7 @@ fn fuzz_245(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::HSSetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_246(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_251(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46791,7 +47068,7 @@ fn fuzz_246(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DSSetShaderResources on DeviceContext, of random arguments.
-fn fuzz_247(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_252(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46804,7 +47081,7 @@ fn fuzz_247(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DSSetShader on DeviceContext, of random arguments.
-fn fuzz_248(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_253(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46822,7 +47099,7 @@ fn fuzz_248(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DSSetSamplers on DeviceContext, of random arguments.
-fn fuzz_249(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_254(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46835,7 +47112,7 @@ fn fuzz_249(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DSSetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_250(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_255(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46848,7 +47125,7 @@ fn fuzz_250(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSSetShaderResources on DeviceContext, of random arguments.
-fn fuzz_251(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_256(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46861,7 +47138,7 @@ fn fuzz_251(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSSetUnorderedAccessViews on DeviceContext, of random arguments.
-fn fuzz_252(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_257(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46875,7 +47152,7 @@ fn fuzz_252(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSSetShader on DeviceContext, of random arguments.
-fn fuzz_253(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_258(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46893,7 +47170,7 @@ fn fuzz_253(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSSetSamplers on DeviceContext, of random arguments.
-fn fuzz_254(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_259(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46906,7 +47183,7 @@ fn fuzz_254(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSSetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_255(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_260(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46919,7 +47196,7 @@ fn fuzz_255(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::VSGetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_256(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_261(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46929,7 +47206,7 @@ fn fuzz_256(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::PSGetShaderResources on DeviceContext, of random arguments.
-fn fuzz_257(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_262(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46939,7 +47216,7 @@ fn fuzz_257(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::PSGetSamplers on DeviceContext, of random arguments.
-fn fuzz_258(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_263(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46949,7 +47226,7 @@ fn fuzz_258(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::PSGetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_259(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_264(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46959,7 +47236,7 @@ fn fuzz_259(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IAGetInputLayout on DeviceContext, of random arguments.
-fn fuzz_260(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_265(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46969,7 +47246,7 @@ fn fuzz_260(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IAGetVertexBuffers on DeviceContext, of random arguments.
-fn fuzz_261(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_266(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46979,7 +47256,7 @@ fn fuzz_261(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IAGetIndexBuffer on DeviceContext, of random arguments.
-fn fuzz_262(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_267(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46989,7 +47266,7 @@ fn fuzz_262(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GSGetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_263(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_268(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -46999,7 +47276,7 @@ fn fuzz_263(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::IAGetPrimitiveTopology on DeviceContext, of random arguments.
-fn fuzz_264(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_269(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47009,7 +47286,7 @@ fn fuzz_264(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::VSGetShaderResources on DeviceContext, of random arguments.
-fn fuzz_265(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_270(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47019,7 +47296,7 @@ fn fuzz_265(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::VSGetSamplers on DeviceContext, of random arguments.
-fn fuzz_266(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_271(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47029,7 +47306,7 @@ fn fuzz_266(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GetPredication on DeviceContext, of random arguments.
-fn fuzz_267(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_272(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47039,7 +47316,7 @@ fn fuzz_267(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GSGetShaderResources on DeviceContext, of random arguments.
-fn fuzz_268(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_273(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47049,7 +47326,7 @@ fn fuzz_268(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GSGetSamplers on DeviceContext, of random arguments.
-fn fuzz_269(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_274(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47059,7 +47336,7 @@ fn fuzz_269(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMGetRenderTargets on DeviceContext, of random arguments.
-fn fuzz_270(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_275(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47069,7 +47346,7 @@ fn fuzz_270(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews on DeviceContext, of random arguments.
-fn fuzz_271(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_276(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47079,7 +47356,7 @@ fn fuzz_271(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMGetBlendState on DeviceContext, of random arguments.
-fn fuzz_272(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_277(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47089,7 +47366,7 @@ fn fuzz_272(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::OMGetDepthStencilState on DeviceContext, of random arguments.
-fn fuzz_273(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_278(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47099,7 +47376,7 @@ fn fuzz_273(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::SOGetTargets on DeviceContext, of random arguments.
-fn fuzz_274(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_279(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47109,7 +47386,7 @@ fn fuzz_274(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::RSGetState on DeviceContext, of random arguments.
-fn fuzz_275(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_280(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47122,7 +47399,7 @@ fn fuzz_275(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::RSGetViewports on DeviceContext, of random arguments.
-fn fuzz_276(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_281(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47132,7 +47409,7 @@ fn fuzz_276(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::RSGetScissorRects on DeviceContext, of random arguments.
-fn fuzz_277(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_282(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47142,7 +47419,7 @@ fn fuzz_277(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::HSGetShaderResources on DeviceContext, of random arguments.
-fn fuzz_278(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_283(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47152,7 +47429,7 @@ fn fuzz_278(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::HSGetSamplers on DeviceContext, of random arguments.
-fn fuzz_279(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_284(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47162,7 +47439,7 @@ fn fuzz_279(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::HSGetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_280(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_285(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47172,7 +47449,7 @@ fn fuzz_280(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DSGetShaderResources on DeviceContext, of random arguments.
-fn fuzz_281(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_286(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47182,7 +47459,7 @@ fn fuzz_281(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DSGetSamplers on DeviceContext, of random arguments.
-fn fuzz_282(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_287(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47192,7 +47469,7 @@ fn fuzz_282(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::DSGetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_283(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_288(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47202,7 +47479,7 @@ fn fuzz_283(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSGetShaderResources on DeviceContext, of random arguments.
-fn fuzz_284(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_289(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47212,7 +47489,7 @@ fn fuzz_284(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSGetUnorderedAccessViews on DeviceContext, of random arguments.
-fn fuzz_285(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_290(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47222,7 +47499,7 @@ fn fuzz_285(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSGetSamplers on DeviceContext, of random arguments.
-fn fuzz_286(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_291(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47232,7 +47509,7 @@ fn fuzz_286(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::CSGetConstantBuffers on DeviceContext, of random arguments.
-fn fuzz_287(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_292(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47242,7 +47519,7 @@ fn fuzz_287(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::ClearState on DeviceContext, of random arguments.
-fn fuzz_288(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_293(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47255,7 +47532,7 @@ fn fuzz_288(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::Flush on DeviceContext, of random arguments.
-fn fuzz_289(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_294(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47266,7 +47543,7 @@ fn fuzz_289(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GetType on DeviceContext, of random arguments.
-fn fuzz_290(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_295(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47278,7 +47555,7 @@ fn fuzz_290(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::GetContextFlags on DeviceContext, of random arguments.
-fn fuzz_291(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_296(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47288,7 +47565,7 @@ fn fuzz_291(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceContext::FinishCommandList on DeviceContext, of random arguments.
-fn fuzz_292(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_297(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47298,7 +47575,7 @@ fn fuzz_292(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on DeviceContext, of random arguments.
-fn fuzz_293(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_298(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47310,7 +47587,7 @@ fn fuzz_293(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on DeviceContext, of random arguments.
-fn fuzz_294(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_299(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47322,7 +47599,7 @@ fn fuzz_294(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on DeviceContext, of random arguments.
-fn fuzz_295(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_300(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47332,7 +47609,7 @@ fn fuzz_295(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::Enter on DeviceContext, of random arguments.
-fn fuzz_296(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_301(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47342,7 +47619,7 @@ fn fuzz_296(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::Leave on DeviceContext, of random arguments.
-fn fuzz_297(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_302(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47352,7 +47629,7 @@ fn fuzz_297(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::SetMultithreadProtected on DeviceContext, of random arguments.
-fn fuzz_298(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_303(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47362,7 +47639,7 @@ fn fuzz_298(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::GetMultithreadProtected on DeviceContext, of random arguments.
-fn fuzz_299(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_304(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47372,7 +47649,7 @@ fn fuzz_299(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::BeginEvent on DeviceContext, of random arguments.
-fn fuzz_300(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_305(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47383,7 +47660,7 @@ fn fuzz_300(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::EndEvent on DeviceContext, of random arguments.
-fn fuzz_301(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_306(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47393,7 +47670,7 @@ fn fuzz_301(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::SetMarker on DeviceContext, of random arguments.
-fn fuzz_302(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_307(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47404,7 +47681,7 @@ fn fuzz_302(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::GetStatus on DeviceContext, of random arguments.
-fn fuzz_303(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_308(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47414,7 +47691,7 @@ fn fuzz_303(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on DeviceContext, of random arguments.
-fn fuzz_304(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_309(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k15.as_ref() else {
         return false;
     };
@@ -47424,7 +47701,7 @@ fn fuzz_304(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on DomainShader, of random arguments.
-fn fuzz_305(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_310(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k16.as_ref() else {
         return false;
     };
@@ -47435,7 +47712,7 @@ fn fuzz_305(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on DomainShader, of random arguments.
-fn fuzz_306(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_311(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k16.as_ref() else {
         return false;
     };
@@ -47452,7 +47729,7 @@ fn fuzz_306(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on DomainShader, of random arguments.
-fn fuzz_307(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_312(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k16.as_ref() else {
         return false;
     };
@@ -47462,7 +47739,7 @@ fn fuzz_307(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on DomainShader, of random arguments.
-fn fuzz_308(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_313(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k16.as_ref() else {
         return false;
     };
@@ -47472,7 +47749,7 @@ fn fuzz_308(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Fence::GetCompletedValue on Fence, of random arguments.
-fn fuzz_309(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_314(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k17.as_ref() else {
         return false;
     };
@@ -47482,7 +47759,7 @@ fn fuzz_309(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Fence::SetEventOnCompletion on Fence, of random arguments.
-fn fuzz_310(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_315(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k17.as_ref() else {
         return false;
     };
@@ -47496,7 +47773,7 @@ fn fuzz_310(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on Fence, of random arguments.
-fn fuzz_311(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_316(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k17.as_ref() else {
         return false;
     };
@@ -47506,7 +47783,7 @@ fn fuzz_311(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on Fence, of random arguments.
-fn fuzz_312(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_317(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k17.as_ref() else {
         return false;
     };
@@ -47522,7 +47799,7 @@ fn fuzz_312(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on Fence, of random arguments.
-fn fuzz_313(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_318(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k17.as_ref() else {
         return false;
     };
@@ -47532,7 +47809,7 @@ fn fuzz_313(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Fence, of random arguments.
-fn fuzz_314(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_319(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k17.as_ref() else {
         return false;
     };
@@ -47542,7 +47819,7 @@ fn fuzz_314(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on GeometryShader, of random arguments.
-fn fuzz_315(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_320(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k18.as_ref() else {
         return false;
     };
@@ -47554,7 +47831,7 @@ fn fuzz_315(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on GeometryShader, of random arguments.
-fn fuzz_316(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_321(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k18.as_ref() else {
         return false;
     };
@@ -47566,7 +47843,7 @@ fn fuzz_316(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on GeometryShader, of random arguments.
-fn fuzz_317(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_322(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k18.as_ref() else {
         return false;
     };
@@ -47576,7 +47853,7 @@ fn fuzz_317(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on GeometryShader, of random arguments.
-fn fuzz_318(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_323(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k18.as_ref() else {
         return false;
     };
@@ -47586,7 +47863,7 @@ fn fuzz_318(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on HullShader, of random arguments.
-fn fuzz_319(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_324(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k19.as_ref() else {
         return false;
     };
@@ -47597,7 +47874,7 @@ fn fuzz_319(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on HullShader, of random arguments.
-fn fuzz_320(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_325(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k19.as_ref() else {
         return false;
     };
@@ -47614,7 +47891,7 @@ fn fuzz_320(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on HullShader, of random arguments.
-fn fuzz_321(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_326(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k19.as_ref() else {
         return false;
     };
@@ -47624,7 +47901,7 @@ fn fuzz_321(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on HullShader, of random arguments.
-fn fuzz_322(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_327(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k19.as_ref() else {
         return false;
     };
@@ -47634,7 +47911,7 @@ fn fuzz_322(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::SetMessageCountLimit on InfoQueue, of random arguments.
-fn fuzz_323(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_328(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47644,7 +47921,7 @@ fn fuzz_323(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::ClearStoredMessages on InfoQueue, of random arguments.
-fn fuzz_324(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_329(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47657,7 +47934,7 @@ fn fuzz_324(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue, of random arguments.
-fn fuzz_325(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_330(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47667,7 +47944,7 @@ fn fuzz_325(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue, of random arguments.
-fn fuzz_326(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_331(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47677,7 +47954,7 @@ fn fuzz_326(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetNumStoredMessages on InfoQueue, of random arguments.
-fn fuzz_327(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_332(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47687,7 +47964,7 @@ fn fuzz_327(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetNumStoredMessagesAllowedByRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_328(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_333(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47697,7 +47974,7 @@ fn fuzz_328(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue, of random arguments.
-fn fuzz_329(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_334(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47707,7 +47984,7 @@ fn fuzz_329(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetMessageCountLimit on InfoQueue, of random arguments.
-fn fuzz_330(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_335(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47717,7 +47994,7 @@ fn fuzz_330(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::ClearStorageFilter on InfoQueue, of random arguments.
-fn fuzz_331(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_336(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47730,7 +48007,7 @@ fn fuzz_331(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::PushEmptyStorageFilter on InfoQueue, of random arguments.
-fn fuzz_332(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_337(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47740,7 +48017,7 @@ fn fuzz_332(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::PushCopyOfStorageFilter on InfoQueue, of random arguments.
-fn fuzz_333(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_338(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47750,7 +48027,7 @@ fn fuzz_333(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::PopStorageFilter on InfoQueue, of random arguments.
-fn fuzz_334(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_339(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47763,7 +48040,7 @@ fn fuzz_334(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetStorageFilterStackSize on InfoQueue, of random arguments.
-fn fuzz_335(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_340(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47773,7 +48050,7 @@ fn fuzz_335(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::ClearRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_336(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_341(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47783,7 +48060,7 @@ fn fuzz_336(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::PushEmptyRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_337(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_342(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47793,7 +48070,7 @@ fn fuzz_337(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::PushCopyOfRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_338(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_343(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47803,7 +48080,7 @@ fn fuzz_338(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::PopRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_339(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_344(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47816,7 +48093,7 @@ fn fuzz_339(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetRetrievalFilterStackSize on InfoQueue, of random arguments.
-fn fuzz_340(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_345(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47826,7 +48103,7 @@ fn fuzz_340(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::AddMessage on InfoQueue, of random arguments.
-fn fuzz_341(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_346(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47842,7 +48119,7 @@ fn fuzz_341(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::AddApplicationMessage on InfoQueue, of random arguments.
-fn fuzz_342(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_347(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47852,7 +48129,7 @@ fn fuzz_342(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::SetBreakOnCategory on InfoQueue, of random arguments.
-fn fuzz_343(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_348(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47867,7 +48144,7 @@ fn fuzz_343(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::SetBreakOnSeverity on InfoQueue, of random arguments.
-fn fuzz_344(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_349(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47882,7 +48159,7 @@ fn fuzz_344(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::SetBreakOnID on InfoQueue, of random arguments.
-fn fuzz_345(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_350(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47896,7 +48173,7 @@ fn fuzz_345(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetBreakOnCategory on InfoQueue, of random arguments.
-fn fuzz_346(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_351(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47910,7 +48187,7 @@ fn fuzz_346(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetBreakOnSeverity on InfoQueue, of random arguments.
-fn fuzz_347(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_352(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47924,7 +48201,7 @@ fn fuzz_347(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetBreakOnID on InfoQueue, of random arguments.
-fn fuzz_348(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_353(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47937,7 +48214,7 @@ fn fuzz_348(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::SetMuteDebugOutput on InfoQueue, of random arguments.
-fn fuzz_349(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_354(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47951,7 +48228,7 @@ fn fuzz_349(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11InfoQueue::GetMuteDebugOutput on InfoQueue, of random arguments.
-fn fuzz_350(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_355(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47964,7 +48241,7 @@ fn fuzz_350(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on InfoQueue, of random arguments.
-fn fuzz_351(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_356(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k20.as_ref() else {
         return false;
     };
@@ -47974,7 +48251,7 @@ fn fuzz_351(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on InputLayout, of random arguments.
-fn fuzz_352(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_357(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k21.as_ref() else {
         return false;
     };
@@ -47985,7 +48262,7 @@ fn fuzz_352(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on InputLayout, of random arguments.
-fn fuzz_353(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_358(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k21.as_ref() else {
         return false;
     };
@@ -48002,7 +48279,7 @@ fn fuzz_353(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on InputLayout, of random arguments.
-fn fuzz_354(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_359(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k21.as_ref() else {
         return false;
     };
@@ -48012,7 +48289,7 @@ fn fuzz_354(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on InputLayout, of random arguments.
-fn fuzz_355(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_360(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k21.as_ref() else {
         return false;
     };
@@ -48022,7 +48299,7 @@ fn fuzz_355(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::Enter on Multithread, of random arguments.
-fn fuzz_356(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_361(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k22.as_ref() else {
         return false;
     };
@@ -48032,7 +48309,7 @@ fn fuzz_356(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::Leave on Multithread, of random arguments.
-fn fuzz_357(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_362(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k22.as_ref() else {
         return false;
     };
@@ -48042,7 +48319,7 @@ fn fuzz_357(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::SetMultithreadProtected on Multithread, of random arguments.
-fn fuzz_358(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_363(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k22.as_ref() else {
         return false;
     };
@@ -48052,7 +48329,7 @@ fn fuzz_358(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Multithread::GetMultithreadProtected on Multithread, of random arguments.
-fn fuzz_359(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_364(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k22.as_ref() else {
         return false;
     };
@@ -48062,7 +48339,7 @@ fn fuzz_359(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Multithread, of random arguments.
-fn fuzz_360(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_365(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k22.as_ref() else {
         return false;
     };
@@ -48072,7 +48349,7 @@ fn fuzz_360(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on PixelShader, of random arguments.
-fn fuzz_361(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_366(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k23.as_ref() else {
         return false;
     };
@@ -48083,7 +48360,7 @@ fn fuzz_361(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on PixelShader, of random arguments.
-fn fuzz_362(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_367(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k23.as_ref() else {
         return false;
     };
@@ -48100,7 +48377,7 @@ fn fuzz_362(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on PixelShader, of random arguments.
-fn fuzz_363(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_368(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k23.as_ref() else {
         return false;
     };
@@ -48110,7 +48387,7 @@ fn fuzz_363(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on PixelShader, of random arguments.
-fn fuzz_364(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_369(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k23.as_ref() else {
         return false;
     };
@@ -48120,7 +48397,7 @@ fn fuzz_364(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Query::GetDesc on Predicate, of random arguments.
-fn fuzz_365(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_370(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k24.as_ref() else {
         return false;
     };
@@ -48130,7 +48407,7 @@ fn fuzz_365(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Asynchronous::GetDataSize on Predicate, of random arguments.
-fn fuzz_366(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_371(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k24.as_ref() else {
         return false;
     };
@@ -48142,7 +48419,7 @@ fn fuzz_366(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on Predicate, of random arguments.
-fn fuzz_367(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_372(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k24.as_ref() else {
         return false;
     };
@@ -48153,7 +48430,7 @@ fn fuzz_367(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on Predicate, of random arguments.
-fn fuzz_368(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_373(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k24.as_ref() else {
         return false;
     };
@@ -48170,7 +48447,7 @@ fn fuzz_368(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on Predicate, of random arguments.
-fn fuzz_369(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_374(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k24.as_ref() else {
         return false;
     };
@@ -48180,7 +48457,7 @@ fn fuzz_369(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Predicate, of random arguments.
-fn fuzz_370(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_375(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k24.as_ref() else {
         return false;
     };
@@ -48190,7 +48467,7 @@ fn fuzz_370(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Query1::GetDesc1 on Query, of random arguments.
-fn fuzz_371(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_376(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k25.as_ref() else {
         return false;
     };
@@ -48200,7 +48477,7 @@ fn fuzz_371(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Query::GetDesc on Query, of random arguments.
-fn fuzz_372(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_377(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k25.as_ref() else {
         return false;
     };
@@ -48210,7 +48487,7 @@ fn fuzz_372(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Asynchronous::GetDataSize on Query, of random arguments.
-fn fuzz_373(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_378(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k25.as_ref() else {
         return false;
     };
@@ -48221,7 +48498,7 @@ fn fuzz_373(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on Query, of random arguments.
-fn fuzz_374(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_379(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k25.as_ref() else {
         return false;
     };
@@ -48231,7 +48508,7 @@ fn fuzz_374(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on Query, of random arguments.
-fn fuzz_375(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_380(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k25.as_ref() else {
         return false;
     };
@@ -48247,7 +48524,7 @@ fn fuzz_375(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on Query, of random arguments.
-fn fuzz_376(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_381(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k25.as_ref() else {
         return false;
     };
@@ -48257,7 +48534,7 @@ fn fuzz_376(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Query, of random arguments.
-fn fuzz_377(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_382(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k25.as_ref() else {
         return false;
     };
@@ -48267,7 +48544,7 @@ fn fuzz_377(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11RasterizerState2::GetDesc2 on RasterizerState, of random arguments.
-fn fuzz_378(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_383(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k26.as_ref() else {
         return false;
     };
@@ -48277,7 +48554,7 @@ fn fuzz_378(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11RasterizerState1::GetDesc1 on RasterizerState, of random arguments.
-fn fuzz_379(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_384(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k26.as_ref() else {
         return false;
     };
@@ -48287,7 +48564,7 @@ fn fuzz_379(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11RasterizerState::GetDesc on RasterizerState, of random arguments.
-fn fuzz_380(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_385(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k26.as_ref() else {
         return false;
     };
@@ -48300,7 +48577,7 @@ fn fuzz_380(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on RasterizerState, of random arguments.
-fn fuzz_381(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_386(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k26.as_ref() else {
         return false;
     };
@@ -48313,7 +48590,7 @@ fn fuzz_381(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on RasterizerState, of random arguments.
-fn fuzz_382(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_387(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k26.as_ref() else {
         return false;
     };
@@ -48325,7 +48602,7 @@ fn fuzz_382(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on RasterizerState, of random arguments.
-fn fuzz_383(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_388(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k26.as_ref() else {
         return false;
     };
@@ -48335,7 +48612,7 @@ fn fuzz_383(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on RasterizerState, of random arguments.
-fn fuzz_384(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_389(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k26.as_ref() else {
         return false;
     };
@@ -48345,7 +48622,7 @@ fn fuzz_384(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11RefDefaultTrackingOptions::SetTrackingOptions on RefDefaultTrackingOptions, of random arguments.
-fn fuzz_385(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_390(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k27.as_ref() else {
         return false;
     };
@@ -48355,7 +48632,7 @@ fn fuzz_385(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on RefDefaultTrackingOptions, of random arguments.
-fn fuzz_386(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_391(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k27.as_ref() else {
         return false;
     };
@@ -48365,7 +48642,7 @@ fn fuzz_386(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11RefTrackingOptions::SetTrackingOptions on RefTrackingOptions, of random arguments.
-fn fuzz_387(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_392(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k28.as_ref() else {
         return false;
     };
@@ -48375,7 +48652,7 @@ fn fuzz_387(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on RefTrackingOptions, of random arguments.
-fn fuzz_388(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_393(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k28.as_ref() else {
         return false;
     };
@@ -48385,7 +48662,7 @@ fn fuzz_388(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11RenderTargetView1::GetDesc1 on RenderTargetView, of random arguments.
-fn fuzz_389(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_394(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k29.as_ref() else {
         return false;
     };
@@ -48395,7 +48672,7 @@ fn fuzz_389(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11RenderTargetView::GetDesc on RenderTargetView, of random arguments.
-fn fuzz_390(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_395(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k29.as_ref() else {
         return false;
     };
@@ -48405,7 +48682,7 @@ fn fuzz_390(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on RenderTargetView, of random arguments.
-fn fuzz_391(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_396(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k29.as_ref() else {
         return false;
     };
@@ -48418,7 +48695,7 @@ fn fuzz_391(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on RenderTargetView, of random arguments.
-fn fuzz_392(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_397(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k29.as_ref() else {
         return false;
     };
@@ -48430,7 +48707,7 @@ fn fuzz_392(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on RenderTargetView, of random arguments.
-fn fuzz_393(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_398(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k29.as_ref() else {
         return false;
     };
@@ -48440,7 +48717,7 @@ fn fuzz_393(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on RenderTargetView, of random arguments.
-fn fuzz_394(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_399(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k29.as_ref() else {
         return false;
     };
@@ -48450,7 +48727,7 @@ fn fuzz_394(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11SamplerState::GetDesc on SamplerState, of random arguments.
-fn fuzz_395(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_400(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k30.as_ref() else {
         return false;
     };
@@ -48461,7 +48738,7 @@ fn fuzz_395(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on SamplerState, of random arguments.
-fn fuzz_396(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_401(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k30.as_ref() else {
         return false;
     };
@@ -48472,7 +48749,7 @@ fn fuzz_396(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on SamplerState, of random arguments.
-fn fuzz_397(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_402(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k30.as_ref() else {
         return false;
     };
@@ -48489,7 +48766,7 @@ fn fuzz_397(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on SamplerState, of random arguments.
-fn fuzz_398(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_403(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k30.as_ref() else {
         return false;
     };
@@ -48499,7 +48776,7 @@ fn fuzz_398(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on SamplerState, of random arguments.
-fn fuzz_399(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_404(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k30.as_ref() else {
         return false;
     };
@@ -48509,7 +48786,7 @@ fn fuzz_399(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderResourceView1::GetDesc1 on ShaderResourceView, of random arguments.
-fn fuzz_400(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_405(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k31.as_ref() else {
         return false;
     };
@@ -48519,7 +48796,7 @@ fn fuzz_400(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderResourceView::GetDesc on ShaderResourceView, of random arguments.
-fn fuzz_401(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_406(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k31.as_ref() else {
         return false;
     };
@@ -48529,7 +48806,7 @@ fn fuzz_401(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on ShaderResourceView, of random arguments.
-fn fuzz_402(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_407(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k31.as_ref() else {
         return false;
     };
@@ -48542,7 +48819,7 @@ fn fuzz_402(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on ShaderResourceView, of random arguments.
-fn fuzz_403(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_408(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k31.as_ref() else {
         return false;
     };
@@ -48554,7 +48831,7 @@ fn fuzz_403(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on ShaderResourceView, of random arguments.
-fn fuzz_404(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_409(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k31.as_ref() else {
         return false;
     };
@@ -48564,7 +48841,7 @@ fn fuzz_404(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderResourceView, of random arguments.
-fn fuzz_405(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_410(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k31.as_ref() else {
         return false;
     };
@@ -48574,7 +48851,7 @@ fn fuzz_405(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::TraceReady on ShaderTrace, of random arguments.
-fn fuzz_406(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_411(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48585,7 +48862,7 @@ fn fuzz_406(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::ResetTrace on ShaderTrace, of random arguments.
-fn fuzz_407(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_412(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48596,7 +48873,7 @@ fn fuzz_407(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::GetTraceStats on ShaderTrace, of random arguments.
-fn fuzz_408(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_413(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48609,7 +48886,7 @@ fn fuzz_408(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::PSSelectStamp on ShaderTrace, of random arguments.
-fn fuzz_409(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_414(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48623,7 +48900,7 @@ fn fuzz_409(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::GetInitialRegisterContents on ShaderTrace, of random arguments.
-fn fuzz_410(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_415(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48633,7 +48910,7 @@ fn fuzz_410(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::GetStep on ShaderTrace, of random arguments.
-fn fuzz_411(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_416(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48646,7 +48923,7 @@ fn fuzz_411(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::GetWrittenRegister on ShaderTrace, of random arguments.
-fn fuzz_412(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_417(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48656,7 +48933,7 @@ fn fuzz_412(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTrace::GetReadRegister on ShaderTrace, of random arguments.
-fn fuzz_413(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_418(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48671,7 +48948,7 @@ fn fuzz_413(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderTrace, of random arguments.
-fn fuzz_414(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_419(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k32.as_ref() else {
         return false;
     };
@@ -48681,7 +48958,7 @@ fn fuzz_414(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11ShaderTraceFactory::CreateShaderTrace on ShaderTraceFactory, of random arguments.
-fn fuzz_415(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_420(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k33.as_ref() else {
         return false;
     };
@@ -48846,7 +49123,7 @@ fn fuzz_415(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on ShaderTraceFactory, of random arguments.
-fn fuzz_416(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_421(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k33.as_ref() else {
         return false;
     };
@@ -48856,7 +49133,7 @@ fn fuzz_416(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11SwitchToRef::SetUseRef on SwitchToRef, of random arguments.
-fn fuzz_417(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_422(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k34.as_ref() else {
         return false;
     };
@@ -48869,7 +49146,7 @@ fn fuzz_417(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11SwitchToRef::GetUseRef on SwitchToRef, of random arguments.
-fn fuzz_418(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_423(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k34.as_ref() else {
         return false;
     };
@@ -48880,7 +49157,7 @@ fn fuzz_418(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on SwitchToRef, of random arguments.
-fn fuzz_419(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_424(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k34.as_ref() else {
         return false;
     };
@@ -48890,7 +49167,7 @@ fn fuzz_419(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Texture1D::GetDesc on Texture1D, of random arguments.
-fn fuzz_420(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_425(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48900,7 +49177,7 @@ fn fuzz_420(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::GetType on Texture1D, of random arguments.
-fn fuzz_421(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_426(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48910,7 +49187,7 @@ fn fuzz_421(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::SetEvictionPriority on Texture1D, of random arguments.
-fn fuzz_422(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_427(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48924,7 +49201,7 @@ fn fuzz_422(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::GetEvictionPriority on Texture1D, of random arguments.
-fn fuzz_423(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_428(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48937,7 +49214,7 @@ fn fuzz_423(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on Texture1D, of random arguments.
-fn fuzz_424(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_429(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48948,7 +49225,7 @@ fn fuzz_424(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on Texture1D, of random arguments.
-fn fuzz_425(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_430(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48965,7 +49242,7 @@ fn fuzz_425(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on Texture1D, of random arguments.
-fn fuzz_426(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_431(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48975,7 +49252,7 @@ fn fuzz_426(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Texture1D, of random arguments.
-fn fuzz_427(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_432(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48986,7 +49263,7 @@ fn fuzz_427(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Texture1D, of random arguments.
-fn fuzz_428(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_433(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -48996,7 +49273,7 @@ fn fuzz_428(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Texture1D, of random arguments.
-fn fuzz_429(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_434(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49006,7 +49283,7 @@ fn fuzz_429(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDeviceSubObject::GetDevice on Texture1D, of random arguments.
-fn fuzz_430(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_435(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49016,7 +49293,7 @@ fn fuzz_430(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetSharedHandle on Texture1D, of random arguments.
-fn fuzz_431(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_436(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49026,7 +49303,7 @@ fn fuzz_431(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetUsage on Texture1D, of random arguments.
-fn fuzz_432(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_437(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49036,7 +49313,7 @@ fn fuzz_432(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::SetEvictionPriority on Texture1D, of random arguments.
-fn fuzz_433(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_438(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49046,7 +49323,7 @@ fn fuzz_433(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetEvictionPriority on Texture1D, of random arguments.
-fn fuzz_434(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_439(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49056,7 +49333,7 @@ fn fuzz_434(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource1::CreateSubresourceSurface on Texture1D, of random arguments.
-fn fuzz_435(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_440(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49066,7 +49343,7 @@ fn fuzz_435(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Texture1D, of random arguments.
-fn fuzz_436(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_441(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k35.as_ref() else {
         return false;
     };
@@ -49076,7 +49353,7 @@ fn fuzz_436(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Texture2D1::GetDesc1 on Texture2D, of random arguments.
-fn fuzz_437(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_442(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49086,7 +49363,7 @@ fn fuzz_437(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Texture2D::GetDesc on Texture2D, of random arguments.
-fn fuzz_438(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_443(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49096,7 +49373,7 @@ fn fuzz_438(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::GetType on Texture2D, of random arguments.
-fn fuzz_439(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_444(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49106,7 +49383,7 @@ fn fuzz_439(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::SetEvictionPriority on Texture2D, of random arguments.
-fn fuzz_440(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_445(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49120,7 +49397,7 @@ fn fuzz_440(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::GetEvictionPriority on Texture2D, of random arguments.
-fn fuzz_441(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_446(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49133,7 +49410,7 @@ fn fuzz_441(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on Texture2D, of random arguments.
-fn fuzz_442(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_447(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49144,7 +49421,7 @@ fn fuzz_442(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on Texture2D, of random arguments.
-fn fuzz_443(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_448(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49161,7 +49438,7 @@ fn fuzz_443(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on Texture2D, of random arguments.
-fn fuzz_444(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_449(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49171,7 +49448,7 @@ fn fuzz_444(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Texture2D, of random arguments.
-fn fuzz_445(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_450(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49182,7 +49459,7 @@ fn fuzz_445(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Texture2D, of random arguments.
-fn fuzz_446(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_451(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49192,7 +49469,7 @@ fn fuzz_446(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Texture2D, of random arguments.
-fn fuzz_447(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_452(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49202,7 +49479,7 @@ fn fuzz_447(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDeviceSubObject::GetDevice on Texture2D, of random arguments.
-fn fuzz_448(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_453(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49212,7 +49489,7 @@ fn fuzz_448(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetSharedHandle on Texture2D, of random arguments.
-fn fuzz_449(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_454(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49222,7 +49499,7 @@ fn fuzz_449(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetUsage on Texture2D, of random arguments.
-fn fuzz_450(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_455(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49232,7 +49509,7 @@ fn fuzz_450(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::SetEvictionPriority on Texture2D, of random arguments.
-fn fuzz_451(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_456(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49242,7 +49519,7 @@ fn fuzz_451(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetEvictionPriority on Texture2D, of random arguments.
-fn fuzz_452(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_457(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49252,7 +49529,7 @@ fn fuzz_452(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource1::CreateSubresourceSurface on Texture2D, of random arguments.
-fn fuzz_453(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_458(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49262,7 +49539,7 @@ fn fuzz_453(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface::GetDesc on Texture2D, of random arguments.
-fn fuzz_454(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_459(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49272,7 +49549,7 @@ fn fuzz_454(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface::Unmap on Texture2D, of random arguments.
-fn fuzz_455(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_460(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49282,7 +49559,7 @@ fn fuzz_455(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface1::GetDC on Texture2D, of random arguments.
-fn fuzz_456(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_461(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49292,7 +49569,7 @@ fn fuzz_456(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface1::ReleaseDC on Texture2D, of random arguments.
-fn fuzz_457(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_462(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49311,7 +49588,7 @@ fn fuzz_457(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface2::GetResource on Texture2D, of random arguments.
-fn fuzz_458(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_463(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49321,7 +49598,7 @@ fn fuzz_458(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Texture2D, of random arguments.
-fn fuzz_459(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_464(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k36.as_ref() else {
         return false;
     };
@@ -49331,7 +49608,7 @@ fn fuzz_459(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Texture3D1::GetDesc1 on Texture3D, of random arguments.
-fn fuzz_460(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_465(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49341,7 +49618,7 @@ fn fuzz_460(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Texture3D::GetDesc on Texture3D, of random arguments.
-fn fuzz_461(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_466(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49351,7 +49628,7 @@ fn fuzz_461(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::GetType on Texture3D, of random arguments.
-fn fuzz_462(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_467(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49361,7 +49638,7 @@ fn fuzz_462(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::SetEvictionPriority on Texture3D, of random arguments.
-fn fuzz_463(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_468(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49375,7 +49652,7 @@ fn fuzz_463(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11Resource::GetEvictionPriority on Texture3D, of random arguments.
-fn fuzz_464(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_469(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49388,7 +49665,7 @@ fn fuzz_464(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on Texture3D, of random arguments.
-fn fuzz_465(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_470(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49399,7 +49676,7 @@ fn fuzz_465(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on Texture3D, of random arguments.
-fn fuzz_466(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_471(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49416,7 +49693,7 @@ fn fuzz_466(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on Texture3D, of random arguments.
-fn fuzz_467(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_472(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49426,7 +49703,7 @@ fn fuzz_467(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Texture3D, of random arguments.
-fn fuzz_468(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_473(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49437,7 +49714,7 @@ fn fuzz_468(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Texture3D, of random arguments.
-fn fuzz_469(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_474(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49447,7 +49724,7 @@ fn fuzz_469(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Texture3D, of random arguments.
-fn fuzz_470(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_475(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49457,7 +49734,7 @@ fn fuzz_470(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDeviceSubObject::GetDevice on Texture3D, of random arguments.
-fn fuzz_471(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_476(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49467,7 +49744,7 @@ fn fuzz_471(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetSharedHandle on Texture3D, of random arguments.
-fn fuzz_472(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_477(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49477,7 +49754,7 @@ fn fuzz_472(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetUsage on Texture3D, of random arguments.
-fn fuzz_473(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_478(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49487,7 +49764,7 @@ fn fuzz_473(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::SetEvictionPriority on Texture3D, of random arguments.
-fn fuzz_474(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_479(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49497,7 +49774,7 @@ fn fuzz_474(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetEvictionPriority on Texture3D, of random arguments.
-fn fuzz_475(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_480(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49507,7 +49784,7 @@ fn fuzz_475(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource1::CreateSubresourceSurface on Texture3D, of random arguments.
-fn fuzz_476(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_481(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49517,7 +49794,7 @@ fn fuzz_476(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on Texture3D, of random arguments.
-fn fuzz_477(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_482(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k37.as_ref() else {
         return false;
     };
@@ -49527,7 +49804,7 @@ fn fuzz_477(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11TracingDevice::SetShaderTrackingOptionsByType on TracingDevice, of random arguments.
-fn fuzz_478(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_483(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k38.as_ref() else {
         return false;
     };
@@ -49537,7 +49814,7 @@ fn fuzz_478(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11TracingDevice::SetShaderTrackingOptions on TracingDevice, of random arguments.
-fn fuzz_479(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_484(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k38.as_ref() else {
         return false;
     };
@@ -49702,7 +49979,7 @@ fn fuzz_479(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on TracingDevice, of random arguments.
-fn fuzz_480(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_485(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k38.as_ref() else {
         return false;
     };
@@ -49712,7 +49989,7 @@ fn fuzz_480(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11UnorderedAccessView1::GetDesc1 on UnorderedAccessView, of random arguments.
-fn fuzz_481(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_486(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k39.as_ref() else {
         return false;
     };
@@ -49722,7 +49999,7 @@ fn fuzz_481(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11UnorderedAccessView::GetDesc on UnorderedAccessView, of random arguments.
-fn fuzz_482(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_487(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k39.as_ref() else {
         return false;
     };
@@ -49732,7 +50009,7 @@ fn fuzz_482(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on UnorderedAccessView, of random arguments.
-fn fuzz_483(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_488(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k39.as_ref() else {
         return false;
     };
@@ -49742,7 +50019,7 @@ fn fuzz_483(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on UnorderedAccessView, of random arguments.
-fn fuzz_484(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_489(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k39.as_ref() else {
         return false;
     };
@@ -49754,7 +50031,7 @@ fn fuzz_484(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on UnorderedAccessView, of random arguments.
-fn fuzz_485(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_490(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k39.as_ref() else {
         return false;
     };
@@ -49764,7 +50041,7 @@ fn fuzz_485(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on UnorderedAccessView, of random arguments.
-fn fuzz_486(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_491(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k39.as_ref() else {
         return false;
     };
@@ -49774,7 +50051,7 @@ fn fuzz_486(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VertexShader, of random arguments.
-fn fuzz_487(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_492(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k40.as_ref() else {
         return false;
     };
@@ -49785,7 +50062,7 @@ fn fuzz_487(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VertexShader, of random arguments.
-fn fuzz_488(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_493(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k40.as_ref() else {
         return false;
     };
@@ -49802,7 +50079,7 @@ fn fuzz_488(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VertexShader, of random arguments.
-fn fuzz_489(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_494(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k40.as_ref() else {
         return false;
     };
@@ -49812,7 +50089,7 @@ fn fuzz_489(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VertexShader, of random arguments.
-fn fuzz_490(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_495(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k40.as_ref() else {
         return false;
     };
@@ -49822,7 +50099,7 @@ fn fuzz_490(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext3::DecoderBeginFrame1 on VideoContext, of random arguments.
-fn fuzz_491(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_496(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49844,7 +50121,7 @@ fn fuzz_491(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext2::VideoProcessorSetOutputHDRMetaData on VideoContext, of random arguments.
-fn fuzz_492(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_497(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49859,7 +50136,7 @@ fn fuzz_492(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext2::VideoProcessorGetOutputHDRMetaData on VideoContext, of random arguments.
-fn fuzz_493(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_498(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49873,7 +50150,7 @@ fn fuzz_493(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext2::VideoProcessorSetStreamHDRMetaData on VideoContext, of random arguments.
-fn fuzz_494(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_499(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49888,7 +50165,7 @@ fn fuzz_494(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext2::VideoProcessorGetStreamHDRMetaData on VideoContext, of random arguments.
-fn fuzz_495(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_500(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49902,7 +50179,7 @@ fn fuzz_495(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::GetDataForNewHardwareKey on VideoContext, of random arguments.
-fn fuzz_496(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_501(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49916,7 +50193,7 @@ fn fuzz_496(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::CheckCryptoSessionStatus on VideoContext, of random arguments.
-fn fuzz_497(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_502(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49929,7 +50206,7 @@ fn fuzz_497(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::DecoderEnableDownsampling on VideoContext, of random arguments.
-fn fuzz_498(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_503(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49942,7 +50219,7 @@ fn fuzz_498(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::DecoderUpdateDownsampling on VideoContext, of random arguments.
-fn fuzz_499(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_504(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49955,7 +50232,7 @@ fn fuzz_499(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorSetOutputColorSpace1 on VideoContext, of random arguments.
-fn fuzz_500(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_505(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49968,7 +50245,7 @@ fn fuzz_500(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorSetOutputShaderUsage on VideoContext, of random arguments.
-fn fuzz_501(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_506(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49981,7 +50258,7 @@ fn fuzz_501(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorGetOutputColorSpace1 on VideoContext, of random arguments.
-fn fuzz_502(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_507(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -49994,7 +50271,7 @@ fn fuzz_502(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorGetOutputShaderUsage on VideoContext, of random arguments.
-fn fuzz_503(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_508(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50007,7 +50284,7 @@ fn fuzz_503(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorSetStreamColorSpace1 on VideoContext, of random arguments.
-fn fuzz_504(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_509(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50020,7 +50297,7 @@ fn fuzz_504(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorSetStreamMirror on VideoContext, of random arguments.
-fn fuzz_505(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_510(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50033,7 +50310,7 @@ fn fuzz_505(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorGetStreamColorSpace1 on VideoContext, of random arguments.
-fn fuzz_506(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_511(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50046,7 +50323,7 @@ fn fuzz_506(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorGetStreamMirror on VideoContext, of random arguments.
-fn fuzz_507(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_512(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50059,7 +50336,7 @@ fn fuzz_507(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext1::VideoProcessorGetBehaviorHints on VideoContext, of random arguments.
-fn fuzz_508(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_513(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50073,7 +50350,7 @@ fn fuzz_508(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::ReleaseDecoderBuffer on VideoContext, of random arguments.
-fn fuzz_509(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_514(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50086,7 +50363,7 @@ fn fuzz_509(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::DecoderBeginFrame on VideoContext, of random arguments.
-fn fuzz_510(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_515(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50104,7 +50381,7 @@ fn fuzz_510(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::DecoderEndFrame on VideoContext, of random arguments.
-fn fuzz_511(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_516(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50117,7 +50394,7 @@ fn fuzz_511(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetOutputTargetRect on VideoContext, of random arguments.
-fn fuzz_512(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_517(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50139,7 +50416,7 @@ fn fuzz_512(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetOutputBackgroundColor on VideoContext, of random arguments.
-fn fuzz_513(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_518(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50152,7 +50429,7 @@ fn fuzz_513(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetOutputColorSpace on VideoContext, of random arguments.
-fn fuzz_514(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_519(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50165,7 +50442,7 @@ fn fuzz_514(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetOutputAlphaFillMode on VideoContext, of random arguments.
-fn fuzz_515(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_520(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50178,7 +50455,7 @@ fn fuzz_515(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetOutputStereoMode on VideoContext, of random arguments.
-fn fuzz_516(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_521(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50191,7 +50468,7 @@ fn fuzz_516(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetOutputTargetRect on VideoContext, of random arguments.
-fn fuzz_517(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_522(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50204,7 +50481,7 @@ fn fuzz_517(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetOutputBackgroundColor on VideoContext, of random arguments.
-fn fuzz_518(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_523(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50217,7 +50494,7 @@ fn fuzz_518(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetOutputColorSpace on VideoContext, of random arguments.
-fn fuzz_519(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_524(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50230,7 +50507,7 @@ fn fuzz_519(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetOutputAlphaFillMode on VideoContext, of random arguments.
-fn fuzz_520(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_525(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50243,7 +50520,7 @@ fn fuzz_520(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetOutputConstriction on VideoContext, of random arguments.
-fn fuzz_521(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_526(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50256,7 +50533,7 @@ fn fuzz_521(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetOutputStereoMode on VideoContext, of random arguments.
-fn fuzz_522(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_527(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50269,7 +50546,7 @@ fn fuzz_522(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetOutputExtension on VideoContext, of random arguments.
-fn fuzz_523(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_528(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50283,7 +50560,7 @@ fn fuzz_523(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamFrameFormat on VideoContext, of random arguments.
-fn fuzz_524(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_529(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50296,7 +50573,7 @@ fn fuzz_524(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamColorSpace on VideoContext, of random arguments.
-fn fuzz_525(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_530(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50309,7 +50586,7 @@ fn fuzz_525(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamOutputRate on VideoContext, of random arguments.
-fn fuzz_526(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_531(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50327,7 +50604,7 @@ fn fuzz_526(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamSourceRect on VideoContext, of random arguments.
-fn fuzz_527(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_532(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50349,7 +50626,7 @@ fn fuzz_527(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamDestRect on VideoContext, of random arguments.
-fn fuzz_528(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_533(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50371,7 +50648,7 @@ fn fuzz_528(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamAlpha on VideoContext, of random arguments.
-fn fuzz_529(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_534(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50384,7 +50661,7 @@ fn fuzz_529(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamPalette on VideoContext, of random arguments.
-fn fuzz_530(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_535(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50398,7 +50675,7 @@ fn fuzz_530(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamPixelAspectRatio on VideoContext, of random arguments.
-fn fuzz_531(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_536(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50421,7 +50698,7 @@ fn fuzz_531(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamLumaKey on VideoContext, of random arguments.
-fn fuzz_532(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_537(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50434,7 +50711,7 @@ fn fuzz_532(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamStereoFormat on VideoContext, of random arguments.
-fn fuzz_533(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_538(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50447,7 +50724,7 @@ fn fuzz_533(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamAutoProcessingMode on VideoContext, of random arguments.
-fn fuzz_534(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_539(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50460,7 +50737,7 @@ fn fuzz_534(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamFilter on VideoContext, of random arguments.
-fn fuzz_535(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_540(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50473,7 +50750,7 @@ fn fuzz_535(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamFrameFormat on VideoContext, of random arguments.
-fn fuzz_536(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_541(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50486,7 +50763,7 @@ fn fuzz_536(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamColorSpace on VideoContext, of random arguments.
-fn fuzz_537(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_542(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50499,7 +50776,7 @@ fn fuzz_537(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamOutputRate on VideoContext, of random arguments.
-fn fuzz_538(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_543(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50512,7 +50789,7 @@ fn fuzz_538(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamSourceRect on VideoContext, of random arguments.
-fn fuzz_539(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_544(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50525,7 +50802,7 @@ fn fuzz_539(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamDestRect on VideoContext, of random arguments.
-fn fuzz_540(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_545(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50538,7 +50815,7 @@ fn fuzz_540(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamAlpha on VideoContext, of random arguments.
-fn fuzz_541(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_546(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50551,7 +50828,7 @@ fn fuzz_541(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamPalette on VideoContext, of random arguments.
-fn fuzz_542(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_547(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50564,7 +50841,7 @@ fn fuzz_542(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamPixelAspectRatio on VideoContext, of random arguments.
-fn fuzz_543(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_548(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50577,7 +50854,7 @@ fn fuzz_543(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamLumaKey on VideoContext, of random arguments.
-fn fuzz_544(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_549(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50590,7 +50867,7 @@ fn fuzz_544(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamStereoFormat on VideoContext, of random arguments.
-fn fuzz_545(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_550(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50603,7 +50880,7 @@ fn fuzz_545(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamAutoProcessingMode on VideoContext, of random arguments.
-fn fuzz_546(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_551(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50616,7 +50893,7 @@ fn fuzz_546(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamFilter on VideoContext, of random arguments.
-fn fuzz_547(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_552(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50629,7 +50906,7 @@ fn fuzz_547(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamExtension on VideoContext, of random arguments.
-fn fuzz_548(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_553(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50643,7 +50920,7 @@ fn fuzz_548(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::NegotiateCryptoSessionKeyExchange on VideoContext, of random arguments.
-fn fuzz_549(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_554(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50657,7 +50934,7 @@ fn fuzz_549(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::EncryptionBlt on VideoContext, of random arguments.
-fn fuzz_550(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_555(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50684,7 +50961,7 @@ fn fuzz_550(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::DecryptionBlt on VideoContext, of random arguments.
-fn fuzz_551(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_556(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50720,7 +50997,7 @@ fn fuzz_551(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::StartSessionKeyRefresh on VideoContext, of random arguments.
-fn fuzz_552(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_557(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50734,7 +51011,7 @@ fn fuzz_552(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::FinishSessionKeyRefresh on VideoContext, of random arguments.
-fn fuzz_553(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_558(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50747,7 +51024,7 @@ fn fuzz_553(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::GetEncryptionBltKey on VideoContext, of random arguments.
-fn fuzz_554(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_559(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50761,7 +51038,7 @@ fn fuzz_554(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::NegotiateAuthenticatedChannelKeyExchange on VideoContext, of random arguments.
-fn fuzz_555(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_560(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50775,7 +51052,7 @@ fn fuzz_555(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::QueryAuthenticatedChannel on VideoContext, of random arguments.
-fn fuzz_556(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_561(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50790,7 +51067,7 @@ fn fuzz_556(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::ConfigureAuthenticatedChannel on VideoContext, of random arguments.
-fn fuzz_557(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_562(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50804,7 +51081,7 @@ fn fuzz_557(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorSetStreamRotation on VideoContext, of random arguments.
-fn fuzz_558(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_563(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50817,7 +51094,7 @@ fn fuzz_558(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoContext::VideoProcessorGetStreamRotation on VideoContext, of random arguments.
-fn fuzz_559(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_564(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50830,7 +51107,7 @@ fn fuzz_559(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VideoContext, of random arguments.
-fn fuzz_560(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_565(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50841,7 +51118,7 @@ fn fuzz_560(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VideoContext, of random arguments.
-fn fuzz_561(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_566(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50858,7 +51135,7 @@ fn fuzz_561(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VideoContext, of random arguments.
-fn fuzz_562(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_567(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50868,7 +51145,7 @@ fn fuzz_562(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoContext, of random arguments.
-fn fuzz_563(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_568(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k41.as_ref() else {
         return false;
     };
@@ -50878,7 +51155,7 @@ fn fuzz_563(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDecoder::GetCreationParameters on VideoDecoder, of random arguments.
-fn fuzz_564(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_569(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k42.as_ref() else {
         return false;
     };
@@ -50888,7 +51165,7 @@ fn fuzz_564(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDecoder::GetDriverHandle on VideoDecoder, of random arguments.
-fn fuzz_565(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_570(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k42.as_ref() else {
         return false;
     };
@@ -50898,7 +51175,7 @@ fn fuzz_565(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VideoDecoder, of random arguments.
-fn fuzz_566(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_571(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k42.as_ref() else {
         return false;
     };
@@ -50909,7 +51186,7 @@ fn fuzz_566(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VideoDecoder, of random arguments.
-fn fuzz_567(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_572(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k42.as_ref() else {
         return false;
     };
@@ -50926,7 +51203,7 @@ fn fuzz_567(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VideoDecoder, of random arguments.
-fn fuzz_568(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_573(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k42.as_ref() else {
         return false;
     };
@@ -50936,7 +51213,7 @@ fn fuzz_568(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDecoder, of random arguments.
-fn fuzz_569(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_574(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k42.as_ref() else {
         return false;
     };
@@ -50946,7 +51223,7 @@ fn fuzz_569(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDecoderOutputView::GetDesc on VideoDecoderOutputView, of random arguments.
-fn fuzz_570(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_575(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k43.as_ref() else {
         return false;
     };
@@ -50956,7 +51233,7 @@ fn fuzz_570(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VideoDecoderOutputView, of random arguments.
-fn fuzz_571(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_576(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k43.as_ref() else {
         return false;
     };
@@ -50966,7 +51243,7 @@ fn fuzz_571(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VideoDecoderOutputView, of random arguments.
-fn fuzz_572(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_577(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k43.as_ref() else {
         return false;
     };
@@ -50978,7 +51255,7 @@ fn fuzz_572(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VideoDecoderOutputView, of random arguments.
-fn fuzz_573(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_578(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k43.as_ref() else {
         return false;
     };
@@ -50988,7 +51265,7 @@ fn fuzz_573(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDecoderOutputView, of random arguments.
-fn fuzz_574(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_579(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k43.as_ref() else {
         return false;
     };
@@ -50998,7 +51275,7 @@ fn fuzz_574(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice2::CheckFeatureSupport on VideoDevice, of random arguments.
-fn fuzz_575(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_580(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51009,7 +51286,7 @@ fn fuzz_575(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice2::NegotiateCryptoSessionKeyExchangeMT on VideoDevice, of random arguments.
-fn fuzz_576(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_581(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51023,7 +51300,7 @@ fn fuzz_576(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice1::GetCryptoSessionPrivateDataSize on VideoDevice, of random arguments.
-fn fuzz_577(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_582(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51038,7 +51315,7 @@ fn fuzz_577(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice1::GetVideoDecoderCaps on VideoDevice, of random arguments.
-fn fuzz_578(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_583(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51053,7 +51330,7 @@ fn fuzz_578(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice1::CheckVideoDecoderDownsampling on VideoDevice, of random arguments.
-fn fuzz_579(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_584(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51063,7 +51340,7 @@ fn fuzz_579(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice1::RecommendVideoDecoderDownsampleParameters on VideoDevice, of random arguments.
-fn fuzz_580(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_585(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51073,7 +51350,7 @@ fn fuzz_580(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateVideoDecoder on VideoDevice, of random arguments.
-fn fuzz_581(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_586(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51083,7 +51360,7 @@ fn fuzz_581(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateVideoProcessor on VideoDevice, of random arguments.
-fn fuzz_582(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_587(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51096,7 +51373,7 @@ fn fuzz_582(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateAuthenticatedChannel on VideoDevice, of random arguments.
-fn fuzz_583(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_588(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51106,7 +51383,7 @@ fn fuzz_583(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateCryptoSession on VideoDevice, of random arguments.
-fn fuzz_584(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_589(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51121,7 +51398,7 @@ fn fuzz_584(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateVideoDecoderOutputView on VideoDevice, of random arguments.
-fn fuzz_585(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_590(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51151,7 +51428,7 @@ fn fuzz_585(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateVideoProcessorInputView on VideoDevice, of random arguments.
-fn fuzz_586(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_591(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51184,7 +51461,7 @@ fn fuzz_586(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateVideoProcessorOutputView on VideoDevice, of random arguments.
-fn fuzz_587(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_592(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51217,7 +51494,7 @@ fn fuzz_587(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CreateVideoProcessorEnumerator on VideoDevice, of random arguments.
-fn fuzz_588(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_593(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51227,7 +51504,7 @@ fn fuzz_588(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::GetVideoDecoderProfileCount on VideoDevice, of random arguments.
-fn fuzz_589(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_594(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51237,7 +51514,7 @@ fn fuzz_589(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::GetVideoDecoderProfile on VideoDevice, of random arguments.
-fn fuzz_590(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_595(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51247,7 +51524,7 @@ fn fuzz_590(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CheckVideoDecoderFormat on VideoDevice, of random arguments.
-fn fuzz_591(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_596(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51257,7 +51534,7 @@ fn fuzz_591(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::GetVideoDecoderConfigCount on VideoDevice, of random arguments.
-fn fuzz_592(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_597(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51267,7 +51544,7 @@ fn fuzz_592(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::GetVideoDecoderConfig on VideoDevice, of random arguments.
-fn fuzz_593(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_598(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51277,7 +51554,7 @@ fn fuzz_593(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::GetContentProtectionCaps on VideoDevice, of random arguments.
-fn fuzz_594(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_599(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51297,7 +51574,7 @@ fn fuzz_594(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::CheckCryptoKeyExchange on VideoDevice, of random arguments.
-fn fuzz_595(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_600(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51312,7 +51589,7 @@ fn fuzz_595(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::SetPrivateData on VideoDevice, of random arguments.
-fn fuzz_596(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_601(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51329,7 +51606,7 @@ fn fuzz_596(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoDevice::SetPrivateDataInterface on VideoDevice, of random arguments.
-fn fuzz_597(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_602(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51339,7 +51616,7 @@ fn fuzz_597(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoDevice, of random arguments.
-fn fuzz_598(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_603(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k44.as_ref() else {
         return false;
     };
@@ -51349,7 +51626,7 @@ fn fuzz_598(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessor::GetContentDesc on VideoProcessor, of random arguments.
-fn fuzz_599(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_604(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k45.as_ref() else {
         return false;
     };
@@ -51359,7 +51636,7 @@ fn fuzz_599(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessor::GetRateConversionCaps on VideoProcessor, of random arguments.
-fn fuzz_600(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_605(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k45.as_ref() else {
         return false;
     };
@@ -51369,7 +51646,7 @@ fn fuzz_600(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VideoProcessor, of random arguments.
-fn fuzz_601(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_606(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k45.as_ref() else {
         return false;
     };
@@ -51381,7 +51658,7 @@ fn fuzz_601(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VideoProcessor, of random arguments.
-fn fuzz_602(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_607(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k45.as_ref() else {
         return false;
     };
@@ -51393,7 +51670,7 @@ fn fuzz_602(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessor, of random arguments.
-fn fuzz_603(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_608(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k45.as_ref() else {
         return false;
     };
@@ -51403,7 +51680,7 @@ fn fuzz_603(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessor, of random arguments.
-fn fuzz_604(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_609(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k45.as_ref() else {
         return false;
     };
@@ -51413,7 +51690,7 @@ fn fuzz_604(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorEnumerator1::CheckVideoProcessorFormatConversion on VideoProcessorEnumerator, of random arguments.
-fn fuzz_605(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_610(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51423,7 +51700,7 @@ fn fuzz_605(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorEnumerator::GetVideoProcessorContentDesc on VideoProcessorEnumerator, of random arguments.
-fn fuzz_606(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_611(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51433,7 +51710,7 @@ fn fuzz_606(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorEnumerator::CheckVideoProcessorFormat on VideoProcessorEnumerator, of random arguments.
-fn fuzz_607(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_612(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51443,7 +51720,7 @@ fn fuzz_607(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorEnumerator::GetVideoProcessorCaps on VideoProcessorEnumerator, of random arguments.
-fn fuzz_608(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_613(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51453,7 +51730,7 @@ fn fuzz_608(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorEnumerator::GetVideoProcessorRateConversionCaps on VideoProcessorEnumerator, of random arguments.
-fn fuzz_609(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_614(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51463,7 +51740,7 @@ fn fuzz_609(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorEnumerator::GetVideoProcessorCustomRate on VideoProcessorEnumerator, of random arguments.
-fn fuzz_610(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_615(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51473,7 +51750,7 @@ fn fuzz_610(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorEnumerator::GetVideoProcessorFilterRange on VideoProcessorEnumerator, of random arguments.
-fn fuzz_611(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_616(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51483,7 +51760,7 @@ fn fuzz_611(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VideoProcessorEnumerator, of random arguments.
-fn fuzz_612(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_617(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51493,7 +51770,7 @@ fn fuzz_612(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VideoProcessorEnumerator, of random arguments.
-fn fuzz_613(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_618(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51505,7 +51782,7 @@ fn fuzz_613(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorEnumerator, of random arguments.
-fn fuzz_614(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_619(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51515,7 +51792,7 @@ fn fuzz_614(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorEnumerator, of random arguments.
-fn fuzz_615(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_620(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k46.as_ref() else {
         return false;
     };
@@ -51525,7 +51802,7 @@ fn fuzz_615(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorInputView::GetDesc on VideoProcessorInputView, of random arguments.
-fn fuzz_616(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_621(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k47.as_ref() else {
         return false;
     };
@@ -51535,7 +51812,7 @@ fn fuzz_616(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VideoProcessorInputView, of random arguments.
-fn fuzz_617(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_622(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k47.as_ref() else {
         return false;
     };
@@ -51545,7 +51822,7 @@ fn fuzz_617(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VideoProcessorInputView, of random arguments.
-fn fuzz_618(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_623(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k47.as_ref() else {
         return false;
     };
@@ -51557,7 +51834,7 @@ fn fuzz_618(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorInputView, of random arguments.
-fn fuzz_619(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_624(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k47.as_ref() else {
         return false;
     };
@@ -51567,7 +51844,7 @@ fn fuzz_619(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorInputView, of random arguments.
-fn fuzz_620(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_625(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k47.as_ref() else {
         return false;
     };
@@ -51577,7 +51854,7 @@ fn fuzz_620(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11VideoProcessorOutputView::GetDesc on VideoProcessorOutputView, of random arguments.
-fn fuzz_621(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_626(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k48.as_ref() else {
         return false;
     };
@@ -51587,7 +51864,7 @@ fn fuzz_621(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on VideoProcessorOutputView, of random arguments.
-fn fuzz_622(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_627(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k48.as_ref() else {
         return false;
     };
@@ -51597,7 +51874,7 @@ fn fuzz_622(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on VideoProcessorOutputView, of random arguments.
-fn fuzz_623(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_628(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k48.as_ref() else {
         return false;
     };
@@ -51609,7 +51886,7 @@ fn fuzz_623(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on VideoProcessorOutputView, of random arguments.
-fn fuzz_624(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_629(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k48.as_ref() else {
         return false;
     };
@@ -51619,7 +51896,7 @@ fn fuzz_624(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on VideoProcessorOutputView, of random arguments.
-fn fuzz_625(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_630(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k48.as_ref() else {
         return false;
     };
@@ -51629,7 +51906,7 @@ fn fuzz_625(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::GetDevice on DeviceContextState, of random arguments.
-fn fuzz_626(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_631(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k49.as_ref() else {
         return false;
     };
@@ -51642,7 +51919,7 @@ fn fuzz_626(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateData on DeviceContextState, of random arguments.
-fn fuzz_627(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_632(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k49.as_ref() else {
         return false;
     };
@@ -51654,7 +51931,7 @@ fn fuzz_627(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3D11DeviceChild::SetPrivateDataInterface on DeviceContextState, of random arguments.
-fn fuzz_628(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_633(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k49.as_ref() else {
         return false;
     };
@@ -51664,7 +51941,7 @@ fn fuzz_628(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on DeviceContextState, of random arguments.
-fn fuzz_629(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_634(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k49.as_ref() else {
         return false;
     };
@@ -51674,7 +51951,7 @@ fn fuzz_629(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::BeginEvent on UserDefinedAnnotation, of random arguments.
-fn fuzz_630(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_635(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k50.as_ref() else {
         return false;
     };
@@ -51685,7 +51962,7 @@ fn fuzz_630(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::EndEvent on UserDefinedAnnotation, of random arguments.
-fn fuzz_631(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_636(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k50.as_ref() else {
         return false;
     };
@@ -51695,7 +51972,7 @@ fn fuzz_631(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::SetMarker on UserDefinedAnnotation, of random arguments.
-fn fuzz_632(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_637(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k50.as_ref() else {
         return false;
     };
@@ -51706,7 +51983,7 @@ fn fuzz_632(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DUserDefinedAnnotation::GetStatus on UserDefinedAnnotation, of random arguments.
-fn fuzz_633(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_638(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k50.as_ref() else {
         return false;
     };
@@ -51716,7 +51993,7 @@ fn fuzz_633(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// ID3DDestructionNotifier::UnregisterDestructionCallback on UserDefinedAnnotation, of random arguments.
-fn fuzz_634(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_639(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k50.as_ref() else {
         return false;
     };
@@ -51726,7 +52003,7 @@ fn fuzz_634(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter4::GetDesc3 on Adapter, of random arguments.
-fn fuzz_635(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_640(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51736,7 +52013,7 @@ fn fuzz_635(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter3::RegisterHardwareContentProtectionTeardownStatusEvent on Adapter, of random arguments.
-fn fuzz_636(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_641(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51746,7 +52023,7 @@ fn fuzz_636(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter3::UnregisterHardwareContentProtectionTeardownStatus on Adapter, of random arguments.
-fn fuzz_637(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_642(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51756,7 +52033,7 @@ fn fuzz_637(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter3::QueryVideoMemoryInfo on Adapter, of random arguments.
-fn fuzz_638(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_643(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51766,7 +52043,7 @@ fn fuzz_638(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter3::SetVideoMemoryReservation on Adapter, of random arguments.
-fn fuzz_639(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_644(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51776,7 +52053,7 @@ fn fuzz_639(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter3::RegisterVideoMemoryBudgetChangeNotificationEvent on Adapter, of random arguments.
-fn fuzz_640(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_645(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51786,7 +52063,7 @@ fn fuzz_640(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter3::UnregisterVideoMemoryBudgetChangeNotification on Adapter, of random arguments.
-fn fuzz_641(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_646(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51796,7 +52073,7 @@ fn fuzz_641(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter2::GetDesc2 on Adapter, of random arguments.
-fn fuzz_642(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_647(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51806,7 +52083,7 @@ fn fuzz_642(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter1::GetDesc1 on Adapter, of random arguments.
-fn fuzz_643(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_648(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51816,7 +52093,7 @@ fn fuzz_643(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter::EnumOutputs on Adapter, of random arguments.
-fn fuzz_644(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_649(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51826,7 +52103,7 @@ fn fuzz_644(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter::GetDesc on Adapter, of random arguments.
-fn fuzz_645(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_650(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51836,7 +52113,7 @@ fn fuzz_645(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIAdapter::CheckInterfaceSupport on Adapter, of random arguments.
-fn fuzz_646(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_651(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51846,7 +52123,7 @@ fn fuzz_646(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Adapter, of random arguments.
-fn fuzz_647(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_652(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51857,7 +52134,7 @@ fn fuzz_647(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Adapter, of random arguments.
-fn fuzz_648(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_653(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51867,7 +52144,7 @@ fn fuzz_648(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Adapter, of random arguments.
-fn fuzz_649(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_654(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k51.as_ref() else {
         return false;
     };
@@ -51877,7 +52154,7 @@ fn fuzz_649(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDebug1::EnableLeakTrackingForThread on Debug, of random arguments.
-fn fuzz_650(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_655(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k52.as_ref() else {
         return false;
     };
@@ -51887,7 +52164,7 @@ fn fuzz_650(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDebug1::DisableLeakTrackingForThread on Debug, of random arguments.
-fn fuzz_651(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_656(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k52.as_ref() else {
         return false;
     };
@@ -51897,7 +52174,7 @@ fn fuzz_651(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDebug1::IsLeakTrackingEnabledForThread on Debug, of random arguments.
-fn fuzz_652(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_657(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k52.as_ref() else {
         return false;
     };
@@ -51907,7 +52184,7 @@ fn fuzz_652(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDebug::ReportLiveObjects on Debug, of random arguments.
-fn fuzz_653(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_658(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k52.as_ref() else {
         return false;
     };
@@ -51917,7 +52194,7 @@ fn fuzz_653(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::PresentBuffer on DecodeSwapChain, of random arguments.
-fn fuzz_654(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_659(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51927,7 +52204,7 @@ fn fuzz_654(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::SetSourceRect on DecodeSwapChain, of random arguments.
-fn fuzz_655(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_660(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51937,7 +52214,7 @@ fn fuzz_655(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::SetTargetRect on DecodeSwapChain, of random arguments.
-fn fuzz_656(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_661(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51947,7 +52224,7 @@ fn fuzz_656(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::SetDestSize on DecodeSwapChain, of random arguments.
-fn fuzz_657(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_662(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51957,7 +52234,7 @@ fn fuzz_657(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::GetSourceRect on DecodeSwapChain, of random arguments.
-fn fuzz_658(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_663(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51967,7 +52244,7 @@ fn fuzz_658(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::GetTargetRect on DecodeSwapChain, of random arguments.
-fn fuzz_659(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_664(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51977,7 +52254,7 @@ fn fuzz_659(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::GetDestSize on DecodeSwapChain, of random arguments.
-fn fuzz_660(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_665(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51987,7 +52264,7 @@ fn fuzz_660(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::SetColorSpace on DecodeSwapChain, of random arguments.
-fn fuzz_661(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_666(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -51997,7 +52274,7 @@ fn fuzz_661(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDecodeSwapChain::GetColorSpace on DecodeSwapChain, of random arguments.
-fn fuzz_662(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_667(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k53.as_ref() else {
         return false;
     };
@@ -52007,7 +52284,7 @@ fn fuzz_662(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice4::OfferResources1 on Device, of random arguments.
-fn fuzz_663(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_668(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52020,7 +52297,7 @@ fn fuzz_663(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice4::ReclaimResources1 on Device, of random arguments.
-fn fuzz_664(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_669(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52033,7 +52310,7 @@ fn fuzz_664(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice3::Trim on Device, of random arguments.
-fn fuzz_665(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_670(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52043,7 +52320,7 @@ fn fuzz_665(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice2::OfferResources on Device, of random arguments.
-fn fuzz_666(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_671(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52056,7 +52333,7 @@ fn fuzz_666(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice2::ReclaimResources on Device, of random arguments.
-fn fuzz_667(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_672(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52069,7 +52346,7 @@ fn fuzz_667(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice2::EnqueueSetEvent on Device, of random arguments.
-fn fuzz_668(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_673(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52079,7 +52356,7 @@ fn fuzz_668(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice1::SetMaximumFrameLatency on Device, of random arguments.
-fn fuzz_669(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_674(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52089,7 +52366,7 @@ fn fuzz_669(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice1::GetMaximumFrameLatency on Device, of random arguments.
-fn fuzz_670(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_675(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52099,7 +52376,7 @@ fn fuzz_670(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::GetAdapter on Device, of random arguments.
-fn fuzz_671(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_676(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52109,7 +52386,7 @@ fn fuzz_671(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::CreateSurface on Device, of random arguments.
-fn fuzz_672(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_677(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52124,7 +52401,7 @@ fn fuzz_672(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::SetGPUThreadPriority on Device, of random arguments.
-fn fuzz_673(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_678(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52134,7 +52411,7 @@ fn fuzz_673(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDevice::GetGPUThreadPriority on Device, of random arguments.
-fn fuzz_674(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_679(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52144,7 +52421,7 @@ fn fuzz_674(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Device, of random arguments.
-fn fuzz_675(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_680(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52155,7 +52432,7 @@ fn fuzz_675(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Device, of random arguments.
-fn fuzz_676(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_681(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52165,7 +52442,7 @@ fn fuzz_676(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Device, of random arguments.
-fn fuzz_677(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_682(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k54.as_ref() else {
         return false;
     };
@@ -52175,7 +52452,7 @@ fn fuzz_677(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDisplayControl::IsStereoEnabled on DisplayControl, of random arguments.
-fn fuzz_678(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_683(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k55.as_ref() else {
         return false;
     };
@@ -52185,7 +52462,7 @@ fn fuzz_678(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDisplayControl::SetStereoEnabled on DisplayControl, of random arguments.
-fn fuzz_679(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_684(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k55.as_ref() else {
         return false;
     };
@@ -52195,7 +52472,7 @@ fn fuzz_679(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory7::RegisterAdaptersChangedEvent on Factory, of random arguments.
-fn fuzz_680(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_685(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52205,7 +52482,7 @@ fn fuzz_680(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory7::UnregisterAdaptersChangedEvent on Factory, of random arguments.
-fn fuzz_681(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_686(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52215,7 +52492,7 @@ fn fuzz_681(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory6::EnumAdapterByGpuPreference on Factory, of random arguments.
-fn fuzz_682(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_687(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52225,7 +52502,7 @@ fn fuzz_682(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory5::CheckFeatureSupport on Factory, of random arguments.
-fn fuzz_683(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_688(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52236,7 +52513,7 @@ fn fuzz_683(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory4::EnumWarpAdapter on Factory, of random arguments.
-fn fuzz_684(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_689(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52246,7 +52523,7 @@ fn fuzz_684(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory3::GetCreationFlags on Factory, of random arguments.
-fn fuzz_685(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_690(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52256,7 +52533,7 @@ fn fuzz_685(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::IsWindowedStereoEnabled on Factory, of random arguments.
-fn fuzz_686(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_691(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52266,7 +52543,7 @@ fn fuzz_686(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::CreateSwapChainForHwnd on Factory, of random arguments.
-fn fuzz_687(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_692(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52341,7 +52618,7 @@ fn fuzz_687(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::CreateSwapChainForCoreWindow on Factory, of random arguments.
-fn fuzz_688(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_693(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52471,7 +52748,7 @@ fn fuzz_688(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::GetSharedResourceAdapterLuid on Factory, of random arguments.
-fn fuzz_689(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_694(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52481,7 +52758,7 @@ fn fuzz_689(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::RegisterStereoStatusWindow on Factory, of random arguments.
-fn fuzz_690(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_695(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52491,7 +52768,7 @@ fn fuzz_690(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::RegisterStereoStatusEvent on Factory, of random arguments.
-fn fuzz_691(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_696(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52501,7 +52778,7 @@ fn fuzz_691(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::UnregisterStereoStatus on Factory, of random arguments.
-fn fuzz_692(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_697(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52511,7 +52788,7 @@ fn fuzz_692(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::RegisterOcclusionStatusWindow on Factory, of random arguments.
-fn fuzz_693(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_698(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52521,7 +52798,7 @@ fn fuzz_693(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::RegisterOcclusionStatusEvent on Factory, of random arguments.
-fn fuzz_694(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_699(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52531,7 +52808,7 @@ fn fuzz_694(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::UnregisterOcclusionStatus on Factory, of random arguments.
-fn fuzz_695(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_700(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52541,7 +52818,7 @@ fn fuzz_695(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory2::CreateSwapChainForComposition on Factory, of random arguments.
-fn fuzz_696(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_701(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52611,7 +52888,7 @@ fn fuzz_696(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory1::EnumAdapters1 on Factory, of random arguments.
-fn fuzz_697(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_702(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52621,7 +52898,7 @@ fn fuzz_697(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory1::IsCurrent on Factory, of random arguments.
-fn fuzz_698(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_703(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52631,7 +52908,7 @@ fn fuzz_698(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory::EnumAdapters on Factory, of random arguments.
-fn fuzz_699(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_704(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52641,7 +52918,7 @@ fn fuzz_699(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory::MakeWindowAssociation on Factory, of random arguments.
-fn fuzz_700(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_705(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52651,7 +52928,7 @@ fn fuzz_700(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory::GetWindowAssociation on Factory, of random arguments.
-fn fuzz_701(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_706(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52661,7 +52938,7 @@ fn fuzz_701(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactory::CreateSwapChain on Factory, of random arguments.
-fn fuzz_702(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_707(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52731,7 +53008,7 @@ fn fuzz_702(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Factory, of random arguments.
-fn fuzz_703(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_708(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52742,7 +53019,7 @@ fn fuzz_703(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Factory, of random arguments.
-fn fuzz_704(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_709(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52752,7 +53029,7 @@ fn fuzz_704(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Factory, of random arguments.
-fn fuzz_705(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_710(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k56.as_ref() else {
         return false;
     };
@@ -52762,7 +53039,7 @@ fn fuzz_705(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle on FactoryMedia, of random arguments.
-fn fuzz_706(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_711(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k57.as_ref() else {
         return false;
     };
@@ -52832,7 +53109,7 @@ fn fuzz_706(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle on FactoryMedia, of random arguments.
-fn fuzz_707(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_712(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k57.as_ref() else {
         return false;
     };
@@ -52905,7 +53182,7 @@ fn fuzz_707(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::SetMessageCountLimit on InfoQueue, of random arguments.
-fn fuzz_708(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_713(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52915,7 +53192,7 @@ fn fuzz_708(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::ClearStoredMessages on InfoQueue, of random arguments.
-fn fuzz_709(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_714(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52925,7 +53202,7 @@ fn fuzz_709(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetNumStoredMessagesAllowedByRetrievalFilters on InfoQueue, of random arguments.
-fn fuzz_710(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_715(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52935,7 +53212,7 @@ fn fuzz_710(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetNumStoredMessages on InfoQueue, of random arguments.
-fn fuzz_711(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_716(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52945,7 +53222,7 @@ fn fuzz_711(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetNumMessagesDiscardedByMessageCountLimit on InfoQueue, of random arguments.
-fn fuzz_712(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_717(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52955,7 +53232,7 @@ fn fuzz_712(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetMessageCountLimit on InfoQueue, of random arguments.
-fn fuzz_713(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_718(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52965,7 +53242,7 @@ fn fuzz_713(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetNumMessagesAllowedByStorageFilter on InfoQueue, of random arguments.
-fn fuzz_714(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_719(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52975,7 +53252,7 @@ fn fuzz_714(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetNumMessagesDeniedByStorageFilter on InfoQueue, of random arguments.
-fn fuzz_715(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_720(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52985,7 +53262,7 @@ fn fuzz_715(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::ClearStorageFilter on InfoQueue, of random arguments.
-fn fuzz_716(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_721(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -52995,7 +53272,7 @@ fn fuzz_716(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PushEmptyStorageFilter on InfoQueue, of random arguments.
-fn fuzz_717(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_722(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53005,7 +53282,7 @@ fn fuzz_717(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PushDenyAllStorageFilter on InfoQueue, of random arguments.
-fn fuzz_718(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_723(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53015,7 +53292,7 @@ fn fuzz_718(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PushCopyOfStorageFilter on InfoQueue, of random arguments.
-fn fuzz_719(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_724(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53025,7 +53302,7 @@ fn fuzz_719(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PopStorageFilter on InfoQueue, of random arguments.
-fn fuzz_720(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_725(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53035,7 +53312,7 @@ fn fuzz_720(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetStorageFilterStackSize on InfoQueue, of random arguments.
-fn fuzz_721(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_726(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53045,7 +53322,7 @@ fn fuzz_721(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::ClearRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_722(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_727(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53055,7 +53332,7 @@ fn fuzz_722(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PushEmptyRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_723(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_728(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53065,7 +53342,7 @@ fn fuzz_723(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PushDenyAllRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_724(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_729(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53075,7 +53352,7 @@ fn fuzz_724(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PushCopyOfRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_725(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_730(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53085,7 +53362,7 @@ fn fuzz_725(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::PopRetrievalFilter on InfoQueue, of random arguments.
-fn fuzz_726(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_731(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53095,7 +53372,7 @@ fn fuzz_726(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetRetrievalFilterStackSize on InfoQueue, of random arguments.
-fn fuzz_727(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_732(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53105,7 +53382,7 @@ fn fuzz_727(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::AddMessage on InfoQueue, of random arguments.
-fn fuzz_728(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_733(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53115,7 +53392,7 @@ fn fuzz_728(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::AddApplicationMessage on InfoQueue, of random arguments.
-fn fuzz_729(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_734(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53125,7 +53402,7 @@ fn fuzz_729(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::SetBreakOnCategory on InfoQueue, of random arguments.
-fn fuzz_730(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_735(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53135,7 +53412,7 @@ fn fuzz_730(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::SetBreakOnSeverity on InfoQueue, of random arguments.
-fn fuzz_731(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_736(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53145,7 +53422,7 @@ fn fuzz_731(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::SetBreakOnID on InfoQueue, of random arguments.
-fn fuzz_732(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_737(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53155,7 +53432,7 @@ fn fuzz_732(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetBreakOnCategory on InfoQueue, of random arguments.
-fn fuzz_733(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_738(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53165,7 +53442,7 @@ fn fuzz_733(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetBreakOnSeverity on InfoQueue, of random arguments.
-fn fuzz_734(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_739(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53175,7 +53452,7 @@ fn fuzz_734(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetBreakOnID on InfoQueue, of random arguments.
-fn fuzz_735(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_740(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53185,7 +53462,7 @@ fn fuzz_735(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::SetMuteDebugOutput on InfoQueue, of random arguments.
-fn fuzz_736(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_741(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53195,7 +53472,7 @@ fn fuzz_736(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIInfoQueue::GetMuteDebugOutput on InfoQueue, of random arguments.
-fn fuzz_737(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_742(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k58.as_ref() else {
         return false;
     };
@@ -53205,7 +53482,7 @@ fn fuzz_737(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIKeyedMutex::AcquireSync on KeyedMutex, of random arguments.
-fn fuzz_738(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_743(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k59.as_ref() else {
         return false;
     };
@@ -53215,7 +53492,7 @@ fn fuzz_738(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIKeyedMutex::ReleaseSync on KeyedMutex, of random arguments.
-fn fuzz_739(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_744(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k59.as_ref() else {
         return false;
     };
@@ -53225,7 +53502,7 @@ fn fuzz_739(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDeviceSubObject::GetDevice on KeyedMutex, of random arguments.
-fn fuzz_740(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_745(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k59.as_ref() else {
         return false;
     };
@@ -53235,7 +53512,7 @@ fn fuzz_740(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on KeyedMutex, of random arguments.
-fn fuzz_741(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_746(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k59.as_ref() else {
         return false;
     };
@@ -53246,7 +53523,7 @@ fn fuzz_741(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on KeyedMutex, of random arguments.
-fn fuzz_742(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_747(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k59.as_ref() else {
         return false;
     };
@@ -53256,7 +53533,7 @@ fn fuzz_742(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on KeyedMutex, of random arguments.
-fn fuzz_743(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_748(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k59.as_ref() else {
         return false;
     };
@@ -53266,7 +53543,7 @@ fn fuzz_743(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput6::GetDesc1 on Output, of random arguments.
-fn fuzz_744(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_749(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53276,7 +53553,7 @@ fn fuzz_744(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput6::CheckHardwareCompositionSupport on Output, of random arguments.
-fn fuzz_745(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_750(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53286,7 +53563,7 @@ fn fuzz_745(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput5::DuplicateOutput1 on Output, of random arguments.
-fn fuzz_746(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_751(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53359,7 +53636,7 @@ fn fuzz_746(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput4::CheckOverlayColorSpaceSupport on Output, of random arguments.
-fn fuzz_747(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_752(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53429,7 +53706,7 @@ fn fuzz_747(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput3::CheckOverlaySupport on Output, of random arguments.
-fn fuzz_748(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_753(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53499,7 +53776,7 @@ fn fuzz_748(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput2::SupportsOverlays on Output, of random arguments.
-fn fuzz_749(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_754(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53509,7 +53786,7 @@ fn fuzz_749(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput1::GetDisplayModeList1 on Output, of random arguments.
-fn fuzz_750(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_755(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53519,7 +53796,7 @@ fn fuzz_750(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput1::FindClosestMatchingMode1 on Output, of random arguments.
-fn fuzz_751(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_756(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53529,7 +53806,7 @@ fn fuzz_751(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput1::GetDisplaySurfaceData1 on Output, of random arguments.
-fn fuzz_752(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_757(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53542,7 +53819,7 @@ fn fuzz_752(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput1::DuplicateOutput on Output, of random arguments.
-fn fuzz_753(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_758(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53612,7 +53889,7 @@ fn fuzz_753(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::GetDesc on Output, of random arguments.
-fn fuzz_754(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_759(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53622,7 +53899,7 @@ fn fuzz_754(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::GetDisplayModeList on Output, of random arguments.
-fn fuzz_755(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_760(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53632,7 +53909,7 @@ fn fuzz_755(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::FindClosestMatchingMode on Output, of random arguments.
-fn fuzz_756(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_761(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53642,7 +53919,7 @@ fn fuzz_756(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::WaitForVBlank on Output, of random arguments.
-fn fuzz_757(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_762(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53652,7 +53929,7 @@ fn fuzz_757(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::TakeOwnership on Output, of random arguments.
-fn fuzz_758(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_763(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53722,7 +53999,7 @@ fn fuzz_758(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::ReleaseOwnership on Output, of random arguments.
-fn fuzz_759(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_764(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53732,7 +54009,7 @@ fn fuzz_759(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::GetGammaControlCapabilities on Output, of random arguments.
-fn fuzz_760(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_765(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53742,7 +54019,7 @@ fn fuzz_760(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::SetGammaControl on Output, of random arguments.
-fn fuzz_761(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_766(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53752,7 +54029,7 @@ fn fuzz_761(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::GetGammaControl on Output, of random arguments.
-fn fuzz_762(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_767(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53762,7 +54039,7 @@ fn fuzz_762(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::SetDisplaySurface on Output, of random arguments.
-fn fuzz_763(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_768(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53775,7 +54052,7 @@ fn fuzz_763(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::GetDisplaySurfaceData on Output, of random arguments.
-fn fuzz_764(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_769(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53788,7 +54065,7 @@ fn fuzz_764(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutput::GetFrameStatistics on Output, of random arguments.
-fn fuzz_765(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_770(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53798,7 +54075,7 @@ fn fuzz_765(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Output, of random arguments.
-fn fuzz_766(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_771(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53809,7 +54086,7 @@ fn fuzz_766(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Output, of random arguments.
-fn fuzz_767(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_772(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53819,7 +54096,7 @@ fn fuzz_767(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Output, of random arguments.
-fn fuzz_768(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_773(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k60.as_ref() else {
         return false;
     };
@@ -53829,7 +54106,7 @@ fn fuzz_768(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutputDuplication::GetDesc on OutputDuplication, of random arguments.
-fn fuzz_769(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_774(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53839,7 +54116,7 @@ fn fuzz_769(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutputDuplication::AcquireNextFrame on OutputDuplication, of random arguments.
-fn fuzz_770(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_775(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53849,7 +54126,7 @@ fn fuzz_770(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutputDuplication::GetFrameDirtyRects on OutputDuplication, of random arguments.
-fn fuzz_771(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_776(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53860,7 +54137,7 @@ fn fuzz_771(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutputDuplication::GetFrameMoveRects on OutputDuplication, of random arguments.
-fn fuzz_772(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_777(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53871,7 +54148,7 @@ fn fuzz_772(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutputDuplication::GetFramePointerShape on OutputDuplication, of random arguments.
-fn fuzz_773(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_778(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53882,7 +54159,7 @@ fn fuzz_773(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutputDuplication::UnMapDesktopSurface on OutputDuplication, of random arguments.
-fn fuzz_774(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_779(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53892,7 +54169,7 @@ fn fuzz_774(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIOutputDuplication::ReleaseFrame on OutputDuplication, of random arguments.
-fn fuzz_775(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_780(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53902,7 +54179,7 @@ fn fuzz_775(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on OutputDuplication, of random arguments.
-fn fuzz_776(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_781(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53913,7 +54190,7 @@ fn fuzz_776(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on OutputDuplication, of random arguments.
-fn fuzz_777(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_782(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53923,7 +54200,7 @@ fn fuzz_777(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on OutputDuplication, of random arguments.
-fn fuzz_778(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_783(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k61.as_ref() else {
         return false;
     };
@@ -53933,7 +54210,7 @@ fn fuzz_778(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource1::CreateSubresourceSurface on Resource, of random arguments.
-fn fuzz_779(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_784(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -53943,7 +54220,7 @@ fn fuzz_779(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetSharedHandle on Resource, of random arguments.
-fn fuzz_780(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_785(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -53953,7 +54230,7 @@ fn fuzz_780(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetUsage on Resource, of random arguments.
-fn fuzz_781(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_786(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -53963,7 +54240,7 @@ fn fuzz_781(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::SetEvictionPriority on Resource, of random arguments.
-fn fuzz_782(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_787(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -53973,7 +54250,7 @@ fn fuzz_782(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIResource::GetEvictionPriority on Resource, of random arguments.
-fn fuzz_783(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_788(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -53983,7 +54260,7 @@ fn fuzz_783(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDeviceSubObject::GetDevice on Resource, of random arguments.
-fn fuzz_784(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_789(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -53993,7 +54270,7 @@ fn fuzz_784(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Resource, of random arguments.
-fn fuzz_785(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_790(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -54004,7 +54281,7 @@ fn fuzz_785(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Resource, of random arguments.
-fn fuzz_786(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_791(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -54014,7 +54291,7 @@ fn fuzz_786(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Resource, of random arguments.
-fn fuzz_787(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_792(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k62.as_ref() else {
         return false;
     };
@@ -54024,7 +54301,7 @@ fn fuzz_787(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface2::GetResource on Surface, of random arguments.
-fn fuzz_788(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_793(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54034,7 +54311,7 @@ fn fuzz_788(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface1::GetDC on Surface, of random arguments.
-fn fuzz_789(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_794(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54044,7 +54321,7 @@ fn fuzz_789(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface1::ReleaseDC on Surface, of random arguments.
-fn fuzz_790(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_795(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54063,7 +54340,7 @@ fn fuzz_790(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface::GetDesc on Surface, of random arguments.
-fn fuzz_791(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_796(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54073,7 +54350,7 @@ fn fuzz_791(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISurface::Unmap on Surface, of random arguments.
-fn fuzz_792(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_797(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54083,7 +54360,7 @@ fn fuzz_792(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDeviceSubObject::GetDevice on Surface, of random arguments.
-fn fuzz_793(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_798(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54093,7 +54370,7 @@ fn fuzz_793(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on Surface, of random arguments.
-fn fuzz_794(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_799(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54104,7 +54381,7 @@ fn fuzz_794(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on Surface, of random arguments.
-fn fuzz_795(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_800(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54114,7 +54391,7 @@ fn fuzz_795(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on Surface, of random arguments.
-fn fuzz_796(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_801(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k63.as_ref() else {
         return false;
     };
@@ -54124,7 +54401,7 @@ fn fuzz_796(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain4::SetHDRMetaData on SwapChain, of random arguments.
-fn fuzz_797(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_802(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54136,7 +54413,7 @@ fn fuzz_797(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain3::GetCurrentBackBufferIndex on SwapChain, of random arguments.
-fn fuzz_798(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_803(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54146,7 +54423,7 @@ fn fuzz_798(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain3::CheckColorSpaceSupport on SwapChain, of random arguments.
-fn fuzz_799(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_804(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54156,7 +54433,7 @@ fn fuzz_799(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain3::SetColorSpace1 on SwapChain, of random arguments.
-fn fuzz_800(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_805(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54166,7 +54443,7 @@ fn fuzz_800(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain2::SetSourceSize on SwapChain, of random arguments.
-fn fuzz_801(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_806(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54176,7 +54453,7 @@ fn fuzz_801(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain2::GetSourceSize on SwapChain, of random arguments.
-fn fuzz_802(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_807(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54186,7 +54463,7 @@ fn fuzz_802(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain2::SetMaximumFrameLatency on SwapChain, of random arguments.
-fn fuzz_803(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_808(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54196,7 +54473,7 @@ fn fuzz_803(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain2::GetMaximumFrameLatency on SwapChain, of random arguments.
-fn fuzz_804(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_809(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54206,7 +54483,7 @@ fn fuzz_804(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain2::GetFrameLatencyWaitableObject on SwapChain, of random arguments.
-fn fuzz_805(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_810(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54216,7 +54493,7 @@ fn fuzz_805(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain2::SetMatrixTransform on SwapChain, of random arguments.
-fn fuzz_806(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_811(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54226,7 +54503,7 @@ fn fuzz_806(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain2::GetMatrixTransform on SwapChain, of random arguments.
-fn fuzz_807(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_812(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54236,7 +54513,7 @@ fn fuzz_807(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::GetDesc1 on SwapChain, of random arguments.
-fn fuzz_808(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_813(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54246,7 +54523,7 @@ fn fuzz_808(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::GetFullscreenDesc on SwapChain, of random arguments.
-fn fuzz_809(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_814(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54256,7 +54533,7 @@ fn fuzz_809(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::GetHwnd on SwapChain, of random arguments.
-fn fuzz_810(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_815(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54266,7 +54543,7 @@ fn fuzz_810(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::GetCoreWindow on SwapChain, of random arguments.
-fn fuzz_811(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_816(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54276,7 +54553,7 @@ fn fuzz_811(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::IsTemporaryMonoSupported on SwapChain, of random arguments.
-fn fuzz_812(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_817(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54286,7 +54563,7 @@ fn fuzz_812(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::GetRestrictToOutput on SwapChain, of random arguments.
-fn fuzz_813(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_818(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54296,7 +54573,7 @@ fn fuzz_813(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::SetBackgroundColor on SwapChain, of random arguments.
-fn fuzz_814(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_819(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54306,7 +54583,7 @@ fn fuzz_814(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::GetBackgroundColor on SwapChain, of random arguments.
-fn fuzz_815(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_820(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54316,7 +54593,7 @@ fn fuzz_815(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::SetRotation on SwapChain, of random arguments.
-fn fuzz_816(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_821(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54326,7 +54603,7 @@ fn fuzz_816(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain1::GetRotation on SwapChain, of random arguments.
-fn fuzz_817(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_822(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54336,7 +54613,7 @@ fn fuzz_817(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::Present on SwapChain, of random arguments.
-fn fuzz_818(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_823(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54346,7 +54623,7 @@ fn fuzz_818(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::GetBuffer on SwapChain, of random arguments.
-fn fuzz_819(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_824(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54356,7 +54633,7 @@ fn fuzz_819(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::SetFullscreenState on SwapChain, of random arguments.
-fn fuzz_820(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_825(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54366,7 +54643,7 @@ fn fuzz_820(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::GetFullscreenState on SwapChain, of random arguments.
-fn fuzz_821(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_826(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54376,7 +54653,7 @@ fn fuzz_821(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::GetDesc on SwapChain, of random arguments.
-fn fuzz_822(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_827(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54386,7 +54663,7 @@ fn fuzz_822(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::ResizeBuffers on SwapChain, of random arguments.
-fn fuzz_823(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_828(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54396,7 +54673,7 @@ fn fuzz_823(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::ResizeTarget on SwapChain, of random arguments.
-fn fuzz_824(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_829(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54406,7 +54683,7 @@ fn fuzz_824(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::GetContainingOutput on SwapChain, of random arguments.
-fn fuzz_825(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_830(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54416,7 +54693,7 @@ fn fuzz_825(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::GetFrameStatistics on SwapChain, of random arguments.
-fn fuzz_826(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_831(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54426,7 +54703,7 @@ fn fuzz_826(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChain::GetLastPresentCount on SwapChain, of random arguments.
-fn fuzz_827(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_832(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54436,7 +54713,7 @@ fn fuzz_827(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIDeviceSubObject::GetDevice on SwapChain, of random arguments.
-fn fuzz_828(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_833(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54446,7 +54723,7 @@ fn fuzz_828(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateData on SwapChain, of random arguments.
-fn fuzz_829(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_834(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54457,7 +54734,7 @@ fn fuzz_829(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::SetPrivateDataInterface on SwapChain, of random arguments.
-fn fuzz_830(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_835(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54467,7 +54744,7 @@ fn fuzz_830(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGIObject::GetParent on SwapChain, of random arguments.
-fn fuzz_831(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_836(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k64.as_ref() else {
         return false;
     };
@@ -54477,7 +54754,7 @@ fn fuzz_831(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChainMedia::GetFrameStatisticsMedia on SwapChainMedia, of random arguments.
-fn fuzz_832(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_837(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k65.as_ref() else {
         return false;
     };
@@ -54487,7 +54764,7 @@ fn fuzz_832(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChainMedia::SetPresentDuration on SwapChainMedia, of random arguments.
-fn fuzz_833(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_838(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k65.as_ref() else {
         return false;
     };
@@ -54497,7 +54774,7 @@ fn fuzz_833(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGISwapChainMedia::CheckPresentDurationSupport on SwapChainMedia, of random arguments.
-fn fuzz_834(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_839(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k65.as_ref() else {
         return false;
     };
@@ -54507,7 +54784,7 @@ fn fuzz_834(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGraphicsAnalysis::BeginCapture on GraphicsAnalysis, of random arguments.
-fn fuzz_835(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_840(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k66.as_ref() else {
         return false;
     };
@@ -54517,7 +54794,7 @@ fn fuzz_835(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// IDXGraphicsAnalysis::EndCapture on GraphicsAnalysis, of random arguments.
-fn fuzz_836(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_841(o: &Objects, r: &mut Rng) -> bool {
     let Some(this) = o.k66.as_ref() else {
         return false;
     };
@@ -54527,7 +54804,7 @@ fn fuzz_836(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// D3D11CreateDevice, of random arguments.
-fn fuzz_837(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_842(o: &Objects, r: &mut Rng) -> bool {
     let count = r.below(SLICE_LENGTHS);
     let s1: Vec<_> = (0..count)
         .map(|_| direct3d_common::enumerations::FeatureLevel(r.value()))
@@ -54545,7 +54822,7 @@ fn fuzz_837(o: &Objects, r: &mut Rng) -> bool {
 }
 
 /// D3D11CreateDeviceAndSwapChain, of random arguments.
-fn fuzz_838(o: &Objects, r: &mut Rng) -> bool {
+fn fuzz_843(o: &Objects, r: &mut Rng) -> bool {
     let count = r.below(SLICE_LENGTHS);
     let s1: Vec<_> = (0..count)
         .map(|_| direct3d_common::enumerations::FeatureLevel(r.value()))
@@ -54765,7 +55042,7 @@ fn drop_some(o: &mut Objects, r: &mut Rng, one_in: usize) {
 }
 
 /// Every method's fuzzer, picked from at random.
-const FUZZERS: [fn(&Objects, &mut Rng) -> bool; 839] = [
+const FUZZERS: [fn(&Objects, &mut Rng) -> bool; 844] = [
     fuzz_0, fuzz_1, fuzz_2, fuzz_3, fuzz_4, fuzz_5, fuzz_6, fuzz_7, fuzz_8, fuzz_9, fuzz_10,
     fuzz_11, fuzz_12, fuzz_13, fuzz_14, fuzz_15, fuzz_16, fuzz_17, fuzz_18, fuzz_19, fuzz_20,
     fuzz_21, fuzz_22, fuzz_23, fuzz_24, fuzz_25, fuzz_26, fuzz_27, fuzz_28, fuzz_29, fuzz_30,
@@ -54858,6 +55135,7 @@ const FUZZERS: [fn(&Objects, &mut Rng) -> bool; 839] = [
     fuzz_812, fuzz_813, fuzz_814, fuzz_815, fuzz_816, fuzz_817, fuzz_818, fuzz_819, fuzz_820,
     fuzz_821, fuzz_822, fuzz_823, fuzz_824, fuzz_825, fuzz_826, fuzz_827, fuzz_828, fuzz_829,
     fuzz_830, fuzz_831, fuzz_832, fuzz_833, fuzz_834, fuzz_835, fuzz_836, fuzz_837, fuzz_838,
+    fuzz_839, fuzz_840, fuzz_841, fuzz_842, fuzz_843,
 ];
 
 /// Calls `calls` methods picked at random, each of random arguments; every `REMAKE_EVERY` calls drops some objects and

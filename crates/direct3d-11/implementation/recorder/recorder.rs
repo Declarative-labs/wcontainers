@@ -6166,7 +6166,7 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &input_element_descs;
         let _ = &shader_bytecode_with_input_signature;
         record("ID3D11Device::CreateInputLayout()".to_string());
-        Err(E_NOTIMPL)
+        Ok(RecordedInputLayout::new())
     }
     fn create_vertex_shader(
         &self,
@@ -6210,8 +6210,11 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
         let _ = &buffer_strides;
         let _ = &rasterized_stream;
         let _ = &class_linkage;
-        record("ID3D11Device::CreateGeometryShaderWithStreamOutput()".to_string());
-        Err(E_NOTIMPL)
+        record(format!(
+            "ID3D11Device::CreateGeometryShaderWithStreamOutput(rasterized_stream={:?})",
+            rasterized_stream
+        ));
+        Ok(RecordedGeometryShader::new())
     }
     fn create_pixel_shader(
         &self,
@@ -6325,7 +6328,7 @@ impl<A: Recorded> direct3d_11::Device for RecordedDevice<A> {
     {
         let _ = &query_desc;
         record("ID3D11Device::CreateQuery()".to_string());
-        Err(E_NOTIMPL)
+        Ok(direct3d_11::QueryObject::Query(RecordedQuery::new()))
     }
     fn create_predicate(
         &self,
@@ -7470,7 +7473,7 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
         dst_resource: direct3d_11::ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&direct3d_11::structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
         copy_flags: u32,
@@ -7482,7 +7485,10 @@ impl<A: Recorded> direct3d_11::DeviceContext1 for RecordedDeviceContext<A> {
         let _ = &src_row_pitch;
         let _ = &src_depth_pitch;
         let _ = &copy_flags;
-        record("ID3D11DeviceContext1::UpdateSubresource1()".to_string());
+        record(format!(
+            "ID3D11DeviceContext1::UpdateSubresource1(dst_subresource={:?}, src_row_pitch={:?}, src_depth_pitch={:?}, copy_flags={:?})",
+            dst_subresource, src_row_pitch, src_depth_pitch, copy_flags
+        ));
     }
     fn discard_resource(&self, resource: direct3d_11::ResourceRef<'_, Self::Api>) {
         let _ = &resource;
@@ -8046,7 +8052,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         async_: direct3d_11::AsynchronousRef<'_, Self::Api>,
         data: Option<&impl wcontainers_volatile_bytes::VolatileBytes>,
         get_data_flags: u32,
-    ) -> Result<(), component_object_model::structures::HResult> {
+    ) -> Result<bool, component_object_model::structures::HResult> {
         let _ = &async_;
         let _ = &data;
         let _ = &get_data_flags;
@@ -8054,7 +8060,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
             "ID3D11DeviceContext::GetData(get_data_flags={:?})",
             get_data_flags
         ));
-        Ok(())
+        Ok(true)
     }
     fn set_predication(
         &self,
@@ -8268,7 +8274,7 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         dst_resource: direct3d_11::ResourceRef<'_, Self::Api>,
         dst_subresource: u32,
         dst_box: Option<&direct3d_11::structures::Box>,
-        src_data: &impl wcontainers_volatile_bytes::VolatileBytes,
+        src_data: &[u8],
         src_row_pitch: u32,
         src_depth_pitch: u32,
     ) {
@@ -8278,7 +8284,10 @@ impl<A: Recorded> direct3d_11::DeviceContext for RecordedDeviceContext<A> {
         let _ = &src_data;
         let _ = &src_row_pitch;
         let _ = &src_depth_pitch;
-        record("ID3D11DeviceContext::UpdateSubresource()".to_string());
+        record(format!(
+            "ID3D11DeviceContext::UpdateSubresource(dst_subresource={:?}, src_row_pitch={:?}, src_depth_pitch={:?})",
+            dst_subresource, src_row_pitch, src_depth_pitch
+        ));
     }
     fn copy_structure_count(
         &self,

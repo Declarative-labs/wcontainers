@@ -5317,6 +5317,22 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 o.k13 = Some(p0);
             }
         }
+        // ID3D11Device::CreateInputLayout
+        if o.k21.is_none() {
+            let answer = {
+                let o = &*o;
+                made(|| {
+                    let this = o.k14.as_ref()?;
+                    let answer = direct3d_11::Device::create_input_layout(this, &[], &[]);
+                    answer.ok()
+                })
+            };
+            if let Some(p0) = answer
+                && o.k21.is_none()
+            {
+                o.k21 = Some(p0);
+            }
+        }
         // ID3D11Device::CreateVertexShader
         if o.k40.is_none() {
             let answer = {
@@ -5340,6 +5356,29 @@ fn make_all<A: direct3d_11::Direct3D11>(o: &mut Objects<A>) -> usize {
                 made(|| {
                     let this = o.k14.as_ref()?;
                     let answer = direct3d_11::Device::create_geometry_shader(this, &[], None);
+                    answer.ok()
+                })
+            };
+            if let Some(p0) = answer
+                && o.k18.is_none()
+            {
+                o.k18 = Some(p0);
+            }
+        }
+        // ID3D11Device::CreateGeometryShaderWithStreamOutput
+        if o.k18.is_none() {
+            let answer = {
+                let o = &*o;
+                made(|| {
+                    let this = o.k14.as_ref()?;
+                    let answer = direct3d_11::Device::create_geometry_shader_with_stream_output(
+                        this,
+                        &[],
+                        &[],
+                        &[],
+                        Default::default(),
+                        None,
+                    );
                     answer.ok()
                 })
             };
@@ -16237,13 +16276,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        let lying = bytes();
         answered(direct3d_11::DeviceContext1::update_subresource1(
             this,
             v1,
             Default::default(),
             None,
-            &lying,
+            &[],
             Default::default(),
             Default::default(),
             Default::default(),
@@ -17074,13 +17112,12 @@ fn drive<A: direct3d_11::Direct3D11>(o: &Objects<A>) -> Driven {
         }) else {
             return false;
         };
-        let lying = bytes();
         answered(direct3d_11::DeviceContext::update_subresource(
             this,
             v1,
             Default::default(),
             None,
-            &lying,
+            &[],
             Default::default(),
             Default::default(),
         ))

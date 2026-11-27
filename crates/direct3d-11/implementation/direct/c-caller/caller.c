@@ -296,7 +296,7 @@ static const uint16_t CASE_INTERFACE[CASES ? CASES : 1] = {0, 0, 1, 1, 2, 3, 3, 
 static const uint8_t CASE_RIID[CASES ? CASES : 1] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static const uint8_t EXPORT_RIID[EXPORTS ? EXPORTS : 1] = {1, 1, 1, 0, 0, 1, 0, 0};
 /* Whether each case hands out an object of a kind its parameters do not name by id. */
-static const uint8_t CASE_MAKES[CASES ? CASES : 1] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static const uint8_t CASE_MAKES[CASES ? CASES : 1] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 static const uint16_t CASES_OF_0[] = {0, 1};
 #define COUNT_OF_0 2
@@ -703,6 +703,20 @@ static uint8_t *pick_text(State *s, uint64_t unit) {
     for (uint64_t at = 0; at < units * unit; at++) bytes[at] = (uint8_t)(1 + below(s, 255));
     memset(bytes + units * unit, 0, unit);
     return bytes;
+}
+
+/* A text past the glue's limit of 65,536 units (a range designator, which GCC and Clang take). */
+static const char LONG_TEXT[70001] = { [0 ... 69999] = 'A' };
+
+/* Writes at `at` the address of a text of ours inside a structure: short, empty, past the glue's limit, or null now and
+   then; never the address random bytes would make. */
+static void put_text(State *s, uint8_t *at) {
+    static const char *const TEXTS[] = { "POSITION", "TEXCOORD", "SV_Position", "", "COLOR" };
+    const char *text;
+    if (below(s, 16) == 0) { s->counted[NULL_POINTERS]++; text = NULL; }
+    else if (below(s, 16) == 0) text = LONG_TEXT;
+    else text = TEXTS[below(s, sizeof TEXTS / sizeof TEXTS[0])];
+    memcpy(at, &text, sizeof text);
 }
 
 static uint8_t *pick_riid(State *s, int *interface) {
@@ -1388,13 +1402,23 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 43: { /* ID3D11Device::CreateInputLayout */
         void *this = pick_this(s, right);
         if (this == right) s->reached[43]++;
-        uint8_t *w4 = out_bytes_fixed(s, sizeof(void *));
-        typedef int32_t (*F)(void *, uint8_t *, uint32_t, uint8_t *, uintptr_t, uint8_t *);
+        typedef int32_t (*F)(void *, const uint8_t *, uint32_t, const uint8_t *, uintptr_t, void **);
         F f = (F)((*(void ***)right)[11]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        if (f(this, (uint8_t *)pick_object(s, 1), (uint32_t)pick_value(s), (uint8_t *)pick_object(s, 1), (uintptr_t)pick_value(s), w4) != (int32_t)0x80004001u) s->counted[REFUSED_WRONG]++;
-        if (w4) { for (uint64_t i = 0; i < sizeof(void *); i++) if (w4[i]) { s->counted[REFUSED_WRONG]++; break; } free(w4); }
-        s->counted[REFUSED]++;
+        uint64_t n1 = pick_count(s);
+        uint64_t n3 = pick_count(s);
+        uint8_t *a0 = elements(s, n1, 32);
+        if (a0) for (uint64_t i = 0; i < (n1 > MOST ? 1 : n1); i++) put_text(s, a0 + i * 32 + 0);
+        uint32_t a1 = (uint32_t)n1;
+        uint8_t *a2 = elements(s, n3, 1);
+        uintptr_t a3 = (uintptr_t)n3;
+        void **a4 = (void **)out_bytes_fixed(s, sizeof(void *));
+        int ok = f(this, a0, a1, a2, a3, a4) >= 0;
+        s->counted[ok ? SUCCEEDED : FAILED]++;
+        if (a4) adopt(s, ok ? *a4 : NULL, 33);
+        free((void *)a0);
+        free((void *)a2);
+        free((void *)a4);
         break;
     }
     case 44: { /* ID3D11Device::CreateVertexShader */
@@ -1436,13 +1460,29 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 46: { /* ID3D11Device::CreateGeometryShaderWithStreamOutput */
         void *this = pick_this(s, right);
         if (this == right) s->reached[46]++;
-        uint8_t *w8 = out_bytes_fixed(s, sizeof(void *));
-        typedef int32_t (*F)(void *, uint8_t *, uintptr_t, uint8_t *, uint32_t, uint8_t *, uint32_t, uint32_t, void *, uint8_t *);
+        typedef int32_t (*F)(void *, const uint8_t *, uintptr_t, const uint8_t *, uint32_t, const uint8_t *, uint32_t, uint32_t, void *, void **);
         F f = (F)((*(void ***)right)[14]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        if (f(this, (uint8_t *)pick_object(s, 1), (uintptr_t)pick_value(s), (uint8_t *)pick_object(s, 1), (uint32_t)pick_value(s), (uint8_t *)pick_object(s, 1), (uint32_t)pick_value(s), (uint32_t)pick_value(s), (void *)pick_object(s, 1), w8) != (int32_t)0x80004001u) s->counted[REFUSED_WRONG]++;
-        if (w8) { for (uint64_t i = 0; i < sizeof(void *); i++) if (w8[i]) { s->counted[REFUSED_WRONG]++; break; } free(w8); }
-        s->counted[REFUSED]++;
+        uint64_t n1 = pick_count(s);
+        uint64_t n3 = pick_count(s);
+        uint64_t n5 = pick_count(s);
+        uint8_t *a0 = elements(s, n1, 1);
+        uintptr_t a1 = (uintptr_t)n1;
+        uint8_t *a2 = elements(s, n3, 24);
+        if (a2) for (uint64_t i = 0; i < (n3 > MOST ? 1 : n3); i++) put_text(s, a2 + i * 24 + 8);
+        uint32_t a3 = (uint32_t)n3;
+        uint8_t *a4 = elements(s, n5, 4);
+        uint32_t a5 = (uint32_t)n5;
+        uint32_t a6 = (uint32_t)pick_value(s);
+        void *a7 = pick_object(s, 1);
+        void **a8 = (void **)out_bytes_fixed(s, sizeof(void *));
+        int ok = f(this, a0, a1, a2, a3, a4, a5, a6, a7, a8) >= 0;
+        s->counted[ok ? SUCCEEDED : FAILED]++;
+        if (a8) adopt(s, ok ? *a8 : NULL, 30);
+        free((void *)a0);
+        free((void *)a2);
+        free((void *)a4);
+        free((void *)a8);
         break;
     }
     case 47: { /* ID3D11Device::CreatePixelShader */
@@ -1593,13 +1633,16 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 56: { /* ID3D11Device::CreateQuery */
         void *this = pick_this(s, right);
         if (this == right) s->reached[56]++;
-        uint8_t *w1 = out_bytes_fixed(s, sizeof(void *));
-        typedef int32_t (*F)(void *, uint8_t *, uint8_t *);
+        typedef int32_t (*F)(void *, const uint8_t *, void **);
         F f = (F)((*(void ***)right)[24]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        if (f(this, (uint8_t *)pick_object(s, 1), w1) != (int32_t)0x80004001u) s->counted[REFUSED_WRONG]++;
-        if (w1) { for (uint64_t i = 0; i < sizeof(void *); i++) if (w1[i]) { s->counted[REFUSED_WRONG]++; break; } free(w1); }
-        s->counted[REFUSED]++;
+        uint8_t *a0 = maybe_bytes(s, 8);
+        void **a1 = (void **)out_bytes_fixed(s, sizeof(void *));
+        int ok = f(this, a0, a1) >= 0;
+        s->counted[ok ? SUCCEEDED : FAILED]++;
+        if (a1) adopt(s, ok ? *a1 : NULL, 37);
+        free((void *)a0);
+        free((void *)a1);
         break;
     }
     case 57: { /* ID3D11Device::CreatePredicate */
@@ -2911,11 +2954,19 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 146: { /* ID3D11DeviceContext::UpdateSubresource */
         void *this = pick_this(s, right);
         if (this == right) s->reached[146]++;
-        typedef void (*F)(void *, void *, uint32_t, uint8_t *, uint8_t *, uint32_t, uint32_t);
+        typedef void (*F)(void *, void *, uint32_t, const uint8_t *, const uint8_t *, uint32_t, uint32_t);
         F f = (F)((*(void ***)right)[48]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        f(this, (void *)pick_object(s, 1), (uint32_t)pick_value(s), (uint8_t *)pick_object(s, 1), (uint8_t *)pick_object(s, 1), (uint32_t)pick_value(s), (uint32_t)pick_value(s));
-        s->counted[REFUSED]++;
+        void *a0 = pick_object(s, 1);
+        uint32_t a1 = (uint32_t)pick_value(s);
+        uint8_t *a2 = maybe_bytes(s, 24);
+        const uint8_t *a3 = NULL;
+        uint32_t a4 = (uint32_t)pick_value(s);
+        uint32_t a5 = (uint32_t)pick_value(s);
+        f(this, a0, a1, a2, a3, a4, a5);
+        int ok = 1;
+        s->counted[ok ? SUCCEEDED : FAILED]++;
+        free((void *)a2);
         break;
     }
     case 147: { /* ID3D11DeviceContext::CopyStructureCount */
@@ -3977,11 +4028,20 @@ static void call_slot(State *s, uint64_t which, void *right) {
     case 214: { /* ID3D11DeviceContext1::UpdateSubresource1 */
         void *this = pick_this(s, right);
         if (this == right) s->reached[214]++;
-        typedef void (*F)(void *, void *, uint32_t, uint8_t *, uint8_t *, uint32_t, uint32_t, uint32_t);
+        typedef void (*F)(void *, void *, uint32_t, const uint8_t *, const uint8_t *, uint32_t, uint32_t, uint32_t);
         F f = (F)((*(void ***)right)[116]);
         if (!f) { fprintf(stderr, "C CALLER: a null entry\n"); abort(); }
-        f(this, (void *)pick_object(s, 1), (uint32_t)pick_value(s), (uint8_t *)pick_object(s, 1), (uint8_t *)pick_object(s, 1), (uint32_t)pick_value(s), (uint32_t)pick_value(s), (uint32_t)pick_value(s));
-        s->counted[REFUSED]++;
+        void *a0 = pick_object(s, 1);
+        uint32_t a1 = (uint32_t)pick_value(s);
+        uint8_t *a2 = maybe_bytes(s, 24);
+        const uint8_t *a3 = NULL;
+        uint32_t a4 = (uint32_t)pick_value(s);
+        uint32_t a5 = (uint32_t)pick_value(s);
+        uint32_t a6 = (uint32_t)pick_value(s);
+        f(this, a0, a1, a2, a3, a4, a5, a6);
+        int ok = 1;
+        s->counted[ok ? SUCCEEDED : FAILED]++;
+        free((void *)a2);
         break;
     }
     case 215: { /* ID3D11DeviceContext1::DiscardResource */

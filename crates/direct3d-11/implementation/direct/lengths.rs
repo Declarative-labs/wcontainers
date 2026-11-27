@@ -145,6 +145,43 @@ fn subresource_extent(
     )
 }
 
+/// Returns the texels an upload's box covers in a subresource of `full` texels: the box's sides, or the whole
+/// subresource for none; none for a box past the subresource's sides; zero sides for an empty box, which uploads nothing.
+///
+/// <https://learn.microsoft.com/windows/win32/api/d3d11/ns-d3d11-d3d11_box>
+fn region_of(
+    full: (u32, u32, u32),
+    region: Option<&direct3d_11::structures::Box>,
+) -> Option<(u32, u32, u32)> {
+    let Some(region) = region else {
+        return Some(full);
+    };
+    if region.right > full.0 || region.bottom > full.1 || region.back > full.2 {
+        return None;
+    }
+    if region.left >= region.right || region.top >= region.bottom || region.front >= region.back {
+        return Some((0, 0, 0));
+    }
+    Some((
+        region.right - region.left,
+        region.bottom - region.top,
+        region.back - region.front,
+    ))
+}
+
+/// Returns the bytes an upload of `region` texels reads at the pitches: zero for an empty box.
+fn upload_extent(
+    format: directx_graphics_infrastructure::enumerations::Format,
+    region: (u32, u32, u32),
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    if region.0 == 0 {
+        return Some(0);
+    }
+    subresource_extent(format, region, row_pitch, depth_pitch)
+}
+
 /// d3d11.h: a texture's side, slices, samples and the most bits of each flag word it declares.
 const MOST_SIDE_1D: u32 = 16384;
 const MOST_SIDE_2D: u32 = 16384;
@@ -265,6 +302,24 @@ pub(crate) fn mapped_length_buffer(
     )
 }
 
+/// Returns the length of the bytes an upload into a buffer reads: its box's bytes (a buffer's box is in bytes, one row
+/// and one slice), or its byte width for none.
+pub(crate) fn upload_length_buffer(
+    desc: &direct3d_11::structures::BufferDesc,
+    subresource: u32,
+    region: Option<&direct3d_11::structures::Box>,
+    _row_pitch: u32,
+    _depth_pitch: u32,
+) -> Option<usize> {
+    if subresource != 0 {
+        return None;
+    }
+    let (bytes, _, _) = region_of((desc.byte_width, 1, 1), region)?;
+    usize::try_from(bytes)
+        .ok()
+        .filter(|length| *length <= most_bytes())
+}
+
 /// Returns the texture's resource dimension.
 pub(crate) fn type_of_texture_1d(
     _desc: &direct3d_11::structures::Texture1DDesc,
@@ -360,6 +415,24 @@ pub(crate) fn mapped_length_texture_1d(
         0,
     )?;
     at_least_pitches(rows, row_pitch, depth_pitch)
+}
+
+/// Returns the length of the bytes an upload into a subresource of the texture reads: the box's rows of blocks (the whole
+/// subresource's for none) at the pitches.
+pub(crate) fn upload_length_texture_1d(
+    desc: &direct3d_11::structures::Texture1DDesc,
+    subresource: u32,
+    region: Option<&direct3d_11::structures::Box>,
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    let full = size_texture_1d(desc, usize::try_from(subresource).ok()?)?;
+    upload_extent(
+        desc.format,
+        region_of(full, region)?,
+        row_pitch,
+        depth_pitch,
+    )
 }
 
 /// Returns the texture's resource dimension.
@@ -479,6 +552,24 @@ pub(crate) fn mapped_length_texture_2d(
     at_least_pitches(rows, row_pitch, depth_pitch)
 }
 
+/// Returns the length of the bytes an upload into a subresource of the texture reads: the box's rows of blocks (the whole
+/// subresource's for none) at the pitches.
+pub(crate) fn upload_length_texture_2d(
+    desc: &direct3d_11::structures::Texture2DDesc,
+    subresource: u32,
+    region: Option<&direct3d_11::structures::Box>,
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    let full = size_texture_2d(desc, usize::try_from(subresource).ok()?)?;
+    upload_extent(
+        desc.format,
+        region_of(full, region)?,
+        row_pitch,
+        depth_pitch,
+    )
+}
+
 /// Returns the texture's resource dimension.
 pub(crate) fn type_of_texture_3d(
     _desc: &direct3d_11::structures::Texture3DDesc,
@@ -592,6 +683,24 @@ pub(crate) fn mapped_length_texture_3d(
         depth_pitch,
     )?;
     at_least_pitches(slices, row_pitch, depth_pitch)
+}
+
+/// Returns the length of the bytes an upload into a subresource of the texture reads: the box's slices and rows of
+/// blocks (the whole subresource's for none) at the pitches.
+pub(crate) fn upload_length_texture_3d(
+    desc: &direct3d_11::structures::Texture3DDesc,
+    subresource: u32,
+    region: Option<&direct3d_11::structures::Box>,
+    row_pitch: u32,
+    depth_pitch: u32,
+) -> Option<usize> {
+    let full = size_texture_3d(desc, usize::try_from(subresource).ok()?)?;
+    upload_extent(
+        desc.format,
+        region_of(full, region)?,
+        row_pitch,
+        depth_pitch,
+    )
 }
 
 /// The least memory the serving glue lends for any subresource: what a small resource's padded rows may need.
