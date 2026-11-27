@@ -3141,3 +3141,72 @@ fn a_process_is_inspected_while_another_traces_it() {
         ]
     );
 }
+
+thread_local! {
+    /// The child [`TracedAway`] took off the kernel, until it puts it back.
+    static TRACED_AWAY: std::cell::RefCell<Vec<SuspendedTask>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the child the parent's getppid names off the kernel at the next step, and puts it back
+/// at the step after.
+#[derive(Default)]
+struct TracedAway {
+    child: Option<TaskId>,
+    stage: u8,
+}
+
+impl Hooks for TracedAway {
+    fn intercept_system_call_request(
+        &mut self,
+        _: Process<'_>,
+        _: TaskId,
+        request: SystemCallRequest,
+    ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if request.number.0 == u64::from(general::__NR_getppid) && request.arguments[0] != 0 {
+            self.child = Some(TaskId(request.arguments[0] as u32));
+        }
+        ControlFlow::Continue(request)
+    }
+
+    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut driver::Machine) -> bool {
+        let Some(child) = self.child else {
+            return false;
+        };
+        match self.stage {
+            0 => {
+                let taken: Vec<SuspendedTask> = kernel
+                    .suspend_tasks(cpu, &[child])
+                    .map(|(_, task)| task)
+                    .collect();
+                assert_eq!(taken.len(), 1, "the stopped child is taken");
+                TRACED_AWAY.with_borrow_mut(|held| held.extend(taken));
+            }
+            1 => {
+                let back = kernel.resume_tasks(cpu, TRACED_AWAY.take()).count();
+                assert_eq!(back, 0, "the child is put back");
+            }
+            _ => return false,
+        }
+        self.stage += 1;
+        true
+    }
+}
+
+/// Checks that a thread stopped for its tracer, taken off the kernel and put back, stays stopped
+/// until its tracer resumes it.
+#[test]
+fn a_thread_stopped_for_its_tracer_stays_stopped_across_being_taken() {
+    let run = try_guest(
+        "tracedaway",
+        &[],
+        Some(Box::new(TracedAway::default())),
+        1,
+        None,
+    )
+    .expect("an outcome on our kernel");
+    assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
+    assert_eq!(
+        String::from_utf8_lossy(&run.outcome.stdout),
+        "stop: stopped 10\nafter it was away: nothing\nState:\tt (tracing stop)\nend: exited 3\n"
+    );
+}

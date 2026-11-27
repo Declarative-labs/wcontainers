@@ -298,6 +298,31 @@ static void information_set(void) {
     print_pipe(pipe_fds[0]);
 }
 
+// A signal sent to a child stopped for its tracer waits: the stop stays the one it was, and the
+// child stops for the new signal once it goes on.
+static void signal_while_stopped(void) {
+    printf("== signal while stopped\n");
+    pid_t child = fork_flushed();
+    if (child == 0) {
+        signal(SIGUSR2, count);
+        pt(TRACEME, 0, 0, 0);
+        kill(getpid(), SIGUSR1);
+        _exit(handled);
+    }
+    wait_for("stop", child, 0);
+    kill(child, SIGUSR2);
+    usleep(100000);
+    wait_for("while stopped", child, WNOHANG);
+    siginfo_t taken;
+    memset(&taken, 0, sizeof taken);
+    pt(GETSIGINFO, child, 0, (long)&taken);
+    printf("siginfo: signal %d\n", taken.si_signo);
+    SHOW("cont", pt(CONT, child, 0, 0));
+    wait_for("stop for the signal sent meanwhile", child, 0);
+    SHOW("cont with it", pt(CONT, child, 0, SIGUSR2));
+    wait_for("end (its handler ran once)", child, 0);
+}
+
 // An ignored signal stops a traced child too; SIGKILL ends a stopped one; PTRACE_KILL ends a
 // running one, which no other request reaches; a fatal signal stops first and ends it when given.
 static void ending(void) {
@@ -570,6 +595,7 @@ int main(void) {
     stops_and_requests();
     blocked_and_changed();
     information_set();
+    signal_while_stopped();
     ending();
     attaching();
     another_tracer();
