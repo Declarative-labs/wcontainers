@@ -4681,8 +4681,11 @@ dependencies = [
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-executor",
+ "wcontainers-executor-arm64-stop",
+ "wcontainers-guest-cpu",
  "wcontainers-linux-process",
  "wcontainers-linux-process-direct",
+ "wcontainers-translator",
  "wcontainers-volatile-bytes",
 ]
 
