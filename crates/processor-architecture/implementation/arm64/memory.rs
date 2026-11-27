@@ -1,6 +1,7 @@
 //! Reading the memory a list of changes leaves, and reporting the changes between two copies of it.
 
 use alloc::borrow::Cow;
+use alloc::vec::Vec;
 
 use vstd::prelude::*;
 use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
@@ -69,6 +70,33 @@ pub fn read_bytes_into<Architecture: ProcessorArchitecture>(
         bytes[offset] = read_byte(memory, start.wrapping_add(offset as u64));
         offset += 1;
     }
+}
+
+/// The `length` bytes the memory holds from the start, whatever its permissions.
+pub fn read_byte_sequence<Architecture: ProcessorArchitecture>(
+    memory: &[MemoryDelta<'_, Architecture>],
+    start: u64,
+    length: usize,
+) -> (bytes: Vec<u8>)
+    ensures
+        bytes@.len() == length,
+        forall|offset: int| 0 <= offset < length
+            ==> #[trigger] bytes@[offset] == memory_of(memory@)(start.wrapping_add(offset as u64)).0,
+{
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut offset: usize = 0;
+    while offset < length
+        invariant
+            offset <= length,
+            bytes@.len() == offset,
+            forall|at: int| 0 <= at < offset
+                ==> #[trigger] bytes@[at] == memory_of(memory@)(start.wrapping_add(at as u64)).0,
+        decreases length - offset,
+    {
+        bytes.push(read_byte(memory, start.wrapping_add(offset as u64)));
+        offset += 1;
+    }
+    bytes
 }
 
 /// The byte the memory holds at the address, whatever its permissions.

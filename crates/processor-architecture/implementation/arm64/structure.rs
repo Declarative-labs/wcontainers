@@ -283,13 +283,8 @@ impl StructureInstruction {
                 mutation_hook,
             )?;
         } else {
-            load(
-                memory,
-                address,
-                location,
-                choices.fault_address_tag,
-                &mut data[..total],
-            )?;
+            let loaded = load(memory, address, location, choices.fault_address_tag, total)?;
+            data[..total].copy_from_slice(&loaded);
             write_loaded(processor, decoded, &accesses, &data[..total]);
         }
         if POST_INDEX.read(word) == 1 {

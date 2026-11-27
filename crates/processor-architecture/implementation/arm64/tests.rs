@@ -1639,13 +1639,18 @@ fn every_integer_operand_list_gives_the_values_its_operation_reads() {
     assert_eq!(checked, 133, "integer instructions");
 }
 
-/// The proven read of a load or store's operands refuses, as UNDEFINED, an operand list it cannot read, which Verus
-/// cannot rule out from tables it does not read: every listed load or store names only registers, a base and offsets,
-/// each fitting its encoding, at most four registers, and a register offset only with a size it can scale by.
+/// The proven read of a load or store's operands, and the proven load or store, refuse, as UNDEFINED, an operand list
+/// they cannot take, which Verus cannot rule out from tables it does not read: every listed load or store names only
+/// registers of five bits, a base and offsets, each fitting its encoding, and a register offset only with a size it
+/// can scale by; a load or store one or two registers of 1 to 8 bytes, or 16 for SIMD and floating-point registers,
+/// sign-extended from at most 8; a prefetch none; a store exclusive a status register and one or two general-purpose
+/// registers of up to 8 bytes; an atomic two; and a compare and swap pair four of 4 or 8 bytes.
 #[test]
 fn every_load_store_operand_list_is_one_the_proven_read_takes() {
-    use crate::load_store::{LoadStoreInstruction, MAXIMUM_REGISTERS, to_load_store_operation};
-    use crate::operand::Operand;
+    use crate::load_store::{
+        LoadStoreInstruction, MAXIMUM_REGISTERS, Transfer, to_load_store_operation,
+    };
+    use crate::operand::{Operand, Signedness};
     let mut checked = 0;
     for instruction in LISTED_INSTRUCTIONS {
         let (Some(_), Some(operation)) = (
@@ -1659,8 +1664,18 @@ fn every_load_store_operand_list_is_one_the_proven_read_takes() {
             .expect("a listed instruction")
             .operands;
         let mut registers = 0;
+        let mut vector = false;
         for operand in operands {
             assert!(operand.is_well_formed(), "{instruction:?}: {operand:?}");
+            match operand {
+                Operand::GeneralPurposeRegister { number, .. }
+                | Operand::VectorRegister { number, .. }
+                | Operand::GeneralPurposeRegisterPair { number, .. } => {
+                    assert!(number.width <= 5, "{instruction:?}");
+                }
+                _ => {}
+            }
+            vector |= matches!(operand, Operand::VectorRegister { .. });
             registers += match operand {
                 Operand::GeneralPurposeRegister { .. } | Operand::VectorRegister { .. } => 1,
                 Operand::GeneralPurposeRegisterPair { .. } => 2,
@@ -1680,6 +1695,24 @@ fn every_load_store_operand_list_is_one_the_proven_read_takes() {
             };
         }
         assert!(registers <= MAXIMUM_REGISTERS, "{instruction:?}");
+        let bytes = operation.bytes;
+        let size = [1, 2, 4, 8].contains(&bytes);
+        let shaped = match operation.transfer {
+            Transfer::Load(signedness) => {
+                registers <= 2
+                    && (size || (vector && bytes == 16))
+                    && (signedness == Signedness::Unsigned || bytes <= 8)
+            }
+            Transfer::Store => registers <= 2 && (size || (vector && bytes == 16)),
+            Transfer::Prefetch => registers == 0,
+            Transfer::StoreExclusive => (2..=3).contains(&registers) && !vector && size,
+            Transfer::Atomic(_) => registers == 2 && !vector && size,
+            Transfer::CompareAndSwapPair => registers == 4 && !vector && [4, 8].contains(&bytes),
+        };
+        assert!(
+            shaped,
+            "{instruction:?}: {registers} registers of {bytes} bytes"
+        );
         checked += 1;
     }
     assert!(checked > 100, "{checked} loads and stores");
