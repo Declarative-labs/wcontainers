@@ -53,6 +53,8 @@ wcontainers-test-window = { path = "../../../test-window" }
 wcontainers-test-window-win32 = { path = "../../../test-window/implementation/win32" }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# The OpenGL ES crate's implementation over a canvas's WebGL 2 context, which the pages' back ends draw on.
+wcontainers-opengl-es-webgl = { path = "../../../opengl-es/implementation/webgl" }
 js-sys = "0.3.84"
 wasm-bindgen = "0.2.130"
 web-sys = { version = "0.3.107", features = ["HtmlCanvasElement", "WebGl2RenderingContext", "console"] }

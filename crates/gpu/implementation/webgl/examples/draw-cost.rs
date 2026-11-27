@@ -5,16 +5,21 @@
 #![cfg(target_arch = "wasm32")]
 
 #[path = "common/kit.rs"]
-#[allow(dead_code, reason = "the scene draws with part of the kit")]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "the scene draws with part of the kit, which imports the whole interface"
+)]
 mod kit;
 
 use kit::Kit;
 use wasm_bindgen::prelude::*;
-use wcontainers_gpu::{
-    caps::*, draw::*, error::*, format::*, helpers::*, occlusion::*, passes::*, reflect::*,
-    resource::*, shader::*, slow::*, state::*, *,
-};
-use wcontainers_gpu_webgl::Gl;
+use wcontainers_gpu::{draw::*, format::*, resource::*, shader::*, state::*, *};
+use wcontainers_gpu_webgl::GlConfig;
+use wcontainers_opengl_es_webgl::WebGl;
+
+/// The back end on the OpenGL ES crate's implementation over a canvas's WebGL 2 context.
+type Gl = wcontainers_gpu_webgl::Gl<WebGl>;
 use wcontainers_gpu_webgpu::{WebGpu, block_on};
 
 /// A quad at the uniform's place, in its colour.
@@ -169,7 +174,11 @@ pub struct GlCost(Gl, Scene<Gl>);
 impl GlCost {
     #[wasm_bindgen(constructor)]
     pub fn new(context: web_sys::WebGl2RenderingContext) -> GlCost {
-        let mut b = Gl::on_canvas(context, &[]);
+        let config = GlConfig {
+            gl: WebGl::new(context, &[]),
+            off: Vec::new(),
+        };
+        let Ok(mut b) = <Gl as StandaloneGpu>::new(config);
         let s = Scene::new(&mut b);
         GlCost(b, s)
     }

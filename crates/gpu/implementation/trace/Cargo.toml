@@ -41,6 +41,7 @@ wasm-bindgen = "=0.2.130"
 web-sys = { version = "0.3.107", features = ["HtmlCanvasElement", "console"] }
 wcontainers-gpu-webgl = { path = "../webgl" }
 wcontainers-gpu-webgpu = { path = "../webgpu" }
+wcontainers-opengl-es-webgl = { path = "../../../opengl-es/implementation/webgl" }
 wgpu = { version = "30.0.2", default-features = false, features = ["webgpu"] }
 
 [lints]

@@ -5,10 +5,13 @@
 #![cfg(target_arch = "wasm32")]
 
 #[path = "common/against.rs"]
+#[allow(unused_imports, reason = "the files shared with the native tests import the whole interface; the page uses part of it")]
 mod against;
 #[path = "common/checks.rs"]
+#[allow(unused_imports, reason = "the files shared with the native tests import the whole interface; the page uses part of it")]
 mod checks;
 #[path = "common/kit.rs"]
+#[allow(unused_imports, reason = "the files shared with the native tests import the whole interface; the page uses part of it")]
 mod kit;
 #[path = "common/rig.rs"]
 mod rig;
@@ -18,8 +21,22 @@ mod scenes;
 use scenes::{Change, Scene};
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
-use wcontainers_gpu::Gpu;
-use wcontainers_gpu_webgl::Gl;
+use wcontainers_gpu::{Gpu, StandaloneGpu};
+use wcontainers_gpu_webgl::GlConfig;
+use wcontainers_opengl_es_webgl::WebGl;
+
+/// The back end on the OpenGL ES crate's implementation over a canvas's WebGL 2 context.
+type Gl = wcontainers_gpu_webgl::Gl<WebGl>;
+
+/// The back end on `context`, with the WebGL extensions in `off` left unused (neither enabled nor used).
+fn on_canvas(context: web_sys::WebGl2RenderingContext, off: &[&str]) -> Gl {
+    let config = GlConfig {
+        gl: WebGl::new(context, off),
+        off: off.iter().map(|name| name.to_string()).collect(),
+    };
+    let Ok(gl) = <Gl as StandaloneGpu>::new(config);
+    gl
+}
 
 #[wasm_bindgen]
 extern "C" {
@@ -44,7 +61,7 @@ impl Device {
     #[wasm_bindgen(constructor)]
     pub fn new(context: web_sys::WebGl2RenderingContext, off: &str) -> Device {
         let off: Vec<&str> = off.split_whitespace().collect();
-        Device(Gl::on_canvas(context, &off))
+        Device(on_canvas(context, &off))
     }
 
     /// Draws a scene (`change` empty, or the name of a change) and returns its texels.
@@ -96,15 +113,14 @@ thread_local! {
 
 /// The checks' host in the browser: each device on a new canvas.
 mod host {
-    use super::{OFF, make_context, shown_texels};
-    use wcontainers_gpu_webgl::Gl;
+    use super::{Gl, OFF, make_context, on_canvas, shown_texels};
 
     pub type Backend = Gl;
 
     pub fn make() -> Gl {
         OFF.with_borrow(|off| {
             let off: Vec<&str> = off.split_whitespace().collect();
-            Gl::on_canvas(make_context(), &off)
+            on_canvas(make_context(), &off)
         })
     }
 
@@ -117,8 +133,7 @@ mod host {
     }
 }
 
-/// Every check of examples/common/checks.rs, by name. The shared suite runs only from
-/// conformance_run.rs.
+/// Every check of examples/common/checks.rs, by name; the shared suite's programs are [`SHARED`].
 macro_rules! suite {
     ($($check:ident),* $(,)?) => {
         const SUITE: &[(&str, fn())] = &[
@@ -195,6 +210,95 @@ suite!(
     stages_past_the_uniform_buffer_limit_are_refused,
 );
 
+/// Every program of the shared suite (wcontainers-gpu-conformance), by name, each on a new canvas's back end:
+/// the list browser/suite-linux.mjs runs is the native run's (`conformance -- --list`), so a program missing
+/// here fails there.
+macro_rules! shared {
+    ($($program:ident),* $(,)?) => {
+        const SHARED: &[(&str, fn())] = &[
+            $((stringify!($program), || wcontainers_gpu_conformance::$program(host::make())),)*
+        ];
+    };
+}
+
+shared!(
+    buffer_writes_land_in_order_and_read_back,
+    texture_writes_land_and_read_back,
+    copies_move_bytes_exactly,
+    clears_fill_exactly,
+    triangle_covers_the_pixels_whose_centres_it_holds,
+    textured_draw_with_depth_and_blending,
+    presents_cleared_frames,
+    edges_through_pixel_centres_follow_the_top_left_rule,
+    strips_take_flat_values_from_the_provoking_vertex,
+    depth_writes_off_leave_the_depth,
+    a_fragment_covering_no_sample_writes_nothing,
+    srgb_targets_convert_colour_but_not_alpha,
+    generate_mips_averages_in_the_values_format,
+    values_are_interpolated_with_perspective,
+    the_scissor_bounds_the_draw,
+    a_scissor_past_the_target_is_clipped_to_it,
+    clear_rects_clear_each_rectangle_clipped_to_the_view,
+    copies_between_depth_stencil_textures_move_both_aspects,
+    stencil_operations_and_tests,
+    each_face_takes_its_own_stencil_operations,
+    near_clipping_and_the_viewport_depth_range,
+    linear_filtering_and_address_modes,
+    instances_start_at_the_first_instance,
+    a_stream_of_stride_zero_reads_its_first_element,
+    comparison_samplers_compare_with_the_stored_depth,
+    indexed_strips_restart_and_add_the_base_vertex,
+    an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows,
+    fragments_write_storage_buffers,
+    multisampled_targets_cover_their_samples_and_resolve,
+    resolves_average_in_the_format_named,
+    programs_run_per_sample_and_read_samples,
+    occlusion_queries_answer_whether_samples_passed,
+    the_occlusion_counter_counts_every_sample_that_passes,
+    fill_modes_draw_edges_or_corners,
+    values_pass_between_programs_by_location,
+    vertices_pulled_from_storage_match_the_fetched_ones,
+    constants_read_through_a_texture_lie_256_rows_to_a_texture_row,
+    missing_components_read_their_defaults,
+    captures_write_location_outputs_packed_in_draw_order,
+    a_copy_within_one_subresource_moves_the_region,
+    a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
+    a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
+    typed_buffers_through_storage_read_their_views_place_and_length,
+    typed_buffers_through_a_texture_lie_2048_elements_to_a_row,
+    every_vertex_format_reads_its_element,
+    slow_paths_are_counted_and_warned_once,
+    ring_writes_place_each_part_at_an_aligned_offset,
+    binding_sets_of_one_layout_share_its_key,
+    fences_are_done_once_waited_on,
+    fans_cover_their_triangles,
+    clear_texture_fills_every_texel,
+    absent_abilities_answer_absent,
+    buffer_writes_from_changing_bytes_land_as_held,
+    texture_writes_from_changing_bytes_land_as_held,
+    read_backs_finish_into_changing_bytes,
+    indirect_draws_and_dispatches_read_their_arguments_when_they_run,
+    timestamps_between_passes_read_back_in_order,
+    programs_ask_a_texture_its_levels_and_samples,
+    bgra4_texels_sample_and_copy_in_direct3d_bit_order,
+    depth_bounds_keep_fragments_whose_stored_depth_lies_within,
+    fragments_read_the_index_of_their_primitive,
+    programs_compute_in_16_bit_floats,
+    vertex_programs_write_storage_buffers,
+    clip_distances_clip_where_they_are_negative,
+    fractional_viewports_cover_the_centres_within_them,
+    prepared_combinations_draw_as_those_built_at_the_draw,
+    instances_step_through_their_streams_at_each_streams_rate,
+    a_stream_widened_on_the_host_drawn_again_in_one_pass_reads_its_elements,
+    a_stream_widened_on_the_host_drawn_again_in_a_later_pass_reads_its_elements,
+    captures_while_drawing_write_indexed_instances_in_draw_order,
+    a_capture_after_a_draw_of_its_stream_in_one_pass_writes_its_vertices,
+    a_capture_after_an_indexed_draw_of_its_buffers_in_one_pass_writes_its_vertices,
+    a_capture_after_a_draw_of_its_stream_in_an_earlier_pass_writes_its_vertices,
+    a_capture_after_an_indexed_draw_of_its_buffers_in_an_earlier_pass_writes_its_vertices,
+    depth_copies_through_buffers_keep_their_pitches_and_values,
+);
+
 thread_local! {
     /// The seed of the checks' patterns and how many seeds from it each check runs.
     static SAMPLING: core::cell::Cell<(u32, u32)> = const { core::cell::Cell::new((0, 1)) };
@@ -210,6 +314,7 @@ pub fn suite_test(name: &str, off: &str, seed: u32, cases: u32) -> Result<(), Js
     std::panic::set_hook(Box::new(|info| panicked(&info.to_string())));
     let (_, test) = SUITE
         .iter()
+        .chain(SHARED)
         .find(|(n, _)| *n == name)
         .ok_or_else(|| JsError::new(&format!("the browser host has no suite test {name}")))?;
     OFF.set(off.to_string());
@@ -276,7 +381,7 @@ mod comparisons {
         let (device, queue) = block_on(adapter.request_device(&device_desc))
             .map_err(|e| JsError::new(&format!("no WebGPU device: {e}")))?;
         let mut gpu = WebGpu::new(&adapter, device, queue);
-        let verdicts = against::compare(c, &mut gpu, |off| Gl::on_canvas(make_context(), off));
+        let verdicts = against::compare(c, &mut gpu, |off| on_canvas(make_context(), off));
         let mut lines = vec![format!(
             "webgpu adapter: {} ({:?}, {:?})",
             info.name, info.device_type, info.backend

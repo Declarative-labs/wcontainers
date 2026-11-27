@@ -10,7 +10,11 @@ use wcontainers_gpu::{
     resource::*, shader::*, slow::*, state::*, *,
 };
 use wcontainers_gpu_trace::{Frame, Replay};
-use wcontainers_gpu_webgl::Gl;
+use wcontainers_gpu_webgl::GlConfig;
+use wcontainers_opengl_es_webgl::WebGl;
+
+/// The WebGL 2 back end on the OpenGL ES crate's implementation over a canvas's WebGL 2 context.
+type Gl = wcontainers_gpu_webgl::Gl<WebGl>;
 use wcontainers_gpu_webgpu::{WebGpu, block_on};
 
 #[wasm_bindgen]
@@ -48,7 +52,11 @@ fn lines(f: &Frame) -> String {
 /// Starts replaying `stream` on the WebGL 2 back end of `context`.
 #[wasm_bindgen]
 pub fn replay_on_webgl(context: web_sys::WebGl2RenderingContext, stream: Vec<u8>) {
-    let b = Gl::on_canvas(context, &[]);
+    let config = GlConfig {
+        gl: WebGl::new(context, &[]),
+        off: Vec::new(),
+    };
+    let Ok(b) = <Gl as StandaloneGpu>::new(config);
     DEVICE.set(Some(Device::Gl(Box::new(b), Replay::new(stream))));
 }
 

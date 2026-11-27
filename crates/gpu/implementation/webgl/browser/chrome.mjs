@@ -1,6 +1,8 @@
 // What run.mjs and suite.mjs share: serving this directory's pages and wasm-bindgen's output, launching
 // the rig's Chrome with a working WebGL 2, and reading chrome://gpu. Uses the Chrome build and the
-// playwright-core package the graphics rig installs (tools/graphics-rig/browser).
+// playwright-core package the graphics rig installs (tools/graphics-rig/browser); where CHROME names a
+// Chrome or Chromium executable (the rented Linux machines, which have no GPU), that one, drawing WebGL 2
+// on SwiftShader, and the playwright-core package whose package.json PLAYWRIGHT_PACKAGE names.
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { readFile, readdir } from 'node:fs/promises';
@@ -8,7 +10,7 @@ import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(join(here, '../../../../../tools/graphics-rig/browser/package.json'));
+const require = createRequire(process.env.PLAYWRIGHT_PACKAGE ?? join(here, '../../../../../tools/graphics-rig/browser/package.json'));
 const { chromium } = require('playwright-core');
 
 // Serves <name>.html and <name>.js from this directory and /pkg/ from <pkg>; resolves to the server.
@@ -38,14 +40,22 @@ export async function serve(pkg) {
 // before it settles; a launch where none survives in ten tries is closed and Chrome launched again,
 // up to three times.
 export async function launch() {
-  const root = 'C:\\wc\\chrome\\chrome';
-  const builds = (await readdir(root)).filter((d) => d.startsWith('win64-'));
-  if (builds.length !== 1) throw new Error(`${root} holds ${builds.length} Chrome builds, not one`);
-  const executablePath = join(root, builds[0], 'chrome-win64', 'chrome.exe');
+  // The developer features flag only adds the backend, adapter type and full name to
+  // GPUAdapterInfo, so the cost page can confirm WebGPU drew on a GPU.
+  const args = ['--enable-webgpu-developer-features'];
+  let executablePath = process.env.CHROME;
+  if (executablePath) {
+    // No GPU and no setuid sandbox helper on the build machines: ANGLE on SwiftShader, Chrome's own
+    // CPU renderer, which Chrome takes for WebGL only when asked.
+    args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox');
+  } else {
+    const root = 'C:\\wc\\chrome\\chrome';
+    const builds = (await readdir(root)).filter((d) => d.startsWith('win64-'));
+    if (builds.length !== 1) throw new Error(`${root} holds ${builds.length} Chrome builds, not one`);
+    executablePath = join(root, builds[0], 'chrome-win64', 'chrome.exe');
+  }
   for (let launches = 1; launches <= 3; launches++) {
-    // The developer features flag only adds the backend, adapter type and full name to
-    // GPUAdapterInfo, so the cost page can confirm WebGPU drew on a GPU.
-    const browser = await chromium.launch({ executablePath, headless: true, args: ['--enable-webgpu-developer-features'] });
+    const browser = await chromium.launch({ executablePath, headless: true, args });
     const lost = await gpuReady(browser);
     if (lost < 10) {
       console.log(`chrome ${browser.version()}${lost ? `: ${lost} WebGL contexts were lost while the GPU process started` : ''}`);
